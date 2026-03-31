@@ -11,7 +11,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/open-telemetry/otel-arrow/go/pkg/arrow"
-	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common"
 	"github.com/open-telemetry/otel-arrow/go/pkg/otel/common/otlp"
 	"github.com/open-telemetry/otel-arrow/go/pkg/otel/constants"
 	"github.com/open-telemetry/otel-arrow/go/pkg/werror"
@@ -151,13 +150,10 @@ func ExemplarsStoreFrom(
 			return nil, werror.Wrap(err)
 		}
 
-		if len(spanId) == 8 {
+		if spanId != nil {
 			var sid pcommon.SpanID
-
 			copy(sid[:], spanId)
 			exemplar.SetSpanID(sid)
-		} else {
-			return nil, werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanId})
 		}
 
 		traceID, err := arrowutils.FixedSizeBinaryFromRecord(record, exemplarIDs.TraceID, row)
@@ -165,13 +161,10 @@ func ExemplarsStoreFrom(
 			return nil, werror.Wrap(err)
 		}
 
-		if len(traceID) == 16 {
+		if traceID != nil {
 			var tid pcommon.TraceID
-
 			copy(tid[:], traceID)
 			exemplar.SetTraceID(tid)
-		} else {
-			return nil, werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
 		}
 
 		if intValue != nil {

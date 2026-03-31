@@ -1098,66 +1098,28 @@ pub const fn parent_payload_type(payload_type: ArrowPayloadType) -> Option<Paren
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        ArrayRef, ArrowPrimitiveType, FixedSizeBinaryArray, Float64Array, Int64Array, RecordBatch,
-        StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
+        ArrowPrimitiveType, DurationNanosecondArray, FixedSizeBinaryArray, Float64Array,
+        Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array,
+        UInt16Array, UInt32Array,
     };
-    use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type, UInt32Type};
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit, UInt16Type, UInt32Type};
     use std::sync::Arc;
 
     use crate::encode::record::array::{ArrayAppend, PrimitiveArrayBuilder};
     use crate::encode::record::attributes::AttributesRecordBatchBuilderConstructorHelper;
     use crate::otlp::attributes::AttributeValueType;
     use crate::schema::FieldExt;
+    use crate::{logs, metrics, record_batch, traces};
 
     use super::*;
 
     /// Creates a minimal valid 1-row RecordBatch for the given payload type.
     /// Includes all required columns plus `id` if present in the spec.
     fn minimal_valid_batch(payload_type: ArrowPayloadType) -> RecordBatch {
-        use crate::schema::schema::{DataType as OtapDataType, SimpleType};
-
-        let spec = crate::schema::payloads::get(payload_type);
-        let mut fields = Vec::new();
-        let mut columns: Vec<ArrayRef> = Vec::new();
-
-        // Add "id" and "parent_id" columns if they exist in the spec, using
-        // the correct native type from the spec.
-        for name in &["id", "parent_id"] {
-            if let Some(spec_field) = spec.fields().iter().find(|f| f.name == *name) {
-                let native_type = match &spec_field.data_type {
-                    OtapDataType::Simple(SimpleType::UInt16) => DataType::UInt16,
-                    OtapDataType::Simple(SimpleType::UInt32) => DataType::UInt32,
-                    OtapDataType::Dictionary {
-                        value_type: SimpleType::UInt16,
-                        ..
-                    } => DataType::UInt16,
-                    OtapDataType::Dictionary {
-                        value_type: SimpleType::UInt32,
-                        ..
-                    } => DataType::UInt32,
-                    other => panic!("Unexpected type for {name} column: {other:?}"),
-                };
-                match native_type {
-                    DataType::UInt16 => {
-                        fields.push(Field::new(*name, DataType::UInt16, false));
-                        columns.push(Arc::new(UInt16Array::from(vec![0u16])));
-                    }
-                    DataType::UInt32 => {
-                        fields.push(Field::new(*name, DataType::UInt32, false));
-                        columns.push(Arc::new(UInt32Array::from(vec![0u32])));
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-
-        // If no id or parent_id (e.g. Schema::EMPTY for MultivariateMetrics),
-        // create an empty batch
-        if fields.is_empty() {
-            return RecordBatch::new_empty(Arc::new(Schema::empty()));
-        }
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+        testing::complete_batch(
+            payload_type,
+            RecordBatch::new_empty(Arc::new(Schema::empty())),
+        )
     }
 
     /// helper function for easily constructing a record batch of attributes. In this particular
@@ -1208,104 +1170,44 @@ mod test {
 
     #[test]
     fn test_logs_num_items() {
-        let logs_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                false,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
-        )
-        .unwrap();
-        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, logs_rb).unwrap();
+        let store: Logs = logs!((Logs, ("id", UInt16, vec![1u16, 2, 3, 4])));
+        let otap_batch: OtapArrowRecords = store.into();
         assert_eq!(otap_batch.num_items(), 4);
     }
 
     #[test]
     fn test_traces_num_items() {
-        let spans_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                false,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
-        )
-        .unwrap();
-        let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
-        otap_batch.set(ArrowPayloadType::Spans, spans_rb).unwrap();
+        let store: Traces = traces!((Spans, ("id", UInt16, vec![1u16, 2, 3, 4])));
+        let otap_batch: OtapArrowRecords = store.into();
         assert_eq!(otap_batch.num_items(), 4);
     }
 
     #[test]
     fn test_metrics_num_items() {
-        let metrics_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                true,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
-        )
-        .unwrap();
-        let dp_schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-        ]));
-        let numbers_dp_rb = RecordBatch::try_new(
-            dp_schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3])),
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1])),
-            ],
-        )
-        .unwrap();
-
-        let summary_dp_rb = RecordBatch::try_new(
-            dp_schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3])),
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1])),
-            ],
-        )
-        .unwrap();
-
-        let hist_dp_rb = RecordBatch::try_new(
-            dp_schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3, 7, 8])),
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1])),
-            ],
-        )
-        .unwrap();
-
-        let exp_hist_dp_rb = RecordBatch::try_new(
-            dp_schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from_iter_values(vec![2, 3])),
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1])),
-            ],
-        )
-        .unwrap();
-
-        let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
-        otap_batch
-            .set(ArrowPayloadType::UnivariateMetrics, metrics_rb)
-            .unwrap();
-        otap_batch
-            .set(ArrowPayloadType::NumberDataPoints, numbers_dp_rb)
-            .unwrap();
-        otap_batch
-            .set(ArrowPayloadType::SummaryDataPoints, summary_dp_rb)
-            .unwrap();
-        otap_batch
-            .set(ArrowPayloadType::HistogramDataPoints, hist_dp_rb)
-            .unwrap();
-        otap_batch
-            .set(ArrowPayloadType::ExpHistogramDataPoints, exp_hist_dp_rb)
-            .unwrap();
-
+        let store: Metrics = metrics!(
+            (UnivariateMetrics, ("id", UInt16, vec![1u16, 2, 3, 4])),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![1u32, 2, 3]),
+                ("parent_id", UInt16, vec![1u16, 1, 1])
+            ),
+            (
+                SummaryDataPoints,
+                ("id", UInt32, vec![1u32, 2, 3]),
+                ("parent_id", UInt16, vec![1u16, 1, 1])
+            ),
+            (
+                HistogramDataPoints,
+                ("id", UInt32, vec![1u32, 2, 3, 7, 8]),
+                ("parent_id", UInt16, vec![1u16, 1, 1, 1, 1])
+            ),
+            (
+                ExpHistogramDataPoints,
+                ("id", UInt32, vec![2u32, 3]),
+                ("parent_id", UInt16, vec![1u16, 1])
+            ),
+        );
+        let otap_batch: OtapArrowRecords = store.into();
         assert_eq!(otap_batch.num_items(), 13);
     }
 
@@ -1845,16 +1747,18 @@ mod test {
         let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
         let metrics_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(consts::ID, DataType::UInt16, false),
                 Field::new(
                     consts::RESOURCE,
                     DataType::Struct(struct_fields.clone()),
                     true,
                 ),
                 Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+                Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(1), None])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1])),
                 Arc::new(StructArray::new(
                     struct_fields.clone(),
                     vec![Arc::new(UInt16Array::from_iter(vec![
@@ -1873,6 +1777,8 @@ mod test {
                     ]))],
                     None,
                 )),
+                Arc::new(UInt8Array::from_iter_values([0, 0, 0])),
+                Arc::new(StringArray::from_iter_values(["", "", ""])),
             ],
         )
         .unwrap();
@@ -1899,6 +1805,11 @@ mod test {
             Arc::new(Schema::new(vec![
                 Field::new(consts::ID, DataType::UInt32, true),
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter(vec![
@@ -1908,6 +1819,7 @@ mod test {
                     Some(1),
                 ])),
                 Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0, 0])),
             ],
         )
         .unwrap();
@@ -1935,6 +1847,11 @@ mod test {
                 Field::new(consts::ID, DataType::UInt32, true),
                 Field::new(consts::PARENT_ID, DataType::UInt32, false),
                 Field::new(consts::INT_VALUE, DataType::Int64, true),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter(vec![
@@ -1945,6 +1862,7 @@ mod test {
                 ])),
                 Arc::new(UInt32Array::from_iter_values(vec![1, 1, 1, 1])),
                 Arc::new(Int64Array::from_iter_values(vec![1, 1, 2, 2])),
+                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0, 0])),
             ],
         )
         .unwrap();
@@ -2024,7 +1942,7 @@ mod test {
         ]);
         let expected_metrics_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     consts::RESOURCE,
                     DataType::Struct(expected_struct_fields.clone()),
@@ -2035,9 +1953,11 @@ mod test {
                     DataType::Struct(expected_struct_fields.clone()),
                     true,
                 ),
+                Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(2), None])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
                 Arc::new(StructArray::new(
                     expected_struct_fields.clone(),
                     vec![Arc::new(UInt16Array::from_iter(vec![
@@ -2056,6 +1976,8 @@ mod test {
                     ]))],
                     None,
                 )),
+                Arc::new(UInt8Array::from_iter_values([0, 0, 0])),
+                Arc::new(StringArray::from_iter_values(["", "", ""])),
             ],
         )
         .unwrap();
@@ -2165,6 +2087,19 @@ mod test {
                     true,
                 ),
                 Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+                Field::new(
+                    consts::START_TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    consts::DURATION_TIME_UNIX_NANO,
+                    DataType::Duration(TimeUnit::Nanosecond),
+                    false,
+                ),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter(vec![Some(1), Some(1), None])),
@@ -2186,6 +2121,21 @@ mod test {
                     ]))],
                     None,
                 )),
+                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(DurationNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 16], [0u8; 16], [0u8; 16]].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8], [0u8; 8], [0u8; 8]].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(StringArray::from_iter_values(["", "", ""])),
             ],
         )
         .unwrap();
@@ -2232,6 +2182,7 @@ mod test {
                 Field::new(consts::ID, DataType::UInt32, true),
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter(vec![
@@ -2250,6 +2201,12 @@ mod test {
                             (16u8..32u8).collect::<Vec<u8>>(),
                         ]
                         .into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8], [0u8; 8], [0u8; 8], [0u8; 8]].into_iter(),
                     )
                     .unwrap(),
                 ),
@@ -2317,6 +2274,19 @@ mod test {
                     DataType::Struct(expected_struct_fields.clone()),
                     true,
                 ),
+                Field::new(
+                    consts::START_TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    consts::DURATION_TIME_UNIX_NANO,
+                    DataType::Duration(TimeUnit::Nanosecond),
+                    false,
+                ),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter(vec![Some(1), Some(2), None])),
@@ -2338,6 +2308,21 @@ mod test {
                     ]))],
                     None,
                 )),
+                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(DurationNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 16], [0u8; 16], [0u8; 16]].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8], [0u8; 8], [0u8; 8]].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(StringArray::from_iter_values(["", "", ""])),
             ],
         )
         .unwrap();
@@ -2415,6 +2400,17 @@ mod test {
             Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
             Field::new(consts::NAME, DataType::Utf8, true),
             Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                consts::DURATION_TIME_UNIX_NANO,
+                DataType::Duration(TimeUnit::Nanosecond),
+                false,
+            ),
+            Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
         ]));
 
         // This data is meant to represent a batch of spans that will be sorted, and will need to
@@ -2490,6 +2486,11 @@ mod test {
                 )),
                 Arc::new(span_names),
                 Arc::new(trace_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(DurationNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(vec![[0u8; 8]; 10].into_iter()).unwrap(),
+                ),
             ],
         )
         .unwrap();
@@ -2595,6 +2596,7 @@ mod test {
                 Field::new(consts::ID, DataType::UInt32, true).with_plain_encoding(),
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(
@@ -2606,6 +2608,12 @@ mod test {
                 Arc::new(
                     FixedSizeBinaryArray::try_from_iter(
                         span_links_data.iter().map(|d| u128::to_be_bytes(d.2)),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8]; span_links_data.len()].into_iter(),
                     )
                     .unwrap(),
                 ),
@@ -2659,6 +2667,17 @@ mod test {
             ),
             Field::new(consts::NAME, DataType::Utf8, true),
             Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                consts::DURATION_TIME_UNIX_NANO,
+                DataType::Duration(TimeUnit::Nanosecond),
+                false,
+            ),
+            Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
         ]));
 
         let expected_spans_data = vec![
@@ -2699,6 +2718,11 @@ mod test {
                 )),
                 Arc::new(span_names),
                 Arc::new(trace_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(DurationNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(vec![[0u8; 8]; 10].into_iter()).unwrap(),
+                ),
             ],
         )
         .unwrap();
@@ -2857,6 +2881,7 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true)
                     .with_encoding(consts::metadata::encodings::QUASI_DELTA),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(
@@ -2870,6 +2895,12 @@ mod test {
                         expected_span_links_data
                             .iter()
                             .map(|d| u128::to_be_bytes(d.2)),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8]; expected_span_links_data.len()].into_iter(),
                     )
                     .unwrap(),
                 ),
@@ -3014,13 +3045,22 @@ mod test {
         let data_points_schema = Arc::new(Schema::new(vec![
             Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
             Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
         let data_points_data = [(0, 9), (1, 5), (3, 7), (2, 2), (4, 1)];
         let ids = UInt32Array::from_iter_values(data_points_data.iter().map(|d| d.0));
         let parent_ids = UInt16Array::from_iter_values(data_points_data.iter().map(|d| d.1));
         let data_points_rb = RecordBatch::try_new(
             data_points_schema,
-            vec![Arc::new(ids), Arc::new(parent_ids)],
+            vec![
+                Arc::new(ids),
+                Arc::new(parent_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 5])),
+            ],
         )
         .unwrap();
 
@@ -3065,6 +3105,11 @@ mod test {
             Field::new(consts::INT_VALUE, DataType::Int64, true),
             Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
             Field::new(consts::PARENT_ID, DataType::UInt32, false).with_plain_encoding(),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
 
         let exemplar_rb = RecordBatch::try_new(
@@ -3074,6 +3119,7 @@ mod test {
                 Arc::new(exemplar_ints),
                 Arc::new(exemplar_doubles),
                 Arc::new(exemplar_parent_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
             ],
         )
         .unwrap();
@@ -3314,10 +3360,19 @@ mod test {
                 .with_encoding(consts::metadata::encodings::DELTA),
             Field::new(consts::PARENT_ID, DataType::UInt16, false)
                 .with_encoding(consts::metadata::encodings::DELTA),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
         let expected_data_points_rb = RecordBatch::try_new(
             expected_data_points_schema,
-            vec![Arc::new(ids), Arc::new(parent_ids)],
+            vec![
+                Arc::new(ids),
+                Arc::new(parent_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 5])),
+            ],
         )
         .unwrap();
 
@@ -3412,6 +3467,11 @@ mod test {
             Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
             Field::new(consts::PARENT_ID, DataType::UInt32, false)
                 .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
 
         let expected_exemplar_rb = RecordBatch::try_new(
@@ -3421,6 +3481,7 @@ mod test {
                 Arc::new(exemplar_int_vals),
                 Arc::new(exemplar_double_vals),
                 Arc::new(exemplar_parent_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
             ],
         )
         .unwrap();

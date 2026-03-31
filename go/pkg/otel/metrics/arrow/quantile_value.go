@@ -20,8 +20,8 @@ import (
 // QuantileValueDT is the Arrow Data Type describing a quantile value.
 var (
 	QuantileValueDT = arrow.StructOf(
-		arrow.Field{Name: constants.SummaryQuantile, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
-		arrow.Field{Name: constants.SummaryValue, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.SummaryQuantile, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional), Nullable: true},
+		arrow.Field{Name: constants.SummaryValue, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 	)
 )
 
