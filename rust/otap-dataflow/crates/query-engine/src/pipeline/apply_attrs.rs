@@ -1389,4 +1389,36 @@ mod test {
             &[OtlpProtoMessage::Logs(expected)],
         );
     }
+
+    #[tokio::test]
+    async fn test_pipeline_invoke_substring() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("abc")),
+                    KeyValue::new("k2", AnyValue::new_string("def")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = substring(value, 1, 1)
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("b")),
+                    KeyValue::new("k2", AnyValue::new_string("e")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
 }

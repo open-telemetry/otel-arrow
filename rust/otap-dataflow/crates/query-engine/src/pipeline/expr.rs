@@ -74,7 +74,7 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME, SUBSTRING_FUNC_NAME};
+use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
@@ -637,12 +637,6 @@ impl DataFusionFunctionDef {
         Some(match func_name.as_ref() {
             ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
-            SUBSTRING_FUNC_NAME => Self::new(
-                substring(),
-                ExprLogicalType::String,
-                true,
-                Some(DataType::Utf8),
-            ),
             _ => return None,
         })
     }
@@ -3187,67 +3181,5 @@ mod test {
         ]);
 
         assert_eq!(result_arr.as_ref(), &expected);
-    }
-
-    #[test]
-    fn test_function_invocation_substring() {
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![
-                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                    SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "event_name",
-                            )),
-                        )]),
-                    ),
-                )),
-                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        0,
-                    )),
-                )),
-                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        7,
-                    )),
-                )),
-            ],
-        ));
-
-        let functions = [PipelineFunction::new_external("substring", vec![], None)];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("event1.happened").finish(),
-            LogRecord::build().event_name("event2.happened").finish(),
-            LogRecord::build().event_name("abc").finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_vals = result.map(|result| result.values);
-        let result_arr = match &result_vals {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => {
-                panic!("expected arr, got scalar {otherwise:?}")
-            }
-        };
-
-        let expected = StringArray::from_iter([None, Some("event1"), Some("event2"), Some("abc")]);
-
-        assert_eq!(result_arr.as_ref(), &expected)
     }
 }

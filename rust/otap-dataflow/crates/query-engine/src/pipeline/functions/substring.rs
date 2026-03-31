@@ -21,7 +21,8 @@ use datafusion::scalar::ScalarValue;
 
 /// Replacement for datafusion's [`SubstrFunc`](datafusion::functions::unicode::substr::SubstrFunc)
 /// with a few behaviour changes:
-/// - can operate directly on Dictionary values if the passed source is dictionary encoded
+/// - can operate directly on Dictionary values if the passed source is dictionary encoded and the
+///   start/len arguments are scalars
 /// - returns a `StringArray` instead of a `StringViewArray`. We do this because, OTAP data model
 ///   does not support string views.
 /// - the substring start index is 0-based, whereas datafusion's implementation is 1-based (like in
@@ -127,6 +128,21 @@ fn dict_substr<K: ArrowDictionaryKeyType>(
         .as_any()
         .downcast_ref::<DictionaryArray<K>>()
         .expect("expected caller to check type");
+
+    if matches!(start_arg, ColumnarValue::Array(_))
+        || matches!(len_arg, Some(ColumnarValue::Array(_)))
+    {
+        // TODO: we may wish to support this in the future, however when we do this we'll
+        // either need to keep track of how many unique values have been created in order to
+        // not overflow the dictionary, or otherwise we'll need to convert to native. Note, we
+        // may also run into a schema issue in the overflow case where we've told datafusion via
+        // the return_type result that if the input is dict encoded, so too will be the output.
+        return Err(DataFusionError::NotImplemented(
+            "substring on dictionary encoded columns \
+            using non-scalar argument not yet supported"
+                .into(),
+        ));
+    }
 
     let new_vals = substr(Arc::clone(dict_arr.values()), start_arg, len_arg)?;
 
@@ -263,6 +279,49 @@ mod test {
 
     use super::*;
 
+    #[test]
+    fn test_too_few_arguments_returns_err() {
+        let func = SubstringFunc::new();
+        let err = func
+            .invoke_with_args(ScalarFunctionArgs {
+                args: vec![ColumnarValue::Scalar(ScalarValue::Null)],
+                number_rows: 1,
+                arg_fields: Vec::new(),
+                return_field: Arc::new(Field::new("", DataType::Utf8, true)),
+                config_options: Arc::new(ConfigOptions::default()),
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Execution error: invalid number of args. received 1 expected 2 or 3"
+        );
+    }
+
+    #[test]
+    fn test_too_many_arguments_returns_err() {
+        let func = SubstringFunc::new();
+        let err = func
+            .invoke_with_args(ScalarFunctionArgs {
+                args: vec![
+                    ColumnarValue::Scalar(ScalarValue::Null),
+                    ColumnarValue::Scalar(ScalarValue::Null),
+                    ColumnarValue::Scalar(ScalarValue::Null),
+                    ColumnarValue::Scalar(ScalarValue::Null),
+                ],
+                number_rows: 1,
+                arg_fields: Vec::new(),
+                return_field: Arc::new(Field::new("", DataType::Utf8, true)),
+                config_options: Arc::new(ConfigOptions::default()),
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Execution error: invalid number of args. received 4 expected 2 or 3"
+        );
+    }
+
     fn invoke_substring_expr(
         input: ColumnarValue,
         start: ColumnarValue,
@@ -328,7 +387,7 @@ mod test {
     }
 
     #[test]
-    fn test_substring_with_arrray_start() {
+    fn test_substring_with_array_start() {
         let source = ColumnarValue::Array(Arc::new(StringArray::from_iter_values([
             "arrow",
             "substring",
@@ -358,6 +417,43 @@ mod test {
         let len = ColumnarValue::Array(Arc::new(Int64Array::from_iter_values([1, 3, 2])));
 
         let expected: ArrayRef = Arc::new(StringArray::from_iter_values(["a", "ubs", "fu"]));
+
+        match invoke_substring_expr(source, start, Some(len)) {
+            Ok(ColumnarValue::Array(arr)) => assert_eq!(arr.as_ref(), expected.as_ref()),
+            other => panic!("unexpected result {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_substring_with_array_start_with_nulls() {
+        let source = ColumnarValue::Array(Arc::new(StringArray::from_iter_values([
+            "arrow",
+            "substring",
+            "func",
+        ])));
+
+        let start = ColumnarValue::Array(Arc::new(Int64Array::from_iter([Some(0), None, Some(3)])));
+
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([Some("arrow"), None, Some("c")]));
+
+        match invoke_substring_expr(source, start, None) {
+            Ok(ColumnarValue::Array(arr)) => assert_eq!(arr.as_ref(), expected.as_ref()),
+            other => panic!("unexpected result {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_substring_with_array_start_and_array_len_with_nulls() {
+        let source = ColumnarValue::Array(Arc::new(StringArray::from_iter_values([
+            "arrow",
+            "substring",
+            "func",
+        ])));
+
+        let start = ColumnarValue::Array(Arc::new(Int64Array::from_iter_values([0, 1, 0])));
+        let len = ColumnarValue::Array(Arc::new(Int64Array::from_iter([Some(1), Some(3), None])));
+
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([Some("a"), Some("ubs"), None]));
 
         match invoke_substring_expr(source, start, Some(len)) {
             Ok(ColumnarValue::Array(arr)) => assert_eq!(arr.as_ref(), expected.as_ref()),
@@ -523,5 +619,15 @@ mod test {
         test_substring_dict_values_start_and_len_scalar_generic::<UInt64Type>();
     }
 
-    // TODO test when input is a scalar
+    #[test]
+    fn test_substring_source_as_scalar() {
+        let source = ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello".into())));
+        let start = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
+        let expected: ArrayRef = Arc::new(StringArray::from_iter_values(["ello"]));
+
+        match invoke_substring_expr(source, start, None) {
+            Ok(ColumnarValue::Array(arr)) => assert_eq!(arr.as_ref(), expected.as_ref()),
+            other => panic!("unexpected result {other:?}"),
+        }
+    }
 }
