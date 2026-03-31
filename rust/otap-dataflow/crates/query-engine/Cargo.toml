@@ -19,7 +19,7 @@ smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
 
-otap-df-pdata = { path = "../pdata", features = ["testing"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
@@ -29,8 +29,8 @@ pretty_assertions = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
 
-otap-df-opl = { path = "../opl" }
-otap-df-pdata = { path = "../pdata", features = ["testing"] }
+otap-df-opl = { workspace = true }
+otap-df-pdata = { workspace = true, features = ["testing"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator.workspace = true
