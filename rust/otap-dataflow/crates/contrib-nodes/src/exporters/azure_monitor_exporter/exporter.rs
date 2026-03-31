@@ -40,7 +40,7 @@ use std::rc::Rc;
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
-const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
+
 /// Minimum interval between token refresh attempts (10 seconds).
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
 /// Buffer time before token expiry to trigger a refresh.
@@ -58,7 +58,7 @@ pub struct AzureMonitorExporter {
     client_pool: LogsIngestionClientPool,
     in_flight_exports: InFlightExports,
     last_batch_queued_at: tokio::time::Instant,
-    heartbeat: Heartbeat,
+    heartbeat: Option<Heartbeat>,
 }
 
 impl AzureMonitorExporter {
@@ -82,7 +82,11 @@ impl AzureMonitorExporter {
         let gzip_batcher = GzipBatcher::new(config.api.gzip_compression_level);
 
         // Create heartbeat handler
-        let heartbeat = Heartbeat::new(&config.api)?;
+        let heartbeat = if config.heartbeat.enabled {
+            Some(Heartbeat::new(&config.api, &config.heartbeat.overrides)?)
+        } else {
+            None
+        };
 
         Ok(Self {
             config,
@@ -535,7 +539,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
                                 Ok(header) => {
                                     self.client_pool.update_auth(header.clone());
-                                    self.heartbeat.update_auth(header.clone());
+                                    if let Some(ref mut hb) = self.heartbeat {
+                                        hb.update_auth(header.clone());
+                                    }
 
                                     // Compute expiry before consuming access_token
                                     let now_utc = azure_core::time::OffsetDateTime::now_utc();
@@ -582,12 +588,14 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_heartbeat_send), if has_token => {
-                    next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
+                _ = tokio::time::sleep_until(next_heartbeat_send), if has_token && self.heartbeat.is_some() => {
+                    next_heartbeat_send = tokio::time::Instant::now() + self.config.heartbeat.frequency;
                     self.metrics.borrow_mut().add_heartbeat();
-                    match self.heartbeat.send().await {
-                        Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
-                        Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = ?e),
+                    if let Some(ref mut hb) = self.heartbeat {
+                        match hb.send().await {
+                            Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
+                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = ?e),
+                        }
                     }
                 }
 
@@ -661,7 +669,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+    use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
     use super::*;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
@@ -701,6 +709,7 @@ mod tests {
                 gzip_compression_level: 6,
             },
             auth: AuthConfig::default(),
+            heartbeat: HeartbeatConfig::default(),
         }
     }
 
