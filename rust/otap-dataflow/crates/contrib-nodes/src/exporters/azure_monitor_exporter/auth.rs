@@ -25,7 +25,7 @@ impl TokenCredential for StaticTokenCredential {
         _options: Option<azure_core::credentials::TokenRequestOptions<'_>>,
     ) -> azure_core::Result<AccessToken> {
         Ok(AccessToken {
-            token: "static-mock-token".to_string().into(),
+            token: "static-mock-token".into(),
             expires_on: azure_core::time::OffsetDateTime::now_utc()
                 + azure_core::time::Duration::hours(24),
         })
