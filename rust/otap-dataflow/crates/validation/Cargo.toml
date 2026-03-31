@@ -23,19 +23,19 @@ tokio = { workspace = true }
 portpicker = { workspace = true }
 humantime-serde = { workspace = true }
 
-testcontainers = "0.27"
-minijinja = "1"
-reqwest = { version = "0.12", features = ["json"] }
+testcontainers = { workspace = true }
+minijinja = { workspace = true }
+reqwest = { workspace = true, features = ["json", "query"] }
 
-otap-df-engine = { path = "../engine" }
-otap-df-channel = { path = "../channel" }
-otap-df-config = { path = "../config" }
-otap-df-core-nodes = { path = "../core-nodes", features = ["dev-tools"] }
-otap-df-pdata = { path = "../pdata", features = ["testing"] }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-telemetry-macros = { path = "../telemetry-macros" }
-otap-df-otap = { path = "../otap" }
-otap-df-controller = { path = "../controller" }
+otap-df-engine = { workspace = true }
+otap-df-channel = { workspace = true }
+otap-df-config = { workspace = true }
+otap-df-core-nodes = { workspace = true, features = ["dev-tools"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }
+otap-df-telemetry = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
+otap-df-otap = { workspace = true }
+otap-df-controller = { workspace = true }
 prost = { workspace = true }
 
 [features]
@@ -45,7 +45,7 @@ crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
 crypto-openssl = ["otap-df-otap/crypto-openssl"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 otap-test-tls-certs = { workspace = true }
 weaver_common = { workspace = true }
 weaver_forge = { workspace = true }
