@@ -58,6 +58,8 @@ use tokio::time::{Instant as TokioInstant, Sleep, sleep_until};
 
 // TODO: Consider deduplicating the keyed blocked-sender waiter logic with
 // `otap-df-channel` by extracting a shared `sender_waiters.rs` there.
+// The current `mpsc` and `mpmc` waiters carry the same tombstone pattern;
+// this crate fixes it locally first to keep this PR isolated.
 //
 // The reusable part is the waiter mechanism itself: stable waiter keys, slot
 // reuse, cancellation-safe unregister, and FIFO wake order. The control
@@ -96,6 +98,8 @@ impl SenderWaiterSlot {
     }
 }
 
+const SENDER_WAITER_COMPACT_MIN_QUEUE_LEN: usize = 64;
+
 struct SenderWaiters {
     // FIFO queue of waiter keys used to preserve blocked-sender wake order.
     queue: VecDeque<SenderWaiterKey>,
@@ -103,6 +107,11 @@ struct SenderWaiters {
     slots: Vec<SenderWaiterSlot>,
     // Reuse released slots to avoid per-contention allocations.
     free_slots: Vec<usize>,
+    // Number of live queued waiters still represented in `queue`.
+    queued_live: usize,
+    // Number of stale queued entries left behind by cancellation and awaiting
+    // wake-time cleanup or periodic compaction.
+    queued_stale: usize,
     next_generation: u64,
 }
 
@@ -112,6 +121,8 @@ impl SenderWaiters {
             queue: VecDeque::new(),
             slots: Vec::new(),
             free_slots: Vec::new(),
+            queued_live: 0,
+            queued_stale: 0,
             next_generation: 0,
         }
     }
@@ -122,14 +133,17 @@ impl SenderWaiters {
                 break;
             };
             let Some(slot) = self.slots.get_mut(key.index) else {
+                self.queued_stale -= 1;
                 continue;
             };
             // Stale queue entries are expected when futures are canceled or
             // re-queued; skip until we find a live queued waiter.
             if !slot.in_use || slot.generation != key.generation || !slot.queued {
+                self.queued_stale -= 1;
                 continue;
             }
             slot.queued = false;
+            self.queued_live -= 1;
             if let Some(waker) = slot.waker.take() {
                 waker.wake();
                 count -= 1;
@@ -140,12 +154,15 @@ impl SenderWaiters {
     fn wake_all(&mut self) {
         while let Some(key) = self.queue.pop_front() {
             let Some(slot) = self.slots.get_mut(key.index) else {
+                self.queued_stale -= 1;
                 continue;
             };
             if !slot.in_use || slot.generation != key.generation || !slot.queued {
+                self.queued_stale -= 1;
                 continue;
             }
             slot.queued = false;
+            self.queued_live -= 1;
             if let Some(waker) = slot.waker.take() {
                 waker.wake();
             }
@@ -166,6 +183,7 @@ impl SenderWaiters {
                     if !slot.queued {
                         slot.queued = true;
                         self.queue.push_back(existing_key);
+                        self.queued_live += 1;
                     }
                     return;
                 }
@@ -190,6 +208,7 @@ impl SenderWaiters {
 
         let key = SenderWaiterKey { index, generation };
         self.queue.push_back(key);
+        self.queued_live += 1;
         *waiter_key = Some(key);
     }
 
@@ -201,9 +220,34 @@ impl SenderWaiters {
             return;
         }
         slot.in_use = false;
+        if slot.queued {
+            self.queued_live -= 1;
+            self.queued_stale += 1;
+        }
         slot.queued = false;
         slot.waker = None;
         self.free_slots.push(waiter_key.index);
+        self.maybe_compact_queue();
+    }
+
+    fn maybe_compact_queue(&mut self) {
+        if self.queue.len() < SENDER_WAITER_COMPACT_MIN_QUEUE_LEN {
+            return;
+        }
+        if self.queued_stale * 2 < self.queue.len() {
+            return;
+        }
+        self.compact_queue();
+    }
+
+    fn compact_queue(&mut self) {
+        self.queue.retain(|key| {
+            self.slots
+                .get(key.index)
+                .is_some_and(|slot| slot.in_use && slot.queued && slot.generation == key.generation)
+        });
+        self.queued_live = self.queue.len();
+        self.queued_stale = 0;
     }
 }
 
@@ -865,4 +909,128 @@ pub fn node_channel_with_meta<PData, Meta>(
         NodeControlSender { inner: sender },
         NodeControlReceiver { inner: receiver },
     ))
+}
+
+#[cfg(test)]
+mod sender_waiters_tests {
+    use super::{SENDER_WAITER_COMPACT_MIN_QUEUE_LEN, SenderWaiters};
+    use std::sync::{Arc, Mutex};
+    use std::task::{Wake, Waker};
+
+    struct NoopWake;
+
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+
+        fn wake_by_ref(self: &Arc<Self>) {}
+    }
+
+    struct RecordingWake {
+        id: usize,
+        wake_log: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl RecordingWake {
+        fn new(id: usize, wake_log: Arc<Mutex<Vec<usize>>>) -> Self {
+            Self { id, wake_log }
+        }
+    }
+
+    impl Wake for RecordingWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_log.lock().unwrap().push(self.id);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.wake_log.lock().unwrap().push(self.id);
+        }
+    }
+
+    fn noop_waker() -> Waker {
+        Waker::from(Arc::new(NoopWake))
+    }
+
+    #[test]
+    fn repeated_unregister_keeps_queue_length_bounded_without_wakes() {
+        // Scenario: blocked send futures are repeatedly canceled before any
+        // completion capacity is released, so no wake path drains tombstones.
+        // Guarantees: periodic compaction keeps the waiter queue bounded even
+        // under pure cancellation churn with no intervening wakeups.
+        let mut waiters = SenderWaiters::new();
+        let waker = noop_waker();
+
+        for _ in 0..(SENDER_WAITER_COMPACT_MIN_QUEUE_LEN * 3) {
+            let mut waiter_key = None;
+            waiters.register_or_refresh(&mut waiter_key, &waker);
+            waiters.unregister(waiter_key.unwrap());
+
+            assert!(waiters.queue.len() < SENDER_WAITER_COMPACT_MIN_QUEUE_LEN);
+            assert_eq!(waiters.queued_live, 0);
+            assert_eq!(waiters.queue.len(), waiters.queued_stale);
+        }
+    }
+
+    #[test]
+    fn compaction_preserves_fifo_order_for_live_waiters() {
+        // Scenario: compaction runs after many canceled waiters while a few
+        // live waiters are still queued in FIFO order.
+        // Guarantees: compaction removes stale tombstones without changing
+        // the wake order of the remaining live waiters.
+        let mut waiters = SenderWaiters::new();
+        let wake_log = Arc::new(Mutex::new(Vec::new()));
+
+        for id in 1..=3 {
+            let mut waiter_key = None;
+            let waker = Waker::from(Arc::new(RecordingWake::new(id, Arc::clone(&wake_log))));
+            waiters.register_or_refresh(&mut waiter_key, &waker);
+        }
+
+        let stale_needed_for_compaction = SENDER_WAITER_COMPACT_MIN_QUEUE_LEN - waiters.queued_live;
+        let noop_waker = noop_waker();
+        for _ in 0..stale_needed_for_compaction {
+            let mut waiter_key = None;
+            waiters.register_or_refresh(&mut waiter_key, &noop_waker);
+            waiters.unregister(waiter_key.unwrap());
+        }
+
+        assert_eq!(waiters.queued_stale, 0);
+        assert_eq!(waiters.queued_live, 3);
+        assert_eq!(waiters.queue.len(), 3);
+
+        waiters.wake_all();
+
+        assert_eq!(*wake_log.lock().unwrap(), vec![1, 2, 3]);
+        assert!(waiters.queue.is_empty());
+        assert_eq!(waiters.queued_live, 0);
+        assert_eq!(waiters.queued_stale, 0);
+    }
+
+    #[test]
+    fn compaction_removes_generation_mismatched_stale_entries() {
+        // Scenario: a slot is canceled, then reused for a later waiter with a
+        // new generation while the old queue entry is still present.
+        // Guarantees: compaction drops the stale generation-mismatched entry
+        // and retains only the live waiter for the reused slot.
+        let mut waiters = SenderWaiters::new();
+        let waker = noop_waker();
+
+        let mut first = None;
+        waiters.register_or_refresh(&mut first, &waker);
+        let first_key = first.unwrap();
+        waiters.unregister(first_key);
+
+        let mut second = None;
+        waiters.register_or_refresh(&mut second, &waker);
+        let second_key = second.unwrap();
+
+        waiters.compact_queue();
+
+        assert_eq!(waiters.queue.len(), 1);
+        let retained = waiters.queue.front().copied().unwrap();
+        assert_eq!(retained.index, second_key.index);
+        assert_eq!(retained.generation, second_key.generation);
+        assert_ne!(retained.generation, first_key.generation);
+        assert_eq!(waiters.queued_live, 1);
+        assert_eq!(waiters.queued_stale, 0);
+    }
 }

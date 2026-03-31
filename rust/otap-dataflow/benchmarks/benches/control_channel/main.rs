@@ -19,7 +19,10 @@ use otap_df_engine::shared::message::{
     SharedReceiver as CurrentSharedReceiver, SharedSender as CurrentSharedSender,
 };
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::future::{Future, poll_fn};
 use std::hint::black_box;
+use std::pin::Pin;
+use std::task::Poll;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
@@ -37,6 +40,7 @@ const NACK_EVERY: usize = 8;
 const TIMER_EVERY: usize = 64;
 const TELEMETRY_EVERY: usize = 256;
 const CONFIG_EVERY: usize = 1_024;
+const CANCELED_BLOCKED_SENDS: usize = 100_000;
 
 #[derive(Clone, Copy, Debug)]
 enum Scenario {
@@ -72,6 +76,13 @@ fn control_aware_channel_config() -> ControlChannelConfig {
         completion_batch_max: COMPLETION_BATCH_MAX,
         completion_burst_limit: COMPLETION_BATCH_MAX,
     }
+}
+
+async fn is_pending_once<F>(mut future: Pin<&mut F>) -> bool
+where
+    F: Future,
+{
+    poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx).is_pending())).await
 }
 
 fn build_metrics_reporter() -> MetricsReporter {
@@ -298,6 +309,42 @@ async fn run_control_aware_workload(scenario: Scenario) -> ObservedWork {
     observed
 }
 
+async fn run_control_aware_canceled_sender_churn() -> usize {
+    let (tx, mut rx) =
+        node_channel(control_aware_channel_config()).expect("control-aware channel config valid");
+
+    let _ = tx
+        .try_send(ControlCmd::Ack(ControlAwareAckMsg::new(0)))
+        .expect("seed completion should enqueue");
+
+    for idx in 0..CANCELED_BLOCKED_SENDS {
+        let mut blocked =
+            std::pin::pin!(tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(idx + 1))));
+        assert!(is_pending_once(blocked.as_mut()).await);
+    }
+
+    let mut live = std::pin::pin!(tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(
+        CANCELED_BLOCKED_SENDS + 1,
+    ))));
+    assert!(is_pending_once(live.as_mut()).await);
+
+    let first_batch = rx.recv().await;
+    assert!(matches!(
+        first_batch,
+        Some(NodeControlEvent::CompletionBatch(_))
+    ));
+    let _ = live
+        .await
+        .expect("live blocked send should complete after capacity is freed");
+    let second_batch = rx.recv().await;
+    assert!(matches!(
+        second_batch,
+        Some(NodeControlEvent::CompletionBatch(_))
+    ));
+
+    CANCELED_BLOCKED_SENDS
+}
+
 fn bench_control_channels(c: &mut Criterion) {
     let rt = Builder::new_current_thread()
         .enable_all()
@@ -350,6 +397,19 @@ fn bench_control_channels(c: &mut Criterion) {
     }
 
     group.finish();
+
+    let mut churn_group = c.benchmark_group("control_channel_blocked_sender_churn");
+    let _ = churn_group.throughput(Throughput::Elements(CANCELED_BLOCKED_SENDS as u64));
+    let _ = churn_group.bench_function("control_aware", |b| {
+        b.to_async(&rt).iter(|| async {
+            let local = LocalSet::new();
+            let churned = local
+                .run_until(async { run_control_aware_canceled_sender_churn().await })
+                .await;
+            let _ = black_box(churned);
+        });
+    });
+    churn_group.finish();
 }
 
 criterion_group!(benches, bench_control_channels);
