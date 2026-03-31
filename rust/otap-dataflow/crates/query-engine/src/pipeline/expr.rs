@@ -516,11 +516,11 @@ impl ExprLogicalPlanner {
             }
         }
 
-        if invoke_arg_exprs.len() == 0 {
+        if invoke_arg_exprs.is_empty() {
             // TODO: support functions with zero arguments, such as `now()`.
-            return Err(Error::NotYetSupportedError {
+            Err(Error::NotYetSupportedError {
                 message: "Only functions with one or more arguments currently supported".into(),
-            });
+            })
         } else {
             // helper function for extracting scalar expression from function argument
             fn arg_to_scalar(arg: &InvokeFunctionArgument) -> Result<&ScalarExpression> {
@@ -544,9 +544,8 @@ impl ExprLogicalPlanner {
             let mut source_scope = first_arg_expr.source;
             let mut source_requires_dict_downcast = first_arg_expr.requires_dict_downcast;
 
-            for i in 1..invoke_arg_exprs.len() {
-                let arg_expr =
-                    self.plan_scalar_expr(arg_to_scalar(&invoke_arg_exprs[i])?, functions)?;
+            for invoke_arg_expr in invoke_arg_exprs.iter().skip(1) {
+                let arg_expr = self.plan_scalar_expr(arg_to_scalar(invoke_arg_expr)?, functions)?;
 
                 // check if the data scope of the argument can be combined without doing a join.
                 // We would need to join data from different scopes if the arguments have would
@@ -634,7 +633,7 @@ impl DataFusionFunctionDef {
         // TODO: some of these functions that involve expanding to dictionary, we may wish to
         // implement our own versions that can operate directly on dictionary arrays (or fix this
         // upstream in datafusion_functions)
-        Some(match func_name.as_ref() {
+        Some(match func_name {
             ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
             _ => return None,

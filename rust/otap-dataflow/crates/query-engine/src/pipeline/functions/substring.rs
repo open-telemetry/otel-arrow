@@ -52,7 +52,7 @@ impl ScalarUDFImpl for SubstringFunc {
     }
 
     fn return_type(&self, data_types: &[DataType]) -> Result<DataType> {
-        if let Some(DataType::Dictionary(k, _)) = data_types.get(0) {
+        if let Some(DataType::Dictionary(k, _)) = data_types.first() {
             Ok(DataType::Dictionary(
                 Box::new(k.as_ref().clone()),
                 Box::new(DataType::Utf8),

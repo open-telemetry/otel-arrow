@@ -13,6 +13,7 @@ use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME};
 
 /// Create parser options that can be used when parsing an expression that will be executed with
 /// this query engine
+#[must_use]
 pub fn default_parser_options() -> ParserOptions {
     ParserOptions::new()
         // Add placeholders for scalar UDFs supported by this engine - these are needed because
