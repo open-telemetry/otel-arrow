@@ -3963,5 +3963,53 @@ mod test {
         test_update_attr_to_substring_function_call_result::<KqlParser>().await
     }
 
-    // TODO need another test where we don't pass the length ...
+    async fn test_update_attr_to_substring_function_call_result_with_no_end_index<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend 
+            attributes["s1"] = substring(attributes["attr"], 1),
+            attributes["s2"] = substring(attributes["attr"], 6),
+            attributes["attr"] = substring(attributes["attr"], 4)
+        "#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("o world")),
+                KeyValue::new("s1", AnyValue::new_string("ello world")),
+                KeyValue::new("s2", AnyValue::new_string("world")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_substring_function_call_result_with_no_end_index_opl_parser() {
+        test_update_attr_to_substring_function_call_result_with_no_end_index::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_substring_function_call_result_with_no_end_index_kql_parser() {
+        test_update_attr_to_substring_function_call_result_with_no_end_index::<KqlParser>().await
+    }
 }
