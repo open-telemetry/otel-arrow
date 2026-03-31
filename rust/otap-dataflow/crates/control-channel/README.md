@@ -228,6 +228,9 @@ Properties:
 - if both are present, `DrainIngress` is delivered first
 - once drain begins, ordinary non-completion control work such as `Config`,
   `TimerTick`, and `CollectTelemetry` is no longer accepted
+- the `DrainIngress` deadline is carried to the receiver event loop so the
+  receiver can bound its own ingress-drain phase; it does not make the
+  control-channel queue itself deadline-driven
 - once shutdown begins, ordinary non-completion control work such as `Config`,
   `TimerTick`, and `CollectTelemetry` is no longer accepted
 - pending ordinary non-completion control state is cleared when drain or
@@ -235,6 +238,11 @@ Properties:
 - completion traffic may continue draining after shutdown is accepted
 
 ### Deadline-bounded terminal progress
+
+Only `Shutdown` carries an active queue-level deadline. `DrainIngress` may also
+carry a deadline field, but that field is for receiver-local ingress-drain
+behavior after delivery rather than for forced progress inside the control
+channel itself.
 
 `Shutdown` carries a deadline and the receiver wait path is deadline-aware.
 

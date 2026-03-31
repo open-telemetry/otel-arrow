@@ -1,7 +1,44 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Single-owner standalone control-aware channel.
+//! Standalone control-aware channel with a single channel-receiver-owned queue
+//! core.
+//!
+//! "Single-owner" means one channel receiver task owns and mutates the queue
+//! state machine. Cloned senders can submit work and wait for capacity, but
+//! they do not share mutable queue state.
+//!
+//! The design is split into three layers:
+//!
+//! - [`Inner`] owns the control-specific semantics: lifecycle recording,
+//!   bounded completion admission, completion batching, latest-wins config
+//!   replacement, coalesced timer/telemetry signals, bounded fairness, and
+//!   deadline-bounded forced shutdown progress.
+//! - [`State`] wraps that core with single-threaded ownership, sender liveness,
+//!   wake routing for the channel receiver, and blocked-sender waiter
+//!   management.
+//! - [`ControlSenderCore`] and [`ControlReceiverCore`] provide the operational
+//!   sender/receiver behavior over that shared state.
+//!
+//! The generic parameter `Meta` is the completion-side metadata carried by
+//! `Ack`/`Nack` messages. Use `Meta = ()` when completions only need to return
+//! the payload, or supply a richer type when the integration needs explicit
+//! unwind/routing context alongside that payload.
+//!
+//! The hot path is intentionally asymmetric:
+//!
+//! - senders only mutate the queue through short `RefCell` borrows and never
+//!   own the queue core directly
+//! - the channel receiver is the only side that pops events and advances drain
+//!   or forced-shutdown progress
+//! - only completion traffic can become capacity-bound; lifecycle signals are
+//!   recorded separately and config/timer/telemetry use replacement or
+//!   coalescing rules instead of ordinary FIFO queuing
+//!
+//! Under contention, blocked completion senders wait in a keyed FIFO waiter
+//! structure. That keeps wakeups bounded when completion slots are released,
+//! while still allowing terminal transitions such as shutdown or close to wake
+//! everyone so they can observe the new state.
 
 use crate::core::Inner;
 use crate::types::CoreControlEvent;
@@ -18,6 +55,20 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 use tokio::sync::Notify;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep_until};
+
+// TODO: Consider deduplicating the keyed blocked-sender waiter logic with
+// `otap-df-channel` by extracting a shared `sender_waiters.rs` there.
+//
+// The reusable part is the waiter mechanism itself: stable waiter keys, slot
+// reuse, cancellation-safe unregister, and FIFO wake order. The control
+// channel would still keep its own `Inner` state machine because control
+// admission, fairness, batching, and lifecycle handling are more specialized
+// than the generic channel crate.
+//
+// This PR keeps a local copy on purpose to stay simple and isolated while the
+// standalone control-channel design is being reviewed. Any deduplication should
+// happen in a second phase and must be benchmarked to confirm that extracting
+// the waiter code preserves the current performance characteristics.
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SenderWaiterKey {
@@ -158,16 +209,22 @@ impl SenderWaiters {
 
 struct State<PData, Meta = ()> {
     /// Single-threaded ownership of the queue core plus the wake state layered
-    /// around it. `Inner` owns all admission and delivery semantics; this
-    /// wrapper only handles waiting, sender liveness, and wake routing.
+    /// around it. `Inner` owns all admission, batching, fairness, and
+    /// lifecycle semantics; this wrapper only handles channel-receiver waiting,
+    /// sender liveness, and wake routing.
     inner: RefCell<Inner<PData, Meta>>,
     notify: Notify,
     /// Number of live sender handles. When the last sender drops, the channel
-    /// transitions to closed so the receiver can finish after buffered work is
-    /// drained.
+    /// transitions to closed so the channel receiver can finish after buffered
+    /// work is drained.
     sender_count: Cell<usize>,
     /// Contended completion sends register here so capacity release can wake a
     /// bounded FIFO subset of blocked senders without waking every waiter.
+    ///
+    /// The keyed waiter-slot structure is adapted from the local MPSC channel
+    /// in `otap-df-channel`. The reuse is intentionally narrow: only the
+    /// blocked-sender waiting mechanism is borrowed here, while control
+    /// admission and delivery remain specific to `Inner`.
     sender_waiters: RefCell<Option<SenderWaiters>>,
 }
 
@@ -235,8 +292,16 @@ pub struct NodeControlReceiver<PData, Meta = ()> {
 
 struct SendFuture<'a, PData, Meta = ()> {
     sender: &'a ControlSenderCore<PData, Meta>,
+    // Owned command being retried across polls. `poll()` takes it out before
+    // each send attempt so ownership can move into `try_send()`. If the queue
+    // is still full, the returned command is stored back here before the
+    // future parks, which keeps the original command available across wakeups,
+    // cancellation, or close.
     pending_cmd: Option<ControlCmd<PData, Meta>>,
     waiter_key: Option<SenderWaiterKey>,
+    // Forced-shutdown deadlines are re-checked while blocked so a completion
+    // sender does not wait forever for capacity that shutdown semantics will
+    // eventually abandon.
     deadline_sleep: Option<Pin<Box<Sleep>>>,
 }
 
@@ -265,6 +330,14 @@ impl<PData, Meta> Drop for ControlSenderCore<PData, Meta> {
 }
 
 impl<PData, Meta> ControlSenderCore<PData, Meta> {
+    /// Records `DrainIngress` outside the bounded completion capacity.
+    ///
+    /// Guarantee: once accepted, the lifecycle token is visible to the channel
+    /// receiver even if ordinary completion traffic is saturated. Acceptance
+    /// also wakes blocked senders and the channel receiver so they can
+    /// re-evaluate terminal state promptly. The carried deadline is for the
+    /// channel receiver's own ingress-drain logic; unlike `Shutdown`, it does
+    /// not make the control-channel queue itself deadline-driven.
     fn accept_drain_ingress(&self, msg: DrainIngressMsg) -> LifecycleSendResult {
         let result = self.state.inner.borrow_mut().record_drain_ingress(msg);
         if matches!(result, LifecycleSendResult::Accepted) {
@@ -274,6 +347,12 @@ impl<PData, Meta> ControlSenderCore<PData, Meta> {
         result
     }
 
+    /// Records `Shutdown` outside the bounded completion capacity.
+    ///
+    /// Guarantee: once accepted, shutdown is remembered even if the completion
+    /// queue is full. Acceptance wakes both blocked senders and the channel
+    /// receiver so forced-shutdown deadlines and abandonment rules do not
+    /// depend on later producer activity.
     fn accept_shutdown(&self, msg: ShutdownMsg) -> LifecycleSendResult {
         let result = self.state.inner.borrow_mut().record_shutdown(msg);
         if matches!(result, LifecycleSendResult::Accepted) {
@@ -283,6 +362,12 @@ impl<PData, Meta> ControlSenderCore<PData, Meta> {
         result
     }
 
+    /// Attempts one immediate non-lifecycle send without waiting.
+    ///
+    /// Guarantee: this never parks the caller. It either applies the command
+    /// immediately, returns `Full` with the original command, or returns
+    /// `Closed` with the original command. Successful admission wakes the
+    /// channel receiver once so newly available work can be observed.
     fn try_send(
         &self,
         cmd: ControlCmd<PData, Meta>,
@@ -294,6 +379,14 @@ impl<PData, Meta> ControlSenderCore<PData, Meta> {
         result
     }
 
+    /// Sends one non-lifecycle command, waiting asynchronously only when
+    /// completion capacity is temporarily exhausted.
+    ///
+    /// Guarantee: the future preserves the original command until it is either
+    /// accepted/replaced or returned as `Closed`. While blocked, the future is
+    /// cancellation-safe and re-checks forced-shutdown deadlines so it does
+    /// not wait forever for capacity that terminal state will eventually
+    /// abandon.
     async fn send(
         &self,
         cmd: ControlCmd<PData, Meta>,
@@ -307,6 +400,11 @@ impl<PData, Meta> ControlSenderCore<PData, Meta> {
         .await
     }
 
+    /// Closes the channel for new sends.
+    ///
+    /// Guarantee: close wakes both blocked senders and the channel receiver so
+    /// all parties can observe terminal state without needing any further
+    /// producer activity.
     fn close(&self) {
         let closed = self.state.inner.borrow_mut().close();
         if closed {
@@ -315,6 +413,10 @@ impl<PData, Meta> ControlSenderCore<PData, Meta> {
         }
     }
 
+    /// Returns a snapshot of the current queue occupancy and lifecycle state.
+    ///
+    /// Guarantee: this is observational only; it does not change wake state or
+    /// queue contents.
     fn stats(&self) -> ControlChannelStats {
         self.state.inner.borrow().stats()
     }
@@ -334,14 +436,35 @@ impl<PData, Meta> Drop for SendFuture<'_, PData, Meta> {
 impl<PData, Meta> Future for SendFuture<'_, PData, Meta> {
     type Output = Result<SendOutcome, SendError<PData, Meta>>;
 
+    // `poll()` implements a small retry state machine around `try_send()`:
+    //
+    // - it takes ownership of the current command from `pending_cmd`
+    // - it attempts immediate admission through `try_send()`
+    // - on `Full`, it stores the command back, refreshes waiter registration,
+    //   arms or refreshes the forced-shutdown deadline sleep, and returns
+    //   `Pending`
+    // - on `Accepted`/`Replaced` or `Closed`, it clears waiter/deadline state
+    //   and returns `Ready`
+    //
+    // Guarantees:
+    // - the original command is never lost while the future is pending
+    // - cancellation is safe because `Drop` unregisters any outstanding waiter
+    // - blocked sends do not depend on a future producer wakeup to observe
+    //   forced shutdown progress, because the deadline path loops back into
+    //   admission checks on its own
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
 
         loop {
+            // `pending_cmd` is populated when the future is created and is
+            // restored before every `Poll::Pending` return on the full-queue
+            // path. Ready returns exit immediately, so hitting this `expect`
+            // would mean the future was polled again after completion or that
+            // this function broke its own local invariant.
             let cmd = this
                 .pending_cmd
                 .take()
-                .expect("SendFuture polled after completion");
+                .expect("SendFuture missing pending_cmd invariant");
 
             match this.sender.try_send(cmd) {
                 Ok(outcome) => {
@@ -416,6 +539,13 @@ impl<PData, Meta> Clone for NodeControlSender<PData, Meta> {
 impl<PData, Meta> ReceiverControlSender<PData, Meta> {
     /// Accepts a receiver-drain lifecycle token without consuming bounded
     /// control capacity.
+    ///
+    /// Guarantee: once accepted, the drain token remains observable to the
+    /// channel receiver even if ordinary completion traffic is saturated.
+    /// Acceptance also wakes blocked senders and the channel receiver so
+    /// terminal-state checks are re-evaluated promptly. The embedded deadline
+    /// is intended for receiver-local ingress-drain behavior, not for queue-
+    /// level forced shutdown in the control channel itself.
     #[must_use]
     pub fn accept_drain_ingress(&self, msg: DrainIngressMsg) -> LifecycleSendResult {
         self.inner.accept_drain_ingress(msg)
@@ -423,12 +553,23 @@ impl<PData, Meta> ReceiverControlSender<PData, Meta> {
 
     /// Accepts a shutdown lifecycle token without consuming bounded control
     /// capacity.
+    ///
+    /// Guarantee: once accepted, shutdown is remembered even if the completion
+    /// queue is full. Acceptance wakes both blocked senders and the channel
+    /// receiver so forced-shutdown deadlines and abandonment rules do not
+    /// depend on later producer activity.
     #[must_use]
     pub fn accept_shutdown(&self, msg: ShutdownMsg) -> LifecycleSendResult {
         self.inner.accept_shutdown(msg)
     }
 
-    /// Attempts to send a non-lifecycle control command without waiting for capacity.
+    /// Attempts to send a non-lifecycle control command without waiting for
+    /// capacity.
+    ///
+    /// Guarantee: this never parks the caller. It either applies the command
+    /// immediately, returns `Full` with the original command, or returns
+    /// `Closed` with the original command. Successful admission wakes the
+    /// channel receiver once so newly available work can be observed.
     pub fn try_send(
         &self,
         cmd: ControlCmd<PData, Meta>,
@@ -436,8 +577,12 @@ impl<PData, Meta> ReceiverControlSender<PData, Meta> {
         self.inner.try_send(cmd)
     }
 
-    /// Sends a non-lifecycle control command, waiting asynchronously for bounded
-    /// completion capacity when needed.
+    /// Sends a non-lifecycle control command, waiting asynchronously for
+    /// bounded completion capacity when needed.
+    ///
+    /// Guarantee: this only waits when completion capacity is exhausted. The
+    /// original command is preserved until it is accepted/replaced or returned
+    /// as `Closed`, and the wait path is cancellation-safe.
     pub async fn send(
         &self,
         cmd: ControlCmd<PData, Meta>,
@@ -446,11 +591,18 @@ impl<PData, Meta> ReceiverControlSender<PData, Meta> {
     }
 
     /// Closes the channel for new sends.
+    ///
+    /// Guarantee: close wakes both blocked senders and the channel receiver so
+    /// all parties can observe terminal state without needing any further
+    /// producer activity.
     pub fn close(&self) {
         self.inner.close();
     }
 
     /// Returns a snapshot of channel occupancy and lifecycle state.
+    ///
+    /// Guarantee: this is observational only; it does not change wake state or
+    /// queue contents.
     #[must_use]
     pub fn stats(&self) -> ControlChannelStats {
         self.inner.stats()
@@ -460,12 +612,23 @@ impl<PData, Meta> ReceiverControlSender<PData, Meta> {
 impl<PData, Meta> NodeControlSender<PData, Meta> {
     /// Accepts a shutdown lifecycle token without consuming bounded control
     /// capacity.
+    ///
+    /// Guarantee: once accepted, shutdown is remembered even if the completion
+    /// queue is full. Acceptance wakes both blocked senders and the channel
+    /// receiver so forced-shutdown deadlines and abandonment rules do not
+    /// depend on later producer activity.
     #[must_use]
     pub fn accept_shutdown(&self, msg: ShutdownMsg) -> LifecycleSendResult {
         self.inner.accept_shutdown(msg)
     }
 
-    /// Attempts to send a non-lifecycle control command without waiting for capacity.
+    /// Attempts to send a non-lifecycle control command without waiting for
+    /// capacity.
+    ///
+    /// Guarantee: this never parks the caller. It either applies the command
+    /// immediately, returns `Full` with the original command, or returns
+    /// `Closed` with the original command. Successful admission wakes the
+    /// channel receiver once so newly available work can be observed.
     pub fn try_send(
         &self,
         cmd: ControlCmd<PData, Meta>,
@@ -473,8 +636,12 @@ impl<PData, Meta> NodeControlSender<PData, Meta> {
         self.inner.try_send(cmd)
     }
 
-    /// Sends a non-lifecycle control command, waiting asynchronously for bounded
-    /// completion capacity when needed.
+    /// Sends a non-lifecycle control command, waiting asynchronously for
+    /// bounded completion capacity when needed.
+    ///
+    /// Guarantee: this only waits when completion capacity is exhausted. The
+    /// original command is preserved until it is accepted/replaced or returned
+    /// as `Closed`, and the wait path is cancellation-safe.
     pub async fn send(
         &self,
         cmd: ControlCmd<PData, Meta>,
@@ -483,11 +650,18 @@ impl<PData, Meta> NodeControlSender<PData, Meta> {
     }
 
     /// Closes the channel for new sends.
+    ///
+    /// Guarantee: close wakes both blocked senders and the channel receiver so
+    /// all parties can observe terminal state without needing any further
+    /// producer activity.
     pub fn close(&self) {
         self.inner.close();
     }
 
     /// Returns a snapshot of channel occupancy and lifecycle state.
+    ///
+    /// Guarantee: this is observational only; it does not change wake state or
+    /// queue contents.
     #[must_use]
     pub fn stats(&self) -> ControlChannelStats {
         self.inner.stats()
@@ -498,9 +672,13 @@ impl<PData, Meta> ControlReceiverCore<PData, Meta> {
     fn notify_after_pop(&self, event: &CoreControlEvent<PData, Meta>) {
         match event {
             CoreControlEvent::CompletionBatch(batch) => {
+                // One freed completion slot should wake one blocked sender, so
+                // batch drains wake a bounded FIFO subset instead of a herd.
                 self.state.wake_completion_waiters(batch.len());
             }
             CoreControlEvent::Shutdown(_) => {
+                // Shutdown is terminal state, not ordinary capacity release, so
+                // all blocked senders must wake and observe the new state.
                 self.state.wake_all_sender_waiters();
                 self.state.notify.notify_waiters();
             }
@@ -525,10 +703,10 @@ impl<PData, Meta> ControlReceiverCore<PData, Meta> {
                 }
             }
 
-            // Avoid waiting if the queue changed after we decided it was
-            // currently empty. Shutdown deadlines are part of the wait
-            // condition so forced shutdown does not depend on a producer
-            // arriving later to wake the receiver.
+            // Avoid waiting if the queue changed after the channel receiver
+            // decided it was currently empty. Shutdown deadlines are part of
+            // the wait condition so forced shutdown does not depend on a
+            // producer arriving later to wake the channel receiver.
             let notified = self.state.notify.notified();
             let (version, deadline) = {
                 let inner = self.state.inner.borrow();
@@ -636,15 +814,15 @@ fn channel_state<PData, Meta>(
     ))
 }
 
-/// Creates a new control-aware channel pair for receiver nodes.
+/// Creates a new control-aware sender/channel-receiver pair for receiver nodes.
 pub fn receiver_channel<PData>(
     config: ControlChannelConfig,
 ) -> Result<(ReceiverControlSender<PData>, ReceiverControlReceiver<PData>), ConfigError> {
     receiver_channel_with_meta(config)
 }
 
-/// Creates a new control-aware channel pair for receiver nodes with explicit
-/// completion metadata carried by `Ack`/`Nack`.
+/// Creates a new control-aware sender/channel-receiver pair for receiver nodes
+/// with explicit completion metadata carried by `Ack`/`Nack`.
 pub fn receiver_channel_with_meta<PData, Meta>(
     config: ControlChannelConfig,
 ) -> Result<
@@ -661,15 +839,16 @@ pub fn receiver_channel_with_meta<PData, Meta>(
     ))
 }
 
-/// Creates a new control-aware channel pair for non-receiver nodes.
+/// Creates a new control-aware sender/channel-receiver pair for non-receiver
+/// nodes.
 pub fn node_channel<PData>(
     config: ControlChannelConfig,
 ) -> Result<(NodeControlSender<PData>, NodeControlReceiver<PData>), ConfigError> {
     node_channel_with_meta(config)
 }
 
-/// Creates a new control-aware channel pair for non-receiver nodes with
-/// explicit completion metadata carried by `Ack`/`Nack`.
+/// Creates a new control-aware sender/channel-receiver pair for non-receiver
+/// nodes with explicit completion metadata carried by `Ack`/`Nack`.
 pub fn node_channel_with_meta<PData, Meta>(
     config: ControlChannelConfig,
 ) -> Result<

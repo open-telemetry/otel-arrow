@@ -2,6 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Queue core for the standalone control-aware channel.
+//!
+//! In this crate, "queue core" means the pure in-memory state machine that
+//! owns all pending control state and decides both admission and delivery
+//! order. It does not do any async waiting, waking, or handle management; the
+//! outer channel layer in `channel.rs` adds those behaviors around this core.
+//!
+//! The queue core is responsible for:
+//!
+//! - reserved-capacity lifecycle recording for `DrainIngress` and `Shutdown`
+//! - bounded admission of completion traffic (`Ack`/`Nack`)
+//! - latest-wins/coalesced handling for normal control work
+//! - bounded fairness between completion batches and normal control events
+//! - deadline-bounded forced shutdown progress
+//!
+//! [`Inner`] is the concrete queue-core state machine. Its generic parameter
+//! `Meta` is carried only by completion messages, so callers can attach unwind
+//! or routing context while the queue core remains agnostic about its meaning.
 
 use crate::types::CoreControlEvent;
 use crate::{
@@ -11,6 +28,8 @@ use crate::{
 use std::collections::VecDeque;
 use std::time::Instant;
 
+/// Delivery class used by the queue core when it round-robins pending normal
+/// non-completion control work.
 #[derive(Clone, Copy)]
 enum NormalEventClass {
     /// Latest-wins config updates. Only the newest pending config matters.
@@ -33,6 +52,18 @@ impl NormalEventClass {
     }
 }
 
+/// Queue-core state machine for one control-channel instance.
+///
+/// In this crate, a "queue core" is the pure in-memory policy engine that
+/// owns all pending control state and decides admission and delivery order.
+/// It does not perform async waiting, wakeups, or handle management; the outer
+/// channel layer in `channel.rs` adds those behaviors around this state.
+///
+/// `Inner<PData, Meta>` stores pending lifecycle, completion, and normal
+/// control work and emits [`CoreControlEvent`] values in policy order. The
+/// generic parameter `Meta` is carried only inside completion messages
+/// (`Ack`/`Nack`), so the queue core stays agnostic about any unwind or
+/// routing meaning attached to that metadata.
 pub(crate) struct Inner<PData, Meta = ()> {
     /// Immutable admission and fairness policy for this channel instance.
     pub(crate) config: ControlChannelConfig,
@@ -85,6 +116,9 @@ pub(crate) struct Inner<PData, Meta = ()> {
 impl<PData, Meta> Inner<PData, Meta> {
     /// Creates an empty queue core. The outer channel wrapper adds waiting
     /// behavior around this state machine.
+    ///
+    /// Guarantee: the returned core starts in `Phase::Normal` with no pending
+    /// lifecycle, completion, or normal control work.
     pub(crate) fn new(config: ControlChannelConfig) -> Self {
         Self {
             config,
@@ -115,6 +149,9 @@ impl<PData, Meta> Inner<PData, Meta> {
 
     /// Returns a point-in-time snapshot of queue occupancy, lifecycle flags,
     /// and cumulative counters.
+    ///
+    /// Guarantee: this is observational only; it does not mutate queue state,
+    /// fairness counters, or lifecycle progress.
     pub(crate) fn stats(&self) -> ControlChannelStats {
         ControlChannelStats {
             phase: self.phase,
@@ -142,6 +179,10 @@ impl<PData, Meta> Inner<PData, Meta> {
 
     /// Closes the queue core. This is triggered either explicitly by a
     /// sender or implicitly when the last sender handle drops.
+    ///
+    /// Guarantee: close is idempotent. After the first successful close, no new
+    /// sends are accepted and the outer channel receiver will eventually observe
+    /// `None` after buffered work is drained.
     pub(crate) fn close(&mut self) -> bool {
         if self.closed {
             return false;
@@ -154,6 +195,11 @@ impl<PData, Meta> Inner<PData, Meta> {
     /// Returns the next deadline that senders/receivers must wait on in
     /// addition to notifications. Only shutdown currently arms an internal
     /// deadline.
+    ///
+    /// Guarantee: `Some(deadline)` means waiting until that instant may change
+    /// what `pop_event()` would return. `None` means notifications alone are
+    /// sufficient because the queue core is either closed, already forced, or
+    /// not currently deadline-driven.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         if self.closed || self.shutdown_forced {
             return None;
@@ -166,6 +212,11 @@ impl<PData, Meta> Inner<PData, Meta> {
 
     /// Attempts to admit a non-lifecycle control command using the current
     /// phase and bounded-capacity policy.
+    ///
+    /// Guarantee: this never blocks. It either updates the queue core
+    /// immediately or returns `Full`/`Closed` with the original command so the
+    /// caller retains ownership. Lifecycle messages are intentionally excluded
+    /// from this path and must use the reserved-capacity record methods.
     pub(crate) fn try_send(
         &mut self,
         cmd: ControlCmd<PData, Meta>,
@@ -205,6 +256,13 @@ impl<PData, Meta> Inner<PData, Meta> {
     /// Records the receiver-only drain lifecycle token. The token is reserved
     /// capacity, delivered ahead of bounded control traffic, and clears pending
     /// normal control work that no longer matters once drain has started.
+    ///
+    /// Guarantee: once accepted, `DrainIngress` becomes observable to the queue
+    /// consumer even if the completion backlog is saturated. Accepting drain
+    /// also drops normal control work because config/timer/telemetry no longer
+    /// matter once ingress shutdown has begun. The `DrainIngressMsg::deadline`
+    /// is carried through for the receiver event loop to interpret; unlike
+    /// `Shutdown`, it does not arm queue-core forced-progress behavior here.
     pub(crate) fn record_drain_ingress(&mut self, msg: DrainIngressMsg) -> LifecycleSendResult {
         if self.closed {
             return LifecycleSendResult::Closed;
@@ -225,6 +283,11 @@ impl<PData, Meta> Inner<PData, Meta> {
 
     /// Records shutdown with its terminal deadline. Shutdown admission is
     /// reserved-capacity and flips the queue into terminal-progress mode.
+    ///
+    /// Guarantee: once accepted, shutdown is remembered even if completion
+    /// capacity is full. Pending normal control is discarded immediately,
+    /// future normal control is rejected, and delivery thereafter is governed
+    /// by completion draining plus the forced-shutdown deadline.
     pub(crate) fn record_shutdown(&mut self, msg: ShutdownMsg) -> LifecycleSendResult {
         if self.closed {
             return LifecycleSendResult::Closed;
@@ -246,6 +309,12 @@ impl<PData, Meta> Inner<PData, Meta> {
     /// Pops the next deliverable event according to lifecycle precedence,
     /// bounded fairness, and deadline-bounded shutdown rules.
     ///
+    /// Guarantee: this is the only place where the queue core converts pending
+    /// state into a deliverable [`CoreControlEvent`]. It never invents new
+    /// work, and it returns `None` only when no event is currently deliverable.
+    /// When shutdown has reached its force deadline, the returned shutdown path
+    /// abandons any remaining completion backlog and makes terminal progress.
+    ///
     /// Delivery order is:
     /// 1. `DrainIngress` if pending
     /// 2. shutdown-mode completion draining, subject to deadline forcing
@@ -256,12 +325,18 @@ impl<PData, Meta> Inner<PData, Meta> {
             self.refresh_shutdown_force(Instant::now());
         }
 
+        // Reserved lifecycle delivery always wins. `DrainIngress` is emitted
+        // once before any remaining completion backlog so receivers stop
+        // admitting new external work as early as possible.
         if let Some(msg) = self.drain_ingress.take() {
             self.completion_burst_len = 0;
             self.bump_version();
             return Some(CoreControlEvent::DrainIngress(msg));
         }
 
+        // Drain/shutdown phases override normal fairness rules. Once either
+        // lifecycle has been recorded, normal control work has already been
+        // discarded and only lifecycle/completion delivery remains relevant.
         match self.phase {
             Phase::ShutdownRecorded => {
                 if self.shutdown_forced {
@@ -283,6 +358,8 @@ impl<PData, Meta> Inner<PData, Meta> {
 
         let has_pending_normal_event = self.has_pending_normal_event();
 
+        // If only completion work remains, emit it greedily; there is no
+        // normal traffic left that needs fairness protection.
         if !has_pending_normal_event {
             if !self.completion.is_empty() {
                 return Some(self.take_completion_batch(None));
@@ -290,12 +367,17 @@ impl<PData, Meta> Inner<PData, Meta> {
             return None;
         }
 
+        // Once the completion burst budget is exhausted, force one pending
+        // normal event before emitting more completion traffic.
         if self.completion_burst_len >= self.config.completion_burst_limit {
             if let Some(event) = self.take_next_normal_event() {
                 return Some(event);
             }
         }
 
+        // Otherwise, prefer completion traffic until the burst limit says one
+        // normal event must run, but cap the batch so we do not overshoot that
+        // fairness budget.
         if !self.completion.is_empty() {
             return Some(
                 self.take_completion_batch(Some(
@@ -455,10 +537,14 @@ impl<PData, Meta> Inner<PData, Meta> {
 
         let mut batch = Vec::with_capacity(batch_len);
         for _ in 0..batch_len {
+            // `batch_len` is derived from `self.completion.len()` and nothing
+            // mutates `self.completion` between that check and this loop, so
+            // this `expect` can only fire if this function breaks its own
+            // local accounting invariant.
             let msg = self
                 .completion
                 .pop_front()
-                .expect("completion batch length checked");
+                .expect("completion batch length/accounting invariant");
             batch.push(msg);
         }
         self.completion_burst_len = self.completion_burst_len.saturating_add(batch_len);

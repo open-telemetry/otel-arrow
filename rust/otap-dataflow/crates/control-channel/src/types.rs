@@ -83,7 +83,9 @@ pub enum ConfigError {
 /// Shutdown-drain lifecycle message for receivers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrainIngressMsg {
-    /// Deadline after which shutdown is considered forced.
+    /// Deadline for receiver-local ingress drain work. The standalone control
+    /// channel carries this through unchanged, but only `Shutdown` deadlines
+    /// drive queue-level forced progress.
     pub deadline: Instant,
     /// Human-readable reason for the drain request.
     pub reason: String,
