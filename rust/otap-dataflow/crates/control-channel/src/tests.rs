@@ -8,7 +8,11 @@ use crate::{
 };
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
-use std::task::Poll;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 fn test_config() -> ControlChannelConfig {
@@ -52,6 +56,27 @@ where
     F: Future,
 {
     poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx).is_pending())).await
+}
+
+#[derive(Default)]
+struct CountingWake {
+    wake_count: AtomicUsize,
+}
+
+impl CountingWake {
+    fn count(&self) -> usize {
+        self.wake_count.load(Ordering::SeqCst)
+    }
+}
+
+impl Wake for CountingWake {
+    fn wake(self: Arc<Self>) {
+        let _ = self.wake_count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let _ = self.wake_count.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 #[test]
@@ -460,6 +485,61 @@ async fn blocking_send_waits_for_capacity_then_completes() {
         Some(NodeControlEvent::CompletionBatch(vec![CompletionMsg::Ack(
             AckMsg::new("ack-2".to_owned())
         )]))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn drain_ingress_does_not_wake_blocked_completion_senders() {
+    // Scenario: receiver drain begins while completion capacity is full and
+    // a completion sender is blocked waiting for one retained completion slot.
+    // Guarantees: `DrainIngress` wakes the channel receiver so lifecycle
+    // precedence is preserved, but blocked completion senders stay asleep
+    // until a later completion batch actually frees capacity.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let (tx, mut rx) = receiver_channel::<String>(ControlChannelConfig {
+        completion_msg_capacity: 1,
+        completion_batch_max: 1,
+        completion_burst_limit: 1,
+    })
+    .unwrap();
+
+    assert_eq!(tx.try_send(ack("ack-1")).unwrap(), SendOutcome::Accepted);
+
+    let wake_counter = Arc::new(CountingWake::default());
+    let waker = Waker::from(wake_counter.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut blocked = std::pin::pin!(tx.send(ack("ack-2")));
+    assert!(matches!(blocked.as_mut().poll(&mut cx), Poll::Pending));
+    assert_eq!(wake_counter.count(), 0);
+
+    assert_eq!(
+        tx.accept_drain_ingress(drain(deadline)),
+        LifecycleSendResult::Accepted
+    );
+    assert_eq!(wake_counter.count(), 0);
+    assert_eq!(
+        rx.recv().await,
+        Some(ReceiverControlEvent::DrainIngress(DrainIngressMsg {
+            deadline,
+            reason: "drain".to_owned(),
+        }))
+    );
+    assert_eq!(wake_counter.count(), 0);
+
+    assert_eq!(
+        rx.recv().await,
+        Some(ReceiverControlEvent::CompletionBatch(vec![
+            CompletionMsg::Ack(AckMsg::new("ack-1".to_owned()))
+        ]))
+    );
+    assert_eq!(wake_counter.count(), 1);
+
+    assert_eq!(blocked.await.unwrap(), SendOutcome::Accepted);
+    assert_eq!(
+        rx.recv().await,
+        Some(ReceiverControlEvent::CompletionBatch(vec![
+            CompletionMsg::Ack(AckMsg::new("ack-2".to_owned()))
+        ]))
     );
 }
 

@@ -8,7 +8,7 @@ stronger and more explicit than a generic FIFO MPSC queue:
 
 - lifecycle control such as `DrainIngress` and `Shutdown` must still be
   accepted and delivered even when ordinary control traffic is backlogged
-- high-frequency completion traffic must remain efficient
+- high-frequency completion traffic must remain efficient through bounded batching
 - low-value control noise should be coalesced instead of competing with
   correctness-critical work
 - shutdown progress must remain bounded and explicit
@@ -26,13 +26,14 @@ It targets the specific needs of the OTAP engine:
 
 - thread-per-core execution
 - single-threaded async runtimes on the hot path
-- frequent `Ack` and `Nack` traffic when `wait_for_result` is enabled
+- frequent `Ack` and `Nack` traffic when `wait_for_result` is enabled,
+  with batching to amortize receive-side overhead
 - node-local lifecycle transitions such as `DrainIngress` and `Shutdown`
 - a need for bounded memory, bounded-fairness, and explicit terminal progress
 
 The design separates policy classes that behave differently:
 
-- retained and backpressured completion traffic
+- retained, backpressured, and batched completion traffic
 - best-effort coalesced control work, where duplicate signals collapse into one
   pending token
 - latest-wins configuration updates, where the newest pending value replaces

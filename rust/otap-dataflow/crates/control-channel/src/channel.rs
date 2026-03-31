@@ -334,14 +334,15 @@ impl<PData, Meta> ControlSenderCore<PData, Meta> {
     ///
     /// Guarantee: once accepted, the lifecycle token is visible to the channel
     /// receiver even if ordinary completion traffic is saturated. Acceptance
-    /// also wakes blocked senders and the channel receiver so they can
-    /// re-evaluate terminal state promptly. The carried deadline is for the
-    /// channel receiver's own ingress-drain logic; unlike `Shutdown`, it does
-    /// not make the control-channel queue itself deadline-driven.
+    /// wakes the channel receiver promptly so it can observe the drain request,
+    /// but it does not wake blocked completion senders because drain does not
+    /// change completion admissibility or free completion capacity. The carried
+    /// deadline is for the channel receiver's own ingress-drain logic; unlike
+    /// `Shutdown`, it does not make the control-channel queue itself
+    /// deadline-driven.
     fn accept_drain_ingress(&self, msg: DrainIngressMsg) -> LifecycleSendResult {
         let result = self.state.inner.borrow_mut().record_drain_ingress(msg);
         if matches!(result, LifecycleSendResult::Accepted) {
-            self.state.wake_all_sender_waiters();
             self.state.notify.notify_waiters();
         }
         result
@@ -542,10 +543,11 @@ impl<PData, Meta> ReceiverControlSender<PData, Meta> {
     ///
     /// Guarantee: once accepted, the drain token remains observable to the
     /// channel receiver even if ordinary completion traffic is saturated.
-    /// Acceptance also wakes blocked senders and the channel receiver so
-    /// terminal-state checks are re-evaluated promptly. The embedded deadline
-    /// is intended for receiver-local ingress-drain behavior, not for queue-
-    /// level forced shutdown in the control channel itself.
+    /// Acceptance wakes the channel receiver promptly, but it does not wake
+    /// blocked completion senders because drain does not free completion
+    /// capacity. The embedded deadline is intended for receiver-local ingress-
+    /// drain behavior, not for queue-level forced shutdown in the control
+    /// channel itself.
     #[must_use]
     pub fn accept_drain_ingress(&self, msg: DrainIngressMsg) -> LifecycleSendResult {
         self.inner.accept_drain_ingress(msg)
