@@ -29,7 +29,7 @@ It targets the specific needs of the OTAP engine:
 - frequent `Ack` and `Nack` traffic when `wait_for_result` is enabled,
   with batching to amortize receive-side overhead
 - node-local lifecycle transitions such as `DrainIngress` and `Shutdown`
-- a need for bounded memory, bounded-fairness, and explicit terminal progress
+- a need for bounded memory, bounded-fairness, and explicit termination progress
 
 The design separates policy classes that behave differently:
 
