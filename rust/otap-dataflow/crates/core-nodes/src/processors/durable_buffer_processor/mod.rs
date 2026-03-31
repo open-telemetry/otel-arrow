@@ -1923,6 +1923,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                     otel_debug!("durable_buffer.config.update", config = ?config);
                     Ok(())
                 }
+                NodeControlMsg::DrainIngress { .. } => Ok(()),
                 NodeControlMsg::DelayedData { data, .. } => {
                     // Check if this is a retry ticket (has BundleRef + retry_count in calldata)
                     if let Some(route) = data.source_route() {

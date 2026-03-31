@@ -198,6 +198,7 @@ impl local::Processor<OtapPdata> for LogSamplingProcessor {
                 | NodeControlMsg::Config { .. }
                 | NodeControlMsg::Ack(_)
                 | NodeControlMsg::Nack(_)
+                | NodeControlMsg::DrainIngress { .. }
                 | NodeControlMsg::DelayedData { .. } => Ok(()),
             },
         }

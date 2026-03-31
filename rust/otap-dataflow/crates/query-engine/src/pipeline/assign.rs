@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::rc::Rc;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
@@ -36,13 +36,15 @@ use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::filter::IdBitmapPool;
 use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
+use otap_df_pdata::otap::transform::upsert_attributes::{
+    AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, upsert_attributes,
+};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::assign::attributes::{AttributeUpsert, upsert_attributes};
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
     RootToAttributesJoin,
@@ -57,22 +59,6 @@ use crate::pipeline::expr::{
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
-
-mod attributes;
-
-/// Empty placeholder record batch used when assigning attributes in cases where there is not a
-/// pre-existing attributes record batch
-static EMPTY_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|| {
-    RecordBatch::new_empty(Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
-        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-        Field::new(
-            consts::ATTRIBUTE_KEY,
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-            false,
-        ),
-    ])))
-});
 
 /// Representation of assignment source and destination
 pub struct Assignment<'a> {
@@ -401,7 +387,7 @@ impl AssignPipelineStage {
 
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
             Some(attrs_batch) => attrs_batch,
-            None => EMPTY_ATTRS_RECORD_BATCH.deref(),
+            None => EMPTY_U16_ATTRS_RECORD_BATCH.deref(),
         };
 
         let mut parent_id_set = self.id_bitmap_pool.acquire();
@@ -1609,13 +1595,13 @@ mod test {
             LogRecord::build()
                 .attributes(vec![KeyValue::new("event", AnyValue::new_string("hello"))])
                 .finish(),
+            // no event attribute, result should be ""..
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("replaceme").finish(),
             LogRecord::build()
                 .event_name("replaceme")
                 .attributes(vec![KeyValue::new("event", AnyValue::new_string("world"))])
                 .finish(),
-            // no event attribute, result should be ""..
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("replaceme").finish(),
         ]);
 
         let result = exec_logs_pipeline::<P>(
@@ -1628,9 +1614,9 @@ mod test {
 
         assert_eq!(logs_records.len(), 4);
         assert_eq!(logs_records[0].event_name, "hello");
-        assert_eq!(logs_records[1].event_name, "world");
+        assert_eq!(logs_records[1].event_name, "");
         assert_eq!(logs_records[2].event_name, "");
-        assert_eq!(logs_records[3].event_name, "");
+        assert_eq!(logs_records[3].event_name, "world");
     }
 
     #[tokio::test]
@@ -1649,12 +1635,12 @@ mod test {
                 .severity_number(2)
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(1))])
                 .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("replaceme").finish(),
             LogRecord::build()
                 .severity_number(3)
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(2))])
                 .finish(),
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("replaceme").finish(),
         ]);
 
         // kind of a weird expression in practice, but this is just checking if the expr evaluates
@@ -1668,9 +1654,9 @@ mod test {
 
         assert_eq!(logs_records.len(), 4);
         assert_eq!(logs_records[0].severity_number, 25);
-        assert_eq!(logs_records[1].severity_number, 35);
+        assert_eq!(logs_records[1].severity_number, 0);
         assert_eq!(logs_records[2].severity_number, 0);
-        assert_eq!(logs_records[3].severity_number, 0);
+        assert_eq!(logs_records[3].severity_number, 35);
     }
 
     #[tokio::test]

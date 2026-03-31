@@ -153,6 +153,92 @@ function parseStatusPipelineSelectionKeys(rawPipelineKey) {
   return keys;
 }
 
+function splitCamelCase(value) {
+  return String(value || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .trim();
+}
+
+function normalizeEventType(rawType) {
+  if (!rawType || typeof rawType !== "object") {
+    return {
+      kind: "unknown",
+      name: "",
+      label: "Unknown",
+    };
+  }
+
+  if ("Request" in rawType) {
+    const name = String(rawType.Request || "");
+    return {
+      kind: "request",
+      name,
+      label: splitCamelCase(name) || "Request",
+    };
+  }
+
+  if ("Success" in rawType) {
+    const name = String(rawType.Success || "");
+    return {
+      kind: "success",
+      name,
+      label: splitCamelCase(name) || "Success",
+    };
+  }
+
+  if ("Error" in rawType) {
+    const rawError = rawType.Error;
+    let name = "";
+    if (typeof rawError === "string") {
+      name = rawError;
+    } else if (rawError && typeof rawError === "object") {
+      const [firstKey] = Object.keys(rawError);
+      name = firstKey || "Error";
+    }
+    return {
+      kind: "error",
+      name,
+      label: splitCamelCase(name) || "Error",
+    };
+  }
+
+  return {
+    kind: "unknown",
+    name: "",
+    label: "Unknown",
+  };
+}
+
+function normalizeEngineEvent(rawEvent, coreId) {
+  if (!rawEvent || typeof rawEvent !== "object") return null;
+  const engineEvent =
+    rawEvent.Engine && typeof rawEvent.Engine === "object"
+      ? rawEvent.Engine
+      : rawEvent;
+  if (!engineEvent || typeof engineEvent !== "object" || !engineEvent.type) {
+    return null;
+  }
+
+  const type = normalizeEventType(engineEvent.type);
+  const time =
+    engineEvent.time && Number.isFinite(new Date(engineEvent.time).getTime())
+      ? new Date(engineEvent.time)
+      : null;
+
+  return {
+    coreId: coreId == null ? null : String(coreId),
+    time: engineEvent.time || null,
+    timeMs: time ? time.getTime() : Number.NEGATIVE_INFINITY,
+    typeKind: type.kind,
+    typeName: type.name,
+    typeLabel: type.label,
+    message:
+      engineEvent.message == null || engineEvent.message === ""
+        ? null
+        : String(engineEvent.message),
+  };
+}
+
 // Normalize /status payload into a stable snapshot consumed by selector and runtime overlay UIs.
 export function buildStatusSnapshot(statusPayload, checkedAt = Date.now()) {
   const pipelineStatuses =
@@ -168,6 +254,25 @@ export function buildStatusSnapshot(statusPayload, checkedAt = Date.now()) {
 
   for (const [rawPipelineKey, rawPipelineStatus] of Object.entries(pipelineStatuses)) {
     const classified = classifyPipelineStatus(rawPipelineStatus);
+    const recentEvents = [];
+    const rawCores =
+      rawPipelineStatus?.cores && typeof rawPipelineStatus.cores === "object"
+        ? rawPipelineStatus.cores
+        : {};
+    Object.entries(rawCores).forEach(([coreId, coreStatus]) => {
+      const rawRecentEvents = Array.isArray(coreStatus?.recentEvents)
+        ? coreStatus.recentEvents
+        : [];
+      rawRecentEvents.forEach((rawEvent) => {
+        const normalized = normalizeEngineEvent(rawEvent, coreId);
+        if (normalized) {
+          recentEvents.push(normalized);
+        }
+      });
+    });
+    recentEvents.sort((a, b) => b.timeMs - a.timeMs);
+    const latestEvent = recentEvents[0] || null;
+
     total += 1;
     if (classified.state === "up") {
       up += 1;
@@ -183,6 +288,7 @@ export function buildStatusSnapshot(statusPayload, checkedAt = Date.now()) {
       readyStatus: classified.ready?.status || "Unknown",
       runningCores: classified.runningCores,
       totalCores: classified.totalCores,
+      latestEventSummary: latestEvent?.typeLabel || "-",
       topReason:
         (classified.accepted &&
           classified.accepted.status !== "True" &&
@@ -209,6 +315,8 @@ export function buildStatusSnapshot(statusPayload, checkedAt = Date.now()) {
           totalCores: classified.totalCores,
           runningCores: classified.runningCores,
           details: classified.details,
+          recentEvents,
+          latestEvent,
         });
       }
     });

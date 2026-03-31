@@ -192,256 +192,290 @@ mod tests {
 
     #[test]
     fn noop_provider_runs() {
-        let setup = test_setup(ProviderSetup::Noop, level("info"));
-        setup.with_subscriber(|| {
-            otel_info!("log_dropped");
+        crate::with_cleared_rust_log(|| {
+            let setup = test_setup(ProviderSetup::Noop, level("info"));
+            setup.with_subscriber(|| {
+                otel_info!("log_dropped");
+            });
         });
     }
 
     #[test]
     fn noop_provider_all_levels() {
-        for l in all_simple_levels() {
-            let setup = test_setup(ProviderSetup::Noop, l);
-            setup.with_subscriber(|| {
-                otel_debug!("debug", "debug message");
-                otel_info!("info");
-                otel_warn!("warn");
-                otel_error!("error");
-            });
-        }
+        crate::with_cleared_rust_log(|| {
+            for l in all_simple_levels() {
+                let setup = test_setup(ProviderSetup::Noop, l);
+                setup.with_subscriber(|| {
+                    otel_debug!("debug", "debug message");
+                    otel_info!("info");
+                    otel_warn!("warn");
+                    otel_error!("error");
+                });
+            }
+        });
     }
 
     #[test]
     fn console_direct_provider_runs() {
-        let setup = test_setup(ProviderSetup::ConsoleDirect, level("info"));
-        setup.with_subscriber(|| {
-            otel_info!("console_log");
+        crate::with_cleared_rust_log(|| {
+            let setup = test_setup(ProviderSetup::ConsoleDirect, level("info"));
+            setup.with_subscriber(|| {
+                otel_info!("console_log");
+            });
         });
     }
 
     #[test]
     fn console_direct_all_levels() {
-        for l in all_simple_levels() {
-            let setup = test_setup(ProviderSetup::ConsoleDirect, l);
-            setup.with_subscriber(|| {
-                otel_debug!("debug", "debug message");
-                otel_info!("info");
-                otel_warn!("warn");
-                otel_error!("error");
-            });
-        }
+        crate::with_cleared_rust_log(|| {
+            for l in all_simple_levels() {
+                let setup = test_setup(ProviderSetup::ConsoleDirect, l);
+                setup.with_subscriber(|| {
+                    otel_debug!("debug", "debug message");
+                    otel_info!("info");
+                    otel_warn!("warn");
+                    otel_error!("error");
+                });
+            }
+        });
     }
 
     #[test]
     fn console_async_provider_sends_logs() {
-        let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
 
-        setup.with_subscriber(|| {
-            otel_info!("async_log");
+            setup.with_subscriber(|| {
+                otel_info!("async_log");
+            });
+
+            // Verify the log was sent through the channel
+            let event = receiver.try_recv().expect("should receive log event");
+            assert!(
+                matches!(event, ObservedEvent::Log(_)),
+                "event should be a log"
+            );
         });
-
-        // Verify the log was sent through the channel
-        let event = receiver.try_recv().expect("should receive log event");
-        assert!(
-            matches!(event, ObservedEvent::Log(_)),
-            "event should be a log"
-        );
     }
 
     #[test]
     fn console_async_all_levels() {
-        for l in all_simple_levels() {
-            let (reporter, receiver) = test_reporter();
-            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, l.clone());
-            setup.with_subscriber(|| {
-                otel_debug!("debug", "debug message");
-                otel_info!("info");
-                otel_warn!("warn");
-                otel_error!("error");
-            });
-            drop(setup);
+        crate::with_cleared_rust_log(|| {
+            for l in all_simple_levels() {
+                let (reporter, receiver) = test_reporter();
+                let setup = test_setup(ProviderSetup::InternalAsync { reporter }, l.clone());
+                setup.with_subscriber(|| {
+                    otel_debug!("debug", "debug message");
+                    otel_info!("info");
+                    otel_warn!("warn");
+                    otel_error!("error");
+                });
+                drop(setup);
 
-            let cnt = receiver.into_iter().count();
-            let expect = match l.as_str() {
-                "off" => 0,
-                "debug" => 4,
-                "info" => 3,
-                "warn" => 2,
-                "error" => 1,
-                _ => unreachable!(),
-            };
-            assert_eq!(cnt, expect);
-        }
+                let cnt = receiver.into_iter().count();
+                let expect = match l.as_str() {
+                    "off" => 0,
+                    "debug" => 4,
+                    "info" => 3,
+                    "warn" => 2,
+                    "error" => 1,
+                    _ => unreachable!(),
+                };
+                assert_eq!(cnt, expect);
+            }
+        });
     }
 
     #[test]
     fn log_level_filters_debug() {
-        let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
 
-        setup.with_subscriber(|| {
-            otel_debug!("filtered", "debug message filtered out");
+            setup.with_subscriber(|| {
+                otel_debug!("filtered", "debug message filtered out");
+            });
+
+            assert!(
+                receiver.try_recv().is_err(),
+                "debug log should not be received at Info level"
+            );
         });
-
-        assert!(
-            receiver.try_recv().is_err(),
-            "debug log should not be received at Info level"
-        );
     }
 
     #[test]
     fn log_level_warn_filters_lower() {
-        let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("warn"));
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("warn"));
 
-        setup.with_subscriber(|| {
-            otel_debug!("filtered", "debug message filtered out");
-            otel_info!("filtered");
-            otel_warn!("not_filtered");
+            setup.with_subscriber(|| {
+                otel_debug!("filtered", "debug message filtered out");
+                otel_info!("filtered");
+                otel_warn!("not_filtered");
+            });
+
+            // Should only receive the warn
+            let event = receiver.try_recv().expect("should receive warn");
+            assert!(matches!(event, ObservedEvent::Log(_)));
+            assert!(receiver.try_recv().is_err(), "should only have one event");
         });
-
-        // Should only receive the warn
-        let event = receiver.try_recv().expect("should receive warn");
-        assert!(matches!(event, ObservedEvent::Log(_)));
-        assert!(receiver.try_recv().is_err(), "should only have one event");
     }
 
     #[test]
     fn log_level_error_filters_lower() {
-        let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("error"));
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("error"));
 
-        setup.with_subscriber(|| {
-            otel_debug!("filtered", "debug message filtered out");
-            otel_info!("filtered");
-            otel_warn!("filtered");
-            otel_error!("not_filtered");
+            setup.with_subscriber(|| {
+                otel_debug!("filtered", "debug message filtered out");
+                otel_info!("filtered");
+                otel_warn!("filtered");
+                otel_error!("not_filtered");
+            });
+
+            let event = receiver.try_recv().expect("should receive error");
+            assert!(matches!(event, ObservedEvent::Log(_)));
+            assert!(receiver.try_recv().is_err(), "should only have one event");
         });
-
-        let event = receiver.try_recv().expect("should receive error");
-        assert!(matches!(event, ObservedEvent::Log(_)));
-        assert!(receiver.try_recv().is_err(), "should only have one event");
     }
 
     #[test]
     fn log_level_off_filters_all() {
-        let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("off"));
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("off"));
 
-        setup.with_subscriber(|| {
-            otel_debug!("filtered", "debug message filtered out");
-            otel_info!("filtered");
-            otel_warn!("filtered");
-            otel_error!("filtered");
+            setup.with_subscriber(|| {
+                otel_debug!("filtered", "debug message filtered out");
+                otel_info!("filtered");
+                otel_warn!("filtered");
+                otel_error!("filtered");
+            });
+
+            assert!(receiver.try_recv().is_err(), "all logs should be filtered");
         });
-
-        assert!(receiver.try_recv().is_err(), "all logs should be filtered");
     }
 
     #[test]
     fn log_level_debug_allows_all() {
-        let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("debug"));
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("debug"));
 
-        setup.with_subscriber(|| {
-            otel_debug!("d", "debug message");
-            otel_info!("i");
-            otel_warn!("w");
-            otel_error!("e");
+            setup.with_subscriber(|| {
+                otel_debug!("d", "debug message");
+                otel_info!("i");
+                otel_warn!("w");
+                otel_error!("e");
+            });
+
+            // Should receive all 4
+            for _ in 0..4 {
+                let _ = receiver.try_recv().expect("should receive log");
+            }
         });
-
-        // Should receive all 4
-        for _ in 0..4 {
-            let _ = receiver.try_recv().expect("should receive log");
-        }
     }
 
     #[test]
     fn console_async_layer_with_fields() {
-        let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("info"));
 
-        setup.with_subscriber(|| {
-            otel_info!("structured", key = "value", number = 42);
+            setup.with_subscriber(|| {
+                otel_info!("structured", key = "value", number = 42);
+            });
+
+            let event = receiver.try_recv().expect("should receive log");
+            assert!(matches!(event, ObservedEvent::Log(_)));
+            let text = event.to_string();
+            assert!(text.contains("key=value"), "text is {}", text);
+            assert!(text.contains("number=42"), "text is {}", text);
+            assert!(text.contains("structured"), "text is {}", text);
         });
-
-        let event = receiver.try_recv().expect("should receive log");
-        assert!(matches!(event, ObservedEvent::Log(_)));
-        let text = event.to_string();
-        assert!(text.contains("key=value"), "text is {}", text);
-        assert!(text.contains("number=42"), "text is {}", text);
-        assert!(text.contains("structured"), "text is {}", text);
     }
 
     #[test]
     fn provider_setup_with_subscriber_all_variants() {
-        let info = level("info");
-        ProviderSetup::Noop.with_subscriber(&info, LogContext::new, || {
-            otel_info!("noop");
-        });
+        crate::with_cleared_rust_log(|| {
+            let info = level("info");
+            ProviderSetup::Noop.with_subscriber(&info, LogContext::new, || {
+                otel_info!("noop");
+            });
 
-        ProviderSetup::ConsoleDirect.with_subscriber(&info, LogContext::new, || {
-            otel_info!("console_direct");
-        });
+            ProviderSetup::ConsoleDirect.with_subscriber(&info, LogContext::new, || {
+                otel_info!("console_direct");
+            });
 
-        let (reporter, _rx) = test_reporter();
-        ProviderSetup::InternalAsync { reporter }.with_subscriber(&info, LogContext::new, || {
-            otel_info!("console_async");
+            let (reporter, _rx) = test_reporter();
+            ProviderSetup::InternalAsync { reporter }.with_subscriber(
+                &info,
+                LogContext::new,
+                || {
+                    otel_info!("console_async");
+                },
+            );
         });
     }
 
     #[test]
     fn its_provider_filters_correctly() {
-        let (reporter, receiver) = test_reporter();
-        let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("warn"));
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level("warn"));
 
-        setup.with_subscriber(|| {
-            otel_debug!("filtered", "debug message filtered out");
-            otel_info!("filtered");
-            otel_warn!("not_filtered");
-            otel_error!("not_filtered");
+            setup.with_subscriber(|| {
+                otel_debug!("filtered", "debug message filtered out");
+                otel_info!("filtered");
+                otel_warn!("not_filtered");
+                otel_error!("not_filtered");
+            });
+            drop(setup);
+
+            assert_eq!(receiver.into_iter().count(), 2);
         });
-        drop(setup);
-
-        assert_eq!(receiver.into_iter().count(), 2);
     }
 
     #[test]
     fn nested_with_subscriber() {
-        let (reporter1, receiver1) = test_reporter();
-        let (reporter2, receiver2) = test_reporter();
+        crate::with_cleared_rust_log(|| {
+            let (reporter1, receiver1) = test_reporter();
+            let (reporter2, receiver2) = test_reporter();
 
-        let setup1 = test_setup(
-            ProviderSetup::InternalAsync {
-                reporter: reporter1,
-            },
-            level("info"),
-        );
-        let setup2 = test_setup(
-            ProviderSetup::InternalAsync {
-                reporter: reporter2,
-            },
-            level("info"),
-        );
+            let setup1 = test_setup(
+                ProviderSetup::InternalAsync {
+                    reporter: reporter1,
+                },
+                level("info"),
+            );
+            let setup2 = test_setup(
+                ProviderSetup::InternalAsync {
+                    reporter: reporter2,
+                },
+                level("info"),
+            );
 
-        let result = setup1.with_subscriber(|| {
-            otel_info!("outer");
-            setup2.with_subscriber(|| {
-                otel_info!("inner");
+            let result = setup1.with_subscriber(|| {
+                otel_info!("outer");
+                setup2.with_subscriber(|| {
+                    otel_info!("inner");
+                });
+                otel_info!("outer_again");
+                100
             });
-            otel_info!("outer_again");
-            100
+
+            assert_eq!(result, 100);
+
+            // Outer should receive 2, inner should receive 1 and no more.
+            assert!(receiver1.try_recv().is_ok());
+            assert!(receiver2.try_recv().is_ok());
+            assert!(receiver1.try_recv().is_ok());
+
+            assert!(receiver1.try_recv().is_err());
+            assert!(receiver2.try_recv().is_err());
         });
-
-        assert_eq!(result, 100);
-
-        // Outer should receive 2, inner should receive 1 and no more.
-        assert!(receiver1.try_recv().is_ok());
-        assert!(receiver2.try_recv().is_ok());
-        assert!(receiver1.try_recv().is_ok());
-
-        assert!(receiver1.try_recv().is_err());
-        assert!(receiver2.try_recv().is_err());
     }
 }

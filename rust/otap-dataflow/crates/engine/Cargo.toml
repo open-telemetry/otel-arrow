@@ -19,12 +19,12 @@ jemalloc-testing = ["jemalloc"]
 test-utils = []
 
 [dependencies]
-otap-df-channel = { path = "../channel" }
-otap-df-pdata = { path = "../pdata" }
-otap-df-config = { path = "../config" }
-otap-df-state = { path = "../state" }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-telemetry-macros = { path = "../telemetry-macros" }
+otap-df-channel = { workspace = true }
+otap-df-pdata = { workspace = true }
+otap-df-config = { workspace = true }
+otap-df-state = { workspace = true }
+otap-df-telemetry = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
 
 thiserror = { workspace = true }
 serde_json = { workspace = true }
@@ -55,7 +55,7 @@ async-channel = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true, optional = true }
 
 [dev-dependencies]
-otap-df-engine = { path = ".", features = ["test-utils"] }
+otap-df-engine = { workspace = true, features = ["test-utils"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }

@@ -3,116 +3,93 @@
 
 use data_engine_expressions::*;
 
-use crate::{execution_context::*, scalars::execute_scalar_expression, *};
+use crate::{execution_context::*, scalars::*, *};
 
 pub fn execute_convert_scalar_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     convert_scalar_expression: &'a ConvertScalarExpression,
+    selection_options: SelectionOptions,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
     'a: 'c,
     'b: 'c,
 {
-    let value = match convert_scalar_expression {
-        ConvertScalarExpression::Boolean(c) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
+    let (inner_expression, target_type) = unpack(convert_scalar_expression);
 
-            let value = inner_value.to_value();
+    let resolved_inner_value = execute_scalar_expression_with_options(
+        execution_context,
+        inner_expression,
+        selection_options,
+    )?;
 
-            if let Some(b) = value.convert_to_bool() {
+    let inner_value = resolved_inner_value.to_value();
+
+    let value = match target_type {
+        ValueType::Boolean => {
+            if let Some(b) = inner_value.convert_to_bool() {
                 ResolvedValue::Computed(OwnedValue::Boolean(BooleanValueStorage::new(b)))
             } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                emit_conversion_failure_diagnostic(
+                    execution_context,
                     convert_scalar_expression,
-                    || {
-                        format!(
-                            "Input of '{:?}' type could not be converted into a bool",
-                            value.get_value_type()
-                        )
-                    },
+                    &inner_value,
+                    "bool",
                 );
 
                 ResolvedValue::Computed(OwnedValue::Null)
             }
         }
-        ConvertScalarExpression::DateTime(c) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-            let value = inner_value.to_value();
-
-            if let Some(d) = value.convert_to_datetime() {
+        ValueType::DateTime => {
+            if let Some(d) = inner_value.convert_to_datetime() {
                 ResolvedValue::Computed(OwnedValue::DateTime(DateTimeValueStorage::new(d)))
             } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                emit_conversion_failure_diagnostic(
+                    execution_context,
                     convert_scalar_expression,
-                    || {
-                        format!(
-                            "Input of '{:?}' type could not be converted into a DateTime",
-                            value.get_value_type()
-                        )
-                    },
+                    &inner_value,
+                    "DateTime",
                 );
+
                 ResolvedValue::Computed(OwnedValue::Null)
             }
         }
-        ConvertScalarExpression::Double(c) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-            let value = inner_value.to_value();
-
-            if let Some(d) = value.convert_to_double() {
+        ValueType::Double => {
+            if let Some(d) = inner_value.convert_to_double() {
                 ResolvedValue::Computed(OwnedValue::Double(DoubleValueStorage::new(d)))
             } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                emit_conversion_failure_diagnostic(
+                    execution_context,
                     convert_scalar_expression,
-                    || {
-                        format!(
-                            "Input of '{:?}' type could not be converted into a double",
-                            value.get_value_type()
-                        )
-                    },
+                    &inner_value,
+                    "double",
                 );
+
                 ResolvedValue::Computed(OwnedValue::Null)
             }
         }
-        ConvertScalarExpression::Integer(c) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-            let value = inner_value.to_value();
-
-            if let Some(i) = value.convert_to_integer() {
+        ValueType::Integer => {
+            if let Some(i) = inner_value.convert_to_integer() {
                 ResolvedValue::Computed(OwnedValue::Integer(IntegerValueStorage::new(i)))
             } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                emit_conversion_failure_diagnostic(
+                    execution_context,
                     convert_scalar_expression,
-                    || {
-                        format!(
-                            "Input of '{:?}' type could not be converted into an integer",
-                            value.get_value_type()
-                        )
-                    },
+                    &inner_value,
+                    "integer",
                 );
+
                 ResolvedValue::Computed(OwnedValue::Null)
             }
         }
-        ConvertScalarExpression::String(c) => {
-            let v = execute_scalar_expression(execution_context, c.get_inner_expression())?;
-            let value_type = v.get_value_type();
+        ValueType::String => {
+            let value_type = inner_value.get_value_type();
             if value_type == ValueType::String {
-                v
+                resolved_inner_value
             } else if value_type == ValueType::Null {
                 ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new("".into())))
             } else {
                 let mut string_value = None;
-                v.to_value().convert_to_string(&mut |s| {
+                inner_value.convert_to_string(&mut |s| {
                     string_value = Some(StringValueStorage::new(s.into()))
                 });
                 ResolvedValue::Computed(OwnedValue::String(
@@ -120,28 +97,21 @@ where
                 ))
             }
         }
-        ConvertScalarExpression::TimeSpan(c) => {
-            let inner_value =
-                execute_scalar_expression(execution_context, c.get_inner_expression())?;
-
-            let value = inner_value.to_value();
-
-            if let Some(t) = value.convert_to_timespan() {
+        ValueType::TimeSpan => {
+            if let Some(t) = inner_value.convert_to_timespan() {
                 ResolvedValue::Computed(OwnedValue::TimeSpan(TimeSpanValueStorage::new(t)))
             } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
+                emit_conversion_failure_diagnostic(
+                    execution_context,
                     convert_scalar_expression,
-                    || {
-                        format!(
-                            "Input of '{:?}' type could not be converted into a TimeSpan",
-                            value.get_value_type()
-                        )
-                    },
+                    &inner_value,
+                    "TimeSpan",
                 );
+
                 ResolvedValue::Computed(OwnedValue::Null)
             }
         }
+        _ => unreachable!("Unexpected ValueType conversion"),
     };
 
     execution_context.add_diagnostic_if_enabled(
@@ -151,6 +121,37 @@ where
     );
 
     Ok(value)
+}
+
+fn unpack(convert_scalar_expression: &ConvertScalarExpression) -> (&ScalarExpression, ValueType) {
+    match convert_scalar_expression {
+        ConvertScalarExpression::Boolean(c) => (c.get_inner_expression(), ValueType::Boolean),
+        ConvertScalarExpression::DateTime(c) => (c.get_inner_expression(), ValueType::DateTime),
+        ConvertScalarExpression::Double(c) => (c.get_inner_expression(), ValueType::Double),
+        ConvertScalarExpression::Integer(c) => (c.get_inner_expression(), ValueType::Integer),
+        ConvertScalarExpression::String(c) => (c.get_inner_expression(), ValueType::String),
+        ConvertScalarExpression::TimeSpan(c) => (c.get_inner_expression(), ValueType::TimeSpan),
+    }
+}
+
+fn emit_conversion_failure_diagnostic<'a, TRecord: Record>(
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
+    convert_scalar_expression: &'a ConvertScalarExpression,
+    value: &Value<'_>,
+    type_name: &str,
+) {
+    if value.get_value_type() != ValueType::Null {
+        execution_context.add_diagnostic_if_enabled(
+            RecordSetEngineDiagnosticLevel::Warn,
+            convert_scalar_expression,
+            || {
+                format!(
+                    "Input of '{}' type could not be converted into a {type_name}",
+                    value.get_value_type()
+                )
+            },
+        );
+    }
 }
 
 #[cfg(test)]

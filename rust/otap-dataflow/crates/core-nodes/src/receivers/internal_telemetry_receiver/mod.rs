@@ -124,6 +124,15 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 // Handle control messages with priority
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
+                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                            while let Ok(event) = logs_receiver.try_recv() {
+                                if let ObservedEvent::Log(log_event) = event {
+                                    Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
+                                }
+                            }
+                            effect_handler.notify_receiver_drained().await?;
+                            return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                        }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             // Drain any remaining logs from channel before shutdown
                             while let Ok(event) = logs_receiver.try_recv() {

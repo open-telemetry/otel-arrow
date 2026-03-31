@@ -76,6 +76,22 @@ pub fn ensure_crypto_provider() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        let _ = install_crypto_provider();
+        #[cfg(any(
+            feature = "crypto-ring",
+            feature = "crypto-aws-lc",
+            feature = "crypto-openssl"
+        ))]
+        {
+            let _ = install_crypto_provider();
+        }
+
+        #[cfg(not(any(
+            feature = "crypto-ring",
+            feature = "crypto-aws-lc",
+            feature = "crypto-openssl"
+        )))]
+        {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
     });
 }

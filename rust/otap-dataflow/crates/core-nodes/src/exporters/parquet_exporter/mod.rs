@@ -48,7 +48,7 @@ use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::message::{ExporterMessageChannel, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
@@ -154,7 +154,7 @@ impl ParquetExporter {
 impl Exporter<OtapPdata> for ParquetExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
+        mut msg_chan: ExporterMessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
@@ -451,8 +451,8 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::control::{
-        Controllable, PipelineControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
-        pipeline_ctrl_msg_channel,
+        Controllable, PipelineCompletionMsgSender, RuntimeControlMsg, RuntimeCtrlMsgReceiver,
+        RuntimeCtrlMsgSender, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
@@ -930,7 +930,9 @@ mod test {
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
         // Keep the receiver alive so EffectHandler can send telemetry/timer requests without error.
 
         exporter
@@ -939,12 +941,18 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
@@ -1034,7 +1042,7 @@ mod test {
         // let the exporter's message handling loop and the message sending run concurrently
         let (exporter_result, _) = rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
                 send_messages(base_dir.as_str(), pdata_tx, control_sender)
             )
         });
@@ -1085,19 +1093,27 @@ mod test {
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
@@ -1106,7 +1122,7 @@ mod test {
             base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
             ctrl_tx: Sender<NodeControlMsg<OtapPdata>>,
-            mut ctrl_rx: PipelineCtrlMsgReceiver<OtapPdata>,
+            mut ctrl_rx: RuntimeCtrlMsgReceiver<OtapPdata>,
         ) -> Result<(), Error> {
             // try to receive the first timer start message
             let msg = tokio::select! {
@@ -1115,7 +1131,7 @@ mod test {
                 }),
                 msg = ctrl_rx.recv() => msg?
             };
-            if let PipelineControlMsg::StartTimer {
+            if let RuntimeControlMsg::StartTimer {
                 node_id: _,
                 duration,
             } = msg
@@ -1123,7 +1139,7 @@ mod test {
                 assert_eq!(duration, Duration::from_secs(1));
             } else {
                 return Err(Error::InternalError {
-                    message: "wrong pipeline control message received. Expected StartTimer".into(),
+                    message: "wrong runtime-control message received. Expected StartTimer".into(),
                 });
             }
 
@@ -1188,12 +1204,12 @@ mod test {
 
         let (exporter_result, test_run_result) = rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
                 run_test(
                     base_dir.as_str(),
                     pdata_tx,
                     control_sender,
-                    pipeline_ctrl_msg_rx
+                    runtime_ctrl_msg_rx
                 )
             )
         });
@@ -1205,7 +1221,7 @@ mod test {
 
     #[test]
     fn test_starts_telemetry_timer() {
-        use otap_df_engine::control::pipeline_ctrl_msg_channel;
+        use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::testing::test_node;
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1232,7 +1248,9 @@ mod test {
         let _pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
-        let (pipeline_ctrl_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, mut runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
 
         exporter
             .set_pdata_receiver(test_node("exp"), pdata_rx)
@@ -1240,41 +1258,50 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
 
         let (_exporter_result, _ignored) = rt.block_on(async move {
-            tokio::join!(start_exporter(exporter, pipeline_ctrl_msg_tx), async move {
-                // Expect StartTelemetryTimer quickly after startup
-                let msg = tokio::time::timeout(Duration::from_millis(1500), async {
-                    pipeline_ctrl_msg_rx.recv().await
-                })
-                .await
-                .expect("timed out waiting for StartTelemetryTimer")
-                .expect("pipeline ctrl channel closed");
-
-                match msg {
-                    PipelineControlMsg::StartTelemetryTimer { duration, .. } => {
-                        assert_eq!(duration, Duration::from_secs(1));
-                    }
-                    other => panic!("Expected StartTelemetryTimer, got {other:?}"),
-                }
-
-                // Shutdown exporter to end the test
-                let _ = control_sender
-                    .send(NodeControlMsg::Shutdown {
-                        deadline: Instant::now(),
-                        reason: "done".into(),
+            tokio::join!(
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
+                async move {
+                    // Expect StartTelemetryTimer quickly after startup
+                    let msg = tokio::time::timeout(Duration::from_millis(1500), async {
+                        runtime_ctrl_msg_rx.recv().await
                     })
-                    .await;
-            })
+                    .await
+                    .expect("timed out waiting for StartTelemetryTimer")
+                    .expect("runtime-control channel closed");
+
+                    match msg {
+                        RuntimeControlMsg::StartTelemetryTimer { duration, .. } => {
+                            assert_eq!(duration, Duration::from_secs(1));
+                        }
+                        other => panic!("Expected StartTelemetryTimer, got {other:?}"),
+                    }
+
+                    // Shutdown exporter to end the test
+                    let _ = control_sender
+                        .send(NodeControlMsg::Shutdown {
+                            deadline: Instant::now(),
+                            reason: "done".into(),
+                        })
+                        .await;
+                }
+            )
         });
     }
 
@@ -1480,15 +1507,23 @@ mod test {
             .expect("Failed to set PData Receiver");
 
         // Keep pipeline ctrl receiver alive
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
@@ -1545,7 +1580,12 @@ mod test {
             let _handle = tokio::task::spawn_local(collector.run_collection_loop());
 
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx, reporter.clone()),
+                start_exporter(
+                    exporter,
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    reporter.clone(),
+                ),
                 drive_test(control_sender, pdata_tx, reporter.clone()),
             )
         }));

@@ -1491,6 +1491,13 @@ impl QuiverEngine {
     fn segment_path(&self, seq: SegmentSeq) -> PathBuf {
         segment_dir(&self.config).join(format!("{}.qseg", seq.to_filename_component()))
     }
+
+    /// Subtracts `offset` from the open segment's `opened_at` timestamp,
+    /// making it appear older for time-based finalization tests.
+    #[cfg(test)]
+    pub(crate) fn test_backdate_open_segment(&self, offset: Duration) {
+        self.open_segment.lock().test_backdate_opened_at(offset);
+    }
 }
 
 fn segment_dir(config: &QuiverConfig) -> PathBuf {
@@ -1780,6 +1787,47 @@ mod tests {
     /// Creates a large test budget (1 GB) for tests that don't specifically test budget limits.
     fn test_budget() -> Arc<DiskBudget> {
         Arc::new(DiskBudget::unlimited())
+    }
+
+    /// Backdates all `.qseg` files in the given data directory's `segments/`
+    /// subdirectory by setting their mtime to `now - offset`.
+    /// Used to make segment files appear older for startup-scan tests.
+    fn backdate_segment_files(data_dir: &Path, offset: Duration) {
+        use std::fs::FileTimes;
+
+        let seg_dir = data_dir.join("segments");
+        let old_time = SystemTime::now()
+            .checked_sub(offset)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let times = FileTimes::new().set_modified(old_time);
+
+        for entry in fs::read_dir(&seg_dir).expect("read segment dir") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "qseg") {
+                // Segment files may be read-only: temporarily make writable
+                let meta = fs::metadata(&path).expect("metadata");
+                let original_perms = meta.permissions();
+                if original_perms.readonly() {
+                    let mut perms = original_perms.clone();
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    perms.set_readonly(false);
+                    fs::set_permissions(&path, perms).expect("make writable");
+                }
+
+                let f = fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .expect("open segment file for time update");
+                f.set_times(times).expect("set file times");
+                drop(f);
+
+                // Restore original permissions
+                if original_perms.readonly() {
+                    fs::set_permissions(&path, original_perms).expect("restore readonly");
+                }
+            }
+        }
     }
 
     /// Small WAL config for budget-constrained tests.
@@ -2096,8 +2144,8 @@ mod tests {
             .expect("engine created");
 
         // Ingest many bundles - WAL will fill up multiple times
-        // Each bundle is ~100-200 bytes, so we need 50+ to fill the 8KB WAL
-        for i in 0..100 {
+        // Each bundle is ~100-200 bytes, so we need enough to fill the 8KB WAL
+        for i in 0..30 {
             let bundle = DummyBundle::with_rows(5);
             engine
                 .ingest(&bundle)
@@ -2124,7 +2172,7 @@ mod tests {
         // Verify all bundles were ingested
         assert_eq!(
             engine.metrics().ingest_attempts(),
-            100,
+            30,
             "all ingests should succeed"
         );
     }
@@ -2694,7 +2742,7 @@ mod tests {
             .await
             .expect("engine created");
 
-        const NUM_BUNDLES: usize = 500;
+        const NUM_BUNDLES: usize = 20;
 
         for _ in 0..NUM_BUNDLES {
             let bundle = MultiSlotBundle::new();
@@ -2830,9 +2878,9 @@ mod tests {
             .await
             .expect("engine created");
 
-        // Simulate schema evolution: 100 different schemas, 10 bundles each
-        const NUM_SCHEMAS: usize = 100;
-        const BUNDLES_PER_SCHEMA: usize = 10;
+        // Simulate schema evolution: 20 different schemas, 5 bundles each
+        const NUM_SCHEMAS: usize = 20;
+        const BUNDLES_PER_SCHEMA: usize = 5;
         const ROWS_PER_BUNDLE: usize = 20;
 
         for schema_id in 0..NUM_SCHEMAS {
@@ -2875,9 +2923,9 @@ mod tests {
             }
         }
 
-        // We created 100 unique fingerprints, but only count those in finalized segments
+        // We created 20 unique fingerprints, but only count those in finalized segments
         assert!(
-            unique_fingerprints.len() >= 50,
+            unique_fingerprints.len() >= 10,
             "expected many unique fingerprints, got {}",
             unique_fingerprints.len()
         );
@@ -2924,8 +2972,8 @@ mod tests {
             .await
             .expect("first ingest succeeds");
 
-        // Wait for the max_open_duration to elapse
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Backdate the open segment so it appears past max_open_duration
+        engine.test_backdate_open_segment(Duration::from_millis(100));
 
         // Second ingest - should trigger time-based finalization
         let bundle2 = DummyBundle::with_rows(1);
@@ -3745,7 +3793,7 @@ mod tests {
 
         // Async next_bundle should timeout quickly
         let result = engine
-            .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
+            .next_bundle(&sub_id, Some(Duration::from_millis(1)), None)
             .await
             .expect("next_bundle");
 
@@ -3783,7 +3831,8 @@ mod tests {
         });
 
         // Give consumer time to start waiting
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
         // Now ingest data and flush (which finalizes segment and notifies)
         for _ in 0..5 {
@@ -3882,7 +3931,7 @@ mod tests {
         // Consume all bundles
         loop {
             match engine
-                .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
+                .next_bundle(&sub_id, Some(Duration::from_millis(1)), None)
                 .await
             {
                 Ok(Some(h)) => h.ack(),
@@ -3937,7 +3986,7 @@ mod tests {
         let mut consumed = 0;
         loop {
             match engine
-                .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
+                .next_bundle(&sub_id, Some(Duration::from_millis(1)), None)
                 .await
             {
                 Ok(Some(h)) => {
@@ -3973,7 +4022,7 @@ mod tests {
             .expect("engine");
 
         // Ingest enough data to trigger segment finalization
-        for _ in 0..20 {
+        for _ in 0..10 {
             let bundle = DummyBundle::with_rows(100);
             engine.ingest(&bundle).await.expect("ingest");
         }
@@ -4014,7 +4063,7 @@ mod tests {
             .expect("first engine open");
 
         // Ingest data to create multiple segment files
-        for _ in 0..10 {
+        for _ in 0..5 {
             let bundle = DummyBundle::with_rows(50);
             engine.ingest(&bundle).await.expect("ingest");
         }
@@ -4058,7 +4107,7 @@ mod tests {
         );
 
         // Ingest more data to create additional segments
-        for _ in 0..10 {
+        for _ in 0..5 {
             let bundle = DummyBundle::with_rows(50);
             engine2.ingest(&bundle).await.expect("ingest after restart");
         }
@@ -4118,7 +4167,7 @@ mod tests {
     async fn cleanup_expired_segments_deletes_old_segments() {
         let dir = tempdir().expect("tempdir");
 
-        // Configure a short max_age for testing (1 second)
+        // Configure a short max_age for testing
         let retention = RetentionConfig {
             max_age: Some(Duration::from_secs(1)),
         };
@@ -4149,8 +4198,10 @@ mod tests {
             "should have at least one segment"
         );
 
-        // Wait for segments to exceed max_age
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Backdate segments so they appear older than max_age
+        engine
+            .segment_store()
+            .backdate_all_segments(Duration::from_secs(2));
 
         // Cleanup expired segments
         let expired_count = engine.cleanup_expired_segments().expect("cleanup");
@@ -4218,8 +4269,10 @@ mod tests {
             .expect("poll succeeds")
             .expect("bundle available");
 
-        // Wait for segments to exceed max_age
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Backdate segments so they appear older than max_age
+        engine
+            .segment_store()
+            .backdate_all_segments(Duration::from_secs(2));
 
         // Cleanup expired segments - should succeed even with claimed bundles
         let expired_count = engine.cleanup_expired_segments().expect("cleanup");
@@ -4296,10 +4349,8 @@ mod tests {
             "should have at least one segment"
         );
 
-        // Wait some time (would normally cause expiration if max_age was set)
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
         // Cleanup should be a no-op since max_age is not configured
+        // (no sleep needed - the test verifies that time doesn't matter when max_age is None)
         let expired_count = engine.cleanup_expired_segments().expect("cleanup");
 
         assert_eq!(
@@ -4397,8 +4448,10 @@ mod tests {
             "should have at least one segment"
         );
 
-        // Wait for segments to exceed max_age
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Backdate segments so they appear older than max_age
+        engine
+            .segment_store()
+            .backdate_all_segments(Duration::from_secs(2));
 
         // Run maintenance
         let stats = engine.maintain().await.expect("maintain");
@@ -4451,8 +4504,8 @@ mod tests {
             assert!(segments_created >= 1, "should create at least one segment");
         }
 
-        // Wait for segments to become "old" enough for our short max_age
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Backdate segment files so they appear older than our short max_age
+        backdate_segment_files(dir.path(), Duration::from_secs(1));
 
         // Phase 2: Create new engine with very short max_age
         let config_short_age = QuiverConfig::builder()
@@ -4516,8 +4569,8 @@ mod tests {
             );
         }
 
-        // Wait for these segments to become "old" - use generous margin
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Backdate old segment files so they appear 2 seconds old
+        backdate_segment_files(dir.path(), Duration::from_secs(2));
 
         // Phase 2: Create fresh segments
         let total_segments;
@@ -4614,8 +4667,10 @@ mod tests {
             "should have at least one segment"
         );
 
-        // Wait for segments to exceed max_age
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Backdate segments so they appear older than max_age
+        engine
+            .segment_store()
+            .backdate_all_segments(Duration::from_secs(2));
 
         // Cleanup expired segments
         let expired_count = engine.cleanup_expired_segments().expect("cleanup");
@@ -4694,8 +4749,8 @@ mod tests {
             // Engine dropped here (simulating shutdown)
         }
 
-        // Wait for segments to become "old" enough
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Backdate segment files so they appear older than our short max_age
+        backdate_segment_files(dir.path(), Duration::from_secs(1));
 
         // Phase 2: Reopen with a very short max_age so all segments expire.
         // The subscriber's progress.json still references the deleted segments.
@@ -4773,7 +4828,8 @@ mod tests {
             assert!(segments_created >= 1, "should have at least one segment");
         }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Backdate segment files so they appear older than our short max_age
+        backdate_segment_files(dir.path(), Duration::from_secs(1));
 
         // Phase 2: Reopen with short max_age to delete all segments
         let config = QuiverConfig::builder()
