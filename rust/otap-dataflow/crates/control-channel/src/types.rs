@@ -53,6 +53,9 @@ impl Default for ControlChannelConfig {
 impl ControlChannelConfig {
     /// Validates channel configuration.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.completion_msg_capacity == 0 {
+            return Err(ConfigError::ZeroCompletionMsgCapacity);
+        }
         if self.completion_batch_max == 0 {
             return Err(ConfigError::ZeroCompletionBatchMax);
         }
@@ -66,6 +69,9 @@ impl ControlChannelConfig {
 /// Configuration validation errors.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
+    /// `completion_msg_capacity` must be strictly positive.
+    #[error("completion_msg_capacity must be greater than zero")]
+    ZeroCompletionMsgCapacity,
     /// `completion_batch_max` must be strictly positive.
     #[error("completion_batch_max must be greater than zero")]
     ZeroCompletionBatchMax,

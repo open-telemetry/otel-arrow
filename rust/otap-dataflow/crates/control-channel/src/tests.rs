@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    AckMsg, AdmissionClass, CompletionMsg, ControlChannelConfig, ControlCmd, DrainIngressMsg,
-    LifecycleSendResult, NodeControlEvent, ReceiverControlEvent, SendError, SendOutcome,
-    ShutdownMsg, TrySendError, node_channel, node_channel_with_meta, receiver_channel,
+    AckMsg, AdmissionClass, CompletionMsg, ConfigError, ControlChannelConfig, ControlCmd,
+    DrainIngressMsg, LifecycleSendResult, NodeControlEvent, ReceiverControlEvent, SendError,
+    SendOutcome, ShutdownMsg, TrySendError, node_channel, node_channel_with_meta, receiver_channel,
 };
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
@@ -52,6 +52,30 @@ where
     F: Future,
 {
     poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx).is_pending())).await
+}
+
+#[test]
+fn zero_completion_capacity_is_rejected_at_validation_and_construction() {
+    // Scenario: retained completion traffic needs at least one slot, so zero
+    // completion capacity must be rejected before constructing the channel.
+    let config = ControlChannelConfig {
+        completion_msg_capacity: 0,
+        completion_batch_max: 1,
+        completion_burst_limit: 1,
+    };
+
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::ZeroCompletionMsgCapacity)
+    );
+    assert!(matches!(
+        node_channel::<String>(config.clone()),
+        Err(ConfigError::ZeroCompletionMsgCapacity)
+    ));
+    assert!(matches!(
+        receiver_channel::<String>(config),
+        Err(ConfigError::ZeroCompletionMsgCapacity)
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
