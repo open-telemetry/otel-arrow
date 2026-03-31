@@ -684,7 +684,7 @@ mod test {
     use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_channel::mpsc::Channel as LocalChannel;
     use otap_df_engine::control::{
-        pipeline_completion_msg_channel, runtime_ctrl_msg_channel, PipelineCompletionMsg,
+        PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use otap_df_engine::effect_handler::SourceTagging;
     use otap_df_engine::local::message::LocalSender;
