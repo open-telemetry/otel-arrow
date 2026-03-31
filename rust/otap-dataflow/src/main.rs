@@ -26,7 +26,7 @@ use sysinfo::System;
 use cfg_if::cfg_if;
 
 // -----------------------------------------------------------------------------
-// Feature guard: jemalloc + mimalloc + dhat-heap any two together should fail (non-Windows only)
+// Feature guard: jemalloc + mimalloc + dhat-heap any two together should fail.
 // -----------------------------------------------------------------------------
 #[cfg(all(
     not(any(test, doc)),
@@ -73,10 +73,9 @@ cfg_if! {
         }
 
         fn dhat_finish() {
-        // Dropping the Profiler is what triggers dhat-heap.json generation. [1](https://outlook.office365.com/owa/?ItemID=AAMkADYwZTk3ZGM5LTU2ZjItNDM2NC1hZmQ0LWY5NjhmZmM5M2NiNwBGAAAAAAC7q57xFfmuSb3iOsuh%			2fVOABwAlpRXD5QvATJ55erMTPKHzAAAAH3TYAABzDoBtHPxlRIZv17%2bj%2fBx2AAhyk6imAAA%3d&exvsurl=1&viewmodel=ReadMessageItem)
                 let mut profiler = DHAT_PROFILER.lock().unwrap();
                 let _ = profiler.take();
-	}
+	    }
 
     // Windows default: mimalloc
     } else if #[cfg(feature = "mimalloc")] {
@@ -334,7 +333,7 @@ fn validate_engine_components(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "dhat-heap")]
     {
-        dhat_start()
+        dhat_start();
     }
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
@@ -365,7 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = controller.run_forever(engine_cfg);
     #[cfg(feature = "dhat-heap")]
     {
-        dhat_finish()
+        dhat_finish();
     }
 
     match result {

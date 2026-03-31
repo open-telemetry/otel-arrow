@@ -247,8 +247,6 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-
-
 # Dev/test tooling (fake data generator).
 dev-tools = ["otap-df-core-nodes/dev-tools"]
 
