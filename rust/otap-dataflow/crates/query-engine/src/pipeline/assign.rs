@@ -3924,9 +3924,9 @@ mod test {
         ]);
 
         let query = r#"logs | extend 
-            attributes["s1"] = substring(attributes["attr"], 1, 5),
-            attributes["s2"] = substring(attributes["attr"], 7, 5),
-            attributes["attr"] = substring(attributes["attr"], 5, 4)
+            attributes["s1"] = substring(attributes["attr"], 0, 5),
+            attributes["s2"] = substring(attributes["attr"], 6, 5),
+            attributes["attr"] = substring(attributes["attr"], 4, 4)
         "#;
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()

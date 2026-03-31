@@ -58,7 +58,6 @@ use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
-use datafusion::functions::unicode::substring;
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
@@ -81,6 +80,7 @@ use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
+use crate::pipeline::functions::substring;
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -327,6 +327,9 @@ impl ExprLogicalPlanner {
                     message: format!("math expression not yet supported {other_math_expr:?}"),
                 }),
             },
+            ScalarExpression::Slice(slice_scalar_expr) => {
+                todo!()
+            }
             other_expr => Err(Error::NotYetSupportedError {
                 message: format!("expression not yet supported {other_expr:?}"),
             }),
