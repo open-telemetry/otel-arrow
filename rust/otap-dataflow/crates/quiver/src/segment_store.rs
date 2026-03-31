@@ -763,6 +763,20 @@ impl SegmentStore {
             })
             .collect()
     }
+
+    /// Subtracts `offset` from every segment's `finalized_at` timestamp,
+    /// making them appear older for expiration tests without sleeping.
+    #[cfg(test)]
+    pub(crate) fn backdate_all_segments(&self, offset: Duration) {
+        let mut segments = self.segments.write();
+        for handle in segments.values_mut() {
+            let h = Arc::get_mut(handle).expect("segment handle has multiple owners");
+            h.finalized_at = h
+                .finalized_at
+                .checked_sub(offset)
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+        }
+    }
 }
 
 impl SegmentProvider for SegmentStore {
@@ -890,6 +904,8 @@ mod tests {
 
     #[test]
     fn is_file_before_cutoff_checks_mtime() {
+        use std::fs::FileTimes;
+
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "test").unwrap();
@@ -903,10 +919,17 @@ mod tests {
             cutoff_1hr_ago
         ));
 
-        // With a very short max_age and sleep, file should be before cutoff
-        std::thread::sleep(Duration::from_millis(50));
-        let later = SystemTime::now();
-        let cutoff_10ms_ago = later.checked_sub(Duration::from_millis(10)).unwrap();
+        // Backdate file mtime to 1 second ago, then check with a 10ms cutoff
+        let old_time = now.checked_sub(Duration::from_secs(1)).unwrap();
+        let times = FileTimes::new().set_modified(old_time);
+        let f = std::fs::File::options()
+            .write(true)
+            .open(&file_path)
+            .unwrap();
+        f.set_times(times).unwrap();
+        drop(f);
+
+        let cutoff_10ms_ago = now.checked_sub(Duration::from_millis(10)).unwrap();
         assert!(SegmentStore::is_file_before_cutoff(
             &file_path,
             cutoff_10ms_ago
