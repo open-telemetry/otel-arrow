@@ -328,7 +328,74 @@ impl ExprLogicalPlanner {
                 }),
             },
             ScalarExpression::Slice(slice_scalar_expr) => {
-                todo!()
+                let mut num_args = 2;
+                if slice_scalar_expr.get_range_start_inclusive().is_some() {
+                    num_args = 3;
+                }
+                let mut arg_exprs = Vec::with_capacity(num_args);
+
+                let start_arg_expr =
+                    self.plan_scalar_expr(slice_scalar_expr.get_source(), functions)?;
+                arg_exprs.push(start_arg_expr.logical_expr);
+                let mut source_scope = start_arg_expr.source;
+                let mut requires_dict_downcast = start_arg_expr.requires_dict_downcast;
+
+                let mut plan_range_index_expr = |scalar_expr, mut source_scope| {
+                    let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
+                    let combined_scope = match (arg_expr.source, source_scope) {
+                        (
+                            LogicalExprDataSource::DataSource(left_scope),
+                            LogicalExprDataSource::DataSource(right_scope),
+                        ) => left_scope.can_combine(&right_scope).then_some(
+                            if !left_scope.is_scalar() {
+                                left_scope
+                            } else {
+                                right_scope
+                            },
+                        ),
+                        _ => None,
+                    };
+                    if let Some(combined_scope) = combined_scope {
+                        source_scope = LogicalExprDataSource::DataSource(combined_scope);
+                    } else {
+                        // TODO: eventually we'll create a new join expr node and invoke the function
+                        // on result of the join.
+                        return Err(Error::NotYetSupportedError {
+                            message:
+                                "Functions arguments with differing data scopes not yet supported"
+                                    .into(),
+                        });
+                    }
+                    requires_dict_downcast |= arg_expr.requires_dict_downcast;
+                    arg_exprs.push(arg_expr.logical_expr);
+
+                    Ok(source_scope)
+                };
+
+                // plan the expression for substring start
+                let start_scalar_expr =
+                    slice_scalar_expr
+                        .get_range_start_inclusive()
+                        .ok_or_else(|| Error::InvalidPipelineError {
+                            cause: "start index is required for substring".into(),
+                            query_location: Some(slice_scalar_expr.get_query_location().clone()),
+                        })?;
+                source_scope = plan_range_index_expr(start_scalar_expr, source_scope)?;
+
+                // plan the expression for substring end
+                if let Some(end_scalar_expr) = slice_scalar_expr.get_range_end_exclusive() {
+                    source_scope = plan_range_index_expr(end_scalar_expr, source_scope)?;
+                }
+
+                Ok(ScopedLogicalExpr {
+                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                        substring(),
+                        arg_exprs,
+                    )),
+                    expr_type: ExprLogicalType::String,
+                    source: source_scope,
+                    requires_dict_downcast,
+                })
             }
             other_expr => Err(Error::NotYetSupportedError {
                 message: format!("expression not yet supported {other_expr:?}"),

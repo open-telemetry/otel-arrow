@@ -3962,4 +3962,6 @@ mod test {
     async fn test_update_attr_to_substring_function_call_result_kql_parser() {
         test_update_attr_to_substring_function_call_result::<KqlParser>().await
     }
+
+    // TODO need another test where we don't pass the length ...
 }

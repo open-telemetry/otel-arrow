@@ -123,7 +123,12 @@ fn dict_substr<K: ArrowDictionaryKeyType>(
         .downcast_ref::<DictionaryArray<K>>()
         .expect("expected caller to check type");
 
-    substr(Arc::clone(dict_arr.values()), start_arg, len_arg)
+    let new_vals = substr(Arc::clone(dict_arr.values()), start_arg, len_arg)?;
+
+    Ok(Arc::new(DictionaryArray::new(
+        dict_arr.keys().clone(),
+        new_vals,
+    )))
 }
 
 fn string_substr(
@@ -142,6 +147,7 @@ fn string_substr(
         for ((source, start), len) in source_iter.zip(start_iter).zip(len_iter) {
             match source {
                 Some(source) => {
+                    println!("input = source {source}, start: {start}, len: {len}");
                     let (start, end) = get_true_start_end(
                         source,
                         // + 1 offset b/c get_true_start_end is indexed starting from 1-based offset
@@ -149,6 +155,10 @@ fn string_substr(
                         start + 1,
                         Some(len as u64),
                         enable_ascii_fast_path,
+                    );
+                    println!(
+                        "output = source {}, start: {start}, end: {end}",
+                        &source[start..end]
                     );
                     result_builder.append_value(&source[start..end])
                 }

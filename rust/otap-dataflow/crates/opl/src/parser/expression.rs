@@ -10,7 +10,8 @@ use data_engine_expressions::{
     IntegerScalarExpression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
     LogicalExpression, MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression,
     NullScalarExpression, OrLogicalExpression, QueryLocation, ScalarExpression,
-    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, ValueAccessor,
+    SliceScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+    ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -760,6 +761,27 @@ fn parse_function_call(
                 query_location,
                 haystack,
                 rhs,
+            ))
+            .into())
+        }
+        "substring" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 2 or 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let source = args.remove(0);
+            let start = Some(args.remove(0));
+            let end = args.pop();
+            Ok(ScalarExpression::Slice(SliceScalarExpression::new(
+                query_location,
+                source,
+                start,
+                end,
             ))
             .into())
         }
