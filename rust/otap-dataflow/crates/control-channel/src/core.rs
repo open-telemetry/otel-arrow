@@ -33,7 +33,7 @@ impl NormalEventClass {
     }
 }
 
-pub(crate) struct Inner<PData> {
+pub(crate) struct Inner<PData, Meta = ()> {
     /// Immutable admission and fairness policy for this channel instance.
     pub(crate) config: ControlChannelConfig,
     /// Current lifecycle phase. This drives which classes can still be
@@ -59,7 +59,7 @@ pub(crate) struct Inner<PData> {
     shutdown_recorded: bool,
     shutdown_forced: bool,
     /// Lossless backpressured completion backlog (`Ack`/`Nack`).
-    completion: VecDeque<CompletionMsg<PData>>,
+    completion: VecDeque<CompletionMsg<PData, Meta>>,
     /// Latest-wins normal control state.
     latest_config: Option<serde_json::Value>,
     /// Coalesced best-effort normal control state.
@@ -82,7 +82,7 @@ pub(crate) struct Inner<PData> {
     next_normal_event: NormalEventClass,
 }
 
-impl<PData> Inner<PData> {
+impl<PData, Meta> Inner<PData, Meta> {
     /// Creates an empty queue core. The outer channel wrapper adds waiting
     /// behavior around this state machine.
     pub(crate) fn new(config: ControlChannelConfig) -> Self {
@@ -168,8 +168,8 @@ impl<PData> Inner<PData> {
     /// phase and bounded-capacity policy.
     pub(crate) fn try_send(
         &mut self,
-        cmd: ControlCmd<PData>,
-    ) -> Result<SendOutcome, TrySendError<PData>> {
+        cmd: ControlCmd<PData, Meta>,
+    ) -> Result<SendOutcome, TrySendError<PData, Meta>> {
         if self.phase == Phase::ShutdownRecorded {
             self.refresh_shutdown_force(Instant::now());
         }
@@ -251,7 +251,7 @@ impl<PData> Inner<PData> {
     /// 2. shutdown-mode completion draining, subject to deadline forcing
     /// 3. in normal phase, bounded alternation between completion batches and
     ///    round-robin normal control events
-    pub(crate) fn pop_event(&mut self) -> Option<CoreControlEvent<PData>> {
+    pub(crate) fn pop_event(&mut self) -> Option<CoreControlEvent<PData, Meta>> {
         if self.phase == Phase::ShutdownRecorded {
             self.refresh_shutdown_force(Instant::now());
         }
@@ -329,7 +329,7 @@ impl<PData> Inner<PData> {
     }
 
     /// Appends one completion message to the lossless backpressured backlog.
-    fn push_completion(&mut self, msg: CompletionMsg<PData>) -> SendOutcome {
+    fn push_completion(&mut self, msg: CompletionMsg<PData, Meta>) -> SendOutcome {
         self.completion.push_back(msg);
         self.bump_version();
         SendOutcome::Accepted
@@ -411,7 +411,7 @@ impl<PData> Inner<PData> {
 
     /// Picks the next pending normal control event using the round-robin
     /// cursor. Delivering any normal event resets the completion burst counter.
-    fn take_next_normal_event(&mut self) -> Option<CoreControlEvent<PData>> {
+    fn take_next_normal_event(&mut self) -> Option<CoreControlEvent<PData, Meta>> {
         for _ in 0..3 {
             let candidate = self.next_normal_event;
             self.next_normal_event = candidate.next();
@@ -444,7 +444,10 @@ impl<PData> Inner<PData> {
     /// Emits one bounded completion batch. When fairness is active, the batch
     /// size is further capped so at least one normal event can run before more
     /// completion traffic is emitted.
-    fn take_completion_batch(&mut self, fairness_budget: Option<usize>) -> CoreControlEvent<PData> {
+    fn take_completion_batch(
+        &mut self,
+        fairness_budget: Option<usize>,
+    ) -> CoreControlEvent<PData, Meta> {
         let mut batch_len = self.completion.len().min(self.config.completion_batch_max);
         if let Some(limit) = fairness_budget {
             batch_len = batch_len.min(limit.max(1));
@@ -470,7 +473,7 @@ impl<PData> Inner<PData> {
     /// Emits the terminal shutdown event. Forced shutdown abandons any
     /// remaining completion backlog; graceful shutdown emits only after that
     /// backlog has drained.
-    fn finalize_shutdown(&mut self, forced: bool) -> Option<CoreControlEvent<PData>> {
+    fn finalize_shutdown(&mut self, forced: bool) -> Option<CoreControlEvent<PData, Meta>> {
         let msg = self.shutdown.take()?;
         if forced {
             self.completion_abandoned_on_forced_shutdown_total = self

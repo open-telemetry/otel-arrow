@@ -156,11 +156,11 @@ impl SenderWaiters {
     }
 }
 
-struct State<PData> {
+struct State<PData, Meta = ()> {
     /// Single-threaded ownership of the queue core plus the wake state layered
     /// around it. `Inner` owns all admission and delivery semantics; this
     /// wrapper only handles waiting, sender liveness, and wake routing.
-    inner: RefCell<Inner<PData>>,
+    inner: RefCell<Inner<PData, Meta>>,
     notify: Notify,
     /// Number of live sender handles. When the last sender drops, the channel
     /// transitions to closed so the receiver can finish after buffered work is
@@ -171,7 +171,7 @@ struct State<PData> {
     sender_waiters: RefCell<Option<SenderWaiters>>,
 }
 
-impl<PData> State<PData> {
+impl<PData, Meta> State<PData, Meta> {
     fn register_or_refresh_sender_waiter(
         &self,
         waiter_key: &mut Option<SenderWaiterKey>,
@@ -205,42 +205,42 @@ impl<PData> State<PData> {
     }
 }
 
-struct ControlSenderCore<PData> {
-    state: Rc<State<PData>>,
+struct ControlSenderCore<PData, Meta = ()> {
+    state: Rc<State<PData, Meta>>,
 }
 
-struct ControlReceiverCore<PData> {
-    state: Rc<State<PData>>,
+struct ControlReceiverCore<PData, Meta = ()> {
+    state: Rc<State<PData, Meta>>,
 }
 
 /// Sender for receiver nodes, including `DrainIngress`.
-pub struct ReceiverControlSender<PData> {
-    inner: ControlSenderCore<PData>,
+pub struct ReceiverControlSender<PData, Meta = ()> {
+    inner: ControlSenderCore<PData, Meta>,
 }
 
 /// Sender for non-receiver nodes.
-pub struct NodeControlSender<PData> {
-    inner: ControlSenderCore<PData>,
+pub struct NodeControlSender<PData, Meta = ()> {
+    inner: ControlSenderCore<PData, Meta>,
 }
 
 /// Receiver for receiver-role control events.
-pub struct ReceiverControlReceiver<PData> {
-    inner: ControlReceiverCore<PData>,
+pub struct ReceiverControlReceiver<PData, Meta = ()> {
+    inner: ControlReceiverCore<PData, Meta>,
 }
 
 /// Receiver for non-receiver node control events.
-pub struct NodeControlReceiver<PData> {
-    inner: ControlReceiverCore<PData>,
+pub struct NodeControlReceiver<PData, Meta = ()> {
+    inner: ControlReceiverCore<PData, Meta>,
 }
 
-struct SendFuture<'a, PData> {
-    sender: &'a ControlSenderCore<PData>,
-    pending_cmd: Option<ControlCmd<PData>>,
+struct SendFuture<'a, PData, Meta = ()> {
+    sender: &'a ControlSenderCore<PData, Meta>,
+    pending_cmd: Option<ControlCmd<PData, Meta>>,
     waiter_key: Option<SenderWaiterKey>,
     deadline_sleep: Option<Pin<Box<Sleep>>>,
 }
 
-impl<PData> Clone for ControlSenderCore<PData> {
+impl<PData, Meta> Clone for ControlSenderCore<PData, Meta> {
     fn clone(&self) -> Self {
         self.state
             .sender_count
@@ -251,7 +251,7 @@ impl<PData> Clone for ControlSenderCore<PData> {
     }
 }
 
-impl<PData> Drop for ControlSenderCore<PData> {
+impl<PData, Meta> Drop for ControlSenderCore<PData, Meta> {
     fn drop(&mut self) {
         let next = self.state.sender_count.get().saturating_sub(1);
         self.state.sender_count.set(next);
@@ -264,7 +264,7 @@ impl<PData> Drop for ControlSenderCore<PData> {
     }
 }
 
-impl<PData> ControlSenderCore<PData> {
+impl<PData, Meta> ControlSenderCore<PData, Meta> {
     fn accept_drain_ingress(&self, msg: DrainIngressMsg) -> LifecycleSendResult {
         let result = self.state.inner.borrow_mut().record_drain_ingress(msg);
         if matches!(result, LifecycleSendResult::Accepted) {
@@ -283,7 +283,10 @@ impl<PData> ControlSenderCore<PData> {
         result
     }
 
-    fn try_send(&self, cmd: ControlCmd<PData>) -> Result<SendOutcome, crate::TrySendError<PData>> {
+    fn try_send(
+        &self,
+        cmd: ControlCmd<PData, Meta>,
+    ) -> Result<SendOutcome, crate::TrySendError<PData, Meta>> {
         let result = self.state.inner.borrow_mut().try_send(cmd);
         if matches!(result, Ok(SendOutcome::Accepted | SendOutcome::Replaced)) {
             self.state.notify.notify_one();
@@ -291,7 +294,10 @@ impl<PData> ControlSenderCore<PData> {
         result
     }
 
-    async fn send(&self, cmd: ControlCmd<PData>) -> Result<SendOutcome, SendError<PData>> {
+    async fn send(
+        &self,
+        cmd: ControlCmd<PData, Meta>,
+    ) -> Result<SendOutcome, SendError<PData, Meta>> {
         SendFuture {
             sender: self,
             pending_cmd: Some(cmd),
@@ -314,9 +320,9 @@ impl<PData> ControlSenderCore<PData> {
     }
 }
 
-impl<'a, PData> Unpin for SendFuture<'a, PData> {}
+impl<'a, PData, Meta> Unpin for SendFuture<'a, PData, Meta> {}
 
-impl<PData> Drop for SendFuture<'_, PData> {
+impl<PData, Meta> Drop for SendFuture<'_, PData, Meta> {
     fn drop(&mut self) {
         let Some(waiter_key) = self.waiter_key.take() else {
             return;
@@ -325,8 +331,8 @@ impl<PData> Drop for SendFuture<'_, PData> {
     }
 }
 
-impl<PData> Future for SendFuture<'_, PData> {
-    type Output = Result<SendOutcome, SendError<PData>>;
+impl<PData, Meta> Future for SendFuture<'_, PData, Meta> {
+    type Output = Result<SendOutcome, SendError<PData, Meta>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
@@ -391,7 +397,7 @@ impl<PData> Future for SendFuture<'_, PData> {
     }
 }
 
-impl<PData> Clone for ReceiverControlSender<PData> {
+impl<PData, Meta> Clone for ReceiverControlSender<PData, Meta> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -399,7 +405,7 @@ impl<PData> Clone for ReceiverControlSender<PData> {
     }
 }
 
-impl<PData> Clone for NodeControlSender<PData> {
+impl<PData, Meta> Clone for NodeControlSender<PData, Meta> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -407,7 +413,7 @@ impl<PData> Clone for NodeControlSender<PData> {
     }
 }
 
-impl<PData> ReceiverControlSender<PData> {
+impl<PData, Meta> ReceiverControlSender<PData, Meta> {
     /// Accepts a receiver-drain lifecycle token without consuming bounded
     /// control capacity.
     #[must_use]
@@ -425,14 +431,17 @@ impl<PData> ReceiverControlSender<PData> {
     /// Attempts to send a non-lifecycle control command without waiting for capacity.
     pub fn try_send(
         &self,
-        cmd: ControlCmd<PData>,
-    ) -> Result<SendOutcome, crate::TrySendError<PData>> {
+        cmd: ControlCmd<PData, Meta>,
+    ) -> Result<SendOutcome, crate::TrySendError<PData, Meta>> {
         self.inner.try_send(cmd)
     }
 
     /// Sends a non-lifecycle control command, waiting asynchronously for bounded
     /// completion capacity when needed.
-    pub async fn send(&self, cmd: ControlCmd<PData>) -> Result<SendOutcome, SendError<PData>> {
+    pub async fn send(
+        &self,
+        cmd: ControlCmd<PData, Meta>,
+    ) -> Result<SendOutcome, SendError<PData, Meta>> {
         self.inner.send(cmd).await
     }
 
@@ -448,7 +457,7 @@ impl<PData> ReceiverControlSender<PData> {
     }
 }
 
-impl<PData> NodeControlSender<PData> {
+impl<PData, Meta> NodeControlSender<PData, Meta> {
     /// Accepts a shutdown lifecycle token without consuming bounded control
     /// capacity.
     #[must_use]
@@ -459,14 +468,17 @@ impl<PData> NodeControlSender<PData> {
     /// Attempts to send a non-lifecycle control command without waiting for capacity.
     pub fn try_send(
         &self,
-        cmd: ControlCmd<PData>,
-    ) -> Result<SendOutcome, crate::TrySendError<PData>> {
+        cmd: ControlCmd<PData, Meta>,
+    ) -> Result<SendOutcome, crate::TrySendError<PData, Meta>> {
         self.inner.try_send(cmd)
     }
 
     /// Sends a non-lifecycle control command, waiting asynchronously for bounded
     /// completion capacity when needed.
-    pub async fn send(&self, cmd: ControlCmd<PData>) -> Result<SendOutcome, SendError<PData>> {
+    pub async fn send(
+        &self,
+        cmd: ControlCmd<PData, Meta>,
+    ) -> Result<SendOutcome, SendError<PData, Meta>> {
         self.inner.send(cmd).await
     }
 
@@ -482,8 +494,8 @@ impl<PData> NodeControlSender<PData> {
     }
 }
 
-impl<PData> ControlReceiverCore<PData> {
-    fn notify_after_pop(&self, event: &CoreControlEvent<PData>) {
+impl<PData, Meta> ControlReceiverCore<PData, Meta> {
+    fn notify_after_pop(&self, event: &CoreControlEvent<PData, Meta>) {
         match event {
             CoreControlEvent::CompletionBatch(batch) => {
                 self.state.wake_completion_waiters(batch.len());
@@ -499,7 +511,7 @@ impl<PData> ControlReceiverCore<PData> {
         }
     }
 
-    async fn recv_internal(&mut self) -> Option<CoreControlEvent<PData>> {
+    async fn recv_internal(&mut self) -> Option<CoreControlEvent<PData, Meta>> {
         loop {
             {
                 let mut inner = self.state.inner.borrow_mut();
@@ -538,7 +550,7 @@ impl<PData> ControlReceiverCore<PData> {
         }
     }
 
-    fn try_recv_internal(&mut self) -> Option<CoreControlEvent<PData>> {
+    fn try_recv_internal(&mut self) -> Option<CoreControlEvent<PData, Meta>> {
         let event = self.state.inner.borrow_mut().pop_event();
         if let Some(event_ref) = &event {
             self.notify_after_pop(event_ref);
@@ -551,21 +563,21 @@ impl<PData> ControlReceiverCore<PData> {
     }
 }
 
-impl<PData> ReceiverControlReceiver<PData> {
+impl<PData, Meta> ReceiverControlReceiver<PData, Meta> {
     /// Receives the next available control event, or `None` if the channel is
     /// closed and fully drained.
-    pub async fn recv(&mut self) -> Option<ReceiverControlEvent<PData>> {
+    pub async fn recv(&mut self) -> Option<ReceiverControlEvent<PData, Meta>> {
         self.inner
             .recv_internal()
             .await
-            .map(ReceiverControlEvent::<PData>::from_core)
+            .map(ReceiverControlEvent::<PData, Meta>::from_core)
     }
 
     /// Attempts to receive one control event without waiting.
-    pub fn try_recv(&mut self) -> Option<ReceiverControlEvent<PData>> {
+    pub fn try_recv(&mut self) -> Option<ReceiverControlEvent<PData, Meta>> {
         self.inner
             .try_recv_internal()
-            .map(ReceiverControlEvent::<PData>::from_core)
+            .map(ReceiverControlEvent::<PData, Meta>::from_core)
     }
 
     /// Returns a snapshot of channel occupancy and lifecycle state.
@@ -575,21 +587,21 @@ impl<PData> ReceiverControlReceiver<PData> {
     }
 }
 
-impl<PData> NodeControlReceiver<PData> {
+impl<PData, Meta> NodeControlReceiver<PData, Meta> {
     /// Receives the next available control event, or `None` if the channel is
     /// closed and fully drained.
-    pub async fn recv(&mut self) -> Option<NodeControlEvent<PData>> {
+    pub async fn recv(&mut self) -> Option<NodeControlEvent<PData, Meta>> {
         self.inner
             .recv_internal()
             .await
-            .map(NodeControlEvent::<PData>::from_core)
+            .map(NodeControlEvent::<PData, Meta>::from_core)
     }
 
     /// Attempts to receive one control event without waiting.
-    pub fn try_recv(&mut self) -> Option<NodeControlEvent<PData>> {
+    pub fn try_recv(&mut self) -> Option<NodeControlEvent<PData, Meta>> {
         self.inner
             .try_recv_internal()
-            .map(NodeControlEvent::<PData>::from_core)
+            .map(NodeControlEvent::<PData, Meta>::from_core)
     }
 
     /// Returns a snapshot of channel occupancy and lifecycle state.
@@ -599,9 +611,15 @@ impl<PData> NodeControlReceiver<PData> {
     }
 }
 
-fn channel_state<PData>(
+fn channel_state<PData, Meta>(
     config: ControlChannelConfig,
-) -> Result<(ControlSenderCore<PData>, ControlReceiverCore<PData>), ConfigError> {
+) -> Result<
+    (
+        ControlSenderCore<PData, Meta>,
+        ControlReceiverCore<PData, Meta>,
+    ),
+    ConfigError,
+> {
     config.validate()?;
     let state = Rc::new(State {
         inner: RefCell::new(Inner::new(config)),
@@ -622,6 +640,20 @@ fn channel_state<PData>(
 pub fn receiver_channel<PData>(
     config: ControlChannelConfig,
 ) -> Result<(ReceiverControlSender<PData>, ReceiverControlReceiver<PData>), ConfigError> {
+    receiver_channel_with_meta(config)
+}
+
+/// Creates a new control-aware channel pair for receiver nodes with explicit
+/// completion metadata carried by `Ack`/`Nack`.
+pub fn receiver_channel_with_meta<PData, Meta>(
+    config: ControlChannelConfig,
+) -> Result<
+    (
+        ReceiverControlSender<PData, Meta>,
+        ReceiverControlReceiver<PData, Meta>,
+    ),
+    ConfigError,
+> {
     let (sender, receiver) = channel_state(config)?;
     Ok((
         ReceiverControlSender { inner: sender },
@@ -633,6 +665,20 @@ pub fn receiver_channel<PData>(
 pub fn node_channel<PData>(
     config: ControlChannelConfig,
 ) -> Result<(NodeControlSender<PData>, NodeControlReceiver<PData>), ConfigError> {
+    node_channel_with_meta(config)
+}
+
+/// Creates a new control-aware channel pair for non-receiver nodes with
+/// explicit completion metadata carried by `Ack`/`Nack`.
+pub fn node_channel_with_meta<PData, Meta>(
+    config: ControlChannelConfig,
+) -> Result<
+    (
+        NodeControlSender<PData, Meta>,
+        NodeControlReceiver<PData, Meta>,
+    ),
+    ConfigError,
+> {
     let (sender, receiver) = channel_state(config)?;
     Ok((
         NodeControlSender { inner: sender },

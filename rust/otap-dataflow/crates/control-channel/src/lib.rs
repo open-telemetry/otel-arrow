@@ -14,7 +14,7 @@ mod types;
 
 pub use channel::{
     NodeControlReceiver, NodeControlSender, ReceiverControlReceiver, ReceiverControlSender,
-    node_channel, receiver_channel,
+    node_channel, node_channel_with_meta, receiver_channel, receiver_channel_with_meta,
 };
 pub use types::{
     AckMsg, AdmissionClass, CompletionMsg, ConfigError, ControlChannelConfig, ControlChannelStats,

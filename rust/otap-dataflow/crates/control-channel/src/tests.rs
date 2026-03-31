@@ -4,7 +4,7 @@
 use crate::{
     AckMsg, AdmissionClass, CompletionMsg, ControlChannelConfig, ControlCmd, DrainIngressMsg,
     LifecycleSendResult, NodeControlEvent, ReceiverControlEvent, SendError, SendOutcome,
-    ShutdownMsg, TrySendError, node_channel, receiver_channel,
+    ShutdownMsg, TrySendError, node_channel, node_channel_with_meta, receiver_channel,
 };
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
@@ -25,6 +25,12 @@ fn ack(value: &str) -> ControlCmd<String> {
 
 fn nack(value: &str) -> ControlCmd<String> {
     ControlCmd::Nack(crate::NackMsg::new("nack", value.to_owned()))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TestMeta {
+    route: &'static str,
+    seq: u64,
 }
 
 fn shutdown(deadline: Instant) -> ShutdownMsg {
@@ -536,6 +542,59 @@ async fn try_send_returns_full_with_the_original_command() {
         }
         other => panic!("expected full completion error, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn completion_metadata_survives_batching_and_full_errors() {
+    // Scenario: explicit completion metadata must survive batching and full
+    // backpressure errors so future engine integration can preserve unwind state.
+    let (tx, mut rx) = node_channel_with_meta::<String, TestMeta>(ControlChannelConfig {
+        completion_msg_capacity: 1,
+        completion_batch_max: 1,
+        completion_burst_limit: 1,
+    })
+    .unwrap();
+
+    let first_meta = TestMeta {
+        route: "batch",
+        seq: 1,
+    };
+    let second_meta = TestMeta {
+        route: "full",
+        seq: 2,
+    };
+
+    assert_eq!(
+        tx.try_send(ControlCmd::Ack(AckMsg::with_meta(
+            "ack-1".to_owned(),
+            first_meta.clone(),
+        )))
+        .unwrap(),
+        SendOutcome::Accepted
+    );
+
+    match tx.try_send(ControlCmd::Nack(crate::NackMsg::with_meta(
+        "nack",
+        "nack-1".to_owned(),
+        second_meta.clone(),
+    ))) {
+        Err(TrySendError::Full {
+            admission_class: AdmissionClass::Backpressured,
+            cmd: ControlCmd::Nack(nack),
+        }) => {
+            assert_eq!(nack.reason, "nack");
+            assert_eq!(*nack.refused, "nack-1".to_owned());
+            assert_eq!(nack.meta, second_meta);
+        }
+        other => panic!("expected full completion error with preserved metadata, got {other:?}"),
+    }
+
+    assert_eq!(
+        rx.recv().await,
+        Some(NodeControlEvent::CompletionBatch(vec![CompletionMsg::Ack(
+            AckMsg::with_meta("ack-1".to_owned(), first_meta)
+        )]))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

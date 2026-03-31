@@ -174,6 +174,9 @@ Properties:
 - batching reduces receive-side overhead under heavy completion load
 - protocols that support completion signals such as `Ack` and `Nack` can take
   advantage of this batching to reduce control-plane churn
+- completion messages can optionally carry explicit metadata through
+  `AckMsg<PData, Meta>` / `NackMsg<PData, Meta>`; standalone usage defaults to
+  `Meta = ()`, while future engine integration can preserve unwind state there
 - `completion_batch_max` bounds the size of a single emitted batch
 - completion traffic remains eligible after `DrainIngress`
 - completion traffic remains eligible after `Shutdown` until terminal progress

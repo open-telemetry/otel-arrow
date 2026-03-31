@@ -94,67 +94,101 @@ pub struct ShutdownMsg {
 
 /// Completion success message.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AckMsg<PData> {
+pub struct AckMsg<PData, Meta = ()> {
     /// Accepted payload being returned upstream.
     pub accepted: Box<PData>,
+    /// Explicit completion metadata carried with the returned payload.
+    /// Future engine integration can use this for unwind state such as
+    /// `UnwindData`.
+    pub meta: Meta,
 }
 
-impl<PData> AckMsg<PData> {
-    /// Creates a new acknowledgment wrapper.
+impl<PData> AckMsg<PData, ()> {
+    /// Creates a new acknowledgment wrapper without additional metadata.
     pub fn new(accepted: PData) -> Self {
+        Self::with_meta(accepted, ())
+    }
+}
+
+impl<PData, Meta> AckMsg<PData, Meta> {
+    /// Creates a new acknowledgment wrapper with explicit metadata.
+    pub fn with_meta(accepted: PData, meta: Meta) -> Self {
         Self {
             accepted: Box::new(accepted),
+            meta,
         }
     }
 }
 
 /// Completion failure message.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NackMsg<PData> {
+pub struct NackMsg<PData, Meta = ()> {
     /// Human-readable failure reason.
     pub reason: String,
     /// Refused payload being returned upstream.
     pub refused: Box<PData>,
+    /// Explicit completion metadata carried with the returned payload.
+    /// Future engine integration can use this for unwind state such as
+    /// `UnwindData`.
+    pub meta: Meta,
     /// Whether the failure is permanent.
     pub permanent: bool,
 }
 
-impl<PData> NackMsg<PData> {
-    /// Creates a new non-permanent negative acknowledgment.
+impl<PData> NackMsg<PData, ()> {
+    /// Creates a new non-permanent negative acknowledgment without additional metadata.
     pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
-        Self {
-            reason: reason.into(),
-            refused: Box::new(refused),
-            permanent: false,
-        }
+        Self::with_meta(reason, refused, ())
     }
 
-    /// Creates a new permanent negative acknowledgment.
+    /// Creates a new permanent negative acknowledgment without additional metadata.
     pub fn new_permanent<T: Into<String>>(reason: T, refused: PData) -> Self {
+        Self::with_meta_permanent(reason, refused, ())
+    }
+}
+
+impl<PData, Meta> NackMsg<PData, Meta> {
+    /// Creates a new non-permanent negative acknowledgment with explicit metadata.
+    pub fn with_meta<T: Into<String>>(reason: T, refused: PData, meta: Meta) -> Self {
+        Self::new_internal(reason, refused, meta, false)
+    }
+
+    /// Creates a new permanent negative acknowledgment with explicit metadata.
+    pub fn with_meta_permanent<T: Into<String>>(reason: T, refused: PData, meta: Meta) -> Self {
+        Self::new_internal(reason, refused, meta, true)
+    }
+
+    fn new_internal<T: Into<String>>(
+        reason: T,
+        refused: PData,
+        meta: Meta,
+        permanent: bool,
+    ) -> Self {
         Self {
             reason: reason.into(),
             refused: Box::new(refused),
-            permanent: true,
+            meta,
+            permanent,
         }
     }
 }
 
 /// Completion message retained inside a batched completion queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CompletionMsg<PData> {
+pub enum CompletionMsg<PData, Meta = ()> {
     /// Positive completion.
-    Ack(AckMsg<PData>),
+    Ack(AckMsg<PData, Meta>),
     /// Negative completion.
-    Nack(NackMsg<PData>),
+    Nack(NackMsg<PData, Meta>),
 }
 
 /// Command submitted to the control-aware channel.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ControlCmd<PData> {
+pub enum ControlCmd<PData, Meta = ()> {
     /// Completion success.
-    Ack(AckMsg<PData>),
+    Ack(AckMsg<PData, Meta>),
     /// Completion failure.
-    Nack(NackMsg<PData>),
+    Nack(NackMsg<PData, Meta>),
     /// Latest configuration update.
     Config {
         /// Resolved configuration payload.
@@ -168,11 +202,11 @@ pub enum ControlCmd<PData> {
 
 /// Event surfaced by receiver-role control channels.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ReceiverControlEvent<PData> {
+pub enum ReceiverControlEvent<PData, Meta = ()> {
     /// Lifecycle drain token.
     DrainIngress(DrainIngressMsg),
     /// Batch of completions in arrival order.
-    CompletionBatch(Vec<CompletionMsg<PData>>),
+    CompletionBatch(Vec<CompletionMsg<PData, Meta>>),
     /// Latest configuration update.
     Config {
         /// Resolved configuration payload.
@@ -188,9 +222,9 @@ pub enum ReceiverControlEvent<PData> {
 
 /// Event surfaced by non-receiver node control channels.
 #[derive(Clone, Debug, PartialEq)]
-pub enum NodeControlEvent<PData> {
+pub enum NodeControlEvent<PData, Meta = ()> {
     /// Batch of completions in arrival order.
-    CompletionBatch(Vec<CompletionMsg<PData>>),
+    CompletionBatch(Vec<CompletionMsg<PData, Meta>>),
     /// Latest configuration update.
     Config {
         /// Resolved configuration payload.
@@ -205,17 +239,17 @@ pub enum NodeControlEvent<PData> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum CoreControlEvent<PData> {
+pub(crate) enum CoreControlEvent<PData, Meta = ()> {
     DrainIngress(DrainIngressMsg),
-    CompletionBatch(Vec<CompletionMsg<PData>>),
+    CompletionBatch(Vec<CompletionMsg<PData, Meta>>),
     Config { config: serde_json::Value },
     TimerTick,
     CollectTelemetry,
     Shutdown(ShutdownMsg),
 }
 
-impl<PData> ReceiverControlEvent<PData> {
-    pub(crate) fn from_core(event: CoreControlEvent<PData>) -> Self {
+impl<PData, Meta> ReceiverControlEvent<PData, Meta> {
+    pub(crate) fn from_core(event: CoreControlEvent<PData, Meta>) -> Self {
         match event {
             CoreControlEvent::DrainIngress(msg) => Self::DrainIngress(msg),
             CoreControlEvent::CompletionBatch(batch) => Self::CompletionBatch(batch),
@@ -227,8 +261,8 @@ impl<PData> ReceiverControlEvent<PData> {
     }
 }
 
-impl<PData> NodeControlEvent<PData> {
-    pub(crate) fn from_core(event: CoreControlEvent<PData>) -> Self {
+impl<PData, Meta> NodeControlEvent<PData, Meta> {
+    pub(crate) fn from_core(event: CoreControlEvent<PData, Meta>) -> Self {
         match event {
             CoreControlEvent::DrainIngress(_) => {
                 panic!("DrainIngress must not be delivered on node control channels")
@@ -268,26 +302,26 @@ pub enum LifecycleSendResult {
 
 /// Non-blocking send errors for the control-aware sender.
 #[derive(Clone, Debug, Error, PartialEq)]
-pub enum TrySendError<PData> {
+pub enum TrySendError<PData, Meta = ()> {
     /// The channel has been closed.
     #[error("control channel is closed")]
-    Closed(ControlCmd<PData>),
+    Closed(ControlCmd<PData, Meta>),
     /// The bounded class-specific capacity has been reached.
     #[error("control channel capacity reached for {admission_class:?}")]
     Full {
         /// The admission class whose bounded capacity is saturated.
         admission_class: AdmissionClass,
         /// The command that could not be enqueued.
-        cmd: ControlCmd<PData>,
+        cmd: ControlCmd<PData, Meta>,
     },
 }
 
 /// Blocking send errors for the control-aware sender.
 #[derive(Clone, Debug, Error, PartialEq)]
-pub enum SendError<PData> {
+pub enum SendError<PData, Meta = ()> {
     /// The channel closed before the command could be enqueued.
     #[error("control channel is closed")]
-    Closed(ControlCmd<PData>),
+    Closed(ControlCmd<PData, Meta>),
 }
 
 /// Snapshot of queue occupancy and lifecycle state.
