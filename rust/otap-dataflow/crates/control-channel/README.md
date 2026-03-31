@@ -87,16 +87,16 @@ whose ordering is governed by the channel's fairness and shutdown policy.
 
 ### Role-specific APIs
 
-There are two channel families:
+There are two channel families used between the engine controller and the individual nodes. Receivers have a different interface than the other node types, because they begin the shutdown sequence.
 
-- `receiver_channel(...)`
-  - sender type: `ReceiverControlSender`
+- For sending messages to receivers, a controller uses `receiver_channel(...)`
+  - channel type: `ReceiverControlSender`, `ReceiverControlReceiver`
   - receiver event type: `ReceiverControlEvent`
-  - supports both `accept_drain_ingress(...)` and `accept_shutdown(...)`
-- `node_channel(...)`
-  - sender type: `NodeControlSender`
+  - channel receiver supports both `accept_drain_ingress(...)` and `accept_shutdown(...)`
+- For sending messages to other nodes, a controller uses `node_channel(...)`
+  - channel type: `NodeControlSender`, `NodeControlReceiver`
   - receiver event type: `NodeControlEvent`
-  - supports `accept_shutdown(...)` only
+  - channel receiver supports `accept_shutdown(...)` only
 
 This split is intentional. `DrainIngress` is receiver-specific lifecycle
 control, so non-receiver nodes cannot express it through the public API.
