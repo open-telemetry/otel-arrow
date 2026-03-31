@@ -1980,7 +1980,10 @@ mod test {
                     Event::build().name("event3.2").finish(),
                 ])
                 .links(vec![
-                    Link::build().trace_id(vec![31; 16]).span_id(vec![31; 8]).finish(),
+                    Link::build()
+                        .trace_id(vec![31; 16])
+                        .span_id(vec![31; 8])
+                        .finish(),
                     Link::build()
                         .trace_id(vec![32; 16])
                         .span_id(vec![32; 8])
@@ -1991,7 +1994,10 @@ mod test {
                             KeyValue::new("key3", AnyValue::new_string("val2")),
                         ])
                         .finish(),
-                    Link::build().trace_id(vec![33; 16]).span_id(vec![33; 8]).finish(),
+                    Link::build()
+                        .trace_id(vec![33; 16])
+                        .span_id(vec![33; 8])
+                        .finish(),
                 ])
                 .finish(),
         ];
