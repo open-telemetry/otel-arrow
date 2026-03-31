@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 
 use data_engine_expressions::{DataExpression, PipelineFunction};
-use data_engine_parser_abstractions::{ParserError, ParserScope, ParserState, to_query_location};
+use data_engine_parser_abstractions::{
+    ParserError, ParserFunction, ParserScope, ParserState, to_query_location,
+};
 use pest::iterators::Pair;
 
 use crate::parser::operator::parse_operator_call;
@@ -21,11 +23,9 @@ pub(crate) trait PipelineBuilder {
     /// push a function definition, returns the function ID
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize;
 
-    fn get_max_func_id(&self) -> Option<usize>;
-
-    fn child_func_id_offset(&self) -> usize {
-        self.get_max_func_id().map(|i| i + 1).unwrap_or_default()
-    }
+    /// get the definition of a function by name. Returns `None` if no function with the passed
+    /// name exists
+    fn get_function(&self, name: &str) -> Option<&ParserFunction>;
 }
 
 pub struct RootPipelineBuilder<'a> {
@@ -60,62 +60,50 @@ impl PipelineBuilder for RootPipelineBuilder<'_> {
         func_id
     }
 
-    fn get_max_func_id(&self) -> Option<usize> {
-        self.max_func_id
+    fn get_function(&self, name: &str) -> Option<&ParserFunction> {
+        self.parser_state.get_function_id(name)
     }
 }
 
 /// simple [`PipelineBuilder`] implementation for collecting nested data expressions and
 /// function definitions
-pub(crate) struct InnerPipelineBuilder {
-    /// The functions that will be appended to this inner pipeline will need to be appended
-    /// to the parent pipeline builder eventually. The expressions inside the inner pipeline
-    /// will reference functions by ID, but the ID must be the global ID. This value is used
-    /// to offset the local IDs to the global function ID.
-    func_id_offset: usize,
-
+pub(crate) struct InnerPipelineBuilder<'a> {
     data_exprs: Vec<DataExpression>,
-    functions: Vec<(String, PipelineFunction)>,
+
+    pub parent: &'a mut dyn PipelineBuilder,
 }
 
-impl InnerPipelineBuilder {
-    pub fn new(func_id_offset: usize) -> Self {
-        Self::new_with_capacities(func_id_offset, None, None)
+impl<'a> InnerPipelineBuilder<'a> {
+    pub fn new(parent: &'a mut dyn PipelineBuilder) -> Self {
+        Self::new_with_capacity(None, parent)
     }
 
-    pub fn new_with_capacities(
-        func_id_offset: usize,
+    pub fn new_with_capacity(
         data_expr_capacity: Option<usize>,
-        functions_capacity: Option<usize>,
+        parent: &'a mut dyn PipelineBuilder,
     ) -> Self {
         Self {
-            func_id_offset,
             data_exprs: Vec::with_capacity(data_expr_capacity.unwrap_or_default()),
-            functions: Vec::with_capacity(functions_capacity.unwrap_or_default()),
+            parent,
         }
     }
 
-    pub fn into_parts(self) -> (Vec<DataExpression>, Vec<(String, PipelineFunction)>) {
-        (self.data_exprs, self.functions)
+    pub fn into_parts(self) -> (Vec<DataExpression>, &'a mut dyn PipelineBuilder) {
+        (self.data_exprs, self.parent)
     }
 }
 
-impl PipelineBuilder for InnerPipelineBuilder {
+impl<'a> PipelineBuilder for InnerPipelineBuilder<'a> {
     fn push_data_expression(&mut self, data_expression: DataExpression) {
         self.data_exprs.push(data_expression)
     }
 
     fn push_function_definition(&mut self, name: &str, definition: PipelineFunction) -> usize {
-        self.functions.push((name.to_string(), definition));
-        self.func_id_offset + self.functions.len() - 1
+        self.parent.push_function_definition(name, definition)
     }
 
-    fn get_max_func_id(&self) -> Option<usize> {
-        if !self.functions.is_empty() || self.func_id_offset > 0 {
-            Some(self.functions.len() + self.func_id_offset - 1)
-        } else {
-            None
-        }
+    fn get_function(&self, name: &str) -> Option<&ParserFunction> {
+        self.parent.get_function(name)
     }
 }
 
