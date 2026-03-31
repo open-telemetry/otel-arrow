@@ -568,6 +568,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 metrics.borrow_mut().received_logs_truncated.inc();
                                                             }
 
+                                                            // TODO: When a message exceeds MAX_MESSAGE_SIZE, the truncated
+                                                            // head is emitted as one record and the remaining tail bytes become
+                                                            // a separate record with no syslog header context (severity, timestamp,
+                                                            // etc.). Consider adding fragment-correlation metadata (e.g. a shared
+                                                            // attribute linking head and tail) or synthesizing a syslog header on
+                                                            // the continuation fragment so downstream consumers can associate the
+                                                            // pieces. See https://github.com/open-telemetry/otel-arrow/pull/2452#discussion_r3004024837
+
                                                             // Strip trailing newline if present
                                                             // (Complete has it, Truncated does not)
                                                             let message_to_parse = if line_bytes.last() == Some(&b'\n') {
