@@ -57,8 +57,7 @@ struct HeartbeatRow {
 
 #[inline]
 fn default_heartbeat_version() -> String {
-    std::env::var("AZURE_MONITOR_EXPORTER_HEARTBEAT_VERSION")
-        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 #[inline]
@@ -393,17 +392,6 @@ mod tests {
     fn test_default_heartbeat_version_fallback() {
         let version = default_heartbeat_version();
         assert!(!version.is_empty());
-    }
-
-    #[test]
-    #[allow(unsafe_code)]
-    fn test_default_heartbeat_version_uses_env_override() {
-        const ENV_KEY: &str = "AZURE_MONITOR_EXPORTER_HEARTBEAT_VERSION";
-        // SAFETY: This test runs serially (single-threaded test) and restores the env var.
-        unsafe { std::env::set_var(ENV_KEY, "99.0.0-custom") };
-        let version = default_heartbeat_version();
-        unsafe { std::env::remove_var(ENV_KEY) };
-        assert_eq!(version, "99.0.0-custom");
     }
 
     #[test]
