@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774830588846,
+  "lastUpdate": 1774916919819,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2945,6 +2945,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 97.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Sumanth Kaliki",
+            "username": "sumanthreddy542",
+            "email": "sumanth.reddy542@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b4867bfce4311b82716229f56209636a3f763015",
+          "message": "Move dependency imports to workspace  (#2453)\n\n# Change Summary\n\nCentralize duplicated dependency declarations\n\nDependencies that were specified with explicit paths or versions in\nmultiple crates have been moved to the root Cargo.toml\n[workspace.dependencies] section. Each crate now inherits them via\n[workspace = true]. This was done using cargo autoinherit and prevents\nversion drift across the workspace.\n\n## What issue does this PR close?\n\n* Closes #525 \n* Closes #1218 \n\n## How are these changes tested?\ncargo build and cargo test\n\n## Are there any user-facing changes?\n\n No\n\n---------\n\nCo-authored-by: Sumanth Kaliki <skaliki@microsoft.com>",
+          "timestamp": "2026-03-30T21:24:54Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b4867bfce4311b82716229f56209636a3f763015"
+        },
+        "date": 1774916913583,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 99.92,
             "unit": "MB"
           }
         ]
