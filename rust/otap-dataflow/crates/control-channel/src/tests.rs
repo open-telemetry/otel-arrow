@@ -1,13 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::local;
-use crate::shared;
 use crate::{
     AckMsg, AdmissionClass, CompletionMsg, ControlChannelConfig, ControlCmd, DrainIngressMsg,
-    LifecycleSendResult, NackMsg, NodeControlEvent, ReceiverControlEvent, SendOutcome, ShutdownMsg,
-    TrySendError,
+    LifecycleSendResult, NodeControlEvent, ReceiverControlEvent, SendError, SendOutcome,
+    ShutdownMsg, TrySendError, node_channel, receiver_channel,
 };
+use std::future::{Future, poll_fn};
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 fn test_config() -> ControlChannelConfig {
@@ -23,7 +24,7 @@ fn ack(value: &str) -> ControlCmd<String> {
 }
 
 fn nack(value: &str) -> ControlCmd<String> {
-    ControlCmd::Nack(NackMsg::new("nack", value.to_owned()))
+    ControlCmd::Nack(crate::NackMsg::new("nack", value.to_owned()))
 }
 
 fn shutdown(deadline: Instant) -> ShutdownMsg {
@@ -40,30 +41,19 @@ fn drain(deadline: Instant) -> DrainIngressMsg {
     }
 }
 
-async fn collect_local_node_events(
-    mut rx: local::LocalNodeControlReceiver<String>,
-) -> Vec<NodeControlEvent<String>> {
-    let mut events = Vec::new();
-    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(20), rx.recv()).await {
-        events.push(event);
-    }
-    events
-}
-
-async fn collect_shared_node_events(
-    mut rx: shared::SharedNodeControlReceiver<String>,
-) -> Vec<NodeControlEvent<String>> {
-    let mut events = Vec::new();
-    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(20), rx.recv()).await {
-        events.push(event);
-    }
-    events
+async fn is_pending_once<F>(mut future: Pin<&mut F>) -> bool
+where
+    F: Future,
+{
+    poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx).is_pending())).await
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn lifecycle_tokens_remain_deliverable_under_backlog() {
+    // Scenario: completion backlog is saturated, but reserved-capacity
+    // lifecycle delivery still gets shutdown through to the receiver.
     let deadline = Instant::now() + Duration::from_secs(1);
-    let (tx, mut rx) = local::node_channel(ControlChannelConfig {
+    let (tx, mut rx) = node_channel(ControlChannelConfig {
         completion_msg_capacity: 2,
         completion_batch_max: 2,
         completion_burst_limit: 2,
@@ -98,8 +88,10 @@ async fn lifecycle_tokens_remain_deliverable_under_backlog() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn drain_ingress_precedes_shutdown_even_if_shutdown_arrives_first() {
+    // Scenario: the engine records shutdown before receiver drain, but the
+    // receiver must still observe `DrainIngress` before `Shutdown`.
     let deadline = Instant::now() + Duration::from_secs(1);
-    let (tx, mut rx) = local::receiver_channel::<String>(test_config()).unwrap();
+    let (tx, mut rx) = receiver_channel::<String>(test_config()).unwrap();
 
     assert_eq!(
         tx.accept_shutdown(shutdown(deadline)),
@@ -128,8 +120,10 @@ async fn drain_ingress_precedes_shutdown_even_if_shutdown_arrives_first() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn config_and_best_effort_work_are_rejected_after_drain_ingress() {
+    // Scenario: once receiver drain starts, normal control work becomes stale
+    // and must be dropped while completion traffic continues to drain.
     let deadline = Instant::now() + Duration::from_secs(1);
-    let (tx, mut rx) = local::receiver_channel::<String>(test_config()).unwrap();
+    let (tx, mut rx) = receiver_channel::<String>(test_config()).unwrap();
 
     assert_eq!(
         tx.accept_drain_ingress(drain(deadline)),
@@ -175,7 +169,8 @@ async fn config_and_best_effort_work_are_rejected_after_drain_ingress() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn completion_batching_preserves_arrival_order() {
-    let (tx, mut rx) = local::node_channel::<String>(test_config()).unwrap();
+    // Scenario: mixed `Ack` and `Nack` messages are batched without reordering.
+    let (tx, mut rx) = node_channel::<String>(test_config()).unwrap();
 
     assert_eq!(tx.try_send(ack("ack-1")).unwrap(), SendOutcome::Accepted);
     assert_eq!(tx.try_send(nack("nack-1")).unwrap(), SendOutcome::Accepted);
@@ -185,7 +180,7 @@ async fn completion_batching_preserves_arrival_order() {
         rx.recv().await,
         Some(NodeControlEvent::CompletionBatch(vec![
             CompletionMsg::Ack(AckMsg::new("ack-1".to_owned())),
-            CompletionMsg::Nack(NackMsg::new("nack", "nack-1".to_owned())),
+            CompletionMsg::Nack(crate::NackMsg::new("nack", "nack-1".to_owned())),
         ]))
     );
     assert_eq!(
@@ -202,7 +197,9 @@ async fn completion_batching_preserves_arrival_order() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn completion_burst_limit_forces_pending_normal_work() {
-    let (tx, mut rx) = local::node_channel::<String>(ControlChannelConfig {
+    // Scenario: pending normal control work must break up long completion
+    // bursts once the configured burst limit is reached.
+    let (tx, mut rx) = node_channel::<String>(ControlChannelConfig {
         completion_msg_capacity: 8,
         completion_batch_max: 2,
         completion_burst_limit: 2,
@@ -244,8 +241,10 @@ async fn completion_burst_limit_forces_pending_normal_work() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_normal_work_is_cleared_when_shutdown_is_accepted() {
+    // Scenario: stale normal control work is discarded when shutdown is
+    // accepted so terminal progress is not delayed by obsolete tokens.
     let deadline = Instant::now() + Duration::from_secs(1);
-    let (tx, mut rx) = local::node_channel::<String>(test_config()).unwrap();
+    let (tx, mut rx) = node_channel::<String>(test_config()).unwrap();
 
     assert_eq!(
         tx.try_send(ControlCmd::TimerTick).unwrap(),
@@ -279,8 +278,10 @@ async fn pending_normal_work_is_cleared_when_shutdown_is_accepted() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn best_effort_work_is_suppressed_once_shutdown_is_recorded() {
+    // Scenario: after shutdown is latched, completion traffic may still drain
+    // but normal control work must be rejected.
     let deadline = Instant::now() + Duration::from_secs(1);
-    let (tx, mut rx) = local::node_channel::<String>(test_config()).unwrap();
+    let (tx, mut rx) = node_channel::<String>(test_config()).unwrap();
 
     assert_eq!(
         tx.accept_shutdown(shutdown(deadline)),
@@ -325,8 +326,10 @@ async fn best_effort_work_is_suppressed_once_shutdown_is_recorded() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_deadline_forces_terminal_progress() {
+    // Scenario: shutdown reaches its deadline while completion backlog still
+    // exists, so the queue must force terminal progress and abandon the rest.
     let deadline = Instant::now() + Duration::from_millis(20);
-    let (tx, mut rx) = shared::node_channel::<String>(ControlChannelConfig {
+    let (tx, mut rx) = node_channel::<String>(ControlChannelConfig {
         completion_msg_capacity: 4,
         completion_batch_max: 2,
         completion_burst_limit: 2,
@@ -365,52 +368,10 @@ async fn shutdown_deadline_forces_terminal_progress() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn local_and_shared_variants_produce_the_same_event_sequence() {
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let script = vec![
-        ack("ack-1"),
-        nack("nack-1"),
-        ControlCmd::TimerTick,
-        ControlCmd::CollectTelemetry,
-        ControlCmd::Config {
-            config: serde_json::json!({"version": 1}),
-        },
-        ControlCmd::Config {
-            config: serde_json::json!({"version": 2}),
-        },
-        ack("ack-2"),
-    ];
-
-    let (local_tx, local_rx) = local::node_channel::<String>(test_config()).unwrap();
-    let (shared_tx, shared_rx) = shared::node_channel::<String>(test_config()).unwrap();
-
-    for cmd in script {
-        let local_result = local_tx.try_send(cmd.clone()).unwrap();
-        let shared_result = shared_tx.try_send(cmd).unwrap();
-        assert_eq!(local_result, shared_result);
-    }
-
-    assert_eq!(
-        local_tx.accept_shutdown(shutdown(deadline)),
-        LifecycleSendResult::Accepted
-    );
-    assert_eq!(
-        shared_tx.accept_shutdown(shutdown(deadline)),
-        LifecycleSendResult::Accepted
-    );
-
-    local_tx.close();
-    shared_tx.close();
-
-    let local_events = collect_local_node_events(local_rx).await;
-    let shared_events = collect_shared_node_events(shared_rx).await;
-
-    assert_eq!(local_events, shared_events);
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn receiver_returns_none_once_last_sender_drops_and_queue_is_empty() {
-    let (tx, mut rx) = shared::node_channel::<String>(test_config()).unwrap();
+    // Scenario: dropping the last sender closes the queue and lets the
+    // receiver terminate once there is no buffered work left.
+    let (tx, mut rx) = node_channel::<String>(test_config()).unwrap();
     drop(tx);
 
     let result = tokio::time::timeout(Duration::from_millis(50), rx.recv())
@@ -421,7 +382,9 @@ async fn receiver_returns_none_once_last_sender_drops_and_queue_is_empty() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn blocking_send_waits_for_capacity_then_completes() {
-    let (tx, mut rx) = shared::node_channel::<String>(ControlChannelConfig {
+    // Scenario: a blocking send waits for bounded completion capacity and then
+    // succeeds after the receiver drains one batch.
+    let (tx, mut rx) = node_channel::<String>(ControlChannelConfig {
         completion_msg_capacity: 1,
         completion_batch_max: 1,
         completion_burst_limit: 1,
@@ -430,13 +393,8 @@ async fn blocking_send_waits_for_capacity_then_completes() {
 
     assert_eq!(tx.try_send(ack("ack-1")).unwrap(), SendOutcome::Accepted);
 
-    let blocked = tokio::spawn({
-        let tx = tx.clone();
-        async move { tx.send(ack("ack-2")).await }
-    });
-
-    tokio::task::yield_now().await;
-    assert!(!blocked.is_finished());
+    let mut blocked = std::pin::pin!(tx.send(ack("ack-2")));
+    assert!(is_pending_once(blocked.as_mut()).await);
 
     assert_eq!(
         rx.recv().await,
@@ -444,7 +402,7 @@ async fn blocking_send_waits_for_capacity_then_completes() {
             AckMsg::new("ack-1".to_owned())
         )]))
     );
-    assert_eq!(blocked.await.unwrap().unwrap(), SendOutcome::Accepted);
+    assert_eq!(blocked.await.unwrap(), SendOutcome::Accepted);
     assert_eq!(
         rx.recv().await,
         Some(NodeControlEvent::CompletionBatch(vec![CompletionMsg::Ack(
@@ -454,8 +412,112 @@ async fn blocking_send_waits_for_capacity_then_completes() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn completion_batch_wakes_as_many_blocked_senders_as_slots_freed() {
+    // Scenario: draining a completion batch should wake one blocked sender per
+    // freed completion slot, not just one sender for the whole batch.
+    let (tx, mut rx) = node_channel::<String>(ControlChannelConfig {
+        completion_msg_capacity: 2,
+        completion_batch_max: 2,
+        completion_burst_limit: 2,
+    })
+    .unwrap();
+
+    assert_eq!(tx.try_send(ack("ack-1")).unwrap(), SendOutcome::Accepted);
+    assert_eq!(tx.try_send(ack("ack-2")).unwrap(), SendOutcome::Accepted);
+
+    let tx_clone = tx.clone();
+    let mut blocked_one = std::pin::pin!(tx.send(ack("ack-3")));
+    let mut blocked_two = std::pin::pin!(tx_clone.send(ack("ack-4")));
+    assert!(is_pending_once(blocked_one.as_mut()).await);
+    assert!(is_pending_once(blocked_two.as_mut()).await);
+
+    assert_eq!(
+        rx.recv().await,
+        Some(NodeControlEvent::CompletionBatch(vec![
+            CompletionMsg::Ack(AckMsg::new("ack-1".to_owned())),
+            CompletionMsg::Ack(AckMsg::new("ack-2".to_owned())),
+        ]))
+    );
+
+    assert_eq!(blocked_one.await.unwrap(), SendOutcome::Accepted);
+    assert_eq!(blocked_two.await.unwrap(), SendOutcome::Accepted);
+    assert_eq!(
+        rx.recv().await,
+        Some(NodeControlEvent::CompletionBatch(vec![
+            CompletionMsg::Ack(AckMsg::new("ack-3".to_owned())),
+            CompletionMsg::Ack(AckMsg::new("ack-4".to_owned())),
+        ]))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canceled_blocked_sender_does_not_steal_next_capacity_wakeup() {
+    // Scenario: canceling a blocked sender should unregister its waiter so the
+    // next capacity release wakes a live blocked sender instead of a stale one.
+    let (tx, mut rx) = node_channel::<String>(ControlChannelConfig {
+        completion_msg_capacity: 1,
+        completion_batch_max: 1,
+        completion_burst_limit: 1,
+    })
+    .unwrap();
+
+    assert_eq!(tx.try_send(ack("ack-1")).unwrap(), SendOutcome::Accepted);
+
+    {
+        let mut canceled = std::pin::pin!(tx.send(ack("ack-2")));
+        assert!(is_pending_once(canceled.as_mut()).await);
+    }
+
+    let tx_clone = tx.clone();
+    let mut live = std::pin::pin!(tx_clone.send(ack("ack-3")));
+    assert!(is_pending_once(live.as_mut()).await);
+
+    assert_eq!(
+        rx.recv().await,
+        Some(NodeControlEvent::CompletionBatch(vec![CompletionMsg::Ack(
+            AckMsg::new("ack-1".to_owned())
+        )]))
+    );
+    assert_eq!(live.await.unwrap(), SendOutcome::Accepted);
+    assert_eq!(
+        rx.recv().await,
+        Some(NodeControlEvent::CompletionBatch(vec![CompletionMsg::Ack(
+            AckMsg::new("ack-3".to_owned())
+        )]))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_wakes_blocked_senders_with_closed() {
+    // Scenario: closing the channel must wake blocked senders so they return
+    // `Closed` with the original command instead of waiting forever.
+    let (tx, _rx) = node_channel::<String>(ControlChannelConfig {
+        completion_msg_capacity: 1,
+        completion_batch_max: 1,
+        completion_burst_limit: 1,
+    })
+    .unwrap();
+
+    assert_eq!(tx.try_send(ack("ack-1")).unwrap(), SendOutcome::Accepted);
+
+    let mut blocked = std::pin::pin!(tx.send(ack("ack-2")));
+    assert!(is_pending_once(blocked.as_mut()).await);
+
+    tx.close();
+
+    match blocked.await {
+        Err(SendError::Closed(ControlCmd::Ack(ack))) => {
+            assert_eq!(*ack.accepted, "ack-2".to_owned());
+        }
+        other => panic!("expected closed send after close(), got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn try_send_returns_full_with_the_original_command() {
-    let (tx, _rx) = local::node_channel::<String>(ControlChannelConfig {
+    // Scenario: `try_send` preserves the original command when bounded
+    // backpressured completion admission is full.
+    let (tx, _rx) = node_channel::<String>(ControlChannelConfig {
         completion_msg_capacity: 1,
         completion_batch_max: 1,
         completion_burst_limit: 1,
@@ -478,8 +540,10 @@ async fn try_send_returns_full_with_the_original_command() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn lifecycle_duplicate_is_rejected_before_delivery_and_closed_after_terminal_shutdown() {
+    // Scenario: duplicate lifecycle offers are rejected while pending, and the
+    // lifecycle path closes after terminal shutdown has been delivered.
     let deadline = Instant::now() + Duration::from_secs(1);
-    let (tx, mut rx) = local::node_channel::<String>(test_config()).unwrap();
+    let (tx, mut rx) = node_channel::<String>(test_config()).unwrap();
 
     assert_eq!(
         tx.accept_shutdown(shutdown(deadline)),
@@ -505,7 +569,9 @@ async fn lifecycle_duplicate_is_rejected_before_delivery_and_closed_after_termin
 
 #[tokio::test(flavor = "current_thread")]
 async fn lifecycle_accept_returns_closed_after_sender_close() {
-    let (tx, _rx) = shared::receiver_channel::<String>(test_config()).unwrap();
+    // Scenario: once senders close the channel, reserved lifecycle acceptance
+    // also reports the closed state.
+    let (tx, _rx) = receiver_channel::<String>(test_config()).unwrap();
     tx.close();
 
     assert_eq!(
@@ -520,7 +586,9 @@ async fn lifecycle_accept_returns_closed_after_sender_close() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn stats_track_config_replacement_and_best_effort_coalescing() {
-    let (tx, _rx) = local::node_channel::<String>(test_config()).unwrap();
+    // Scenario: stats expose replacement and coalescing counters while normal
+    // control events remain pending.
+    let (tx, _rx) = node_channel::<String>(test_config()).unwrap();
 
     assert_eq!(
         tx.try_send(ControlCmd::Config {

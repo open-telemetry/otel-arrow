@@ -8,11 +8,14 @@
 //! reserve lifecycle delivery, batch completion traffic, and coalesce
 //! best-effort control work.
 
+mod channel;
 mod core;
-pub mod local;
-pub mod shared;
 mod types;
 
+pub use channel::{
+    NodeControlReceiver, NodeControlSender, ReceiverControlReceiver, ReceiverControlSender,
+    node_channel, receiver_channel,
+};
 pub use types::{
     AckMsg, AdmissionClass, CompletionMsg, ConfigError, ControlChannelConfig, ControlChannelStats,
     ControlCmd, DrainIngressMsg, LifecycleSendResult, NackMsg, NodeControlEvent, Phase,

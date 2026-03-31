@@ -100,12 +100,9 @@ There are two channel families:
 This split is intentional. `DrainIngress` is receiver-specific lifecycle
 control, so non-receiver nodes cannot express it through the public API.
 
-The implementation is available in both:
-
-- local form for `!Send` execution
-- shared form for `Send` execution
-
-Both variants are designed to expose the same semantics.
+The crate intentionally exposes one single-owner implementation. That matches the
+thread-per-core execution model the engine is targeting and keeps the control
+state machine behind one receiver-owned queue core.
 
 ### Traffic classes
 
@@ -161,6 +158,7 @@ For non-lifecycle traffic, the sender exposes two modes:
 - `send(...).await`
   - waits for bounded capacity when needed
   - returns only when the command is accepted or the channel closes
+  - wakes blocked completion senders in FIFO order as completion capacity is released
 
 This supports both explicit backpressure and opportunistic best-effort usage,
 depending on the caller.
@@ -249,15 +247,16 @@ Properties:
 This is the key liveness property needed to avoid shutdown being postponed
 indefinitely by continued completion traffic.
 
-### Matching local and shared semantics
+### Single-owner execution model
 
-The crate provides both local and shared implementations, but the design goal is
-semantic parity:
+The channel is implemented as a single-owner state machine:
 
-- same role split
-- same lifecycle behavior
-- same batching and fairness rules
-- same terminal shutdown behavior
+- the queue core is mutated only by the channel owner
+- sender clones share that owner through local single-threaded handles
+- blocked completion senders wait in a keyed FIFO waiter queue so
+  capacity release can wake only the senders that can now make progress
+- receiver waiting remains deadline-aware so forced shutdown does not
+  depend on a later producer wakeup
 
 ## Observability
 

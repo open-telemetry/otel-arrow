@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared queue core for the standalone control-aware channel.
+//! Queue core for the standalone control-aware channel.
 
 use crate::types::CoreControlEvent;
 use crate::{
@@ -13,12 +13,17 @@ use std::time::Instant;
 
 #[derive(Clone, Copy)]
 enum NormalEventClass {
+    /// Latest-wins config updates. Only the newest pending config matters.
     Config,
+    /// Coalesced timer wakeup emitted at most once while pending.
     TimerTick,
+    /// Coalesced telemetry collection token emitted at most once while pending.
     CollectTelemetry,
 }
 
 impl NormalEventClass {
+    /// Advances the round-robin cursor used to provide bounded fairness across
+    /// normal non-completion control work.
     fn next(self) -> Self {
         match self {
             Self::Config => Self::TimerTick,
@@ -29,24 +34,42 @@ impl NormalEventClass {
 }
 
 pub(crate) struct Inner<PData> {
+    /// Immutable admission and fairness policy for this channel instance.
     pub(crate) config: ControlChannelConfig,
+    /// Current lifecycle phase. This drives which classes can still be
+    /// admitted and which events may be delivered next.
     pub(crate) phase: Phase,
+    /// Terminal close flag. Once set, no new sends are accepted and the
+    /// receiver returns `None` after buffered work is drained.
     pub(crate) closed: bool,
     // Generation counter used with `Notify` to avoid check-then-sleep races in
     // sender/receiver wait loops. Any state transition that can unblock a
     // waiter must bump this value before notifications are observed.
     pub(crate) version: u64,
+    /// Reserved lifecycle tokens. They bypass bounded completion capacity and
+    /// are delivered ahead of normal control work.
     drain_ingress: Option<DrainIngressMsg>,
     shutdown: Option<ShutdownMsg>,
+    /// Deadline after which shutdown stops waiting for completion backlog and
+    /// forces terminal progress.
     shutdown_deadline: Option<Instant>,
+    /// Sticky lifecycle observability flags kept even after the corresponding
+    /// token has been delivered.
     drain_ingress_recorded: bool,
     shutdown_recorded: bool,
     shutdown_forced: bool,
+    /// Lossless backpressured completion backlog (`Ack`/`Nack`).
     completion: VecDeque<CompletionMsg<PData>>,
+    /// Latest-wins normal control state.
     latest_config: Option<serde_json::Value>,
+    /// Coalesced best-effort normal control state.
     pending_timer_tick: bool,
     pending_collect_telemetry: bool,
+    /// Number of completion messages emitted since the last normal control
+    /// event. This enforces bounded fairness between completion traffic and
+    /// normal control work.
     completion_burst_len: usize,
+    /// Monotonic counters used for observability and tests.
     completion_batch_emitted_total: u64,
     completion_message_emitted_total: u64,
     config_replaced_total: u64,
@@ -54,10 +77,14 @@ pub(crate) struct Inner<PData> {
     collect_telemetry_coalesced_total: u64,
     normal_event_dropped_during_drain_total: u64,
     completion_abandoned_on_forced_shutdown_total: u64,
+    /// Round-robin cursor for normal control events. This avoids fixed-priority
+    /// starvation among config, timer, and telemetry work.
     next_normal_event: NormalEventClass,
 }
 
 impl<PData> Inner<PData> {
+    /// Creates an empty queue core. The outer channel wrapper adds waiting
+    /// behavior around this state machine.
     pub(crate) fn new(config: ControlChannelConfig) -> Self {
         Self {
             config,
@@ -86,6 +113,8 @@ impl<PData> Inner<PData> {
         }
     }
 
+    /// Returns a point-in-time snapshot of queue occupancy, lifecycle flags,
+    /// and cumulative counters.
     pub(crate) fn stats(&self) -> ControlChannelStats {
         ControlChannelStats {
             phase: self.phase,
@@ -111,6 +140,8 @@ impl<PData> Inner<PData> {
         }
     }
 
+    /// Closes the queue core. This is triggered either explicitly by a
+    /// sender or implicitly when the last sender handle drops.
     pub(crate) fn close(&mut self) -> bool {
         if self.closed {
             return false;
@@ -120,6 +151,9 @@ impl<PData> Inner<PData> {
         true
     }
 
+    /// Returns the next deadline that senders/receivers must wait on in
+    /// addition to notifications. Only shutdown currently arms an internal
+    /// deadline.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         if self.closed || self.shutdown_forced {
             return None;
@@ -130,6 +164,8 @@ impl<PData> Inner<PData> {
         None
     }
 
+    /// Attempts to admit a non-lifecycle control command using the current
+    /// phase and bounded-capacity policy.
     pub(crate) fn try_send(
         &mut self,
         cmd: ControlCmd<PData>,
@@ -166,6 +202,9 @@ impl<PData> Inner<PData> {
         }
     }
 
+    /// Records the receiver-only drain lifecycle token. The token is reserved
+    /// capacity, delivered ahead of bounded control traffic, and clears pending
+    /// normal control work that no longer matters once drain has started.
     pub(crate) fn record_drain_ingress(&mut self, msg: DrainIngressMsg) -> LifecycleSendResult {
         if self.closed {
             return LifecycleSendResult::Closed;
@@ -184,6 +223,8 @@ impl<PData> Inner<PData> {
         LifecycleSendResult::Accepted
     }
 
+    /// Records shutdown with its terminal deadline. Shutdown admission is
+    /// reserved-capacity and flips the queue into terminal-progress mode.
     pub(crate) fn record_shutdown(&mut self, msg: ShutdownMsg) -> LifecycleSendResult {
         if self.closed {
             return LifecycleSendResult::Closed;
@@ -202,6 +243,14 @@ impl<PData> Inner<PData> {
         LifecycleSendResult::Accepted
     }
 
+    /// Pops the next deliverable event according to lifecycle precedence,
+    /// bounded fairness, and deadline-bounded shutdown rules.
+    ///
+    /// Delivery order is:
+    /// 1. `DrainIngress` if pending
+    /// 2. shutdown-mode completion draining, subject to deadline forcing
+    /// 3. in normal phase, bounded alternation between completion batches and
+    ///    round-robin normal control events
     pub(crate) fn pop_event(&mut self) -> Option<CoreControlEvent<PData>> {
         if self.phase == Phase::ShutdownRecorded {
             self.refresh_shutdown_force(Instant::now());
@@ -264,6 +313,8 @@ impl<PData> Inner<PData> {
         None
     }
 
+    /// Checks whether shutdown has crossed its force deadline and, if so,
+    /// flips the queue into forced terminal progress.
     fn refresh_shutdown_force(&mut self, now: Instant) {
         if self.shutdown_forced || self.phase != Phase::ShutdownRecorded {
             return;
@@ -277,16 +328,20 @@ impl<PData> Inner<PData> {
         }
     }
 
+    /// Appends one completion message to the lossless backpressured backlog.
     fn push_completion(&mut self, msg: CompletionMsg<PData>) -> SendOutcome {
         self.completion.push_back(msg);
         self.bump_version();
         SendOutcome::Accepted
     }
 
+    /// Accepts or replaces the latest pending config while the queue remains in
+    /// normal phase. Config is dropped once drain or shutdown has started.
     fn send_config(&mut self, config: serde_json::Value) -> SendOutcome {
         if self.phase != Phase::Normal {
-            self.normal_event_dropped_during_drain_total =
-                self.normal_event_dropped_during_drain_total.saturating_add(1);
+            self.normal_event_dropped_during_drain_total = self
+                .normal_event_dropped_during_drain_total
+                .saturating_add(1);
             return SendOutcome::DroppedDuringDrain;
         }
 
@@ -301,10 +356,13 @@ impl<PData> Inner<PData> {
         outcome
     }
 
+    /// Accepts one pending timer tick token. Repeated offers coalesce until
+    /// the pending token is delivered.
     fn send_timer_tick(&mut self) -> SendOutcome {
         if self.phase != Phase::Normal {
-            self.normal_event_dropped_during_drain_total =
-                self.normal_event_dropped_during_drain_total.saturating_add(1);
+            self.normal_event_dropped_during_drain_total = self
+                .normal_event_dropped_during_drain_total
+                .saturating_add(1);
             return SendOutcome::DroppedDuringDrain;
         }
 
@@ -317,10 +375,13 @@ impl<PData> Inner<PData> {
         SendOutcome::Accepted
     }
 
+    /// Accepts one pending telemetry collection token. Repeated offers
+    /// coalesce until the pending token is delivered.
     fn send_telemetry_tick(&mut self) -> SendOutcome {
         if self.phase != Phase::Normal {
-            self.normal_event_dropped_during_drain_total =
-                self.normal_event_dropped_during_drain_total.saturating_add(1);
+            self.normal_event_dropped_during_drain_total = self
+                .normal_event_dropped_during_drain_total
+                .saturating_add(1);
             return SendOutcome::DroppedDuringDrain;
         }
 
@@ -335,6 +396,8 @@ impl<PData> Inner<PData> {
         SendOutcome::Accepted
     }
 
+    /// Drops pending normal control state when drain/shutdown begins or after
+    /// terminal shutdown delivery.
     fn clear_normal_pending(&mut self) {
         self.latest_config = None;
         self.pending_timer_tick = false;
@@ -346,6 +409,8 @@ impl<PData> Inner<PData> {
         self.latest_config.is_some() || self.pending_timer_tick || self.pending_collect_telemetry
     }
 
+    /// Picks the next pending normal control event using the round-robin
+    /// cursor. Delivering any normal event resets the completion burst counter.
     fn take_next_normal_event(&mut self) -> Option<CoreControlEvent<PData>> {
         for _ in 0..3 {
             let candidate = self.next_normal_event;
@@ -376,6 +441,9 @@ impl<PData> Inner<PData> {
         None
     }
 
+    /// Emits one bounded completion batch. When fairness is active, the batch
+    /// size is further capped so at least one normal event can run before more
+    /// completion traffic is emitted.
     fn take_completion_batch(&mut self, fairness_budget: Option<usize>) -> CoreControlEvent<PData> {
         let mut batch_len = self.completion.len().min(self.config.completion_batch_max);
         if let Some(limit) = fairness_budget {
@@ -399,6 +467,9 @@ impl<PData> Inner<PData> {
         CoreControlEvent::CompletionBatch(batch)
     }
 
+    /// Emits the terminal shutdown event. Forced shutdown abandons any
+    /// remaining completion backlog; graceful shutdown emits only after that
+    /// backlog has drained.
     fn finalize_shutdown(&mut self, forced: bool) -> Option<CoreControlEvent<PData>> {
         let msg = self.shutdown.take()?;
         if forced {
@@ -416,6 +487,8 @@ impl<PData> Inner<PData> {
         Some(CoreControlEvent::Shutdown(msg))
     }
 
+    /// Bumps the waiter generation after any transition that may unblock a
+    /// sender or receiver.
     fn bump_version(&mut self) {
         self.version = self.version.wrapping_add(1);
     }
