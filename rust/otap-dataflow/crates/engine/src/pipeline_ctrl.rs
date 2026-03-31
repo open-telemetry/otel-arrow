@@ -14,7 +14,7 @@
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
-use crate::context::{PipelineContext, PipelineContextParams};
+use crate::context::PipelineContext;
 use crate::control::RouteData;
 use crate::control::UnwindData;
 use crate::control::{
@@ -1203,7 +1203,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
 mod tests {
     use super::*;
     use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
-    use crate::context::ControllerContext;
+    use crate::context::{ControllerContext, PipelineContextParams};
     use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
     use crate::control::{
         NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
@@ -1297,7 +1297,7 @@ mod tests {
         let pipeline_context_params = PipelineContextParams {
             pipeline_group_id: pipeline_group_id.clone(),
             pipeline_id: pipeline_id.clone(),
-            core_id: core_id,
+            core_id,
             num_cores: 1,
             thread_id: 0,
         };
@@ -1798,11 +1798,11 @@ mod tests {
                 let pipeline_context_params = PipelineContextParams {
                     pipeline_group_id: pipeline_group_id.clone(),
                     pipeline_id: pipeline_id.clone(),
-                    core_id: core_id,
+                    core_id,
                     num_cores: 1,
                     thread_id: 0,
                 };
-                let pipeline_contex =
+                let pipeline_context =
                     PipelineContext::new(controller_context, pipeline_context_params);
                 let pipeline_entity_key = pipeline_context.register_pipeline_entity();
                 let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(

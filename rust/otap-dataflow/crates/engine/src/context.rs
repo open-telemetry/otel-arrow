@@ -209,7 +209,7 @@ impl PipelineContext {
     ) -> Self {
         Self {
             controller_context: parent_ctx,
-            pipeline_context_params: pipeline_context_params,
+            pipeline_context_params,
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
