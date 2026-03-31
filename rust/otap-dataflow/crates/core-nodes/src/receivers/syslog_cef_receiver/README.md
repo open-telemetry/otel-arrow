@@ -356,18 +356,17 @@ To optimize throughput and reduce per-message overhead, the receiver batches
 messages into Apache Arrow record batches before sending downstream:
 
 ```text
-+-------------------------------------------------------------+
-|                    Batching Logic                           |
-+-------------------------------------------------------------+
-|                                                             |
-|   Messages arrive  -->  ArrowRecordsBuilder  -->  Batch     |
-|                              |                     sent     |
-|                              |                              |
-|   Flush conditions:          |                              |
-|   +- Size: max_size messages +-------------------------->   |
-|   +- Time: max_batch_duration_ms  |                              |
-|                                                             |
-+-------------------------------------------------------------+
++-------------------------------------------------------------------+
+|                         Batching Logic                            |
++-------------------------------------------------------------------+
+|                                                                   |
+|   Messages arrive  -->  ArrowRecordsBuilder  -->  Batch sent      |
+|                              |                                    |
+|   Flush conditions:          |                                    |
+|   +- Size: max_size messages +------------------------------->    |
+|   +- Time: max_batch_duration_ms  +-------------------------->    |
+|                                                                   |
++-------------------------------------------------------------------+
 ```
 
 A batch is flushed when either:

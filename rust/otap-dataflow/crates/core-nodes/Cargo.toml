@@ -13,17 +13,17 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-otap-df-channel = { path = "../channel" }
-otap-df-config = { path = "../config" }
-otap-df-engine = { path = "../engine" }
-otap-df-opl = { path = "../opl" }
-otap-df-otap = { path = "../otap" }
-otap-df-pdata = { path = "../pdata" }
+otap-df-channel = { workspace = true }
+otap-df-config = { workspace = true }
+otap-df-engine = { workspace = true }
+otap-df-opl = { workspace = true }
+otap-df-otap = { workspace = true }
+otap-df-pdata = { workspace = true }
 otap-df-pdata-views = { workspace = true }
-otap-df-query-engine = { path = "../query-engine" }
-otap-df-quiver = { path = "../quiver" }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-telemetry-macros = { path = "../telemetry-macros" }
+otap-df-query-engine = { workspace = true }
+otap-df-quiver = { workspace = true }
+otap-df-telemetry = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
 
 arrow = { workspace = true }
 async-trait.workspace = true
@@ -72,11 +72,11 @@ arrow-ipc.workspace = true
 arrow-schema.workspace = true
 fluke-hpack.workspace = true
 flume.workspace = true
-otap-df-channel = { path = "../channel" }
-otap-df-engine = { path = "../engine", features = ["test-utils"] }
-otap-df-otap = { path = "../otap", features = ["test-utils", "crypto-ring"] }
-otap-df-pdata = { path = "../pdata", features = ["testing"] }
-otap-df-telemetry = { path = "../telemetry" }
+otap-df-channel = { workspace = true }
+otap-df-engine = { workspace = true, features = ["test-utils"] }
+otap-df-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }
+otap-df-telemetry = { workspace = true }
 flate2.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
