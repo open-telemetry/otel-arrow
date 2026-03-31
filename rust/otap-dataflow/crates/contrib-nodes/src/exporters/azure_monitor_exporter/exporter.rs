@@ -223,7 +223,7 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    async fn handle_logs_view(
+    async fn handle_logs(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         context: Context,
@@ -423,7 +423,7 @@ impl AzureMonitorExporter {
                 };
 
                 if let Some(log_entries) = log_entries {
-                    self.handle_logs_view(effect_handler, context, payload, log_entries, *msg_id)
+                    self.handle_logs(effect_handler, context, payload, log_entries, *msg_id)
                         .await?;
                 }
             }

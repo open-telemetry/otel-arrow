@@ -76,6 +76,7 @@ azure-monitor-exporter = [
     "dep:ryu",
     "dep:urlencoding",
 ]
+azure-monitor-auth-none = ["azure-monitor-exporter"]
 
 contrib-processors = [
     "condense-attributes-processor",

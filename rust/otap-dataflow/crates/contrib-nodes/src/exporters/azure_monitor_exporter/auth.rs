@@ -10,6 +10,28 @@ use futures::future::LocalBoxFuture;
 use otap_df_telemetry::otel_debug;
 use std::sync::Arc;
 
+/// A no-op credential that returns a static dummy token.
+/// Only for local testing with a mock server that ignores auth headers.
+#[cfg(feature = "azure-monitor-auth-none")]
+#[derive(Debug)]
+struct StaticTokenCredential;
+
+#[cfg(feature = "azure-monitor-auth-none")]
+#[async_trait::async_trait]
+impl TokenCredential for StaticTokenCredential {
+    async fn get_token(
+        &self,
+        _scopes: &[&str],
+        _options: Option<azure_core::credentials::TokenRequestOptions<'_>>,
+    ) -> azure_core::Result<AccessToken> {
+        Ok(AccessToken {
+            token: "static-mock-token".to_string().into(),
+            expires_on: azure_core::time::OffsetDateTime::now_utc()
+                + azure_core::time::Duration::hours(24),
+        })
+    }
+}
+
 use super::Error;
 use super::config::{AuthConfig, AuthMethod};
 use super::metrics::AzureMonitorExporterMetricsRc;
@@ -141,6 +163,8 @@ impl Auth {
                 DeveloperToolsCredentialOptions::default(),
             ))
             .map_err(|e| Error::create_credential(AuthMethod::Development, e))?),
+            #[cfg(feature = "azure-monitor-auth-none")]
+            AuthMethod::None => Ok(Arc::new(StaticTokenCredential)),
         }
     }
 }

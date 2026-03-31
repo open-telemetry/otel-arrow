@@ -350,7 +350,6 @@ impl Transformer {
     fn write_body_value_json<'a, V: AnyValueView<'a>>(value: &V, out: &mut Vec<u8>) {
         match value.value_type() {
             ValueType::String => match value.as_string() {
-                Some(s) if std::str::from_utf8(s).is_ok() => Self::write_json_string(s, out),
                 Some(s) => {
                     let lossy = String::from_utf8_lossy(s);
                     Self::write_json_string(lossy.as_bytes(), out);
@@ -447,7 +446,8 @@ impl Transformer {
         out.push(b'0' + (n % 10) as u8);
     }
 
-    /// Write nanoseconds with dot prefix, trimming trailing zeros.
+    /// Write nanoseconds with dot prefix, trimming trailing zero groups of 3
+    /// to match chrono's `to_rfc3339()` output (0, 3, 6, or 9 fractional digits).
     #[inline]
     fn write_nanos_trimmed(nanos: u32, out: &mut Vec<u8>) {
         out.push(b'.');
@@ -457,9 +457,14 @@ impl Transformer {
             *d = b'0' + (n % 10) as u8;
             n /= 10;
         }
+        // Trim in groups of 3: 9 -> 6 -> 3 (never 0, caller checks nanos > 0)
         let mut len = 9;
-        while len > 0 && digits[len - 1] == b'0' {
-            len -= 1;
+        while len > 3
+            && digits[len - 1] == b'0'
+            && digits[len - 2] == b'0'
+            && digits[len - 3] == b'0'
+        {
+            len -= 3;
         }
         out.extend_from_slice(&digits[..len]);
     }
@@ -468,6 +473,8 @@ impl Transformer {
     /// Avoids String allocation since RFC3339 contains no JSON-special characters.
     #[inline]
     fn write_timestamp_json(time_unix_nano: u64, out: &mut Vec<u8>) {
+        out.reserve(32); // enough for full timestamp with quotes
+
         if time_unix_nano == 0 {
             let ts = chrono::Utc::now().to_rfc3339();
             Self::write_json_string(ts.as_bytes(), out);
@@ -1691,9 +1698,7 @@ mod tests {
 
         // The body value must be a string (not null) and must contain the
         // Unicode replacement character U+FFFD for the invalid bytes.
-        let body = json["Body"]
-            .as_str()
-            .expect("Body should be a JSON string");
+        let body = json["Body"].as_str().expect("Body should be a JSON string");
         assert!(
             body.contains('\u{FFFD}'),
             "expected replacement character in body, got: {body:?}"
