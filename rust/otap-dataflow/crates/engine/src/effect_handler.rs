@@ -326,9 +326,11 @@ impl<PData> EffectHandlerCore<PData> {
     /// Send an AckMsg to the runtime control manager for context unwinding.
     /// This will skip if there are no frames.
     ///
-    /// TODO: Note that callers are able to directly invoke route_ack() and route_nack()
-    /// but it means skipping certain frame-related business and they have the same
-    /// signature, so it is easy for callers to do. Find something safer.
+    /// External callers should use [`ConsumerEffectHandlerExtension::notify_ack`]
+    /// and [`ConsumerEffectHandlerExtension::notify_nack`] instead.
+    /// Those wrappers stamp timing information required for correct duration
+    /// metrics. Direct access is gated behind the `#[doc(hidden)]`
+    /// [`AckNackRouting`] trait so that accidental bypass is unlikely.
     pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,

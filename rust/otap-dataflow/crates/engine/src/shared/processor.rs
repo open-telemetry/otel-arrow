@@ -230,22 +230,6 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the runtime control manager for context unwinding.
-    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_ack(ack).await
-    }
-
-    /// Send a Nack to the runtime control manager for context unwinding.
-    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_nack(nack).await
-    }
-
     /// Delay data.
     pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.delay_data(when, data).await
@@ -273,6 +257,17 @@ impl<PData> EffectHandler<PData> {
     }
 
     // More methods will be added in the future as needed.
+}
+
+#[async_trait(?Send)]
+impl<PData: crate::Unwindable> crate::AckNackRouting<PData> for EffectHandler<PData> {
+    async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+        self.core.route_ack(ack).await
+    }
+
+    async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+        self.core.route_nack(nack).await
+    }
 }
 
 #[cfg(test)]

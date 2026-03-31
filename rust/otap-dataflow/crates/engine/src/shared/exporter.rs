@@ -151,22 +151,6 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the runtime control manager for context unwinding.
-    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_ack(ack).await
-    }
-
-    /// Send a Nack to the runtime control manager for context unwinding.
-    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_nack(nack).await
-    }
-
     /// Reports metrics collected by the exporter.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
@@ -177,4 +161,15 @@ impl<PData> EffectHandler<PData> {
     }
 
     // More methods will be added in the future as needed.
+}
+
+#[async_trait(?Send)]
+impl<PData: crate::Unwindable> crate::AckNackRouting<PData> for EffectHandler<PData> {
+    async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+        self.core.route_ack(ack).await
+    }
+
+    async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+        self.core.route_nack(nack).await
+    }
 }
