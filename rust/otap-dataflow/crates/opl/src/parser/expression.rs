@@ -807,7 +807,7 @@ fn parse_function_call(
 
             let arguments = args
                 .into_iter()
-                .map(|arg| InvokeFunctionArgument::Scalar(arg))
+                .map(InvokeFunctionArgument::Scalar)
                 .collect();
             let invoke_func_expr =
                 ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
