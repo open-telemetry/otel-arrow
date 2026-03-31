@@ -1922,6 +1922,7 @@ mod test {
                 ])
                 .links(vec![
                     Link::build()
+                        .trace_id(vec![11; 16])
                         .span_id(vec![11; 8])
                         .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
                         .finish(),
@@ -1948,6 +1949,7 @@ mod test {
                 ])
                 .links(vec![
                     Link::build()
+                        .trace_id(vec![21; 16])
                         .span_id(vec![21; 8])
                         .attributes(vec![
                             KeyValue::new("key2", AnyValue::new_string("val2")),
@@ -1955,6 +1957,7 @@ mod test {
                         ])
                         .finish(),
                     Link::build()
+                        .trace_id(vec![22; 16])
                         .span_id(vec![22; 8])
                         .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
                         .finish(),
@@ -1977,8 +1980,12 @@ mod test {
                     Event::build().name("event3.2").finish(),
                 ])
                 .links(vec![
-                    Link::build().span_id(vec![31; 8]).finish(),
                     Link::build()
+                        .trace_id(vec![31; 16])
+                        .span_id(vec![31; 8])
+                        .finish(),
+                    Link::build()
+                        .trace_id(vec![32; 16])
                         .span_id(vec![32; 8])
                         .attributes(vec![
                             KeyValue::new("key2", AnyValue::new_string("val2")),
@@ -1987,7 +1994,10 @@ mod test {
                             KeyValue::new("key3", AnyValue::new_string("val2")),
                         ])
                         .finish(),
-                    Link::build().span_id(vec![33; 8]).finish(),
+                    Link::build()
+                        .trace_id(vec![33; 16])
+                        .span_id(vec![33; 8])
+                        .finish(),
                 ])
                 .finish(),
         ];
@@ -2084,9 +2094,11 @@ mod test {
                 .data_gauge(Gauge {
                     data_points: vec![
                         NumberDataPoint::build()
+                            .time_unix_nano(1000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(100u64)
                                     .trace_id(vec![1; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2104,9 +2116,11 @@ mod test {
                 .data_gauge(Gauge {
                     data_points: vec![
                         NumberDataPoint::build()
+                            .time_unix_nano(2000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(200u64)
                                     .trace_id(vec![2; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2124,9 +2138,11 @@ mod test {
                 .data_histogram(Histogram {
                     data_points: vec![
                         HistogramDataPoint::build()
+                            .time_unix_nano(3000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(300u64)
                                     .trace_id(vec![1; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2145,9 +2161,11 @@ mod test {
                 .data_histogram(Histogram {
                     data_points: vec![
                         HistogramDataPoint::build()
+                            .time_unix_nano(4000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(400u64)
                                     .trace_id(vec![2; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2166,9 +2184,11 @@ mod test {
                 .data_exponential_histogram(ExponentialHistogram {
                     data_points: vec![
                         ExponentialHistogramDataPoint::build()
+                            .time_unix_nano(5000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(500u64)
                                     .trace_id(vec![1; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2189,9 +2209,11 @@ mod test {
                 .data_exponential_histogram(ExponentialHistogram {
                     data_points: vec![
                         ExponentialHistogramDataPoint::build()
+                            .time_unix_nano(6000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(600u64)
                                     .trace_id(vec![2; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2210,6 +2232,7 @@ mod test {
                 .data_summary(Summary {
                     data_points: vec![
                         SummaryDataPoint::build()
+                            .time_unix_nano(7000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .finish(),
                     ],
@@ -2221,6 +2244,7 @@ mod test {
                 .data_summary(Summary {
                     data_points: vec![
                         SummaryDataPoint::build()
+                            .time_unix_nano(8000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .finish(),
                     ],
@@ -4129,6 +4153,7 @@ mod test {
                 Field::new("parent_id", DataType::UInt16, false),
                 Field::new("key", DataType::Utf8, false),
                 Field::new("str", DataType::Utf8, true),
+                Field::new("type", DataType::UInt8, true),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values([0, 0, 1, 1, 2, 2])),
@@ -4138,6 +4163,7 @@ mod test {
                 Arc::new(StringArray::from_iter_values([
                     "a", "d", "b", "e", "c", "f",
                 ])),
+                Arc::new(UInt8Array::from_iter_values([1, 1, 1, 1, 1, 1])),
             ],
         )
         .unwrap();
@@ -4622,10 +4648,12 @@ mod test {
             Arc::new(Schema::new(vec![
                 Field::new("parent_id", DataType::UInt16, false),
                 Field::new("key", DataType::Utf8, false),
+                Field::new("type", DataType::UInt8, false),
             ])),
             vec![
                 Arc::new(UInt16Array::from(vec![0u16, 1, 2])),
                 Arc::new(StringArray::from_iter_values(["a", "b", "c"])),
+                Arc::new(UInt8Array::from_iter_values([1, 1, 1])),
             ],
         )
         .unwrap();

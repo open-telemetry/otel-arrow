@@ -3208,6 +3208,13 @@ mod tests {
         }
     }
 
+    fn assert_u64_gte(values: &[MetricValue], index: usize, min: u64, msg: &str) {
+        match values[index] {
+            MetricValue::U64(v) => assert!(v >= min, "{msg}: expected >= {min}, got {v}"),
+            other => panic!("{msg}: expected U64, got {other:?}"),
+        }
+    }
+
     /// Extract Mmsc from a MetricValue, returning the snapshot for further assertions.
     fn assert_mmsc(
         values: &[MetricValue],
@@ -4432,6 +4439,8 @@ mod tests {
                     ],
                 )
                 .expect("runtime-control metrics should export due-work counters");
+                // Inbound request counters are deterministic: the test sends
+                // exactly one of each message type.
                 assert_u64(
                     &due_metrics,
                     RUNTIME_START_TIMER_RECEIVED,
@@ -4452,21 +4461,26 @@ mod tests {
                 );
                 assert_u64(
                     &due_metrics,
+                    RUNTIME_DELAYED_DATA_SENT,
+                    1,
+                    "delayed_data.sent should count due delayed-data dispatches",
+                );
+                // Recurring timers reschedule immediately after firing, so
+                // the 5ms timer may fire more than once before `drop(pipeline_tx)`
+                // closes the manager. Unlike delayed data (one-shot), these are
+                // inherently non-deterministic — we only require at least one
+                // dispatch was recorded.
+                assert_u64_gte(
+                    &due_metrics,
                     RUNTIME_TIMER_TICK_SENT,
                     1,
                     "timer_tick.sent should count due timer dispatches",
                 );
-                assert_u64(
+                assert_u64_gte(
                     &due_metrics,
                     RUNTIME_COLLECT_TELEMETRY_SENT,
                     1,
                     "collect_telemetry.sent should count due telemetry dispatches",
-                );
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_DELAYED_DATA_SENT,
-                    1,
-                    "delayed_data.sent should count due delayed-data dispatches",
                 );
             })
             .await;
