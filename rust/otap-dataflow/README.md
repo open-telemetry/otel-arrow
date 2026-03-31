@@ -396,7 +396,9 @@ samply profilers respectively.
 
 **Installation**:
 
+```cmd/pwsh/bash
 cargo install --locked samply
+```
 
 Note: dhat-rs is a library crate designed for heap profiling in Rust programs.
       Hence it does not require explicit installation.
@@ -404,18 +406,36 @@ Note: dhat-rs is a library crate designed for heap profiling in Rust programs.
 **Build**:
 
 **Build for both CPU & Memory profiling**:
+```cmd/pwsh/bash
 cargo build --profile profiling --no-default-features --features dhat-heap --workspace
+```
 
 **Build for only CPU profiling**:
+```cmd/pwsh/bash
 cargo build --profile profiling --workspace
+```
 
 **Run**:
 
 **Run with both Memory & CPU profiling enabled**:
-samply record ./target/profiling/df_engine.exe --config .\configs\otap-noop.yaml
+```cmd/pwsh
+samply record .\target\profiling\df_engine.exe --config .\configs\otap-noop.yaml
+```
+or
+
+```bash
+samply record ./target/profiling/df_engine.exe --config ./configs/otap-noop.yaml
+```
 
 **Run with only Memory profiling enabled**:
-./target/profiling/df_engine.exe --config .\configs\otap-noop.yaml
+```cmd/pwsh
+.\target\profiling\df_engine.exe --config .\configs\otap-noop.yaml
+```
+or
+
+```bash
+./target/profiling/df_engine.exe --config ./configs/otap-noop.yaml
+```
 
 **Result**:
 
