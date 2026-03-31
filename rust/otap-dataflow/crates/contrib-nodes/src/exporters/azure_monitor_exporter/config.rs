@@ -93,8 +93,8 @@ fn default_heartbeat_frequency() -> Duration {
 /// Heartbeat configuration
 #[derive(Debug, Deserialize, Clone)]
 pub struct HeartbeatConfig {
-    /// Whether heartbeat is enabled (defaults to true)
-    #[serde(default = "default_true")]
+    /// Whether heartbeat is enabled (defaults to false)
+    #[serde(default)]
     pub enabled: bool,
 
     /// Heartbeat frequency (defaults to 60s). Accepts human-readable durations like "30s" or "2m".
@@ -109,15 +109,11 @@ pub struct HeartbeatConfig {
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             frequency: default_heartbeat_frequency(),
             overrides: HeartbeatOverrides::default(),
         }
     }
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Optional overrides for heartbeat row columns.
@@ -678,7 +674,7 @@ mod tests {
                 dcr: "mydcr"
         "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
-        assert!(config.heartbeat.enabled);
+        assert!(!config.heartbeat.enabled);
         assert_eq!(config.heartbeat.frequency, Duration::from_secs(60));
         assert!(config.heartbeat.overrides.version.is_none());
         assert!(config.heartbeat.overrides.computer.is_none());
@@ -707,7 +703,7 @@ mod tests {
                 frequency: 2m
         "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
-        assert!(config.heartbeat.enabled);
+        assert!(!config.heartbeat.enabled);
         assert_eq!(config.heartbeat.frequency, Duration::from_secs(120));
     }
 

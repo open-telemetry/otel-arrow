@@ -86,9 +86,9 @@ groups:
                 # OAuth scope for Azure Monitor
                 scope: "https://monitor.azure.com/.default"
 
-              # Heartbeat configuration (optional)
+              # Heartbeat configuration (optional, disabled by default)
               heartbeat:
-                enabled: true        # default: true
+                enabled: true
                 frequency: 1m        # default: 60s, accepts human-readable durations (e.g. 30s, 2m)
                 # overrides:         # optional: override auto-detected system fields
                 #   version: "1.0.0"
