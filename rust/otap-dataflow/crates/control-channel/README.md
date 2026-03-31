@@ -98,8 +98,8 @@ There are two channel families used between the engine controller and the indivi
   - receiver event type: `NodeControlEvent`
   - channel receiver supports `accept_shutdown(...)` only
 
-This split is intentional. `DrainIngress` is receiver-specific lifecycle
-control, so non-receiver nodes cannot express it through the public API.
+This split is intentional. `DrainIngress` is a receiver-specific lifecycle
+control, so non-receiver nodes cannot express it through the public channel receiver API.
 
 The crate intentionally exposes one single-owner implementation. That matches the
 thread-per-core execution model the engine is targeting and keeps the control
