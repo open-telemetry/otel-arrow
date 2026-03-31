@@ -14,7 +14,7 @@
 use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
-use crate::context::PipelineContext;
+use crate::context::{PipelineContext, PipelineContextParams};
 use crate::control::RouteData;
 use crate::control::UnwindData;
 use crate::control::{
@@ -1240,13 +1240,16 @@ mod tests {
     -> (PipelineContext, crate::entity_context::PipelineEntityScope) {
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: Default::default(),
+            pipeline_id: Default::default(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
         let pipeline_context = PipelineContext::new(
             controller_context,
-            Default::default(),
-            Default::default(),
-            0,
-            1,
-            0,
+            pipeline_context_params,
         );
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
@@ -1293,15 +1296,17 @@ mod tests {
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
         let core_id = 0;
-        let thread_id = 0;
         let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            core_id: core_id,
+            num_cores: 1,
+            thread_id: 0,
+        };
         let pipeline_context = PipelineContext::new(
             controller_context,
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            core_id,
-            1, // num_cores
-            thread_id,
+            pipeline_context_params,
         );
 
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -1796,15 +1801,17 @@ mod tests {
                     pipeline_id: pipeline_id.clone(),
                     core_id,
                 };
-                let thread_id = 0;
                 let controller_context = ControllerContext::new(metrics_system.registry());
+                let pipeline_context_params = PipelineContextParams {
+                    pipeline_group_id: pipeline_group_id.clone(),
+                    pipeline_id: pipeline_id.clone(),
+                    core_id: core_id,
+                    num_cores: 1,
+                    thread_id: 0,
+                };
                 let pipeline_context = PipelineContext::new(
                     controller_context,
-                    pipeline_group_id.clone(),
-                    pipeline_id.clone(),
-                    core_id,
-                    1, // num_cores
-                    thread_id,
+                    pipeline_context_params,
                 );
                 let pipeline_entity_key = pipeline_context.register_pipeline_entity();
                 let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
@@ -3051,13 +3058,16 @@ mod tests {
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
         let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
         let pipeline_context = PipelineContext::new(
             controller_context,
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            0,
-            1,
-            0,
+            pipeline_context_params,
         );
 
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -3340,13 +3350,16 @@ mod tests {
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
         let pipeline_context = PipelineContext::new(
             controller_context,
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            0,
-            1,
-            0,
+            pipeline_context_params,
         );
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
@@ -3459,13 +3472,16 @@ mod tests {
         let (snapshot_rx, metrics_reporter) =
             MetricsReporter::create_new_and_receiver(reporter_channel_size);
         let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: Default::default(),
+            pipeline_id: Default::default(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
         let pipeline_context = PipelineContext::new(
             controller_context,
-            Default::default(),
-            Default::default(),
-            0,
-            1,
-            0,
+            pipeline_context_params,
         );
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
