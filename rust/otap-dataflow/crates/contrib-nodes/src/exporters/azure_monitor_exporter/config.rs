@@ -5,6 +5,7 @@ use super::Error;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -84,9 +85,9 @@ fn default_scope() -> String {
     "https://monitor.azure.com/.default".to_string()
 }
 
-/// Default heartbeat frequency in seconds.
-fn default_heartbeat_frequency() -> u64 {
-    60
+/// Default heartbeat frequency.
+fn default_heartbeat_frequency() -> Duration {
+    Duration::from_secs(60)
 }
 
 /// Heartbeat configuration
@@ -96,9 +97,9 @@ pub struct HeartbeatConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Heartbeat frequency in seconds (defaults to 60)
-    #[serde(default = "default_heartbeat_frequency")]
-    pub frequency: u64,
+    /// Heartbeat frequency (defaults to 60s). Accepts human-readable durations like "30s" or "2m".
+    #[serde(with = "humantime_serde", default = "default_heartbeat_frequency")]
+    pub frequency: Duration,
 
     /// Optional overrides for heartbeat row columns
     #[serde(default)]
@@ -238,7 +239,7 @@ impl Config {
             ));
         }
 
-        if self.heartbeat.enabled && self.heartbeat.frequency == 0 {
+        if self.heartbeat.enabled && self.heartbeat.frequency.is_zero() {
             return Err(Error::Config(
                 "Invalid configuration: heartbeat frequency must be greater than 0 when enabled"
                     .to_string(),
@@ -678,7 +679,7 @@ mod tests {
         "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(config.heartbeat.enabled);
-        assert_eq!(config.heartbeat.frequency, 60);
+        assert_eq!(config.heartbeat.frequency, Duration::from_secs(60));
         assert!(config.heartbeat.overrides.version.is_none());
         assert!(config.heartbeat.overrides.computer.is_none());
     }
@@ -703,11 +704,11 @@ mod tests {
                 stream_name: "mystream"
                 dcr: "mydcr"
             heartbeat:
-                frequency: 120
+                frequency: 2m
         "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(config.heartbeat.enabled);
-        assert_eq!(config.heartbeat.frequency, 120);
+        assert_eq!(config.heartbeat.frequency, Duration::from_secs(120));
     }
 
     #[test]
@@ -715,7 +716,7 @@ mod tests {
         let config = Config {
             heartbeat: HeartbeatConfig {
                 enabled: true,
-                frequency: 0,
+                frequency: Duration::ZERO,
                 ..HeartbeatConfig::default()
             },
             ..test_config()
@@ -733,7 +734,7 @@ mod tests {
         let config = Config {
             heartbeat: HeartbeatConfig {
                 enabled: false,
-                frequency: 0,
+                frequency: Duration::ZERO,
                 ..HeartbeatConfig::default()
             },
             ..test_config()
@@ -749,14 +750,14 @@ mod tests {
                 stream_name: "mystream"
                 dcr: "mydcr"
             heartbeat:
-                frequency: 30
+                frequency: 30s
                 overrides:
                     version: "2.0.0-custom"
                     computer: "my-host"
                     os_type: "Linux"
         "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.heartbeat.frequency, 30);
+        assert_eq!(config.heartbeat.frequency, Duration::from_secs(30));
         assert_eq!(
             config.heartbeat.overrides.version,
             Some("2.0.0-custom".to_string())
@@ -845,7 +846,7 @@ mod tests {
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(!config.heartbeat.enabled);
         // frequency still gets its default
-        assert_eq!(config.heartbeat.frequency, 60);
+        assert_eq!(config.heartbeat.frequency, Duration::from_secs(60));
         assert!(config.validate().is_ok());
     }
 }

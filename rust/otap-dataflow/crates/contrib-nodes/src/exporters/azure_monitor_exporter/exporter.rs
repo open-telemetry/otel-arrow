@@ -589,7 +589,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 }
 
                 _ = tokio::time::sleep_until(next_heartbeat_send), if has_token && self.heartbeat.is_some() => {
-                    next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(self.config.heartbeat.frequency);
+                    next_heartbeat_send = tokio::time::Instant::now() + self.config.heartbeat.frequency;
                     self.metrics.borrow_mut().add_heartbeat();
                     if let Some(ref mut hb) = self.heartbeat {
                         match hb.send().await {
