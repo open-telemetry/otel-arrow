@@ -43,6 +43,11 @@ impl DeclarativeView {
     ) -> impl Fn(&Instrument) -> Option<Stream> + Send + Sync + 'static {
         let config = self.config.clone();
         move |instrument: &Instrument| {
+            if let Some(scope_name) = &config.selector.scope_name
+                && instrument.scope().name() != scope_name
+            {
+                return None;
+            }
             if let Some(instrument_name) = &config.selector.instrument_name
                 && instrument.name() != instrument_name
             {
@@ -75,6 +80,7 @@ mod tests {
         let view_config = ViewConfig {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
+                scope_name: None,
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -92,6 +98,7 @@ mod tests {
         let view_config = ViewConfig {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
+                scope_name: None,
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -115,6 +122,7 @@ mod tests {
         let view_config = ViewConfig {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
+                scope_name: None,
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
