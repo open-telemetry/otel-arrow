@@ -661,7 +661,7 @@ impl WalWriter {
     /// Call this after downstream has confirmed durability (e.g., segment flush).
     pub(crate) async fn persist_cursor(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
         self.coordinator
-            .persist_cursor(&mut self.active_file, cursor)
+            .persist_cursor(&self.active_file, cursor)
             .await
     }
 
@@ -1418,7 +1418,7 @@ impl WalCoordinator {
 
     async fn persist_cursor(
         &mut self,
-        active_file: &mut ActiveWalFile,
+        active_file: &ActiveWalFile,
         cursor: &WalConsumerCursor,
     ) -> WalResult<()> {
         self.validate_cursor(active_file, cursor)?;
