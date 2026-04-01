@@ -1,6 +1,20 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+/*
+    The benchmark results:
+    criterion = "0.5.1"
+
+    Hardware: Apple M1 Max
+    Total Number of Cores: 10 (8 performance and 2 efficiency)
+    RAM: 32.0 GB
+    | Test                          | Average time |
+    |-------------------------------|--------------|
+    | parser_comparison/cef         | 31.826 ns    |
+    | cef_extensions/three_ext      | 20.065 ns    |
+    | cef_extensions/ten_ext        | 219.12 ns    |
+*/
+
 /// CEF message structure
 #[derive(Debug, Clone, PartialEq)]
 pub struct CefMessage<'a> {
