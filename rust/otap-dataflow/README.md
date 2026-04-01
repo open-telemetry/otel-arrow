@@ -394,6 +394,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     startup::validate_engine_components(&cfg, &OTAP_PIPELINE_FACTORY)?;
 
     // Print diagnostics.
+    // Pass "system" here for the minimal example; in practice, align this
+    // string with your binary's allocator feature (e.g. "jemalloc", "mimalloc").
     println!("{}", startup::system_info(&OTAP_PIPELINE_FACTORY, "system"));
 
     // Run the engine.

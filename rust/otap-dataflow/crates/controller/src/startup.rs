@@ -16,7 +16,7 @@
 //! let mut cfg = OtelDataflowSpec::from_file(&path)?;
 //! startup::apply_cli_overrides(&mut cfg, num_cores, core_id_range, http_admin_bind);
 //! startup::validate_engine_components(&cfg, &MY_PIPELINE_FACTORY)?;
-//! println!("{}", startup::system_info(&MY_PIPELINE_FACTORY));
+//! println!("{}", startup::system_info(&MY_PIPELINE_FACTORY, "system"));
 //! ```
 
 use otap_df_config::engine::{
@@ -85,7 +85,7 @@ pub fn apply_cli_overrides(
 /// that all referenced components are actually compiled into the binary, and
 /// validates their node-specific config statically.
 ///
-/// **Scope:** This is *static* validation only — it checks that config values
+/// **Scope:** This is *static* validation only -- it checks that config values
 /// can be deserialized into the expected types.  It does **not** detect runtime
 /// issues such as port conflicts, unreachable endpoints, or missing files.
 pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
