@@ -172,7 +172,6 @@ pub mod bench_support {
     }
 
     /// Extract the timestamp from a parsed message.
-    #[must_use]
     pub fn timestamp(msg: &ParsedSyslogMessage<'_>) -> Option<u64> {
         msg.timestamp()
     }
@@ -188,8 +187,7 @@ pub mod bench_support {
     }
 
     /// Start iterating over CEF extensions.
-    #[must_use]
-    pub const fn parse_extensions<'a>(msg: &'a CefMessage<'a>) -> CefExtensionsIter<'a> {
+    pub fn parse_extensions<'a>(msg: &'a CefMessage<'a>) -> CefExtensionsIter<'a> {
         CefExtensionsIter(msg.parse_extensions())
     }
 }
