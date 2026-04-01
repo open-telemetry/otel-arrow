@@ -9,15 +9,43 @@
 
 **OTel-Arrow is building a high-performance, end-to-end
 column-oriented telemetry pipeline for
-[OpenTelemetry](https://opentelemetry.io/) based on [Apache
+[OpenTelemetry](https://opentelemetry.io/) data based on [Apache
 Arrow](https://arrow.apache.org/).**
 
-OTel-Arrow brings the efficiency of columnar data processing to
-OpenTelemetry. We've built a [production-ready protocol
-specification](./docs/otap-spec.md) and a [Rust dataflow
-engine](./rust/otap-dataflow/README.md) that dramatically reduce
-network, memory, and CPU usage for large-scale and low-resource
-telemetry pipelines.
+The OpenTelemetry-Arrow Protocol (OTAP) is designed as the
+column-oriented equivalent of OpenTelemetry Protocol (OTLP) that
+dramatically reduces network usage, and our protocol specification
+[protocol specification](./docs/otap-spec.md) ensures that OTAP and
+OTLP are always convertible, without loss, in either direction.
+
+The [OTAP Dataflow Engine](./rust/otap-dataflow/README.md) is our new
+Rust OpenTelemetry code base, a pipeline engine that dramatically
+reduces network, memory, and CPU usage for large-scale and
+low-resource telemetry pipelines.
+
+The OTAP Dataflow engine implements efficient OpenTelemetry data
+processing through numerous architectural optimizations, including the
+_shared-nothing_ and _thread-per-core_ design patterns and extensive
+use of _zero-copy_ data types.
+
+
+Reference implementations in Go and Rust making OTAP a seamless alternative to OTLP
+
+The OTel-Arrow
+Receiver and Exporter components 
+
+Rust 
+
+
+
+production-ready .
+
+The OTA
+
+
+extensive use of Zero-copy abstraction
+
+
 
 We've built a column-oriented persistence layer for storing OTAP
 
