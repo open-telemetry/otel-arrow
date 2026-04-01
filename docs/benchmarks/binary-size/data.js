@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774916919819,
+  "lastUpdate": 1775003388344,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2972,6 +2972,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 99.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Gokhan Uslu",
+            "username": "gouslu",
+            "email": "geukhanuslu@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d8f431884b821d2318d099a4aa587c1c75f5b6f9",
+          "message": "Add heartbeat configuration to Azure Monitor Exporter (#2473)\n\n## Add heartbeat configuration to Azure Monitor Exporter\n\nAdds a `heartbeat` configuration section to the Azure Monitor Exporter,\nallowing operators to control heartbeat behavior and override\nauto-detected system fields.\n\nPart of #2475\n\n### Configuration\n\n```yaml\nheartbeat:\n  enabled: true       # default: false\n  frequency: 30       # seconds, default: 60\n  overrides:\n    version: \"2.0.0-custom\"\n    computer: \"my-host\"\n    os_type: \"Linux\"\n    os_name: \"Ubuntu\"\n    os_major_version: \"22\"\n    os_minor_version: \"04\"",
+          "timestamp": "2026-03-31T22:42:07Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d8f431884b821d2318d099a4aa587c1c75f5b6f9"
+        },
+        "date": 1775003381219,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 100,
             "unit": "MB"
           }
         ]
