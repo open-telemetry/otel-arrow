@@ -355,18 +355,18 @@ The `views` sub-module contains zero-copy machinery for:
 
 The engine crates are designed as reusable libraries. A custom binary can
 link the same controller, factory, and node crates and register its own
-components via `linkme` distributed slices — exactly how `src/main.rs` works.
+components via `linkme` distributed slices -- exactly how `src/main.rs` works.
 
 The `otap_df_controller::startup` module provides three helpers that every
 embedding binary typically needs:
 
-- **`validate_engine_components`** — Checks that every node URN in a
+- **`validate_engine_components`** -- Checks that every node URN in a
   config maps to a registered component and runs per-component config
   validation.
-- **`apply_cli_overrides`** — Merges core-allocation and HTTP-admin
+- **`apply_cli_overrides`** -- Merges core-allocation and HTTP-admin
   bind overrides into an `OtelDataflowSpec`.
-- **`system_info`** — Returns a formatted string with CPU/memory info
-  and all registered component URNs — useful for `--help` banners or
+- **`system_info`** -- Returns a formatted string with CPU/memory info
+  and all registered component URNs, useful for `--help` banners or
   diagnostics.
 
 A minimal custom binary looks like this:
