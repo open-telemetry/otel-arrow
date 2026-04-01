@@ -165,7 +165,7 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
         return Err(ParseError::InvalidPriority);
     }
 
-    // Parse 1-3 ASCII digits directly without str::from_utf8 + str::parse overhead.
+    // Parse 1-3 ASCII digits directly from bytes.
     let mut priority_num: u8 = 0;
     for &b in priority_bytes {
         if !b.is_ascii_digit() {
