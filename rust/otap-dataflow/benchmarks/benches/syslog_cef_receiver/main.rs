@@ -3,6 +3,33 @@
 
 //! Benchmarks for syslog RFC3164, RFC5424, and CEF message parsing.
 
+/*
+    The benchmark results:
+    criterion = "0.5.1"
+
+    Hardware: Apple M1 Max
+    Total Number of Cores: 10 (8 performance and 2 efficiency)
+    RAM: 32.0 GB
+    | Test                                        | Average time |
+    |---------------------------------------------|--------------|
+    | parser_comparison/rfc3164                   | 17.947 ns    |
+    | parser_comparison/rfc5424                   | 35.897 ns    |
+    | parser_comparison/cef                       | 31.826 ns    |
+    | parse_auto_detect/rfc3164                   | 39.528 ns    |
+    | parse_auto_detect/rfc5424                   | 41.345 ns    |
+    | parse_auto_detect/cef                       | 36.844 ns    |
+    | parse_auto_detect/cef_rfc3164               | 115.30 ns    |
+    | parse_auto_detect/cef_rfc5424               | 66.394 ns    |
+    | timestamp_extraction/rfc3164                | 539.92 ns    |
+    | timestamp_extraction/rfc5424                | 22.963 ns    |
+    | cef_extensions/one_extension                | 20.155 ns    |
+    | cef_extensions/ten_extensions               | 212.31 ns    |
+    | cef_extensions/ten_extensions_with_escape   | 190.64 ns    |
+    | rfc3164_arrow_batch_100_msgs                | 95.930 µs    |
+    | rfc5424_arrow_batch_100_msgs                | 47.484 µs    |
+    | cef_arrow_batch_100_msgs                    | 43.238 µs    |
+*/
+
 #![allow(missing_docs)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -33,7 +60,9 @@ static CEF_WITH_RFC3164_MSG: &[u8] =
 static CEF_WITH_RFC5424_MSG: &[u8] =
     b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com app - - - CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1";
 static CEF_MSG_TEN_EXT: &[u8] =
-    b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232 dpt=1233 proto=TCP act=blocked app=HTTP rt=1234567890 msg=Worm\\=stopped cn1=42 cn1Label=score";
+    b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232 dpt=1233 proto=TCP act=blocked app=HTTP rt=1234567890 msg=Worm\\=stopped cn1Label=score";
+static CEF_MSG_TEN_EXT_WITH_ESCAPE: &[u8] =
+    b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232 dpt=1233 proto=TCP act=blocked app=HTTP rt=1234567890 msg=Worm stopped cn1Label=score";
 
 /// Benchmark comparing all three parsers
 fn bench_parser_comparison(c: &mut Criterion) {
@@ -122,8 +151,8 @@ fn bench_timestamp_extraction(c: &mut Criterion) {
 fn bench_cef_extensions(c: &mut Criterion) {
     let mut group = c.benchmark_group("cef_extensions");
 
-    let cef_parsed = parse_cef(CEF_MSG).expect("parse CEF");
-    let _ = group.bench_function("three_extensions", |b| {
+    let cef_parsed = parse_cef(CEF_MSG).expect("parse CEF 1 ext");
+    let _ = group.bench_function("one_extension", |b| {
         b.iter(|| {
             let mut iter = bench_support::parse_extensions(&cef_parsed);
             while let Some(kv) = iter.next_extension() {
@@ -136,6 +165,16 @@ fn bench_cef_extensions(c: &mut Criterion) {
     let _ = group.bench_function("ten_extensions", |b| {
         b.iter(|| {
             let mut iter = bench_support::parse_extensions(&cef_ten);
+            while let Some(kv) = iter.next_extension() {
+                let _ = black_box(kv);
+            }
+        })
+    });
+
+    let cef_ten_with_escape = parse_cef(CEF_MSG_TEN_EXT_WITH_ESCAPE).expect("parse CEF 10 ext with escape");
+    let _ = group.bench_function("ten_extensions_with_escape", |b| {
+        b.iter(|| {
+            let mut iter = bench_support::parse_extensions(&cef_ten_with_escape);
             while let Some(kv) = iter.next_extension() {
                 let _ = black_box(kv);
             }
