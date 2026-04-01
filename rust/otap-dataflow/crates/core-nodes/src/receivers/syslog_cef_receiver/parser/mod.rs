@@ -189,7 +189,7 @@ pub mod bench_support {
 
     /// Start iterating over CEF extensions.
     #[must_use]
-    pub fn parse_extensions<'a>(msg: &'a CefMessage<'a>) -> CefExtensionsIter<'a> {
+    pub const fn parse_extensions<'a>(msg: &'a CefMessage<'a>) -> CefExtensionsIter<'a> {
         CefExtensionsIter(msg.parse_extensions())
     }
 }
