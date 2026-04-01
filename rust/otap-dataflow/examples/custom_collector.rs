@@ -141,16 +141,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = controller.run_forever_with_observer(engine_cfg, |handle| {
         eprintln!("[observer] ObservedStateHandle obtained");
         if poll_status {
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                let snapshot = handle.snapshot();
-                for (key, status) in &snapshot {
-                    eprintln!(
-                        "[observer] pipeline {}:{} -> {:?}",
-                        key.pipeline_group_id().as_ref(),
-                        key.pipeline_id().as_ref(),
-                        status
-                    );
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    let snapshot = handle.snapshot();
+                    for (key, status) in &snapshot {
+                        eprintln!(
+                            "[observer] pipeline {}:{} -> {:?}",
+                            key.pipeline_group_id().as_ref(),
+                            key.pipeline_id().as_ref(),
+                            status
+                        );
+                    }
                 }
             });
         }
