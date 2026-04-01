@@ -124,6 +124,7 @@ rel_op_gte = @{ ">=" }
 rel_op_gt  = @{ ">" }
 rel_op_lte = @{ "<=" }
 rel_op_lt  = @{ "<" }
+rel_op_eq_case_insensitive = @{ "=~" }
 
 rel_op = _{
     rel_op_eq
@@ -132,6 +133,7 @@ rel_op = _{
   | rel_op_gt
   | rel_op_lte
   | rel_op_lt
+  | rel_op_eq_case_insensitive
 }
 
 rel_expression = {

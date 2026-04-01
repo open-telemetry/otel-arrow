@@ -19,7 +19,8 @@ use arrow::datatypes::UInt16Type;
 use async_trait::async_trait;
 use data_engine_expressions::{
     BooleanValue, ContainsLogicalExpression, Expression, LogicalExpression,
-    MatchesLogicalExpression, ScalarExpression, StaticScalarExpression,
+    MatchesLogicalExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
+    StringValue,
 };
 use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
@@ -193,12 +194,13 @@ impl FilterPlan {
     ///
     fn try_from_binary_expr(
         left_expr: &ScalarExpression,
-        binary_op: Operator,
+        mut binary_op: Operator,
         right_expr: &ScalarExpression,
+        case_sensitive: bool,
         attr_keys_case_sensitive: bool,
     ) -> Result<Self> {
-        let left_arg = BinaryArg::try_from(left_expr)?;
-        let right_arg = BinaryArg::try_from(right_expr)?;
+        let mut left_arg = BinaryArg::try_from(left_expr)?;
+        let mut right_arg = BinaryArg::try_from(right_expr)?;
 
         // don't allow non equals comparisons for null
         if binary_op != Operator::Eq
@@ -211,6 +213,10 @@ impl FilterPlan {
                 ),
                 query_location: None,
             });
+        }
+
+        if !case_sensitive {
+            Self::transform_case_insensitive_equals(&mut left_arg, &mut binary_op, &mut right_arg);
         }
 
         // TODO there are several branches below which are not yet supported
@@ -378,16 +384,84 @@ impl FilterPlan {
         }
     }
 
+    /// transform the arguments for a binary filter expression into case-insensitive equals
+    /// if the operator and the types would support it
+    ///
+    /// TODO: Currently this uses ILikeMatch to implement case insensitive equals. We'll eventually
+    /// revisit this. There are two small issues with the current implementation:
+    /// - In the future, we will probably support filtering where one side is not a static, so
+    ///   we won't be able to statically determine that this is the appropriate operator
+    /// - If the string literal to which we're comparing contains special characters used in
+    ///   SQL Like expressions, such as "%", "_" or "\\", the underlying arrow_string kernel will
+    ///   do the comparison using a case insensitive regex match (even if the characters are
+    ///   escaped), and this is slower than it just calling eq_ignore_case.
+    ///
+    /// The better solution in the future is probably to implement our kernel for checking string
+    /// equality while ignoring ascii case and embedding it in either a PhysicalExpr or ScalarUDF.
+    /// However, this will be a lot easier to implement with some changes to arrow_string crate.
+    ///
+    fn transform_case_insensitive_equals(
+        left_arg: &mut BinaryArg,
+        binary_op: &mut Operator,
+        right_arg: &mut BinaryArg,
+    ) {
+        if binary_op != &Operator::Eq {
+            return;
+        }
+
+        if let BinaryArg::Literal(StaticScalarExpression::String(literal)) = left_arg {
+            *binary_op = Operator::ILikeMatch;
+            let literal_val = literal.get_value();
+            if Self::contains_like_pattern(literal_val) {
+                *literal = StringScalarExpression::new(
+                    literal.get_query_location().clone(),
+                    &Self::escape_like_pattern(literal_val),
+                )
+            }
+        }
+
+        if let BinaryArg::Literal(StaticScalarExpression::String(literal)) = right_arg {
+            *binary_op = Operator::ILikeMatch;
+            let literal_val = literal.get_value();
+            if Self::contains_like_pattern(literal_val) {
+                *literal = StringScalarExpression::new(
+                    literal.get_query_location().clone(),
+                    &Self::escape_like_pattern(literal_val),
+                )
+            }
+        }
+    }
+
+    fn contains_like_pattern(pattern: &str) -> bool {
+        memchr::memchr3(b'%', b'_', b'\\', pattern.as_bytes()).is_some()
+    }
+
+    fn escape_like_pattern(value: &str) -> String {
+        let mut result = String::with_capacity(value.len());
+        for ch in value.chars() {
+            if ch == '%' || ch == '_' || ch == '\\' {
+                result.push('\\');
+            }
+            result.push(ch);
+        }
+        result
+    }
+
+    /// Create the expression that checks the name of some attribute.
+    ///
+    /// If case sensitive, it simply checks the value in thea attribute key column is equal to
+    /// the attribute key. When case insensitive, it uses ILikeMatch which will actually get
+    /// evaluated using `str.equals_ignore_case` inside `arrow_string::predicate`
     fn attr_key_equals(attrs_key: &str, case_sensitive: bool) -> Expr {
         if case_sensitive {
             col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
         } else {
-            //
-            binary_expr(
-                col(consts::ATTRIBUTE_KEY),
-                Operator::ILikeMatch,
-                lit(attrs_key),
-            )
+            let rhs_expr = if Self::contains_like_pattern(attrs_key) {
+                lit(Self::escape_like_pattern(attrs_key))
+            } else {
+                lit(attrs_key)
+            };
+            binary_expr(col(consts::ATTRIBUTE_KEY), Operator::ILikeMatch, rhs_expr)
         }
     }
 
@@ -427,6 +501,7 @@ impl Composite<FilterPlan> {
                 equals_to_expr.get_left(),
                 Operator::Eq,
                 equals_to_expr.get_right(),
+                equals_to_expr.get_case_insensitive(),
                 attr_keys_case_sensitive,
             )
             .map(|plan| plan.into()),
@@ -434,6 +509,7 @@ impl Composite<FilterPlan> {
                 gt_expr.get_left(),
                 Operator::Gt,
                 gt_expr.get_right(),
+                Default::default(),
                 attr_keys_case_sensitive,
             )
             .map(|plan| plan.into()),
@@ -441,6 +517,7 @@ impl Composite<FilterPlan> {
                 geq_expr.get_left(),
                 Operator::GtEq,
                 geq_expr.get_right(),
+                Default::default(),
                 attr_keys_case_sensitive,
             )
             .map(|plan| plan.into()),
@@ -4736,6 +4813,44 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_key_match_escape_special_chars() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key%1_1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "keyabcd1x1",
+                    AnyValue::new_string("val1"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("KEY%1_1", AnyValue::new_string("val1"))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key%1_1\"] == \"val1\"";
+        let pipeline_expr = KqlParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
     async fn test_filter_by_attributes_case_insensitive_key_match_record_has_same_key_different_case()
      {
         let log_records = vec![
@@ -4784,5 +4899,95 @@ mod test {
             panic!("invalid variant {:?}", result)
         };
         assert!(&result.resource_logs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_equals() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("VAL1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key1\"] =~ \"val1\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+
+        // check it also works w/ the literal on the left
+        let query = "logs | where \"val1\" =~ attributes[\"key1\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_equals_escapes_special_chars() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val%1_1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("VAL%1_1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("valA1B1"))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key1\"] =~ \"val%1_1\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+
+        // check it also escapes correctly when the literal is on the left
+        let query = "logs | where  \"val%1_1\" =~ attributes[\"key1\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
     }
 }
