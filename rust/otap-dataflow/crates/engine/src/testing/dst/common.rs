@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::clock;
-use crate::context::{ControllerContext, PipelineContext};
+use crate::context::{ControllerContext, PipelineContext, PipelineContextParams};
 use crate::control::{ControlSenders, Frame, NodeControlMsg, RouteData, runtime_ctrl_msg_channel};
 use crate::entity_context::set_pipeline_entity_key;
 use crate::message::{Receiver, Sender};
@@ -118,15 +118,14 @@ pub(super) fn build_manager<PData>(
     let pipeline_group_id: PipelineGroupId = Default::default();
     let pipeline_id: PipelineId = Default::default();
     let controller_context = ControllerContext::new(metrics_system.registry());
-    let pipeline_context = PipelineContext::new(
-        controller_context,
-        pipeline_group_id.clone(),
-        pipeline_id.clone(),
-        0,
-        1,
-        0,
-    );
-
+    let pipeline_context_params = PipelineContextParams {
+        pipeline_group_id: pipeline_group_id.clone(),
+        pipeline_id: pipeline_id.clone(),
+        core_id: 0,
+        num_cores: 1,
+        thread_id: 0,
+    };
+    let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
     let pipeline_entity_key = pipeline_context.register_pipeline_entity();
     let pipeline_entity_guard =
         set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
