@@ -1128,7 +1128,7 @@ impl WalCoordinator {
     /// reading from disk. The index is populated during append operations.
     fn ensure_entry_boundary(
         &mut self,
-        _active_file: &mut ActiveWalFile,
+        _active_file: &ActiveWalFile,
         target: u64,
     ) -> WalResult<()> {
         // Fast path: target matches the last validated boundary
@@ -1421,13 +1421,13 @@ impl WalCoordinator {
         active_file: &mut ActiveWalFile,
         cursor: &WalConsumerCursor,
     ) -> WalResult<()> {
-        self.validate_cursor(active_file, cursor).await?;
+        self.validate_cursor(active_file, cursor)?;
         self.write_cursor_sidecar(cursor).await
     }
 
-    async fn validate_cursor(
+    fn validate_cursor(
         &mut self,
-        active_file: &mut ActiveWalFile,
+        active_file: &ActiveWalFile,
         cursor: &WalConsumerCursor,
     ) -> WalResult<()> {
         // Validate sequence monotonicity
@@ -1450,8 +1450,11 @@ impl WalCoordinator {
             return Ok(());
         }
 
-        // Cursor is in the active file - validate it's within bounds and on an entry boundary
-        let file_len = active_file.file_mut()?.metadata().await?.len();
+        // Cursor is in the active file - validate it's within bounds and on an entry boundary.
+        // Use the tracked length instead of metadata() to avoid a race: tokio's
+        // File::poll_write returns Ready before the blocking write completes, so a
+        // subsequent metadata() call can observe a stale (pre-write) file length.
+        let file_len = active_file.len();
         let data_within_active = cursor.safe_offset.saturating_sub(active_start);
         let file_offset = self.active_header_size.saturating_add(data_within_active);
 
