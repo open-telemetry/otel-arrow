@@ -455,6 +455,7 @@ async fn shutdown_deadline_forces_terminal_progress() {
 
     let stats = tx.stats();
     assert!(stats.shutdown_recorded);
+    assert!(stats.shutdown_forced);
     assert_eq!(stats.completion_abandoned_on_forced_shutdown_total, 2);
     assert!(stats.closed);
 
@@ -464,6 +465,36 @@ async fn shutdown_deadline_forces_terminal_progress() {
         }
         other => panic!("expected closed after forced shutdown, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn late_drain_ingress_is_rejected_after_shutdown_is_forced() {
+    // Scenario: shutdown is recorded first, its deadline expires, and only
+    // then a receiver-drain token is offered.
+    // Guarantees: once forced shutdown has begun, late `DrainIngress` no
+    // longer reintroduces a graceful-drain step ahead of terminal shutdown.
+    let deadline = Instant::now() + Duration::from_millis(20);
+    let (tx, mut rx) = receiver_channel::<String>(test_config()).unwrap();
+
+    assert_eq!(
+        tx.accept_shutdown(shutdown(deadline)),
+        LifecycleSendResult::Accepted
+    );
+
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    assert_eq!(
+        tx.accept_drain_ingress(drain(deadline)),
+        LifecycleSendResult::Closed
+    );
+    assert_eq!(
+        rx.recv().await,
+        Some(ReceiverControlEvent::Shutdown(ShutdownMsg {
+            deadline,
+            reason: "shutdown".to_owned(),
+        }))
+    );
+    assert_eq!(rx.try_recv(), None);
 }
 
 #[tokio::test(flavor = "current_thread")]

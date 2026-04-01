@@ -263,12 +263,21 @@ impl<PData, Meta> Inner<PData, Meta> {
     /// matter once ingress shutdown has begun. The `DrainIngressMsg::deadline`
     /// is carried through for the receiver event loop to interpret; unlike
     /// `Shutdown`, it does not arm queue-core forced-progress behavior here.
+    /// Once shutdown has already crossed into forced terminal progress, late
+    /// drain tokens are rejected rather than resurfacing a new graceful-drain
+    /// step ahead of forced shutdown delivery.
     pub(crate) fn record_drain_ingress(&mut self, msg: DrainIngressMsg) -> LifecycleSendResult {
+        if self.phase == Phase::ShutdownRecorded {
+            self.refresh_shutdown_force(Instant::now());
+        }
         if self.closed {
             return LifecycleSendResult::Closed;
         }
         if self.drain_ingress_recorded {
             return LifecycleSendResult::AlreadyAccepted;
+        }
+        if self.shutdown_forced {
+            return LifecycleSendResult::Closed;
         }
 
         self.clear_normal_pending();
@@ -570,7 +579,6 @@ impl<PData, Meta> Inner<PData, Meta> {
 
         self.clear_normal_pending();
         self.shutdown_deadline = None;
-        self.shutdown_forced = false;
         self.closed = true;
         self.bump_version();
         Some(CoreControlEvent::Shutdown(msg))
