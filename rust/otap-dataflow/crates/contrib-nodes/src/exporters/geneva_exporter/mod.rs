@@ -55,7 +55,6 @@ use std::time::{Duration, Instant};
 
 // Geneva uploader dependencies
 use futures::StreamExt;
-use futures::stream::TryStreamExt;
 use geneva_uploader::AuthMethod;
 use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
@@ -152,41 +151,79 @@ pub enum AuthConfig {
 
 /// Geneva exporter metrics.
 /// Grouped under `otap.exporter.geneva`.
+///
+/// Upload, failure, and latency counters are split per signal type (logs vs
+/// traces) so operators can identify which signal is failing or slow.
 #[metric_set(name = "otap.exporter.geneva")]
 #[derive(Debug, Default, Clone)]
 struct ExporterMetrics {
-    /// Total number of compressed batches produced by the encoder.
+    // -- Log-signal counters ------------------------------------------------
+    /// Compressed log batches produced by the encoder.
     #[metric(unit = "{batch}")]
-    pub batches_encoded: Counter<u64>,
+    pub log_batches_encoded: Counter<u64>,
 
-    /// Total number of batches successfully uploaded to Geneva.
+    /// Log batches successfully uploaded to Geneva.
     #[metric(unit = "{batch}")]
-    pub batches_uploaded: Counter<u64>,
+    pub log_batches_uploaded: Counter<u64>,
 
-    /// Total number of batches that failed to upload.
+    /// Log batches that failed to upload.
     #[metric(unit = "{batch}")]
-    pub batches_failed: Counter<u64>,
+    pub log_batches_failed: Counter<u64>,
 
-    /// Total individual records (log/span) successfully uploaded.
+    /// Individual log records successfully uploaded.
     #[metric(unit = "{record}")]
-    pub records_uploaded: Counter<u64>,
+    pub log_records_uploaded: Counter<u64>,
 
-    /// Total individual records (log/span) that failed to upload.
+    /// Individual log records that failed to upload.
     #[metric(unit = "{record}")]
-    pub records_failed: Counter<u64>,
+    pub log_records_failed: Counter<u64>,
 
-    /// Total bytes uploaded to Geneva (compressed payload size).
+    /// Log bytes uploaded to Geneva (compressed payload size).
     #[metric(unit = "By")]
-    pub bytes_uploaded: Counter<u64>,
+    pub log_bytes_uploaded: Counter<u64>,
 
-    /// Upload latency in milliseconds (min/max/sum/count).
+    /// Per-upload latency for log batches in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
-    pub upload_duration: Mmsc,
+    pub log_upload_duration: Mmsc,
 
-    /// Encode + compress latency in milliseconds (min/max/sum/count).
+    /// Encode + compress latency for logs in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
-    pub encode_duration: Mmsc,
+    pub log_encode_duration: Mmsc,
 
+    // -- Trace-signal counters ------------------------------------------------
+    /// Compressed trace batches produced by the encoder.
+    #[metric(unit = "{batch}")]
+    pub trace_batches_encoded: Counter<u64>,
+
+    /// Trace batches successfully uploaded to Geneva.
+    #[metric(unit = "{batch}")]
+    pub trace_batches_uploaded: Counter<u64>,
+
+    /// Trace batches that failed to upload.
+    #[metric(unit = "{batch}")]
+    pub trace_batches_failed: Counter<u64>,
+
+    /// Individual trace records (spans) successfully uploaded.
+    #[metric(unit = "{record}")]
+    pub trace_records_uploaded: Counter<u64>,
+
+    /// Individual trace records (spans) that failed to upload.
+    #[metric(unit = "{record}")]
+    pub trace_records_failed: Counter<u64>,
+
+    /// Trace bytes uploaded to Geneva (compressed payload size).
+    #[metric(unit = "By")]
+    pub trace_bytes_uploaded: Counter<u64>,
+
+    /// Per-upload latency for trace batches in milliseconds (min/max/sum/count).
+    #[metric(unit = "ms")]
+    pub trace_upload_duration: Mmsc,
+
+    /// Encode + compress latency for traces in milliseconds (min/max/sum/count).
+    #[metric(unit = "ms")]
+    pub trace_encode_duration: Mmsc,
+
+    // -- Signal-agnostic counters ---------------------------------------------
     /// Number of empty payloads skipped (no-op ack).
     #[metric(unit = "{msg}")]
     pub empty_payloads_skipped: Counter<u64>,
@@ -195,9 +232,9 @@ struct ExporterMetrics {
     #[metric(unit = "{error}")]
     pub conversion_errors: Counter<u64>,
 
-    /// Number of unsupported signal types rejected (e.g. metrics).
+    /// Number of metrics payloads dropped (unsupported signal).
     #[metric(unit = "{msg}")]
-    pub unsupported_signals: Counter<u64>,
+    pub metrics_payloads_dropped: Counter<u64>,
 }
 
 /// Geneva exporter that sends OTAP data to Geneva backend
@@ -288,47 +325,112 @@ impl GenevaExporter {
         &self.config
     }
 
-    /// Upload batches concurrently
+    /// Upload batches concurrently.
+    ///
+    /// All batches are attempted regardless of individual failures (no
+    /// short-circuit). Per-batch upload latency and per-signal success/failure
+    /// counters are recorded accurately using `batch.row_count`.
+    ///
+    /// # Partial-success limitation
+    ///
+    /// TODO: When some batches succeed and others fail, this method returns
+    /// `Err` and the caller NACKs the entire payload. The retry processor then
+    /// resends the whole payload, re-uploading already-successful batches and
+    /// causing duplicates (Geneva assigns a fresh UUID per upload, so there is
+    /// no server-side dedup). The Azure Monitor exporter solves this with
+    /// per-message batch tracking and deferred ACK/NACK (see
+    /// `azure_monitor_exporter/state.rs`). A similar approach should be
+    /// adopted here.
     async fn upload_batches_concurrent(
         &mut self,
         batches: &[EncodedBatch],
         signal_type: SignalType,
-        record_count: u64,
     ) -> Result<usize, String> {
         let batches_encoded = batches.len();
-        self.metrics.batches_encoded.add(batches_encoded as u64);
+        match signal_type {
+            SignalType::Logs => self.metrics.log_batches_encoded.add(batches_encoded as u64),
+            SignalType::Traces => self
+                .metrics
+                .trace_batches_encoded
+                .add(batches_encoded as u64),
+            _ => {}
+        }
 
         let max_concurrent = self.config.max_concurrent_uploads.max(1);
         let client = &self.geneva_client;
 
-        let upload_start = Instant::now();
+        // Run all uploads concurrently, collecting per-batch results.
+        let results: Vec<(Result<(), String>, f64, u64, u64)> =
+            futures::stream::iter(batches.iter())
+                .map(|batch| {
+                    let batch_size = batch.data.len() as u64;
+                    let row_count = batch.row_count as u64;
+                    async move {
+                        let start = Instant::now();
+                        let result = client
+                            .upload_batch(batch)
+                            .await
+                            .map_err(|e| format!("Failed to upload {:?} batch: {e}", signal_type));
+                        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        (result, duration_ms, batch_size, row_count)
+                    }
+                })
+                .buffer_unordered(max_concurrent)
+                .collect()
+                .await;
 
-        let result = futures::stream::iter(batches.iter())
-            .map(Ok::<_, String>)
-            .try_for_each_concurrent(max_concurrent, |batch| async move {
-                client
-                    .upload_batch(batch)
-                    .await
-                    .map_err(|e| format!("Failed to upload {:?} batch: {e}", signal_type))
-            })
-            .await;
+        // Aggregate results and update per-signal metrics.
+        let mut first_error: Option<String> = None;
+        let mut succeeded: u64 = 0;
+        let mut failed: u64 = 0;
+        let mut records_ok: u64 = 0;
+        let mut records_err: u64 = 0;
+        let mut bytes_ok: u64 = 0;
 
-        let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
-        self.metrics.upload_duration.record(upload_ms);
-
-        match result {
-            Ok(()) => {
-                self.metrics.batches_uploaded.add(batches_encoded as u64);
-                self.metrics.records_uploaded.add(record_count);
-                let total_bytes: u64 = batches.iter().map(|b| b.data.len() as u64).sum();
-                self.metrics.bytes_uploaded.add(total_bytes);
-                Ok(batches_encoded)
+        for (result, duration_ms, batch_size, row_count) in &results {
+            match signal_type {
+                SignalType::Logs => self.metrics.log_upload_duration.record(*duration_ms),
+                SignalType::Traces => self.metrics.trace_upload_duration.record(*duration_ms),
+                _ => {}
             }
-            Err(e) => {
-                self.metrics.batches_failed.add(batches_encoded as u64);
-                self.metrics.records_failed.add(record_count);
-                Err(e)
+            match result {
+                Ok(()) => {
+                    succeeded += 1;
+                    records_ok += row_count;
+                    bytes_ok += batch_size;
+                }
+                Err(e) => {
+                    failed += 1;
+                    records_err += row_count;
+                    if first_error.is_none() {
+                        first_error = Some(e.clone());
+                    }
+                }
             }
+        }
+
+        match signal_type {
+            SignalType::Logs => {
+                self.metrics.log_batches_uploaded.add(succeeded);
+                self.metrics.log_records_uploaded.add(records_ok);
+                self.metrics.log_bytes_uploaded.add(bytes_ok);
+                self.metrics.log_batches_failed.add(failed);
+                self.metrics.log_records_failed.add(records_err);
+            }
+            SignalType::Traces => {
+                self.metrics.trace_batches_uploaded.add(succeeded);
+                self.metrics.trace_records_uploaded.add(records_ok);
+                self.metrics.trace_bytes_uploaded.add(bytes_ok);
+                self.metrics.trace_batches_failed.add(failed);
+                self.metrics.trace_records_failed.add(records_err);
+            }
+            _ => {}
+        }
+
+        if let Some(e) = first_error {
+            Err(e)
+        } else {
+            Ok(batches_encoded)
         }
     }
 
@@ -407,16 +509,10 @@ impl GenevaExporter {
                             .encode_and_compress_logs(&logs_request.resource_logs)
                             .map_err(|e| format!("Failed to encode logs: {}", e))?;
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
-                        self.metrics.encode_duration.record(encode_ms);
+                        self.metrics.log_encode_duration.record(encode_ms);
 
-                        let record_count: u64 = logs_request
-                            .resource_logs
-                            .iter()
-                            .flat_map(|rl| &rl.scope_logs)
-                            .map(|sl| sl.log_records.len() as u64)
-                            .sum();
                         let batches_uploaded = self
-                            .upload_batches_concurrent(&batches, SignalType::Logs, record_count)
+                            .upload_batches_concurrent(&batches, SignalType::Logs)
                             .await?;
 
                         otel_info!(
@@ -463,16 +559,10 @@ impl GenevaExporter {
                             .encode_and_compress_spans(&traces_request.resource_spans)
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
-                        self.metrics.encode_duration.record(encode_ms);
+                        self.metrics.trace_encode_duration.record(encode_ms);
 
-                        let record_count: u64 = traces_request
-                            .resource_spans
-                            .iter()
-                            .flat_map(|rs| &rs.scope_spans)
-                            .map(|ss| ss.spans.len() as u64)
-                            .sum();
                         let batches_uploaded = self
-                            .upload_batches_concurrent(&batches, SignalType::Traces, record_count)
+                            .upload_batches_concurrent(&batches, SignalType::Traces)
                             .await?;
 
                         otel_info!(
@@ -485,7 +575,7 @@ impl GenevaExporter {
                         Ok(batches_uploaded)
                     }
                     OtapArrowRecords::Metrics(_) => {
-                        self.metrics.unsupported_signals.inc();
+                        self.metrics.metrics_payloads_dropped.inc();
                         Err("Geneva exporter does not support metrics signal".to_string())
                     }
                 }
@@ -514,16 +604,10 @@ impl GenevaExporter {
                             .encode_and_compress_logs(&logs_request.resource_logs)
                             .map_err(|e| format!("Failed to encode logs: {}", e))?;
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
-                        self.metrics.encode_duration.record(encode_ms);
+                        self.metrics.log_encode_duration.record(encode_ms);
 
-                        let record_count: u64 = logs_request
-                            .resource_logs
-                            .iter()
-                            .flat_map(|rl| &rl.scope_logs)
-                            .map(|sl| sl.log_records.len() as u64)
-                            .sum();
                         let batches_uploaded = self
-                            .upload_batches_concurrent(&batches, SignalType::Logs, record_count)
+                            .upload_batches_concurrent(&batches, SignalType::Logs)
                             .await?;
 
                         otel_info!(
@@ -554,16 +638,10 @@ impl GenevaExporter {
                             .encode_and_compress_spans(&traces_request.resource_spans)
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
-                        self.metrics.encode_duration.record(encode_ms);
+                        self.metrics.trace_encode_duration.record(encode_ms);
 
-                        let record_count: u64 = traces_request
-                            .resource_spans
-                            .iter()
-                            .flat_map(|rs| &rs.scope_spans)
-                            .map(|ss| ss.spans.len() as u64)
-                            .sum();
                         let batches_uploaded = self
-                            .upload_batches_concurrent(&batches, SignalType::Traces, record_count)
+                            .upload_batches_concurrent(&batches, SignalType::Traces)
                             .await?;
 
                         otel_info!(
@@ -575,7 +653,7 @@ impl GenevaExporter {
                         Ok(batches_uploaded)
                     }
                     OtlpProtoBytes::ExportMetricsRequest(_) => {
-                        self.metrics.unsupported_signals.inc();
+                        self.metrics.metrics_payloads_dropped.inc();
                         Err("Geneva exporter does not support metrics signal".to_string())
                     }
                 }
