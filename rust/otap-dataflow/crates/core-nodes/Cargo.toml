@@ -68,6 +68,7 @@ weaver_semconv = { workspace = true, optional = true }
 [features]
 experimental-tls = ["otap-df-otap/experimental-tls"]
 dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schema", "dep:weaver_resolver", "dep:weaver_semconv"]
+bench = []
 
 [dev-dependencies]
 arrow-ipc.workspace = true
