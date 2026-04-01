@@ -12,6 +12,7 @@
 //!
 //! ```bash
 //! cargo run --example custom_collector -- --config configs/fake-perf.yaml
+//! cargo run --example custom_collector -- --config configs/fake-perf.yaml --poll-status
 //! ```
 
 use std::path::PathBuf;
@@ -58,6 +59,10 @@ struct Args {
     /// Validate the configuration and exit without starting the engine
     #[arg(long)]
     validate_and_exit: bool,
+
+    /// Periodically print pipeline health snapshots to stderr
+    #[arg(long)]
+    poll_status: bool,
 }
 
 fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
@@ -130,9 +135,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Run the engine.
+    // Run the engine, obtaining an ObservedStateHandle for in-process health checks.
+    let poll_status = args.poll_status;
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let result = controller.run_forever(engine_cfg);
+    let result = controller.run_forever_with_observer(engine_cfg, |handle| {
+        eprintln!("[observer] ObservedStateHandle obtained");
+        if poll_status {
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let snapshot = handle.snapshot();
+                for (key, status) in &snapshot {
+                    eprintln!(
+                        "[observer] pipeline {}:{} -> {:?}",
+                        key.pipeline_group_id().as_ref(),
+                        key.pipeline_id().as_ref(),
+                        status
+                    );
+                }
+            });
+        }
+    });
     match result {
         Ok(_) => {
             println!("Pipeline completed successfully");
