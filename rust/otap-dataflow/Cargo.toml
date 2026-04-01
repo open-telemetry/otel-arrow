@@ -203,9 +203,31 @@ cpu-time = "1.0.0"
 azure_core = {version = "0.33.0", default-features = false }
 azure_identity = {version = "0.33.0", default-features = false }
 flate2 = "1.1.5"
-reqwest = { version = "0.13.1", default-features = false }
+reqwest = { version = "0.13.1", features = ["rustls-no-provider", "json", "query", "http2", "stream"] }
 time = "0.3.44"
 wiremock = "0.6.5"
+anyhow = "1.0.98"
+crossterm = "0.29"
+data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
+data_engine_recordset_otlp_bridge = { path = '../experimental/query_engine/engine-recordset-otlp-bridge' }
+include_dir = "0.7.4"
+mime_guess = "2.0.5"
+minijinja = "1"
+otap-df-admin = { path = 'crates/admin' }
+otap-df-channel = { path = 'crates/channel' }
+otap-df-engine-macros = { path = 'crates/engine-macros' }
+otap-df-opl = { path = 'crates/opl' }
+otap-df-query-engine = { path = 'crates/query-engine' }
+otap-df-quiver = { path = 'crates/quiver' }
+otap-df-state = { path = 'crates/state' }
+otap-df-telemetry-macros = { path = 'crates/telemetry-macros' }
+prost-build = "0.14"
+ratatui = "0.30"
+testcontainers = "0.27"
+toml = "0.8.22"
+tonic-prost-build = "0.14"
+urlencoding = "2"
+geneva-uploader = "0.4.0"
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof

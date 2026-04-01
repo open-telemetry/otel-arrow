@@ -22,6 +22,7 @@ use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_engine::control::PipelineAdminSender;
 use otap_df_state::store::ObservedStateHandle;
+use otap_df_telemetry::log_tap::InternalLogTapHandle;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
 
@@ -34,6 +35,9 @@ struct AppState {
     /// The metrics registry for querying current metrics.
     metrics_registry: TelemetryRegistryHandle,
 
+    /// Optional internal log tap for querying retained internal logs.
+    log_tap: Option<InternalLogTapHandle>,
+
     /// The control message senders for controlling pipelines.
     ctrl_msg_senders: Arc<Mutex<Vec<Arc<dyn PipelineAdminSender>>>>,
 }
@@ -44,11 +48,13 @@ pub async fn run(
     observed_store: ObservedStateHandle,
     ctrl_msg_senders: Vec<Arc<dyn PipelineAdminSender>>,
     metrics_registry: TelemetryRegistryHandle,
+    log_tap: Option<InternalLogTapHandle>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let app_state = AppState {
         observed_state_store: observed_store,
         metrics_registry,
+        log_tap,
         ctrl_msg_senders: Arc::new(Mutex::new(ctrl_msg_senders)),
     };
 

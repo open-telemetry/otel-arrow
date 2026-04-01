@@ -4,7 +4,7 @@
 use serde::Serialize;
 
 use super::client::AZURE_MONITOR_SOURCE_RESOURCEID_HEADER;
-use super::config::ApiConfig;
+use super::config::{ApiConfig, HeartbeatOverrides};
 use super::error::Error;
 use chrono::Utc;
 use otap_df_telemetry::otel_warn;
@@ -112,7 +112,7 @@ fn default_heartbeat_os_type() -> String {
 
 impl Heartbeat {
     /// Create a new Heartbeat instance.
-    pub fn new(config: &ApiConfig) -> Result<Self, Error> {
+    pub fn new(config: &ApiConfig, overrides: &HeartbeatOverrides) -> Result<Self, Error> {
         let http_client = Client::builder()
             .http1_only()
             .timeout(Duration::from_secs(30))
@@ -132,12 +132,30 @@ impl Heartbeat {
             ),
             heartbeat_row: HeartbeatRow {
                 time: Utc::now().to_rfc3339(),
-                computer: default_heartbeat_computer(),
-                os_type: default_heartbeat_os_type(),
-                os_name: default_heartbeat_os_name(),
-                os_major_version: os_major,
-                os_minor_version: os_minor,
-                version: default_heartbeat_version(),
+                computer: overrides
+                    .computer
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_computer),
+                os_type: overrides
+                    .os_type
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_os_type),
+                os_name: overrides
+                    .os_name
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_os_name),
+                os_major_version: overrides
+                    .os_major_version
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_os_major_version),
+                os_minor_version: overrides
+                    .os_minor_version
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_os_minor_version),
+                version: overrides
+                    .version
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_version),
             },
             auth_header: HeaderValue::from_static("Bearer "),
             resource_id_header: config
@@ -618,5 +636,118 @@ mod tests {
             HeaderValue::from_str(&encoded).ok()
         });
         assert!(result.is_none());
+    }
+
+    // ==================== Heartbeat::new with Overrides Tests ====================
+
+    fn test_api_config() -> ApiConfig {
+        ApiConfig {
+            dcr_endpoint: "https://test.ingest.monitor.azure.com".to_string(),
+            dcr: "dcr-abc123".to_string(),
+            stream_name: "Custom-Logs".to_string(),
+            schema: super::super::config::SchemaConfig {
+                resource_mapping: HashMap::new(),
+                scope_mapping: HashMap::new(),
+                log_record_mapping: HashMap::new(),
+            },
+            azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
+        }
+    }
+
+    #[test]
+    fn test_new_with_no_overrides_uses_defaults() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides::default();
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+
+        // All fields should be auto-detected (non-empty)
+        assert!(!hb.heartbeat_row.computer.is_empty());
+        assert!(!hb.heartbeat_row.os_type.is_empty());
+        assert!(!hb.heartbeat_row.os_name.is_empty());
+        assert!(!hb.heartbeat_row.os_major_version.is_empty());
+        assert!(!hb.heartbeat_row.os_minor_version.is_empty());
+        assert!(!hb.heartbeat_row.version.is_empty());
+    }
+
+    #[test]
+    fn test_new_with_all_overrides() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides {
+            version: Some("99.0.0-custom".to_string()),
+            computer: Some("my-host".to_string()),
+            os_type: Some("CustomOS".to_string()),
+            os_name: Some("MyLinux".to_string()),
+            os_major_version: Some("42".to_string()),
+            os_minor_version: Some("7".to_string()),
+        };
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+
+        assert_eq!(hb.heartbeat_row.version, "99.0.0-custom");
+        assert_eq!(hb.heartbeat_row.computer, "my-host");
+        assert_eq!(hb.heartbeat_row.os_type, "CustomOS");
+        assert_eq!(hb.heartbeat_row.os_name, "MyLinux");
+        assert_eq!(hb.heartbeat_row.os_major_version, "42");
+        assert_eq!(hb.heartbeat_row.os_minor_version, "7");
+    }
+
+    #[test]
+    fn test_new_with_partial_overrides() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides {
+            version: Some("2.0.0".to_string()),
+            computer: Some("override-host".to_string()),
+            os_type: None,
+            os_name: None,
+            os_major_version: None,
+            os_minor_version: None,
+        };
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+
+        // Overridden fields
+        assert_eq!(hb.heartbeat_row.version, "2.0.0");
+        assert_eq!(hb.heartbeat_row.computer, "override-host");
+
+        // Non-overridden fields should still be auto-detected
+        assert!(!hb.heartbeat_row.os_type.is_empty());
+        assert!(!hb.heartbeat_row.os_name.is_empty());
+        assert!(!hb.heartbeat_row.os_major_version.is_empty());
+        assert!(!hb.heartbeat_row.os_minor_version.is_empty());
+    }
+
+    #[test]
+    fn test_new_overrides_appear_in_serialized_payload() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides {
+            version: Some("payload-test-1.0".to_string()),
+            computer: Some("payload-host".to_string()),
+            os_type: None,
+            os_name: None,
+            os_major_version: None,
+            os_minor_version: None,
+        };
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+        let payload = serde_json::json!([hb.heartbeat_row]);
+        let row = &payload[0];
+
+        assert_eq!(row["Version"], "payload-test-1.0");
+        assert_eq!(row["Computer"], "payload-host");
+    }
+
+    #[test]
+    fn test_new_builds_correct_endpoint() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides::default();
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+
+        assert_eq!(
+            hb.endpoint,
+            "https://test.ingest.monitor.azure.com/dataCollectionRules/dcr-abc123/streams/HEALTH_ASSESSMENT_BLOB?api-version=2021-11-01-preview"
+        );
     }
 }
