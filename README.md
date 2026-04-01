@@ -37,7 +37,7 @@ receivers and exporters, and built-in procsesors featuring batching,
 fanout, failover, retry, and routing by signal type. It has processors
 for common forms of filtering, transforming, sampling, and temporal
 aggregation. We have a **durable buffer** processor, based on the
-[Arrow IPC format](https://arrow.apache.org/docs/format/IPC.html),
+[Arrow IPC format][ARROW-IPC],
 introducing disk-based storage into pipelines for reliable delivery,
 and there are others such as a Syslog receiver and a Console exporter.
 
@@ -53,13 +53,10 @@ ourselves](./rust/otap-dataflow/crates/telemetry/README.md) with an
 experimental OpenTelemetry SDK that emits OTAP directly, meaning we
 have an **end-to-end column-oriented telemetry pipeline** in Rust.
 
-Our Golang Collector components
-[`otelarrowreceiver`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md)
-and
-[`otelarrowexporter`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md)
-have been included in the OpenTelemetry Collector-Contrib distribution
-since [the July 2024 release of
-v0.104.0](https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.104.0).
+Our Golang Collector components [`otelarrowreceiver`][RECEIVER] and
+[`otelarrowexporter`][EXPORTER] have been included in the
+OpenTelemetry Collector-Contrib distribution since [the July 2024
+release of v0.104.0][ARROW-RELEASED].
 
 Our Rust and Go codebases are both used in production. Our project has
 55+ contributors and 1500+ pull requests merged.  **[Join us in
@@ -90,7 +87,7 @@ across language, process, and network boundaries. You can build a
 record batch in one language, and pass it to another language without
 copying the data. Record batches support zero-copy operations, and for
 network and file-based communications, each library includes a reader
-and writer for [Arrow IPC](https://arrow.apache.org/docs/format/IPC.html).
+and writer for [Arrow IPC][ARROW-IPC].
 
 ## What is OTAP?
 
@@ -102,7 +99,7 @@ row-oriented protocol, OTel-Arrow's OTAP protocol uses Apache Arrow to
 encode telemetry in a columnar format that is more efficient for CPUs
 to work with, because of vectorization, and compresses dramatically
 better, especially over long-lived streams with the use of [Arrow
-IPC](https://arrow.apache.org/docs/format/IPC.html) stream encoding.
+IPC][ARROW-IPC] stream encoding.
 
 OTAP maintains 100% compatibility with the OpenTelemetry data model,
 with a straight-forward and non-lossy round trip from OTLP to OTAP and
@@ -152,7 +149,23 @@ configurations](./rust/otap-dataflow/configs/README.md) is
 provided. For example, to print syslog records to the console:
 
 ```
-./target/release/df_engine -c ./configs/syslog-console.yaml  --num-cores=1
+./target/release/df_engine -c ./configs/syslog-console.yaml --num-cores=1
+```
+
+Linux/MacOS users, to test this:
+
+```
+﻿logger -n 127.0.0.1 -P 5140 -d --rfc3164 "hello world"
+```
+
+PowerShell users, to test this:
+
+```
+﻿$t=Get-Date -Format 'MMM dd HH:mm:ss';
+$u=New-Object Net.Sockets.UdpClient; 
+$b=[Text.Encoding]::ASCII.GetBytes("<14>$t powershell test: hello world"); 
+$u.Send($b,$b.Length,'127.0.0.1',5140); 
+$u.Close()
 ```
 
 See the [OTAP Dataflow Engine
@@ -161,7 +174,8 @@ documentation](rust/otap-dataflow/README.md) for more details.
 [COLLECTOR-CONTRIB]: https://github.com/open-telemetry/opentelemetry-collector-contrib
 [RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
 [EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
-
+[ARROW-IPC]: https://arrow.apache.org/docs/format/IPC.html
+[ARROW-RELEASED]: https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.104.0
 ---
 
 ## Project Phases
