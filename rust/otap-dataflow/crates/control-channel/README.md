@@ -87,7 +87,9 @@ whose ordering is governed by the channel's fairness and shutdown policy.
 
 ### Role-specific APIs
 
-There are two channel families used between the engine controller and the individual nodes. Receivers have a different interface than the other node types, because they begin the shutdown sequence.
+There are two channel families used between the engine controller and the
+individual nodes. Receivers have a different interface than the other node
+types, because they begin the shutdown sequence.
 
 - For sending messages to receivers, a controller uses `receiver_channel(...)`
   - channel type: `ReceiverControlSender`, `ReceiverControlReceiver`
@@ -99,9 +101,11 @@ There are two channel families used between the engine controller and the indivi
   - channel receiver supports `accept_shutdown(...)` only
 
 This split is intentional. `DrainIngress` is a receiver-specific lifecycle
-control, so non-receiver nodes cannot express it through the public channel receiver API.
+control, so non-receiver nodes cannot express it through the public channel
+receiver API.
 
-The crate exposes a single-owner implementation for use by a single engine core. 
+The crate exposes a single-owner implementation for use by a single engine
+core.
 This design fits our thread-per-core execution model and keeps the control
 state machine behind one receiver-owned or node-owned **queue core**.
 
