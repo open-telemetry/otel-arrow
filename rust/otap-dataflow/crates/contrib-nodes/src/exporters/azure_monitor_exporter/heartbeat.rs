@@ -144,14 +144,8 @@ impl Heartbeat {
                     .os_name
                     .clone()
                     .unwrap_or_else(default_heartbeat_os_name),
-                os_major_version: overrides
-                    .os_major_version
-                    .clone()
-                    .unwrap_or(os_major),
-                os_minor_version: overrides
-                    .os_minor_version
-                    .clone()
-                    .unwrap_or(os_minor),
+                os_major_version: overrides.os_major_version.clone().unwrap_or(os_major),
+                os_minor_version: overrides.os_minor_version.clone().unwrap_or(os_minor),
                 version: overrides
                     .version
                     .clone()
