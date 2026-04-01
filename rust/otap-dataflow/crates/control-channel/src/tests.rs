@@ -105,6 +105,32 @@ fn zero_completion_capacity_is_rejected_at_validation_and_construction() {
     ));
 }
 
+#[test]
+fn completion_batch_max_cannot_exceed_completion_capacity() {
+    // Scenario: a config claims one completion batch can exceed the total
+    // number of retained completions.
+    // Guarantees: validation rejects this meaningless setting early so batch
+    // sizing remains bounded by an explicit, coherent config relation.
+    let config = ControlChannelConfig {
+        completion_msg_capacity: 1,
+        completion_batch_max: 2,
+        completion_burst_limit: 1,
+    };
+
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::CompletionBatchMaxExceedsCapacity)
+    );
+    assert!(matches!(
+        node_channel::<String>(config.clone()),
+        Err(ConfigError::CompletionBatchMaxExceedsCapacity)
+    ));
+    assert!(matches!(
+        receiver_channel::<String>(config),
+        Err(ConfigError::CompletionBatchMaxExceedsCapacity)
+    ));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn lifecycle_tokens_remain_deliverable_under_backlog() {
     // Scenario: completion backlog is saturated, but reserved-capacity

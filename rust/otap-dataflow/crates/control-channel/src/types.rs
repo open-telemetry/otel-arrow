@@ -59,6 +59,9 @@ impl ControlChannelConfig {
         if self.completion_batch_max == 0 {
             return Err(ConfigError::ZeroCompletionBatchMax);
         }
+        if self.completion_batch_max > self.completion_msg_capacity {
+            return Err(ConfigError::CompletionBatchMaxExceedsCapacity);
+        }
         if self.completion_burst_limit == 0 {
             return Err(ConfigError::ZeroCompletionBurstLimit);
         }
@@ -75,6 +78,9 @@ pub enum ConfigError {
     /// `completion_batch_max` must be strictly positive.
     #[error("completion_batch_max must be greater than zero")]
     ZeroCompletionBatchMax,
+    /// `completion_batch_max` cannot exceed retained completion capacity.
+    #[error("completion_batch_max must be less than or equal to completion_msg_capacity")]
+    CompletionBatchMaxExceedsCapacity,
     /// `completion_burst_limit` must be strictly positive.
     #[error("completion_burst_limit must be greater than zero")]
     ZeroCompletionBurstLimit,
