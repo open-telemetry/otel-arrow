@@ -281,10 +281,6 @@ impl AttributeHash {
     pub const EMPTY: Self = Self([0u8; 16]);
 
     /// Compute a hash from an iterator of [`AttributeView`] items.
-    ///
-    /// The provided [`HashBuffer`] is reused across calls to avoid repeated
-    /// heap allocations for the hash input bytes. A temporary `Vec` is
-    /// allocated internally for sorting the attributes by key.
     pub fn compute<A: AttributeView>(buf: &mut HashBuffer, attrs: impl Iterator<Item = A>) -> Self {
         buf.buf.clear();
 
