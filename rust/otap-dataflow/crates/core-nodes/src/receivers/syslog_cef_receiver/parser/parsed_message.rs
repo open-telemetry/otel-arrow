@@ -106,7 +106,7 @@ impl ParsedSyslogMessage<'_> {
 
     /// Returns the time when the event occurred.
     // Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
-    pub(crate) fn timestamp(&self) -> Option<u64> {
+    pub fn timestamp(&self) -> Option<u64> {
         match self {
             ParsedSyslogMessage::Rfc5424(msg) | ParsedSyslogMessage::CefWithRfc5424(msg, _) => {
                 msg.timestamp.and_then(|ts| {
@@ -153,7 +153,7 @@ impl ParsedSyslogMessage<'_> {
     }
 
     /// Returns the severity level of the log message.
-    pub(crate) fn severity(&self) -> Option<(i32, &str)> {
+    pub fn severity(&self) -> Option<(i32, &str)> {
         match self {
             ParsedSyslogMessage::Rfc5424(msg) | ParsedSyslogMessage::CefWithRfc5424(msg, _) => {
                 Some(Self::to_otel_severity(msg.priority.severity))

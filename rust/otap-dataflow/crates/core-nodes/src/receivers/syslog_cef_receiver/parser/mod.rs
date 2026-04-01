@@ -45,7 +45,7 @@ pub enum ParseError {
 }
 
 /// Parse a syslog message from bytes, automatically detecting the format
-pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+pub fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
     // Try pure CEF first - it's the simplest check
     if input.starts_with(b"CEF:") {
         if let Ok(cef_msg) = parse_cef(input) {

@@ -17,7 +17,7 @@ pub struct CefMessage<'a> {
 
 impl CefMessage<'_> {
     /// Parse and iterate over the extensions as key-value pairs
-    pub(super) const fn parse_extensions(&self) -> CefExtensionsIter<'_> {
+    pub const fn parse_extensions(&self) -> CefExtensionsIter<'_> {
         CefExtensionsIter::new(self.extensions)
     }
 }
@@ -206,7 +206,7 @@ pub fn parse_cef(input: &[u8]) -> Result<CefMessage<'_>, super::ParseError> {
 }
 
 /// Iterator for CEF extensions that parses on-demand
-pub(super) struct CefExtensionsIter<'a> {
+pub struct CefExtensionsIter<'a> {
     data: &'a [u8],
     pos: usize,
     // Scratch buffer for unescaping - reused across iterations
@@ -222,7 +222,8 @@ impl<'a> CefExtensionsIter<'a> {
         }
     }
 
-    pub(super) fn next_extension(&mut self) -> Option<(&[u8], &[u8])> {
+    /// Returns the next key-value extension pair, or `None` when exhausted.
+    pub fn next_extension(&mut self) -> Option<(&[u8], &[u8])> {
         if self.pos >= self.data.len() {
             return None;
         }
