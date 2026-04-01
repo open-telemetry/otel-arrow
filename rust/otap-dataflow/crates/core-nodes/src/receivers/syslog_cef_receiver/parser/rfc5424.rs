@@ -1,6 +1,19 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+/*
+    The benchmark results:
+    criterion = "0.5.1"
+
+    Hardware: Apple M1 Max
+    Total Number of Cores: 10 (8 performance and 2 efficiency)
+    RAM: 32.0 GB
+    | Test                          | Average time |
+    |-------------------------------|--------------|
+    | parser_comparison/rfc5424     | 35.897 ns    |
+    | timestamp_extraction/rfc5424  | 22.963 ns    |
+*/
+
 use core::str;
 
 use crate::receivers::syslog_cef_receiver::parser::ParseError;
