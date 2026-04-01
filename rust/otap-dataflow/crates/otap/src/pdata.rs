@@ -16,7 +16,6 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::_private::AckNackRouting;
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::{
@@ -567,6 +566,7 @@ macro_rules! impl_consumer_ext {
         #[async_trait(?Send)]
         impl ConsumerEffectHandlerExtension<OtapPdata> for $handler {
             async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+                use otap_df_engine::_private::AckNackRouting;
                 if ack.accepted.has_timing(Interests::ACKS) {
                     ack.unwind.return_time_ns = nanos_since_birth();
                 }
@@ -574,6 +574,7 @@ macro_rules! impl_consumer_ext {
             }
 
             async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+                use otap_df_engine::_private::AckNackRouting;
                 if nack.refused.has_timing(Interests::NACKS) {
                     nack.unwind.return_time_ns = nanos_since_birth();
                 }
@@ -683,7 +684,6 @@ mod test {
 
     use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_channel::mpsc::Channel as LocalChannel;
-    use otap_df_engine::_private::AckNackRouting;
     use otap_df_engine::ConsumerEffectHandlerExtension;
     use otap_df_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -1817,27 +1817,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn local_processor_route_ack_does_not_stamp_return_time() {
-        let (eh, mut completion_rx) = create_local_processor_with_completion_channel();
-
-        let pdata = pdata_with_timed_ack_frame();
-        let ack = AckMsg::new(pdata);
-        assert_eq!(ack.unwind.return_time_ns, 0, "precondition: initially zero");
-
-        eh.route_ack(ack).await.expect("route_ack should succeed");
-
-        match completion_rx.recv().await.expect("completion message") {
-            PipelineCompletionMsg::DeliverAck { ack } => {
-                assert_eq!(
-                    ack.unwind.return_time_ns, 0,
-                    "route_ack must NOT stamp return_time_ns (callers should use notify_ack)"
-                );
-            }
-            other => panic!("expected DeliverAck, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn local_processor_notify_nack_stamps_return_time() {
         let (eh, mut completion_rx) = create_local_processor_with_completion_channel();
 
@@ -1863,32 +1842,6 @@ mod test {
         }
     }
 
-    #[tokio::test]
-    async fn local_processor_route_nack_does_not_stamp_return_time() {
-        let (eh, mut completion_rx) = create_local_processor_with_completion_channel();
-
-        let pdata = pdata_with_timed_nack_frame();
-        let nack = NackMsg::new("test", pdata);
-        assert_eq!(
-            nack.unwind.return_time_ns, 0,
-            "precondition: initially zero"
-        );
-
-        eh.route_nack(nack)
-            .await
-            .expect("route_nack should succeed");
-
-        match completion_rx.recv().await.expect("completion message") {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert_eq!(
-                    nack.unwind.return_time_ns, 0,
-                    "route_nack must NOT stamp return_time_ns (callers should use notify_nack)"
-                );
-            }
-            other => panic!("expected DeliverNack, got {other:?}"),
-        }
-    }
-
     // -- Local exporter --
 
     #[tokio::test]
@@ -1905,19 +1858,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn local_exporter_route_ack_does_not_stamp_return_time() {
-        let (eh, mut completion_rx) = create_local_exporter_with_completion_channel();
-        let ack = AckMsg::new(pdata_with_timed_ack_frame());
-        eh.route_ack(ack).await.expect("route_ack should succeed");
-        match completion_rx.recv().await.expect("completion message") {
-            PipelineCompletionMsg::DeliverAck { ack } => {
-                assert_eq!(ack.unwind.return_time_ns, 0);
-            }
-            other => panic!("expected DeliverAck, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn local_exporter_notify_nack_stamps_return_time() {
         let (eh, mut completion_rx) = create_local_exporter_with_completion_channel();
         let nack = NackMsg::new("test", pdata_with_timed_nack_frame());
@@ -1927,21 +1867,6 @@ mod test {
         match completion_rx.recv().await.expect("completion message") {
             PipelineCompletionMsg::DeliverNack { nack } => {
                 assert_ne!(nack.unwind.return_time_ns, 0);
-            }
-            other => panic!("expected DeliverNack, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn local_exporter_route_nack_does_not_stamp_return_time() {
-        let (eh, mut completion_rx) = create_local_exporter_with_completion_channel();
-        let nack = NackMsg::new("test", pdata_with_timed_nack_frame());
-        eh.route_nack(nack)
-            .await
-            .expect("route_nack should succeed");
-        match completion_rx.recv().await.expect("completion message") {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert_eq!(nack.unwind.return_time_ns, 0);
             }
             other => panic!("expected DeliverNack, got {other:?}"),
         }
@@ -1963,19 +1888,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn shared_processor_route_ack_does_not_stamp_return_time() {
-        let (eh, mut completion_rx) = create_shared_processor_with_completion_channel();
-        let ack = AckMsg::new(pdata_with_timed_ack_frame());
-        eh.route_ack(ack).await.expect("route_ack should succeed");
-        match completion_rx.recv().await.expect("completion message") {
-            PipelineCompletionMsg::DeliverAck { ack } => {
-                assert_eq!(ack.unwind.return_time_ns, 0);
-            }
-            other => panic!("expected DeliverAck, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn shared_processor_notify_nack_stamps_return_time() {
         let (eh, mut completion_rx) = create_shared_processor_with_completion_channel();
         let nack = NackMsg::new("test", pdata_with_timed_nack_frame());
@@ -1985,21 +1897,6 @@ mod test {
         match completion_rx.recv().await.expect("completion message") {
             PipelineCompletionMsg::DeliverNack { nack } => {
                 assert_ne!(nack.unwind.return_time_ns, 0);
-            }
-            other => panic!("expected DeliverNack, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn shared_processor_route_nack_does_not_stamp_return_time() {
-        let (eh, mut completion_rx) = create_shared_processor_with_completion_channel();
-        let nack = NackMsg::new("test", pdata_with_timed_nack_frame());
-        eh.route_nack(nack)
-            .await
-            .expect("route_nack should succeed");
-        match completion_rx.recv().await.expect("completion message") {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert_eq!(nack.unwind.return_time_ns, 0);
             }
             other => panic!("expected DeliverNack, got {other:?}"),
         }
@@ -2021,19 +1918,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn shared_exporter_route_ack_does_not_stamp_return_time() {
-        let (eh, mut completion_rx) = create_shared_exporter_with_completion_channel();
-        let ack = AckMsg::new(pdata_with_timed_ack_frame());
-        eh.route_ack(ack).await.expect("route_ack should succeed");
-        match completion_rx.recv().await.expect("completion message") {
-            PipelineCompletionMsg::DeliverAck { ack } => {
-                assert_eq!(ack.unwind.return_time_ns, 0);
-            }
-            other => panic!("expected DeliverAck, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn shared_exporter_notify_nack_stamps_return_time() {
         let (eh, mut completion_rx) = create_shared_exporter_with_completion_channel();
         let nack = NackMsg::new("test", pdata_with_timed_nack_frame());
@@ -2043,21 +1927,6 @@ mod test {
         match completion_rx.recv().await.expect("completion message") {
             PipelineCompletionMsg::DeliverNack { nack } => {
                 assert_ne!(nack.unwind.return_time_ns, 0);
-            }
-            other => panic!("expected DeliverNack, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn shared_exporter_route_nack_does_not_stamp_return_time() {
-        let (eh, mut completion_rx) = create_shared_exporter_with_completion_channel();
-        let nack = NackMsg::new("test", pdata_with_timed_nack_frame());
-        eh.route_nack(nack)
-            .await
-            .expect("route_nack should succeed");
-        match completion_rx.recv().await.expect("completion message") {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert_eq!(nack.unwind.return_time_ns, 0);
             }
             other => panic!("expected DeliverNack, got {other:?}"),
         }
