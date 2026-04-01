@@ -362,20 +362,31 @@ pub trait ConsumerEffectHandlerExtension<PData> {
     async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
 }
 
-/// Internal routing trait for ack/nack messages.
+/// Implementation-detail module re-exporting the internal
+/// [`AckNackRouting`] trait.
 ///
-/// Callers should use [`ConsumerEffectHandlerExtension::notify_ack`] and
-/// [`ConsumerEffectHandlerExtension::notify_nack`] instead of calling these
-/// methods directly. Those wrappers stamp timing information required for
-/// correct duration metrics before forwarding to `route_ack`/`route_nack`.
+/// **Do not use directly.** Prefer
+/// [`ConsumerEffectHandlerExtension::notify_ack`] /
+/// [`ConsumerEffectHandlerExtension::notify_nack`] which stamp timing
+/// information required for correct duration metrics.
 #[doc(hidden)]
-#[async_trait(?Send)]
-pub trait AckNackRouting<PData> {
-    /// Routes an ack message to the runtime control manager.
-    async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>;
+pub mod _private {
+    use super::*;
 
-    /// Routes a nack message to the runtime control manager.
-    async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
+    /// Internal routing trait for ack/nack messages.
+    ///
+    /// Callers should use [`ConsumerEffectHandlerExtension::notify_ack`] and
+    /// [`ConsumerEffectHandlerExtension::notify_nack`] instead of calling these
+    /// methods directly. Those wrappers stamp timing information required for
+    /// correct duration metrics before forwarding to `route_ack`/`route_nack`.
+    #[async_trait(?Send)]
+    pub trait AckNackRouting<PData> {
+        /// Routes an ack message to the runtime control manager.
+        async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>;
+
+        /// Routes a nack message to the runtime control manager.
+        async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
+    }
 }
 
 /// Effect handler extension for adding message source

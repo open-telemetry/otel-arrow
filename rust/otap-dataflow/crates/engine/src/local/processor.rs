@@ -299,7 +299,7 @@ impl<PData> EffectHandler<PData> {
 }
 
 #[async_trait(?Send)]
-impl<PData: crate::Unwindable> crate::AckNackRouting<PData> for EffectHandler<PData> {
+impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for EffectHandler<PData> {
     async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
         self.core.route_ack(ack).await
     }
@@ -313,7 +313,7 @@ impl<PData: crate::Unwindable> crate::AckNackRouting<PData> for EffectHandler<PD
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::AckNackRouting;
+    use crate::_private::AckNackRouting;
     use crate::completion_emission_metrics::make_completion_emission_metrics;
     use crate::context::ControllerContext;
     use crate::control::{

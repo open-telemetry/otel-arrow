@@ -257,10 +257,22 @@ impl<PData> EffectHandler<PData> {
     }
 
     // More methods will be added in the future as needed.
+
+    /// Sets the pipeline result message sender for this effect handler.
+    ///
+    /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
+    /// the engine wiring sets this automatically in `prepare_runtime`.
+    pub fn set_pipeline_completion_msg_sender(
+        &mut self,
+        pipeline_completion_msg_sender: crate::control::PipelineCompletionMsgSender<PData>,
+    ) {
+        self.core
+            .set_pipeline_completion_msg_sender(pipeline_completion_msg_sender);
+    }
 }
 
 #[async_trait(?Send)]
-impl<PData: crate::Unwindable> crate::AckNackRouting<PData> for EffectHandler<PData> {
+impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for EffectHandler<PData> {
     async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
         self.core.route_ack(ack).await
     }

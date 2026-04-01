@@ -329,8 +329,9 @@ impl<PData> EffectHandlerCore<PData> {
     /// External callers should use [`ConsumerEffectHandlerExtension::notify_ack`]
     /// and [`ConsumerEffectHandlerExtension::notify_nack`] instead.
     /// Those wrappers stamp timing information required for correct duration
-    /// metrics. Direct access is gated behind the `#[doc(hidden)]`
-    /// [`AckNackRouting`] trait so that accidental bypass is unlikely.
+    /// metrics. Direct access is gated behind the
+    /// `#[doc(hidden)] pub mod _private` module and the
+    /// [`_private::AckNackRouting`] trait so that accidental bypass is unlikely.
     pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
     where
         PData: crate::Unwindable,
