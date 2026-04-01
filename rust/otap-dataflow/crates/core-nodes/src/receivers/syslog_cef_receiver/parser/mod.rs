@@ -45,7 +45,7 @@ pub enum ParseError {
 }
 
 /// Parse a syslog message from bytes, automatically detecting the format
-pub fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
     // Try pure CEF first - it's the simplest check
     if input.starts_with(b"CEF:") {
         if let Ok(cef_msg) = parse_cef(input) {
@@ -153,6 +153,43 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
     let severity = priority_num & 0x07; // Lower 3 bits are severity. This is equivalent to priority_num % 8
 
     Ok((Priority { facility, severity }, &input[end + 1..]))
+}
+
+/// Benchmark support — exposes internal parser helpers for benchmarking only.
+///
+/// This module is **not** part of the public API and is gated behind the `bench`
+/// Cargo feature. Items here may change or be removed without notice.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support {
+    use super::ParseError;
+    use super::cef::CefMessage;
+    use super::parsed_message::ParsedSyslogMessage;
+
+    /// Auto-detect format and parse a syslog message.
+    pub fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+        super::parse(input)
+    }
+
+    /// Extract the timestamp from a parsed message.
+    pub fn timestamp(msg: &ParsedSyslogMessage<'_>) -> Option<u64> {
+        msg.timestamp()
+    }
+
+    /// Opaque wrapper around the internal CEF extensions iterator.
+    pub struct CefExtensionsIter<'a>(super::cef::CefExtensionsIter<'a>);
+
+    impl<'a> CefExtensionsIter<'a> {
+        /// Returns the next key-value extension pair, or `None` when exhausted.
+        pub fn next_extension(&mut self) -> Option<(&[u8], &[u8])> {
+            self.0.next_extension()
+        }
+    }
+
+    /// Start iterating over CEF extensions.
+    pub fn parse_extensions<'a>(msg: &'a CefMessage<'a>) -> CefExtensionsIter<'a> {
+        CefExtensionsIter(msg.parse_extensions())
+    }
 }
 
 #[cfg(test)]

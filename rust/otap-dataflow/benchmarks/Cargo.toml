@@ -12,7 +12,7 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-otap-df-core-nodes = { workspace = true, features = ["dev-tools"] }
+otap-df-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
 otap-df-otap = { workspace = true }
 
 [dev-dependencies]

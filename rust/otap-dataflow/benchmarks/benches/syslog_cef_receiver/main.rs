@@ -7,8 +7,8 @@
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_core_nodes::receivers::syslog_cef_receiver::arrow_records_encoder::ArrowRecordsBuilder;
+use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::bench_support;
 use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::cef::parse_cef;
-use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::parse;
 use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
 use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::rfc3164::parse_rfc3164;
 use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::rfc5424::parse_rfc5424;
@@ -75,25 +75,27 @@ fn bench_parse_auto_detect(c: &mut Criterion) {
 
     _ = group.throughput(Throughput::Bytes(RFC3164_MSG.len() as u64));
     let _ = group.bench_function("rfc3164", |b| {
-        b.iter(|| black_box(parse(black_box(RFC3164_MSG))))
+        b.iter(|| black_box(bench_support::parse(black_box(RFC3164_MSG))))
     });
 
     _ = group.throughput(Throughput::Bytes(RFC5424_MSG.len() as u64));
     let _ = group.bench_function("rfc5424", |b| {
-        b.iter(|| black_box(parse(black_box(RFC5424_MSG))))
+        b.iter(|| black_box(bench_support::parse(black_box(RFC5424_MSG))))
     });
 
     _ = group.throughput(Throughput::Bytes(CEF_MSG.len() as u64));
-    let _ = group.bench_function("cef", |b| b.iter(|| black_box(parse(black_box(CEF_MSG)))));
+    let _ = group.bench_function("cef", |b| {
+        b.iter(|| black_box(bench_support::parse(black_box(CEF_MSG))))
+    });
 
     _ = group.throughput(Throughput::Bytes(CEF_WITH_RFC3164_MSG.len() as u64));
     let _ = group.bench_function("cef_with_rfc3164", |b| {
-        b.iter(|| black_box(parse(black_box(CEF_WITH_RFC3164_MSG))))
+        b.iter(|| black_box(bench_support::parse(black_box(CEF_WITH_RFC3164_MSG))))
     });
 
     _ = group.throughput(Throughput::Bytes(CEF_WITH_RFC5424_MSG.len() as u64));
     let _ = group.bench_function("cef_with_rfc5424", |b| {
-        b.iter(|| black_box(parse(black_box(CEF_WITH_RFC5424_MSG))))
+        b.iter(|| black_box(bench_support::parse(black_box(CEF_WITH_RFC5424_MSG))))
     });
 
     group.finish();
@@ -103,14 +105,14 @@ fn bench_parse_auto_detect(c: &mut Criterion) {
 fn bench_timestamp_extraction(c: &mut Criterion) {
     let mut group = c.benchmark_group("timestamp_extraction");
 
-    let rfc3164_parsed = parse(RFC3164_MSG).expect("parse RFC3164");
+    let rfc3164_parsed = bench_support::parse(RFC3164_MSG).expect("parse RFC3164");
     let _ = group.bench_function("rfc3164", |b| {
-        b.iter(|| black_box(black_box(&rfc3164_parsed).timestamp()))
+        b.iter(|| black_box(bench_support::timestamp(black_box(&rfc3164_parsed))))
     });
 
-    let rfc5424_parsed = parse(RFC5424_MSG).expect("parse RFC5424");
+    let rfc5424_parsed = bench_support::parse(RFC5424_MSG).expect("parse RFC5424");
     let _ = group.bench_function("rfc5424", |b| {
-        b.iter(|| black_box(black_box(&rfc5424_parsed).timestamp()))
+        b.iter(|| black_box(bench_support::timestamp(black_box(&rfc5424_parsed))))
     });
 
     group.finish();
@@ -123,7 +125,7 @@ fn bench_cef_extensions(c: &mut Criterion) {
     let cef_parsed = parse_cef(CEF_MSG).expect("parse CEF");
     let _ = group.bench_function("three_extensions", |b| {
         b.iter(|| {
-            let mut iter = cef_parsed.parse_extensions();
+            let mut iter = bench_support::parse_extensions(&cef_parsed);
             while let Some(kv) = iter.next_extension() {
                 let _ = black_box(kv);
             }
@@ -133,7 +135,7 @@ fn bench_cef_extensions(c: &mut Criterion) {
     let cef_ten = parse_cef(CEF_MSG_TEN_EXT).expect("parse CEF 10 ext");
     let _ = group.bench_function("ten_extensions", |b| {
         b.iter(|| {
-            let mut iter = cef_ten.parse_extensions();
+            let mut iter = bench_support::parse_extensions(&cef_ten);
             while let Some(kv) = iter.next_extension() {
                 let _ = black_box(kv);
             }
