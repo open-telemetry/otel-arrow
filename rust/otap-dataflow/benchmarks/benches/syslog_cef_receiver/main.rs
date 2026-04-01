@@ -12,22 +12,22 @@
     RAM: 32.0 GB
     | Test                                        | Average time |
     |---------------------------------------------|--------------|
-    | parser_comparison/rfc3164                   | 17.947 ns    |
-    | parser_comparison/rfc5424                   | 35.897 ns    |
-    | parser_comparison/cef                       | 31.826 ns    |
-    | parse_auto_detect/rfc3164                   | 39.528 ns    |
-    | parse_auto_detect/rfc5424                   | 41.345 ns    |
-    | parse_auto_detect/cef                       | 36.844 ns    |
-    | parse_auto_detect/cef_rfc3164               | 115.30 ns    |
-    | parse_auto_detect/cef_rfc5424               | 66.394 ns    |
-    | timestamp_extraction/rfc3164                | 539.92 ns    |
-    | timestamp_extraction/rfc5424                | 22.963 ns    |
-    | cef_extensions/one_extension                | 20.155 ns    |
-    | cef_extensions/ten_extensions               | 212.31 ns    |
-    | cef_extensions/ten_extensions_with_escape   | 190.64 ns    |
-    | rfc3164_arrow_batch_100_msgs                | 95.930 µs    |
-    | rfc5424_arrow_batch_100_msgs                | 47.484 µs    |
-    | cef_arrow_batch_100_msgs                    | 43.238 µs    |
+    | parser_comparison/rfc3164                   | 17.409 ns    |
+    | parser_comparison/rfc5424                   | 35.704 ns    |
+    | parser_comparison/cef                       | 31.316 ns    |
+    | parse_auto_detect/rfc3164                   | 40.016 ns    |
+    | parse_auto_detect/rfc5424                   | 42.375 ns    |
+    | parse_auto_detect/cef                       | 37.960 ns    |
+    | parse_auto_detect/cef_with_rfc3164          | 117.88 ns    |
+    | parse_auto_detect/cef_with_rfc5424          | 67.939 ns    |
+    | timestamp_extraction/rfc3164                | 549.32 ns    |
+    | timestamp_extraction/rfc5424                | 23.182 ns    |
+    | cef_extensions/one_extension                | 20.341 ns    |
+    | cef_extensions/ten_extensions               | 191.42 ns    |
+    | cef_extensions/ten_extensions_with_escape   | 215.20 ns    |
+    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 96.281 µs    |
+    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 47.681 µs    |
+    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 43.565 µs    |
 */
 
 #![allow(missing_docs)]
@@ -60,9 +60,9 @@ static CEF_WITH_RFC3164_MSG: &[u8] =
 static CEF_WITH_RFC5424_MSG: &[u8] =
     b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com app - - - CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1";
 static CEF_MSG_TEN_EXT: &[u8] =
-    b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232 dpt=1233 proto=TCP act=blocked app=HTTP rt=1234567890 msg=Worm\\=stopped cn1Label=score";
-static CEF_MSG_TEN_EXT_WITH_ESCAPE: &[u8] =
     b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232 dpt=1233 proto=TCP act=blocked app=HTTP rt=1234567890 msg=Worm stopped cn1Label=score";
+static CEF_MSG_TEN_EXT_WITH_ESCAPE: &[u8] =
+    b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232 dpt=1233 proto=TCP act=blocked app=HTTP rt=1234567890 msg=Worm\\=stopped cn1Label=score";
 
 /// Benchmark comparing all three parsers
 fn bench_parser_comparison(c: &mut Criterion) {
