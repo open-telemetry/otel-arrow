@@ -133,13 +133,21 @@ impl SenderWaiters {
                 break;
             };
             let Some(slot) = self.slots.get_mut(key.index) else {
-                self.queued_stale -= 1;
+                debug_assert!(
+                    self.queued_stale > 0,
+                    "stale waiter bookkeeping must not underflow"
+                );
+                self.queued_stale = self.queued_stale.saturating_sub(1);
                 continue;
             };
             // Stale queue entries are expected when futures are canceled or
             // re-queued; skip until we find a live queued waiter.
             if !slot.in_use || slot.generation != key.generation || !slot.queued {
-                self.queued_stale -= 1;
+                debug_assert!(
+                    self.queued_stale > 0,
+                    "stale waiter bookkeeping must not underflow"
+                );
+                self.queued_stale = self.queued_stale.saturating_sub(1);
                 continue;
             }
             slot.queued = false;
@@ -154,11 +162,19 @@ impl SenderWaiters {
     fn wake_all(&mut self) {
         while let Some(key) = self.queue.pop_front() {
             let Some(slot) = self.slots.get_mut(key.index) else {
-                self.queued_stale -= 1;
+                debug_assert!(
+                    self.queued_stale > 0,
+                    "stale waiter bookkeeping must not underflow"
+                );
+                self.queued_stale = self.queued_stale.saturating_sub(1);
                 continue;
             };
             if !slot.in_use || slot.generation != key.generation || !slot.queued {
-                self.queued_stale -= 1;
+                debug_assert!(
+                    self.queued_stale > 0,
+                    "stale waiter bookkeeping must not underflow"
+                );
+                self.queued_stale = self.queued_stale.saturating_sub(1);
                 continue;
             }
             slot.queued = false;
