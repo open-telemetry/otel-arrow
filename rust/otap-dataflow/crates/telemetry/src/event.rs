@@ -3,6 +3,7 @@
 
 //! Definition of all signals/conditions that drive state transitions and log events.
 
+use crate::log_tap::InternalLogTapDropCounter;
 use crate::self_tracing::{LogRecord, format_log_record_to_string};
 use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
 use serde::Serialize;
@@ -20,6 +21,7 @@ use std::time::SystemTime;
 pub struct ObservedEventReporter {
     policy: SendPolicy,
     sender: flume::Sender<ObservedEvent>,
+    drop_counter: Option<InternalLogTapDropCounter>,
     /// Dedicated reliable sender for engine lifecycle events.
     /// When `Some`, [`report`](Self::report) bypasses the lossy path and uses
     /// a blocking send on the unbounded engine channel.
@@ -37,6 +39,7 @@ impl ObservedEventReporter {
         Self {
             policy,
             sender,
+            drop_counter: None,
             engine_sender: None,
         }
     }
@@ -53,8 +56,16 @@ impl ObservedEventReporter {
         Self {
             policy,
             sender,
+            drop_counter: None,
             engine_sender: Some(engine_sender),
         }
+    }
+
+    /// Attach a counter for logs dropped before they reach retention.
+    #[must_use]
+    pub fn with_drop_counter(mut self, drop_counter: InternalLogTapDropCounter) -> Self {
+        self.drop_counter = Some(drop_counter);
+        self
     }
 
     /// Report an engine event.
@@ -82,10 +93,16 @@ impl ObservedEventReporter {
     }
 
     fn observe(&self, event: ObservedEvent) {
+        let is_log = matches!(event, ObservedEvent::Log(_));
         match self.policy.blocking_timeout {
             None => match self.sender.try_send(event) {
                 Ok(_) => {}
                 Err(err) => {
+                    if is_log {
+                        if let Some(drop_counter) = &self.drop_counter {
+                            drop_counter.increment();
+                        }
+                    }
                     if !self.policy.console_fallback {
                         return;
                     }
@@ -102,6 +119,11 @@ impl ObservedEventReporter {
             Some(timeout) => match self.sender.send_timeout(event, timeout) {
                 Ok(_) => {}
                 Err(err) => {
+                    if is_log {
+                        if let Some(drop_counter) = &self.drop_counter {
+                            drop_counter.increment();
+                        }
+                    }
                     if !self.policy.console_fallback {
                         return;
                     }
