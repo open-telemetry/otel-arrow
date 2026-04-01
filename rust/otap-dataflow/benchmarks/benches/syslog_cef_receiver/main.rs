@@ -171,7 +171,8 @@ fn bench_cef_extensions(c: &mut Criterion) {
         })
     });
 
-    let cef_ten_with_escape = parse_cef(CEF_MSG_TEN_EXT_WITH_ESCAPE).expect("parse CEF 10 ext with escape");
+    let cef_ten_with_escape =
+        parse_cef(CEF_MSG_TEN_EXT_WITH_ESCAPE).expect("parse CEF 10 ext with escape");
     let _ = group.bench_function("ten_extensions_with_escape", |b| {
         b.iter(|| {
             let mut iter = bench_support::parse_extensions(&cef_ten_with_escape);
