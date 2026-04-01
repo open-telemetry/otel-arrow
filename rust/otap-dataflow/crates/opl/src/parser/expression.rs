@@ -230,10 +230,10 @@ pub(crate) fn parse_rel_expression(
                 query_location,
                 left_expr.into(),
                 right_expr,
-                true,
+                false,
             )),
             Rule::rel_op_eq_case_insensitive => LogicalExpression::EqualTo(
-                EqualToLogicalExpression::new(query_location, left_expr.into(), right_expr, false),
+                EqualToLogicalExpression::new(query_location, left_expr.into(), right_expr, true),
             ),
 
             Rule::rel_op_neq => LogicalExpression::Not(NotLogicalExpression::new(
@@ -242,7 +242,7 @@ pub(crate) fn parse_rel_expression(
                     query_location,
                     left_expr.into(),
                     right_expr,
-                    true,
+                    false,
                 )),
             )),
             Rule::rel_op_gt => LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
@@ -1121,7 +1121,7 @@ mod test {
             ScalarExpression::Static(StaticScalarExpression::Integer(
                 IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
             )),
-            true,
+            false,
         ));
 
         assert_eq!(result, expected);
@@ -1151,7 +1151,7 @@ mod test {
             ScalarExpression::Static(StaticScalarExpression::Integer(
                 IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
             )),
-            false,
+            true,
         ));
 
         assert_eq!(result, expected);
@@ -1520,7 +1520,7 @@ mod test {
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
                 )),
-                true,
+                false,
             )),
         ));
 
@@ -1553,7 +1553,7 @@ mod test {
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
                 )),
-                true,
+                false,
             )),
             LogicalExpression::And(AndLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -1571,7 +1571,7 @@ mod test {
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
                     )),
-                    true,
+                    false,
                 )),
                 LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
@@ -1587,7 +1587,7 @@ mod test {
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 30),
                     )),
-                    true,
+                    false,
                 )),
             )),
         ));

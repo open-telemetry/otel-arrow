@@ -501,7 +501,7 @@ impl Composite<FilterPlan> {
                 equals_to_expr.get_left(),
                 Operator::Eq,
                 equals_to_expr.get_right(),
-                equals_to_expr.get_case_insensitive(),
+                !equals_to_expr.get_case_insensitive(),
                 attr_keys_case_sensitive,
             )
             .map(|plan| plan.into()),
@@ -4901,8 +4901,7 @@ mod test {
         assert!(&result.resource_logs.is_empty());
     }
 
-    #[tokio::test]
-    async fn test_filter_by_attributes_case_insensitive_equals() {
+    async fn test_filter_by_attributes_case_insensitive_equals<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
@@ -4916,7 +4915,7 @@ mod test {
         ];
 
         let query = "logs | where attributes[\"key1\"] =~ \"val1\"";
-        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
         let result = pipeline.execute(input.clone()).await.unwrap();
@@ -4944,6 +4943,16 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()]
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_equals_opl_parser() {
+        test_filter_by_attributes_case_insensitive_equals::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_equals_kql_parser() {
+        test_filter_by_attributes_case_insensitive_equals::<KqlParser>().await
     }
 
     #[tokio::test]
