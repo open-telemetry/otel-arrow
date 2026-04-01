@@ -244,7 +244,7 @@ impl PlannedPipeline {
 /// Options for pipeline
 pub struct PipelineOptions {
     /// Whether to treat  attribute keys as case sensitive in filtering pipeline stages
-    filter_attribute_keys_case_sensitive: bool,
+    pub filter_attribute_keys_case_sensitive: bool,
 }
 
 impl Default for PipelineOptions {

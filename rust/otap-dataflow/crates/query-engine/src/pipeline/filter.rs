@@ -382,10 +382,11 @@ impl FilterPlan {
         if case_sensitive {
             col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
         } else {
+            //
             binary_expr(
                 col(consts::ATTRIBUTE_KEY),
-                Operator::RegexIMatch,
-                lit(format!("^{attrs_key}$")),
+                Operator::ILikeMatch,
+                lit(attrs_key),
             )
         }
     }
@@ -4732,5 +4733,56 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[2].clone()]
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_key_match_record_has_same_key_different_case()
+     {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("key1", AnyValue::new_string("val1")),
+                    KeyValue::new("KEY1", AnyValue::new_string("val2")),
+                ])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key1\"] == \"val1\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        // test that since at least one of the attributes passes predicate, we get the result
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
+
+        // test the negation as well: since one of the attributes having "key1" is equal to
+        // "val1", we filter out the record
+        let query = "logs | where attributes[\"key1\"] != \"val2\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+        assert!(&result.resource_logs.is_empty());
     }
 }
