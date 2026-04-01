@@ -269,4 +269,36 @@ mod tests {
             assert_eq!(msg.priority.severity, 7);
         }
     }
+
+    #[test]
+    fn test_parse_empty_input() {
+        assert_eq!(parse(b""), Err(ParseError::EmptyInput));
+    }
+
+    #[test]
+    fn test_parse_priority_invalid() {
+        // Priority exceeds maximum (191)
+        assert_eq!(parse_priority(b"<192>rest"), Err(ParseError::InvalidPriority));
+
+        // Non-digit characters in priority
+        assert_eq!(parse_priority(b"<abc>rest"), Err(ParseError::InvalidPriority));
+
+        // Empty priority value
+        assert_eq!(parse_priority(b"<>rest"), Err(ParseError::InvalidPriority));
+
+        // No closing angle bracket
+        assert_eq!(parse_priority(b"<1rest"), Err(ParseError::InvalidPriority));
+
+        // Leading zeros
+        assert_eq!(parse_priority(b"<01>rest"), Err(ParseError::InvalidPriority));
+
+        // Empty input
+        assert_eq!(parse_priority(b""), Err(ParseError::InvalidPriority));
+
+        // No opening angle bracket
+        assert_eq!(parse_priority(b"34>rest"), Err(ParseError::InvalidPriority));
+
+        // Priority too long (>3 digits)
+        assert_eq!(parse_priority(b"<1234>rest"), Err(ParseError::InvalidPriority));
+    }
 }
