@@ -43,7 +43,7 @@ pub enum ParseError {
 }
 
 /// Parse a syslog message from bytes, automatically detecting the format
-pub fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
     if input.is_empty() {
         return Err(ParseError::EmptyInput);
     }
@@ -60,8 +60,7 @@ pub fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
     if input.starts_with(b"<") {
         if let Ok((priority, remaining)) = parse_priority(input) {
             // Try RFC 5424 first (has version number after priority)
-            if let Ok(rfc5424_msg) =
-                parse_rfc5424_with_priority(priority.clone(), remaining, input)
+            if let Ok(rfc5424_msg) = parse_rfc5424_with_priority(priority.clone(), remaining, input)
             {
                 // Check if the message contains CEF
                 if let Some(msg) = rfc5424_msg.message {
@@ -75,9 +74,7 @@ pub fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
             }
 
             // Fall through to RFC 3164 with the already-parsed priority
-            if let Ok(rfc3164_msg) =
-                parse_rfc3164_with_priority(Some(priority), remaining, input)
-            {
+            if let Ok(rfc3164_msg) = parse_rfc3164_with_priority(Some(priority), remaining, input) {
                 return try_rfc3164_cef(rfc3164_msg, input);
             }
         } else {
@@ -117,9 +114,7 @@ fn try_rfc3164_cef<'a>(
         // Find where "CEF:" appears in the original input after the hostname
         if let Some(hostname) = rfc3164_msg.hostname {
             // Find hostname position in input
-            if let Some(hostname_pos) =
-                input.windows(hostname.len()).position(|w| w == hostname)
-            {
+            if let Some(hostname_pos) = input.windows(hostname.len()).position(|w| w == hostname) {
                 // Look for "CEF:" after hostname position
                 let search_start = hostname_pos + hostname.len();
                 let after_hostname = &input[search_start..];
