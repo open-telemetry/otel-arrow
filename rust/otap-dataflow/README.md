@@ -409,6 +409,9 @@ This pattern is analogous to the builder approach used by projects like
 `bindplane-otel-collector` in the Go ecosystem. The default `src/main.rs`
 is itself a thin wrapper over these library calls.
 
+For a complete runnable example, see
+[`examples/custom_collector.rs`](examples/custom_collector.rs).
+
 ## Development Setup
 
 **Requirements**:
