@@ -16,6 +16,7 @@ pub struct CefMessage<'a> {
 }
 
 impl CefMessage<'_> {
+    #[must_use]
     /// Parse and iterate over the extensions as key-value pairs
     pub const fn parse_extensions(&self) -> CefExtensionsIter<'_> {
         CefExtensionsIter::new(self.extensions)
