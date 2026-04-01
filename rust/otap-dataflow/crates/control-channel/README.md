@@ -101,9 +101,9 @@ There are two channel families used between the engine controller and the indivi
 This split is intentional. `DrainIngress` is a receiver-specific lifecycle
 control, so non-receiver nodes cannot express it through the public channel receiver API.
 
-The crate intentionally exposes one single-owner implementation. That matches the
-thread-per-core execution model the engine is targeting and keeps the control
-state machine behind one receiver-owned queue core.
+The crate exposes a single-owner implementation for use by a single engine core. 
+This design fits our thread-per-core execution model and keeps the control
+state machine behind one receiver-owned or node-owned **queue core**.
 
 ### Traffic classes
 
