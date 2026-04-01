@@ -195,6 +195,7 @@ impl FilterPlan {
         left_expr: &ScalarExpression,
         binary_op: Operator,
         right_expr: &ScalarExpression,
+        attr_keys_case_sensitive: bool,
     ) -> Result<Self> {
         let left_arg = BinaryArg::try_from(left_expr)?;
         let right_arg = BinaryArg::try_from(right_expr)?;
@@ -269,7 +270,8 @@ impl FilterPlan {
                         BinaryArg::Literal(right_lit) => {
                             // left = attribute & right = literal
                             Ok(FilterPlan::from(AttributesFilterPlan::new(
-                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
+                                // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
+                                Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                         &right_lit, binary_op,
                                     )?),
@@ -280,7 +282,8 @@ impl FilterPlan {
                         BinaryArg::Null => {
                             // left = attribute & right = null (e.g. doesn't have attribute)
                             Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
-                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
+                                Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive),
+                                // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
                                 attrs_identifier,
                             ))))
                         }
@@ -321,11 +324,13 @@ impl FilterPlan {
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = literal & right = attribute
                         Ok(FilterPlan::from(AttributesFilterPlan::new(
-                            col(consts::ATTRIBUTE_KEY)
-                                .eq(lit(attrs_key))
-                                .and(Expr::BinaryExpr(try_attrs_value_filter_from_literal(
+                            // col(consts::ATTRIBUTE_KEY)
+                            //     .eq(lit(attrs_key))
+                            Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
+                                Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                     &left_lit, binary_op,
-                                )?)),
+                                )?),
+                            ),
                             attrs_identifier,
                         )))
                     }
@@ -352,7 +357,7 @@ impl FilterPlan {
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = null & right = attribute (e.g. doesn't have attribute)
                         Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
-                            col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
+                            Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive),
                             attrs_identifier,
                         ))))
                     }
@@ -370,6 +375,18 @@ impl FilterPlan {
                     })
                 }
             },
+        }
+    }
+
+    fn attr_key_equals(attrs_key: &str, case_sensitive: bool) -> Expr {
+        if case_sensitive {
+            col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
+        } else {
+            binary_expr(
+                col(consts::ATTRIBUTE_KEY),
+                Operator::RegexIMatch,
+                lit(format!("^{attrs_key}$")),
+            )
         }
     }
 
@@ -399,41 +416,46 @@ impl FilterPlan {
     }
 }
 
-impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
-    type Error = Error;
-
-    fn try_from(logical_expr: &LogicalExpression) -> Result<Self> {
+impl Composite<FilterPlan> {
+    pub fn try_from(
+        logical_expr: &LogicalExpression,
+        attr_keys_case_sensitive: bool,
+    ) -> Result<Self> {
         match logical_expr {
             LogicalExpression::EqualTo(equals_to_expr) => FilterPlan::try_from_binary_expr(
                 equals_to_expr.get_left(),
                 Operator::Eq,
                 equals_to_expr.get_right(),
+                attr_keys_case_sensitive,
             )
             .map(|plan| plan.into()),
             LogicalExpression::GreaterThan(gt_expr) => FilterPlan::try_from_binary_expr(
                 gt_expr.get_left(),
                 Operator::Gt,
                 gt_expr.get_right(),
+                attr_keys_case_sensitive,
             )
             .map(|plan| plan.into()),
             LogicalExpression::GreaterThanOrEqualTo(geq_expr) => FilterPlan::try_from_binary_expr(
                 geq_expr.get_left(),
                 Operator::GtEq,
                 geq_expr.get_right(),
+                attr_keys_case_sensitive,
             )
             .map(|plan| plan.into()),
             LogicalExpression::And(and_expr) => {
-                let left = Self::try_from(and_expr.get_left())?;
-                let right = Self::try_from(and_expr.get_right())?;
+                let left = Self::try_from(and_expr.get_left(), attr_keys_case_sensitive)?;
+                let right = Self::try_from(and_expr.get_right(), attr_keys_case_sensitive)?;
                 Ok(Self::and(left, right))
             }
             LogicalExpression::Or(or_expr) => {
-                let left = Self::try_from(or_expr.get_left())?;
-                let right = Self::try_from(or_expr.get_right())?;
+                let left = Self::try_from(or_expr.get_left(), attr_keys_case_sensitive)?;
+                let right = Self::try_from(or_expr.get_right(), attr_keys_case_sensitive)?;
                 Ok(Self::or(left, right))
             }
             LogicalExpression::Not(not_expr) => {
-                let inner = Self::try_from(not_expr.get_inner_expression())?;
+                let inner =
+                    Self::try_from(not_expr.get_inner_expression(), attr_keys_case_sensitive)?;
                 Ok(Self::not(inner))
             }
             LogicalExpression::Contains(contains_expr) => {
@@ -1355,7 +1377,7 @@ impl PipelineStage for FilterPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use crate::pipeline::Pipeline;
+    use crate::pipeline::{Pipeline, PipelineOptions};
 
     use super::*;
 
@@ -1394,7 +1416,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::{
-        otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
+        otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
     };
 
     use crate::pipeline::test::{
@@ -4675,5 +4697,40 @@ mod test {
             .execute(&otap_batch, &session_ctx, true, &mut pool)
             .unwrap();
         assert_eq!(result, IdMask::All);
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_key_match() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val1"))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key1\"] == \"val1\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
     }
 }
