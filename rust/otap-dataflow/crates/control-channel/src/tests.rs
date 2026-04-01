@@ -652,6 +652,52 @@ async fn close_wakes_blocked_senders_with_closed() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn receiver_drop_wakes_blocked_senders_with_closed() {
+    // Scenario: the channel receiver is dropped while a completion sender is
+    // blocked on bounded capacity.
+    // Guarantees: receiver drop closes the channel, wakes blocked senders
+    // immediately, and returns the original command as `Closed`.
+    let (tx, rx) = node_channel::<String>(ControlChannelConfig {
+        completion_msg_capacity: 1,
+        completion_batch_max: 1,
+        completion_burst_limit: 1,
+    })
+    .unwrap();
+
+    assert_eq!(tx.try_send(ack("ack-1")).unwrap(), SendOutcome::Accepted);
+
+    let mut blocked = std::pin::pin!(tx.send(ack("ack-2")));
+    assert!(is_pending_once(blocked.as_mut()).await);
+
+    drop(rx);
+
+    match blocked.await {
+        Err(SendError::Closed(ControlCmd::Ack(ack))) => {
+            assert_eq!(*ack.accepted, "ack-2".to_owned());
+        }
+        other => panic!("expected closed send after receiver drop, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn receiver_drop_makes_future_sends_fail_closed() {
+    // Scenario: the channel receiver is dropped before a sender attempts more
+    // work, leaving no consumer for queued control events.
+    // Guarantees: receiver drop closes the channel for future sends so control
+    // messages are not accepted into a channel with no consumer.
+    let (tx, rx) = node_channel::<String>(test_config()).unwrap();
+
+    drop(rx);
+
+    match tx.try_send(ack("ack-1")) {
+        Err(TrySendError::Closed(ControlCmd::Ack(ack))) => {
+            assert_eq!(*ack.accepted, "ack-1".to_owned());
+        }
+        other => panic!("expected closed try_send after receiver drop, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn try_send_returns_full_with_the_original_command() {
     // Scenario: `try_send` preserves the original command when bounded
     // backpressured completion admission is full.

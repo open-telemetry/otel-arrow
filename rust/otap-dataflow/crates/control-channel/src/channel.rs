@@ -373,6 +373,16 @@ impl<PData, Meta> Drop for ControlSenderCore<PData, Meta> {
     }
 }
 
+impl<PData, Meta> Drop for ControlReceiverCore<PData, Meta> {
+    fn drop(&mut self) {
+        let closed = self.state.inner.borrow_mut().close();
+        if closed {
+            self.state.wake_all_sender_waiters();
+            self.state.notify.notify_waiters();
+        }
+    }
+}
+
 impl<PData, Meta> ControlSenderCore<PData, Meta> {
     /// Records `DrainIngress` outside the bounded completion capacity.
     ///
