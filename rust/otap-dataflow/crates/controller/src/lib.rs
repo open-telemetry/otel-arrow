@@ -91,6 +91,8 @@ use std::thread;
 
 /// Error types and helpers for the controller module.
 pub mod error;
+/// Reusable startup helpers (validation, CLI overrides, system info).
+pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
 pub mod thread_task;
 
