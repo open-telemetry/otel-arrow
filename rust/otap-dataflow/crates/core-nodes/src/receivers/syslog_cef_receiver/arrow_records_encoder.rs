@@ -1,20 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-/*
-    The benchmark results:
-    criterion = "0.5.1"
-
-    Hardware: Apple M1 Max
-    Total Number of Cores: 10 (8 performance and 2 efficiency)
-    RAM: 32.0 GB
-    | Test                          | Average time |
-    |-------------------------------|--------------|
-    | rfc3164_arrow_batch_100_msgs  | 95.930 µs    |
-    | rfc5424_arrow_batch_100_msgs  | 47.484 µs    |
-    | cef_arrow_batch_100_msgs      | 43.238 µs    |
-*/
-
 use chrono::Utc;
 use otap_df_pdata::{
     encode::record::{

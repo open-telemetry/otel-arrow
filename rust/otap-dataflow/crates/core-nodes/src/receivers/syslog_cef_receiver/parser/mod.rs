@@ -1,22 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-/*
-    The benchmark results:
-    criterion = "0.5.1"
-
-    Hardware: Apple M1 Max
-    Total Number of Cores: 10 (8 performance and 2 efficiency)
-    RAM: 32.0 GB
-    | Test                          | Average time |
-    |-------------------------------|--------------|
-    | parse_auto_detect/rfc3164     | 39.528 ns    |
-    | parse_auto_detect/rfc5424     | 41.345 ns    |
-    | parse_auto_detect/cef         | 36.844 ns    |
-    | parse_auto_detect/cef_rfc3164 | 115.30 ns    |
-    | parse_auto_detect/cef_rfc5424 | 66.394 ns    |
-*/
-
 use core::str;
 
 /// Parser for Common Event Format (CEF) messages
