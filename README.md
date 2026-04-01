@@ -145,8 +145,9 @@ cargo build --release --workspace
 ```
 
 A [directory of example
-configurations](./rust/otap-dataflow/configs/README.md) is
-provided. For example, to print syslog records to the console:
+configurations](./rust/otap-dataflow/configs/README.md) is provided,
+for example [syslog-console.yaml][SYSLOG-CONSOLE-YAML]. For example,
+to print syslog records to the console on port 5140:
 
 ```
 ./target/release/df_engine -c ./configs/syslog-console.yaml --num-cores=1
@@ -168,6 +169,8 @@ $u.Send($b,$b.Length,'127.0.0.1',5140);
 $u.Close()
 ```
 
+Note! This is insecure, see the [`syslog_cef` documentation][SYSLOG-CEF] for more details.
+
 See the [OTAP Dataflow Engine
 documentation](rust/otap-dataflow/README.md) for more details.
 
@@ -176,9 +179,10 @@ documentation](rust/otap-dataflow/README.md) for more details.
 [EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
 [ARROW-IPC]: https://arrow.apache.org/docs/format/IPC.html
 [ARROW-RELEASED]: https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.104.0
----
+[SYSLOG-CEF]: ./rust/otap-dataflow/crates/core-nodes/src/receivers/syslog_cef_receiver/README.md
+[SYSLOG-CONSOLE-YAML]: ./rust/otap-dataflow/configs/syslog-console.yaml
 
-## Project Phases
+## Project History
 
 ### Phase 1 — Wire Protocol ✅
 

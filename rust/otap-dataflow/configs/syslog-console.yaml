@@ -5,16 +5,16 @@ groups:
     pipelines:
       main:
         nodes:
-          receiver:
+          syslog:
             type: receiver:syslog_cef
             config:
               protocol:
                 udp:
                   listening_addr: "0.0.0.0:5140"
-          exporter:
+          console:
             type: exporter:console
             config: {}
 
         connections:
-          - from: receiver
-            to: exporter
+          - from: syslog
+            to: console
