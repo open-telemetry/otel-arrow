@@ -84,9 +84,7 @@ fn bench_parse_auto_detect(c: &mut Criterion) {
     });
 
     _ = group.throughput(Throughput::Bytes(CEF_MSG.len() as u64));
-    let _ = group.bench_function("cef", |b| {
-        b.iter(|| black_box(parse(black_box(CEF_MSG))))
-    });
+    let _ = group.bench_function("cef", |b| b.iter(|| black_box(parse(black_box(CEF_MSG)))));
 
     _ = group.throughput(Throughput::Bytes(CEF_WITH_RFC3164_MSG.len() as u64));
     let _ = group.bench_function("cef_with_rfc3164", |b| {
