@@ -9,10 +9,10 @@ use crate::testing::dst::common::setup_dst_runtime;
 use otap_df_channel::mpsc;
 use std::time::Duration;
 
-// Seeded message-channel sweep covering the three behaviors that matter for the
+// Seeded inbox sweep covering the three behaviors that matter for the
 // refactor: bounded-fair control vs pdata delivery, processor draining once
 // shutdown is latched, and exporter forced-drain when admission never reopens.
-async fn run_message_channel_seed(seed: u64) {
+async fn run_inbox_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();
     let (rt, local_tasks) = setup_dst_runtime();
@@ -163,12 +163,12 @@ async fn run_message_channel_seed(seed: u64) {
     }));
 }
 
-// Sweep seeded message-channel interleavings that combine bounded-fair control
+// Sweep seeded inbox interleavings that combine bounded-fair control
 // vs pdata delivery, processor shutdown draining with admission reopen, and the
 // exporter-specific forced-drain behavior once Shutdown is latched.
 #[test]
-fn dst_message_channel_seeded() {
+fn dst_inbox_seeded() {
     for seed in dst_seeds(&[3, 19, 41], 8) {
-        futures::executor::block_on(run_message_channel_seed(seed));
+        futures::executor::block_on(run_inbox_seed(seed));
     }
 }

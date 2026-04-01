@@ -24,7 +24,7 @@
 //!
 //! The current engine DST scenarios cover:
 //!
-//! - `dst_message_channel_seeded`: bounded-fair progress between control and
+//! - `dst_inbox_seeded`: bounded-fair progress between control and
 //!   `pdata`, processor shutdown draining after admission reopens, exporter
 //!   shutdown draining of buffered `pdata` without reopening admission, and
 //!   deadline-forced shutdown when a processor keeps admission closed
@@ -143,4 +143,4 @@ mod control_plane;
 #[cfg(test)]
 mod heavy_ingress;
 #[cfg(test)]
-mod message_channel;
+mod inbox;
