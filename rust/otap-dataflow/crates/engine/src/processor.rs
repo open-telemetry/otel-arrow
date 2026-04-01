@@ -22,8 +22,9 @@ use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
-use crate::message::{Message, ProcessorMessageChannel, Receiver, Sender};
+use crate::message::{Message, ProcessorInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use otap_df_channel::error::SendError;
@@ -102,8 +103,8 @@ pub enum ProcessorWrapperRuntime<PData> {
     Local {
         /// The processor instance.
         processor: Box<dyn local::Processor<PData>>,
-        /// The message channel
-        message_channel: ProcessorMessageChannel<PData>,
+        /// The processor inbox
+        inbox: ProcessorInbox<PData>,
         /// The local effect handler
         effect_handler: local::EffectHandler<PData>,
     },
@@ -111,8 +112,8 @@ pub enum ProcessorWrapperRuntime<PData> {
     Shared {
         /// The processor instance.
         processor: Box<dyn shared::Processor<PData>>,
-        /// Message channel
-        message_channel: ProcessorMessageChannel<PData>,
+        /// Processor inbox
+        inbox: ProcessorInbox<PData>,
         /// The shared effect handler
         effect_handler: shared::EffectHandler<PData>,
     },
@@ -325,6 +326,7 @@ impl<PData> ProcessorWrapper<PData> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
+                runtime_config,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -333,7 +335,11 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let message_channel = ProcessorMessageChannel::new(
+                let local_scheduler = NodeLocalSchedulerHandle::new(
+                    runtime_config.input_pdata_channel.capacity,
+                    runtime_config.control_channel.capacity,
+                );
+                let inbox = ProcessorInbox::new_with_local_scheduler(
                     Receiver::Local(control_receiver),
                     pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
@@ -341,6 +347,7 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?,
+                    local_scheduler.clone(),
                     node_id.index,
                     node_interests,
                 );
@@ -352,14 +359,16 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.core.set_local_scheduler(local_scheduler);
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
-                    message_channel,
+                    inbox,
                 })
             }
             ProcessorWrapper::Shared {
                 node_id,
+                runtime_config,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -368,7 +377,11 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let message_channel = ProcessorMessageChannel::new(
+                let local_scheduler = NodeLocalSchedulerHandle::new(
+                    runtime_config.input_pdata_channel.capacity,
+                    runtime_config.control_channel.capacity,
+                );
+                let inbox = ProcessorInbox::new_with_local_scheduler(
                     Receiver::Shared(control_receiver),
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
@@ -376,6 +389,7 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?),
+                    local_scheduler.clone(),
                     node_id.index,
                     node_interests,
                 );
@@ -387,10 +401,11 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.core.set_local_scheduler(local_scheduler);
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
-                    message_channel,
+                    inbox,
                 })
             }
         }
@@ -435,7 +450,7 @@ impl<PData> ProcessorWrapper<PData> {
         match runtime {
             ProcessorWrapperRuntime::Local {
                 mut processor,
-                mut message_channel,
+                mut inbox,
                 mut effect_handler,
             } => {
                 effect_handler
@@ -454,7 +469,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = message_channel.recv_when(processor.accept_pdata()).await {
+                while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
@@ -469,7 +484,7 @@ impl<PData> ProcessorWrapper<PData> {
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
-                mut message_channel,
+                mut inbox,
                 mut effect_handler,
             } => {
                 effect_handler
@@ -488,7 +503,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = message_channel.recv_when(processor.accept_pdata()).await {
+                while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection

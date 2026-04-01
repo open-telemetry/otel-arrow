@@ -4,7 +4,7 @@
 use super::{DstRng, SimClock, dst_seeds};
 use crate::Interests;
 use crate::control::NodeControlMsg;
-use crate::message::{ExporterMessageChannel, Message, ProcessorMessageChannel, Receiver};
+use crate::message::{ExporterInbox, Message, ProcessorInbox, Receiver};
 use crate::testing::dst::common::setup_dst_runtime;
 use otap_df_channel::mpsc;
 use std::time::Duration;
@@ -23,7 +23,7 @@ async fn run_message_channel_seed(seed: u64) {
         // Fairness phase.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(128);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(128);
-        let mut channel = ProcessorMessageChannel::new(
+        let mut channel = ProcessorInbox::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             1,
@@ -72,7 +72,7 @@ async fn run_message_channel_seed(seed: u64) {
         // Draining phase with explicit deadline expiry.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(128);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(128);
-        let mut channel = ProcessorMessageChannel::new(
+        let mut channel = ProcessorInbox::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             2,
@@ -124,7 +124,7 @@ async fn run_message_channel_seed(seed: u64) {
         // Exporter draining while admission stays closed.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(16);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(16);
-        let mut channel = ExporterMessageChannel::new(
+        let mut channel = ExporterInbox::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             3,
