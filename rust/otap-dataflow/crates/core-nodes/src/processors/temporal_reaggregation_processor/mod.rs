@@ -324,6 +324,8 @@ mod tests {
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"])),
                 (NumberDataPoints,
@@ -336,6 +338,8 @@ mod tests {
             let batch2 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"])),
                 (NumberDataPoints,
@@ -369,6 +373,8 @@ mod tests {
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Sum as u8]),
                     ("name", Utf8, ["requests"]),
                     ("aggregation_temporality", Int32, [2]),
@@ -383,6 +389,8 @@ mod tests {
             let batch2 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Sum as u8]),
                     ("name", Utf8, ["requests"]),
                     ("aggregation_temporality", Int32, [2]),
@@ -605,6 +613,8 @@ mod tests {
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"])),
                 (ResourceAttrs,
@@ -621,6 +631,8 @@ mod tests {
             let batch2 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"])),
                 (ResourceAttrs,
@@ -659,9 +671,10 @@ mod tests {
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0, 1]),
+                    ("resource.id", UInt16, [0, 0]),
+                    ("scope.id", UInt16, [0, 1]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8, MetricType::Gauge as u8]),
-                    ("name", Utf8, ["cpu", "cpu"]),
-                    ("scope.id", UInt16, [0, 1])),
+                    ("name", Utf8, ["cpu", "cpu"])),
                 (ScopeAttrs,
                     ("parent_id", UInt16, [0, 1]),
                     ("key", Utf8, ["lib", "lib"]),
@@ -694,9 +707,10 @@ mod tests {
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"]),
-                    ("scope.id", UInt16, [0]),
                     ("scope.name", Utf8, ["scope-a"])),
                 (ResourceAttrs,
                     ("parent_id", UInt16, [0]),
@@ -712,9 +726,10 @@ mod tests {
             let batch2 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"]),
-                    ("scope.id", UInt16, [0]),
                     ("scope.name", Utf8, ["scope-b"])),
                 (ResourceAttrs,
                     ("parent_id", UInt16, [0]),
@@ -752,6 +767,8 @@ mod tests {
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0, 1]),
+                    ("resource.id", UInt16, [0, 0]),
+                    ("scope.id", UInt16, [0, 0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8, MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu", "memory"])),
                 (NumberDataPoints,
@@ -781,6 +798,8 @@ mod tests {
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0, 1]),
+                    ("resource.id", UInt16, [0, 0]),
+                    ("scope.id", UInt16, [0, 0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8, MetricType::Sum as u8]),
                     ("name", Utf8, ["cpu", "cpu"]),
                     ("aggregation_temporality", Int32, [0, 2]),
@@ -812,6 +831,8 @@ mod tests {
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0]),
+                    ("resource.id", UInt16, [0]),
+                    ("scope.id", UInt16, [0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8]),
                     ("name", Utf8, ["cpu"])),
                 (NumberDataPoints,
@@ -846,6 +867,8 @@ mod tests {
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
                     ("id", UInt16, [0, 1]),
+                    ("resource.id", UInt16, [0, 0]),
+                    ("scope.id", UInt16, [0, 0]),
                     ("metric_type", UInt8, [MetricType::Gauge as u8, MetricType::Sum as u8]),
                     ("name", Utf8, ["temperature", "requests"]),
                     ("aggregation_temporality", Int32, [0, 2]),
