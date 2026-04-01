@@ -355,6 +355,8 @@ mod test {
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use prost::Message;
 
+    use crate::parser::default_parser_options;
+
     use super::*;
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
@@ -379,7 +381,8 @@ mod test {
     }
 
     pub async fn exec_logs_pipeline<P: Parser>(query: &str, logs_data: LogsData) -> LogsData {
-        let parser_result = P::parse(query).unwrap();
+        let options = default_parser_options();
+        let parser_result = P::parse_with_options(query, options).unwrap();
         exec_logs_pipeline_expr(parser_result.pipeline, logs_data).await
     }
 

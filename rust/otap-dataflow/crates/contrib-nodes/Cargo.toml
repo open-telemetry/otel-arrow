@@ -37,6 +37,7 @@ thiserror.workspace = true
 linkme.workspace = true
 chrono = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
+humantime-serde = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
@@ -71,6 +72,7 @@ azure-monitor-exporter = [
     "dep:chrono",
     "dep:flate2",
     "dep:http",
+    "dep:humantime-serde",
     "dep:itoa",
     "dep:rand",
     "dep:ryu",

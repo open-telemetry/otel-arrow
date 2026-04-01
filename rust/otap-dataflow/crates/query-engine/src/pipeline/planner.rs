@@ -687,15 +687,6 @@ impl PipelinePlanner {
             // its name or some additional metadata. For now, we just know this is the only type
             // of function invocation supported.
             if let ScalarExpression::InvokeFunction(func) = set_expr.get_source() {
-                // create a pipeline stage to execute any previous assignments before executing
-                // this nested pipeline
-                if !assignments.is_empty() {
-                    let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
-                    results.push(Box::new(pipeline_stage));
-                    assignments.clear();
-                    cols_or_keys_referenced.clear();
-                }
-
                 let function_id = func.get_function_id();
                 let function =
                     functions
@@ -705,65 +696,71 @@ impl PipelinePlanner {
                             query_location: Some(func.get_query_location().clone()),
                         })?;
 
-                let PipelineFunctionImplementation::Expressions(function_exprs) =
+                if let PipelineFunctionImplementation::Expressions(function_exprs) =
                     function.get_implementation()
-                else {
-                    return Err(Error::NotYetSupportedError {
-                        message:"only functions with 'Expressions' implementation is currently supported".into(),
-                    });
-                };
-
-                let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
-                for func_expr in function_exprs {
-                    let data_expr = match func_expr {
-                        PipelineFunctionExpression::Conditional(c) => {
-                            DataExpression::Conditional(c.clone())
-                        }
-                        PipelineFunctionExpression::Discard(d) => {
-                            DataExpression::Discard(d.clone())
-                        }
-                        PipelineFunctionExpression::Transform(t) => {
-                            DataExpression::Transform(t.clone())
-                        }
-                        PipelineFunctionExpression::Return(_r) => {
-                            return Err(Error::NotYetSupportedError {
-                                message: "return statement in function not yet supported".into(),
-                            });
-                        }
-                    };
-                    inner_pipeline_data_exprs.push(data_expr);
-                }
-
-                let planner = Self::new_for_attributes();
-                let child_pipeline = planner.plan_data_exprs(
-                    &inner_pipeline_data_exprs,
-                    functions,
-                    session_ctx,
-                    otap_batch,
-                )?;
-
-                let attributes_id = Self::source_to_apply_attrs_id(dest).ok_or_else(|| {
-                    Error::InvalidPipelineError {
-                        cause: format!(
-                            "Invalid source for nested apply pipeline to attributes {:?}",
-                            dest,
-                        ),
-                        query_location: Some(dest.get_query_location().clone()),
+                {
+                    // create a pipeline stage to execute any previous assignments before executing
+                    // this nested pipeline
+                    if !assignments.is_empty() {
+                        let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
+                        results.push(Box::new(pipeline_stage));
+                        assignments.clear();
+                        cols_or_keys_referenced.clear();
                     }
-                })?;
 
-                results.push(Box::new(ApplyToAttributesPipelineStage::new(
-                    attributes_id,
-                    child_pipeline,
-                )));
+                    let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
+                    for func_expr in function_exprs {
+                        let data_expr = match func_expr {
+                            PipelineFunctionExpression::Conditional(c) => {
+                                DataExpression::Conditional(c.clone())
+                            }
+                            PipelineFunctionExpression::Discard(d) => {
+                                DataExpression::Discard(d.clone())
+                            }
+                            PipelineFunctionExpression::Transform(t) => {
+                                DataExpression::Transform(t.clone())
+                            }
+                            PipelineFunctionExpression::Return(_r) => {
+                                return Err(Error::NotYetSupportedError {
+                                    message: "return statement in function not yet supported"
+                                        .into(),
+                                });
+                            }
+                        };
+                        inner_pipeline_data_exprs.push(data_expr);
+                    }
 
-                continue;
+                    let planner = Self::new_for_attributes();
+                    let child_pipeline = planner.plan_data_exprs(
+                        &inner_pipeline_data_exprs,
+                        functions,
+                        session_ctx,
+                        otap_batch,
+                    )?;
+
+                    let attributes_id = Self::source_to_apply_attrs_id(dest).ok_or_else(|| {
+                        Error::InvalidPipelineError {
+                            cause: format!(
+                                "Invalid source for nested apply pipeline to attributes {:?}",
+                                dest,
+                            ),
+                            query_location: Some(dest.get_query_location().clone()),
+                        }
+                    })?;
+
+                    results.push(Box::new(ApplyToAttributesPipelineStage::new(
+                        attributes_id,
+                        child_pipeline,
+                    )));
+
+                    continue;
+                }
             }
 
             // create new assignment argument
             let assignment = Assignment {
                 dest_column: ColumnAccessor::try_from(dest.get_value_accessor())?,
-                source: logical_planner.plan_scalar_expr(set_expr.get_source())?,
+                source: logical_planner.plan_scalar_expr(set_expr.get_source(), functions)?,
                 dest_query_location: Some(dest.get_query_location()),
             };
 

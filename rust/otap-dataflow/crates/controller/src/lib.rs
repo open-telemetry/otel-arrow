@@ -980,10 +980,18 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         // Create the shared telemetry registry first - it will be used by both
         // the observed state store and the internal telemetry system.
         let telemetry_registry = TelemetryRegistryHandle::new();
+        let log_tap_handle = telemetry_config
+            .logs
+            .tap
+            .enabled
+            .then(|| otap_df_telemetry::log_tap::build(&telemetry_config.logs.tap));
 
         // Create the observed state store for the telemetry system.
-        let obs_state_store =
-            ObservedStateStore::new(&engine.observed_state, telemetry_registry.clone());
+        let obs_state_store = ObservedStateStore::new_with_log_tap(
+            &engine.observed_state,
+            telemetry_registry.clone(),
+            log_tap_handle.clone(),
+        );
         let obs_state_handle = obs_state_store.handle();
         let engine_evt_reporter =
             obs_state_store.engine_reporter(engine.observed_state.engine_events);
@@ -1001,6 +1009,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             telemetry_registry.clone(),
             console_async_reporter,
             engine_context,
+            log_tap_handle.clone(),
         )?;
 
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
@@ -1285,6 +1294,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     obs_state_handle,
                     admin_senders,
                     telemetry_registry,
+                    log_tap_handle,
                     cancellation_token,
                 )
             },
