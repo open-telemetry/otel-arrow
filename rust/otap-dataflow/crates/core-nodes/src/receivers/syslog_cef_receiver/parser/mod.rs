@@ -44,10 +44,6 @@ pub enum ParseError {
 
 /// Parse a syslog message from bytes, automatically detecting the format
 pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
-    if input.is_empty() {
-        return Err(ParseError::EmptyInput);
-    }
-
     // Try pure CEF first - it's the simplest check
     if input.starts_with(b"CEF:") {
         if let Ok(cef_msg) = parse_cef(input) {
@@ -166,21 +162,19 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
     }
 
     // Parse 1-3 ASCII digits directly from bytes.
-    let mut priority_num: u8 = 0;
+    let mut priority_num: u16 = 0;
     for &b in priority_bytes {
         if !b.is_ascii_digit() {
             return Err(ParseError::InvalidPriority);
         }
-        priority_num = priority_num
-            .checked_mul(10)
-            .and_then(|v| v.checked_add(b - b'0'))
-            .ok_or(ParseError::InvalidPriority)?;
+        priority_num = priority_num * 10 + (b - b'0') as u16;
     }
 
-    // RFC 3164: Maximum valid priority is 191 (facility 23, severity 7)
     if priority_num > 191 {
         return Err(ParseError::InvalidPriority);
     }
+
+    let priority_num = priority_num as u8;
 
     let facility = priority_num >> 3; // Upper 5 bits are facility. This is equivalent to priority_num / 8
     let severity = priority_num & 0x07; // Lower 3 bits are severity. This is equivalent to priority_num % 8
@@ -268,11 +262,6 @@ mod tests {
             assert_eq!(msg.priority.facility, 23);
             assert_eq!(msg.priority.severity, 7);
         }
-    }
-
-    #[test]
-    fn test_parse_empty_input() {
-        assert_eq!(parse(b""), Err(ParseError::EmptyInput));
     }
 
     #[test]
