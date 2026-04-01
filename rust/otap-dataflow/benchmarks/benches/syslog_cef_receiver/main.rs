@@ -12,22 +12,22 @@
     RAM: 32.0 GB
     | Test                                        | Average time |
     |---------------------------------------------|--------------|
-    | parser_comparison/rfc3164                   | 17.409 ns    |
-    | parser_comparison/rfc5424                   | 35.704 ns    |
-    | parser_comparison/cef                       | 31.316 ns    |
-    | parse_auto_detect/rfc3164                   | 40.016 ns    |
-    | parse_auto_detect/rfc5424                   | 42.375 ns    |
-    | parse_auto_detect/cef                       | 37.960 ns    |
-    | parse_auto_detect/cef_with_rfc3164          | 117.88 ns    |
-    | parse_auto_detect/cef_with_rfc5424          | 67.939 ns    |
-    | timestamp_extraction/rfc3164                | 549.32 ns    |
-    | timestamp_extraction/rfc5424                | 23.182 ns    |
-    | cef_extensions/one_extension                | 20.341 ns    |
-    | cef_extensions/ten_extensions               | 191.42 ns    |
-    | cef_extensions/ten_extensions_with_escape   | 215.20 ns    |
-    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 96.281 µs    |
-    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 47.681 µs    |
-    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 43.565 µs    |
+    | parser_comparison/rfc3164                   | 13.797 ns    |
+    | parser_comparison/rfc5424                   | 32.442 ns    |
+    | parser_comparison/cef                       | 30.977 ns    |
+    | parse_auto_detect/rfc3164                   | 24.480 ns    |
+    | parse_auto_detect/rfc5424                   | 37.627 ns    |
+    | parse_auto_detect/cef                       | 37.327 ns    |
+    | parse_auto_detect/cef_with_rfc3164          | 103.18 ns    |
+    | parse_auto_detect/cef_with_rfc5424          | 64.122 ns    |
+    | timestamp_extraction/rfc3164                | 540.88 ns    |
+    | timestamp_extraction/rfc5424                | 22.944 ns    |
+    | cef_extensions/one_extension                | 20.168 ns    |
+    | cef_extensions/ten_extensions               | 191.17 ns    |
+    | cef_extensions/ten_extensions_with_escape   | 212.95 ns    |
+    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 96.492 µs    |
+    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 46.538 µs    |
+    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 43.568 µs    |
 */
 
 #![allow(missing_docs)]
