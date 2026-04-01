@@ -689,7 +689,114 @@ for configuration hygiene.
    \- Extensions terminate after data-path is fully drained
 ```
 
-## Migration Plan
+## Future: Hierarchical Extension Scopes
+
+The current implementation supports **pipeline-scoped**
+extensions only. The extension system is designed to
+evolve toward hierarchical scoping in future phases.
+
+### Current: Pipeline Scope (Phase 1)
+
+Extensions are declared at the pipeline level and consumed
+by nodes within that pipeline. Each pipeline instance (one
+per core in thread-per-core mode) gets its own extension
+instances.
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:        # pipeline-scoped
+          azure-auth: ...
+        nodes:
+          exporter:
+            capabilities:
+              bearer_token_provider: azure-auth
+```
+
+### Planned: Group and Engine Scopes (Phase 2)
+
+Extension declarations will be allowed at higher levels
+in the configuration hierarchy:
+
+```yaml
+engine:
+  extensions:              # engine-scoped (global)
+    shared-auth: ...
+
+groups:
+  default:
+    extensions:            # group-scoped
+      group-kv-store: ...
+    pipelines:
+      main:
+        extensions:        # pipeline-scoped (current)
+          local-cache: ...
+```
+
+**Scope resolution order:** when a node binds a capability,
+the engine resolves extensions from the innermost scope
+outward: pipeline -> group -> engine. The first matching
+extension wins.
+
+**Execution model implications:**
+
+| Scope    | Execution Model | Sharing                          |
+|----------|-----------------|----------------------------------|
+| Pipeline | Local or Shared | Per pipeline instance (per core) |
+| Group    | Shared          | Across pipelines in the group    |
+| Engine   | Shared          | Across all pipelines             |
+
+- Pipeline-scoped extensions can be local (`!Send`,
+  `Rc`-based) or shared (`Send`, `Clone`-based).
+- Group and engine-scoped extensions must be shared
+  (`Send + Clone`) since they are accessed from multiple
+  pipeline instances running on different cores.
+
+**No architectural changes required:** the current
+`CapabilityRegistry`, `resolve_bindings()`, and
+`require_local()` / `require_shared()` mechanisms are
+scope-agnostic. Adding higher scopes requires:
+
+1. Config parsing for `extensions` at group and engine
+   levels
+2. A scope-aware resolution pass in `resolve_bindings()`
+   that merges registries from inner to outer scope
+3. Validation that group/engine-scoped extensions only
+   use shared execution model
+
+The `SharedAsLocal` adapter ensures that even when a
+group or engine-scoped shared extension is consumed by a
+local node (via `require_local()`), the local consumer
+gets an `Rc`-wrapped adapter with no API change.
+
+### Phase 3 (future): WASM Extensions
+
+WASM-based sandboxed extensions could allow third-party
+extension authors to provide implementations of
+engine-defined capabilities without native code
+compilation.
+
+A possible integration path: a native `WasmExtensionHost`
+extension embeds a WASM runtime (e.g., `wasmtime`), loads
+user-provided `.wasm` modules, and bridges WASM function
+exports to engine capability traits. The host would
+register capabilities into the `CapabilityRegistry` at
+runtime via the existing `register_all_shared()` API.
+WASM runtimes produce `Send + Sync` instances, so WASM
+extensions would always be shared, with local consumers
+served via the `SharedAsLocal` adapter.
+
+The consumer-side API (`require_local` / `require_shared`)
+would not change. Capability types would still be defined
+in the engine core.
+
+No design work has started. Details will depend on
+actual use cases and requirements when this phase is
+explored.
+
+## Migration Plan (Phase 1)
 
 The extension system is developed on a feature branch and
 will be merged to `main` incrementally. Each PR is
