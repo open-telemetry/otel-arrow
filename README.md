@@ -14,47 +14,38 @@ Arrow](https://arrow.apache.org/).**
 
 The OpenTelemetry-Arrow Protocol (OTAP) is designed as the
 column-oriented equivalent of OpenTelemetry Protocol (OTLP) that
-dramatically reduces network usage, and our protocol specification
-[protocol specification](./docs/otap-spec.md) ensures that OTAP and
-OTLP are always convertible, without loss, in either direction.
+dramatically reduces network usage, and our [protocol
+specification](./docs/otap-spec.md) ensures that OTAP and OTLP are
+perfectly convertible, without loss, in both directions.
 
 The [OTAP Dataflow Engine](./rust/otap-dataflow/README.md) is our new
 Rust OpenTelemetry code base, a pipeline engine that dramatically
-reduces network, memory, and CPU usage for large-scale and
-low-resource telemetry pipelines.
+reduces network, memory, and CPU usage, gaining efficiency through a
+number of architectural optimizations, including the
+**shared-nothing** and **thread-per-core** patterns, and extensive use
+of **zero-copy** data types.
 
-The OTAP Dataflow engine implements efficient OpenTelemetry data
-processing through numerous architectural optimizations, including the
-_shared-nothing_ and _thread-per-core_ design patterns and extensive
-use of _zero-copy_ data types.
+The OTAP Dataflow Engine is **embeddable software**. Our repo builds
+an demonstration `df_engine` binary for demonstrating the core
+features, with YAML configuration, but it's really designed for safely
+adding OpenTelemetry features and capabilities anywhere that Rust can
+be compiled, with fine-grained control over memory and CPU resources.
 
+The OTAP Dataflow Engine has built-in support for OTAP and OTLP, and
+for standard pipeline behaviors like batching, fanout, failover,
+retry, and routing by signal type. It has standard OpenTelemetry
+processors for filtering, transforming, sampling, and temporal
+aggregation. We have a **durable buffer** processor based on the
+[Arrow IPC format](https://arrow.apache.org/docs/format/IPC.html)
+acting as a disk-based queue for reliable delivery.
 
-Reference implementations in Go and Rust making OTAP a seamless alternative to OTLP
-
-The OTel-Arrow
-Receiver and Exporter components 
-
-Rust 
-
-
-
-production-ready .
-
-The OTA
-
-
-extensive use of Zero-copy abstraction
-
-
-
-We've built a column-oriented persistence layer for storing OTAP
-
-We've connected the OTAP columnar representation with the the [Apache
-Datafusion](https://datafusion.apache.org/) embedded query engine and
-the wider [Apache Parquet](https://parquet.apache.org/) ecosystem.
-We're self-instrumenting our Rust OpenTelemetry pipeline with an
+Our transform procsesor is built using [Apache
+Datafusion](https://datafusion.apache.org/), an embedded query engine,
+and our Parquet exporter makes OpenTelemetry data accessible to the
+wider [Apache Parquet](https://parquet.apache.org/) ecosystem. We're
+self-instrumenting our Rust OpenTelemetry pipeline with an
 experimental OpenTelemetry SDK that emits OTAP directly, making an
-**end-to-end columnar telemetry pipeline**.
+**end-to-end column-oriented telemetry pipeline**.
 
 Our OpenTelemetry Collector components
 [`otelarrowreceiver`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md)
