@@ -114,41 +114,49 @@ the two protocols.
 
 In the OTAP Dataflow Engine, batches of OTAP data are represented
 using **multiple record batches** in an arrangement referred to as a
-"star schema". The number of record batches
+"star schema". The number of record batches varies by OpenTelemetry
+signal type, see our [data model documentation](./docs/data_model.md)
+for details. Adapter libraries for conversion between OTAP and OTLP
+representations are provided in
+[Rust](./rust/otap-dataflow/crates/pdata/README.md) and
+[Golang](./go/README.md) in this repository.
 
 ## Quick Start
 
-### Using OTAP Today (Golang Collector Components)
+### OpenTelemetry Collector example
 
-OTel-Arrow components ship in the [OpenTelemetry Collector-Contrib][COLLECTOR-CONTRIB]
-distribution. Swap `otlp` for `otelarrow` in your collector config:
+OTel-Arrow components ship in the [OpenTelemetry
+Collector-Contrib][COLLECTOR-CONTRIB] distribution. The two components
+extend the configuration model and settings of the core OTLP receiver
+and exporter. By design, you can swap `otlp` for `otelarrow` in your
+Collector configuration.  To locate one, see [OpenTelemetry Collector
+releases](https://opentelemetry.io/docs/collector/#releases).
 
-```yaml
-receivers:
-  otelarrow:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
+See the [Exporter][EXPORTER] and [Receiver][RECEIVER] docs for
+complete and up-to-date configuration details.
 
-exporters:
-  otelarrow:
-    endpoint: backend:4317
-```
+### OTAP Dataflow Engine example
 
-See the [Exporter][EXPORTER] and [Receiver][RECEIVER] docs for full
-configuration options.
-
-### Building the OTAP Dataflow Engine (Rust)
+**We are not at this time providing pre-built OTAP Dataflow Engine
+releases.** Developers can build and test our code with the following:
 
 ```bash
-git clone https://github.com/open-telemetry/otel-arrow
+git clone https://github.com/open-telemetry/otel-arrow.git
 cd otel-arrow/rust/otap-dataflow
-cargo build --workspace
 cargo test --workspace
+cargo build --release --workspace
 ```
 
-See the [OTAP Dataflow Engine documentation](rust/otap-dataflow/README.md) for
-architecture details, example configurations, and component reference.
+A [directory of example
+configurations](./rust/otap-dataflow/configs/README.md) is
+provided. For example, to print syslog records to the console:
+
+```
+./target/release/df_engine -c ./configs/syslog-console.yaml  --num-cores=1
+```
+
+See the [OTAP Dataflow Engine
+documentation](rust/otap-dataflow/README.md) for more details.
 
 [COLLECTOR-CONTRIB]: https://github.com/open-telemetry/opentelemetry-collector-contrib
 [RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
