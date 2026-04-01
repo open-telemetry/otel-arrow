@@ -105,12 +105,12 @@ fn bench_timestamp_extraction(c: &mut Criterion) {
 
     let rfc3164_parsed = parse(RFC3164_MSG).expect("parse RFC3164");
     let _ = group.bench_function("rfc3164", |b| {
-        b.iter(|| black_box(rfc3164_parsed.timestamp()))
+        b.iter(|| black_box(black_box(&rfc3164_parsed).timestamp()))
     });
 
     let rfc5424_parsed = parse(RFC5424_MSG).expect("parse RFC5424");
     let _ = group.bench_function("rfc5424", |b| {
-        b.iter(|| black_box(rfc5424_parsed.timestamp()))
+        b.iter(|| black_box(black_box(&rfc5424_parsed).timestamp()))
     });
 
     group.finish();
