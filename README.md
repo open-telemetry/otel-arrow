@@ -33,7 +33,7 @@ anywhere that Rust can be compiled, with fine-grained control over
 memory and CPU resources.
 
 The OTAP Dataflow Engine has built-in support for OTAP and OTLP,
-receivers and exporters, and built-in procsesors featuring batching,
+receivers and exporters, and built-in processors featuring batching,
 fanout, failover, retry, and routing by signal type. It has processors
 for common forms of filtering, transforming, sampling, and temporal
 aggregation. We have a **durable buffer** processor, based on the
