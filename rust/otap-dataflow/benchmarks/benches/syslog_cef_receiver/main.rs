@@ -12,9 +12,6 @@
     RAM: 32.0 GB
     | Test                                        | Average time |
     |---------------------------------------------|--------------|
-    | parser_comparison/rfc3164                   | 13.797 ns    |
-    | parser_comparison/rfc5424                   | 32.442 ns    |
-    | parser_comparison/cef                       | 30.977 ns    |
     | parse_auto_detect/rfc3164                   | 24.480 ns    |
     | parse_auto_detect/rfc5424                   | 37.627 ns    |
     | parse_auto_detect/cef                       | 37.327 ns    |
@@ -36,9 +33,6 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_core_nodes::receivers::syslog_cef_receiver::arrow_records_encoder::ArrowRecordsBuilder;
 use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::bench_support;
 use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::cef::parse_cef;
-use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
-use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::rfc3164::parse_rfc3164;
-use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::rfc5424::parse_rfc5424;
 use std::hint::black_box;
 
 #[cfg(not(windows))]
@@ -63,40 +57,6 @@ static CEF_MSG_TEN_EXT: &[u8] =
     b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232 dpt=1233 proto=TCP act=blocked app=HTTP rt=1234567890 msg=Worm stopped cn1Label=score";
 static CEF_MSG_TEN_EXT_WITH_ESCAPE: &[u8] =
     b"CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232 dpt=1233 proto=TCP act=blocked app=HTTP rt=1234567890 msg=Worm\\=stopped cn1Label=score";
-
-/// Benchmark comparing all three parsers
-fn bench_parser_comparison(c: &mut Criterion) {
-    let mut group = c.benchmark_group("parser_comparison");
-
-    // RFC3164 benchmark with its specific throughput
-    _ = group.throughput(Throughput::Bytes(RFC3164_MSG.len() as u64));
-    let _ = group.bench_function("rfc3164", |b| {
-        b.iter(|| {
-            let result = parse_rfc3164(black_box(RFC3164_MSG));
-            black_box(result)
-        });
-    });
-
-    // RFC5424 benchmark with its specific throughput
-    _ = group.throughput(Throughput::Bytes(RFC5424_MSG.len() as u64));
-    let _ = group.bench_function("rfc5424", |b| {
-        b.iter(|| {
-            let result = parse_rfc5424(black_box(RFC5424_MSG));
-            black_box(result)
-        });
-    });
-
-    // CEF benchmark with its specific throughput
-    _ = group.throughput(Throughput::Bytes(CEF_MSG.len() as u64));
-    let _ = group.bench_function("cef", |b| {
-        b.iter(|| {
-            let result = parse_cef(black_box(CEF_MSG));
-            black_box(result)
-        });
-    });
-
-    group.finish();
-}
 
 /// Benchmark the top-level auto-detect `parse()` function across all formats
 fn bench_parse_auto_detect(c: &mut Criterion) {
@@ -193,9 +153,8 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
         b.iter(|| {
             let mut builder = ArrowRecordsBuilder::new();
             for _ in 0..100 {
-                let parsed =
-                    parse_rfc3164(black_box(RFC3164_MSG)).expect("Failed to parse RFC3164 message");
-                let parsed_msg = ParsedSyslogMessage::Rfc3164(parsed);
+                let parsed_msg = bench_support::parse(black_box(RFC3164_MSG))
+                    .expect("Failed to parse RFC3164 message");
                 builder.append_syslog(parsed_msg);
             }
             let arrow_records = builder.build().expect("Failed to build Arrow records");
@@ -208,9 +167,8 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
         b.iter(|| {
             let mut builder = ArrowRecordsBuilder::new();
             for _ in 0..100 {
-                let parsed =
-                    parse_rfc5424(black_box(RFC5424_MSG)).expect("Failed to parse RFC5424 message");
-                let parsed_msg = ParsedSyslogMessage::Rfc5424(parsed);
+                let parsed_msg = bench_support::parse(black_box(RFC5424_MSG))
+                    .expect("Failed to parse RFC5424 message");
                 builder.append_syslog(parsed_msg);
             }
             let arrow_records = builder.build().expect("Failed to build Arrow records");
@@ -223,8 +181,8 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
         b.iter(|| {
             let mut builder = ArrowRecordsBuilder::new();
             for _ in 0..100 {
-                let parsed = parse_cef(black_box(CEF_MSG)).expect("Failed to parse CEF message");
-                let parsed_msg = ParsedSyslogMessage::Cef(parsed);
+                let parsed_msg =
+                    bench_support::parse(black_box(CEF_MSG)).expect("Failed to parse CEF message");
                 builder.append_syslog(parsed_msg);
             }
             let arrow_records = builder.build().expect("Failed to build Arrow records");
@@ -236,7 +194,6 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
 }
 criterion_group!(
     benches,
-    bench_parser_comparison,
     bench_parse_auto_detect,
     bench_timestamp_extraction,
     bench_cef_extensions,

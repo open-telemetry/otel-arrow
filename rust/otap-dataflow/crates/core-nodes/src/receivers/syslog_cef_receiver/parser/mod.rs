@@ -43,7 +43,11 @@ pub enum ParseError {
 }
 
 /// Parse a syslog message from bytes, automatically detecting the format
-pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+    if input.is_empty() {
+        return Err(ParseError::EmptyInput);
+    }
+
     // Try pure CEF first - it's the simplest check
     if input.starts_with(b"CEF:") {
         if let Ok(cef_msg) = parse_cef(input) {
@@ -224,6 +228,11 @@ pub mod bench_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_empty_input() {
+        assert_eq!(parse(b""), Err(ParseError::EmptyInput));
+    }
 
     #[test]
     fn test_parse_auto_detection() {
