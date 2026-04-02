@@ -20,7 +20,7 @@ use crate::encode::record::array::{
     },
 };
 
-use super::{ArrayBuilder, ArrayBuilderConstructor, CheckedArrayAppend};
+use super::{ArrayBuilder, ArrayBuilderConstructor, ArrayLen, CheckedArrayAppend};
 
 impl ArrayBuilderConstructor for FixedSizeBinaryBuilder {
     type Args = i32;
@@ -73,6 +73,21 @@ impl ArrayAppendNulls for FixedSizeBinaryBuilder {
 impl ArrayBuilder for FixedSizeBinaryBuilder {
     fn finish(&mut self) -> ArrayRef {
         Arc::new(self.finish())
+    }
+}
+
+impl ArrayLen for FixedSizeBinaryBuilder {
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(self)
+    }
+}
+
+impl<K> ArrayLen for FixedSizeBinaryDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+{
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(self)
     }
 }
 

@@ -20,7 +20,7 @@ use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
-use crate::message::{ExporterMessageChannel, Receiver, Sender};
+use crate::message::{ExporterInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -323,13 +323,13 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
-                let message_channel = ExporterMessageChannel::new(
+                let inbox = ExporterInbox::new(
                     Receiver::Local(control_receiver),
                     pdata_rx,
                     node_id.index,
                     node_interests,
                 );
-                exporter.start(message_channel, effect_handler).await
+                exporter.start(inbox, effect_handler).await
             }
             (
                 ExporterWrapper::Shared {
@@ -359,13 +359,13 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics);
-                let message_channel = shared::ExporterMessageChannel::new(
+                let inbox = shared::ExporterInbox::new(
                     control_receiver,
                     pdata_rx,
                     node_id.index,
                     node_interests,
                 );
-                exporter.start(message_channel, effect_handler).await
+                exporter.start(inbox, effect_handler).await
             }
         }
     }
@@ -445,7 +445,7 @@ mod tests {
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
-    use crate::message::{ExporterMessageChannel, Message, ProcessorMessageChannel, Receiver};
+    use crate::message::{ExporterInbox, Message, ProcessorInbox, Receiver};
     use crate::shared::exporter as shared;
     use crate::shared::message::SharedReceiver;
     use crate::terminal_state::TerminalState;
@@ -481,7 +481,7 @@ mod tests {
     impl local::Exporter<TestMsg> for TestExporter {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: ExporterMessageChannel<TestMsg>,
+            mut msg_chan: ExporterInbox<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
@@ -518,7 +518,7 @@ mod tests {
     impl shared::Exporter<TestMsg> for TestExporter {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: shared::ExporterMessageChannel<TestMsg>,
+            mut msg_chan: shared::ExporterInbox<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
@@ -642,14 +642,14 @@ mod tests {
     ) -> (
         mpsc::Sender<NodeControlMsg<String>>,
         mpsc::Sender<String>,
-        ExporterMessageChannel<String>,
+        ExporterInbox<String>,
     ) {
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(capacity);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(capacity);
         (
             control_tx,
             pdata_tx,
-            ExporterMessageChannel::new(
+            ExporterInbox::new(
                 Receiver::Local(LocalReceiver::mpsc(control_rx)),
                 Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
                 0,
@@ -661,7 +661,7 @@ mod tests {
     fn make_chan() -> (
         mpsc::Sender<NodeControlMsg<String>>,
         mpsc::Sender<String>,
-        ExporterMessageChannel<String>,
+        ExporterInbox<String>,
     ) {
         make_chan_with_capacity(10)
     }
@@ -671,14 +671,14 @@ mod tests {
     ) -> (
         mpsc::Sender<NodeControlMsg<String>>,
         mpsc::Sender<String>,
-        ProcessorMessageChannel<String>,
+        ProcessorInbox<String>,
     ) {
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(capacity);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(capacity);
         (
             control_tx,
             pdata_tx,
-            ProcessorMessageChannel::new(
+            ProcessorInbox::new(
                 Receiver::Local(LocalReceiver::mpsc(control_rx)),
                 Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
                 0,
@@ -690,7 +690,7 @@ mod tests {
     fn make_processor_chan() -> (
         mpsc::Sender<NodeControlMsg<String>>,
         mpsc::Sender<String>,
-        ProcessorMessageChannel<String>,
+        ProcessorInbox<String>,
     ) {
         make_processor_chan_with_capacity(10)
     }
@@ -1274,14 +1274,14 @@ mod tests {
     fn make_shared_chan() -> (
         tokio::sync::mpsc::Sender<NodeControlMsg<String>>,
         tokio::sync::mpsc::Sender<String>,
-        ProcessorMessageChannel<String>,
+        ProcessorInbox<String>,
     ) {
         let (control_tx, control_rx) = tokio::sync::mpsc::channel::<NodeControlMsg<String>>(10);
         let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel::<String>(10);
         (
             control_tx,
             pdata_tx,
-            ProcessorMessageChannel::new(
+            ProcessorInbox::new(
                 Receiver::Shared(SharedReceiver::mpsc(control_rx)),
                 Receiver::Shared(SharedReceiver::mpsc(pdata_rx)),
                 0,

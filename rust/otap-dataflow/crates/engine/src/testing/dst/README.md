@@ -38,8 +38,8 @@ interleavings.
 
 The DST suite intentionally uses production components such as:
 
-- `ProcessorMessageChannel`
-- `ExporterMessageChannel`
+- `ProcessorInbox`
+- `ExporterInbox`
 - `RuntimeCtrlMsgManager`
 - `PipelineCompletionMsgDispatcher`
 

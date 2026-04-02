@@ -1,27 +1,21 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Specialized builders for data point record batches. The motivation behind
-//! these is having an API to overwrite data points that have already been pushed
-//! because a newer data point came in. Many metric types are aggregated in this
-//! way by taking the latest point.
+//! Record batch builders for temporal reaggregation output.
 //!
-//! APIs to write at a specific Array position are typically not supported by
-//! arrow-rs ArrayBuilder types and by extension not supported by the builder
-//! types in [otap_df_pdata::encode::record]. These types usually only support
-//! appends.
+//! This module contains [`MetricSignalBuilder`] which orchestrates all the
+//! individual payload type builders, plus the specialized data point builders
+//! that support random-access writes for replacing stale data points.
 //!
-//! Random write APIs _are_, however, generally supported by the arrow-rs
-//! BufferBuilder types (including [BooleanBufferBuilder] for [NullBuffer]s).
-//! Arrow-rs also generally supports direct conversion to Arrays from Vec<T> for
-//! fixed-width types.
-//!
-//! So, we have these builders which use Vec<T> as much as possible along with
-//! [BooleanBufferBuilder] directly for nulls.
+//! The data point builders exist because APIs to write at a specific Array
+//! position are typically not supported by arrow-rs ArrayBuilder types. Random
+//! write APIs _are_, however, generally supported by the arrow-rs BufferBuilder
+//! types, so these builders use `Vec<T>` as much as possible along with
+//! [`BooleanBufferBuilder`] directly for nulls.
 //!
 //! Note: These builders currently make no attempt to optimize for space via
 //! dictionary encoding. We may want to add this in the future, however a typical
-//! pipeline configuration may be to place a batch processor immeditaly following
+//! pipeline configuration may be to place a batch processor immediately following
 //! this component in which case the dictionary could get re-written or removed
 //! anyway. Figuring out under what circumstances it's better to use dictionaries
 //! here needs investigation.
@@ -35,11 +29,353 @@ use arrow::array::{
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, Schema, TimeUnit};
+use otap_df_pdata::encode::append_attribute_value;
+use otap_df_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
+use otap_df_pdata::encode::record::metrics::MetricsRecordBatchBuilder;
+use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{FieldExt, consts};
+use otap_df_pdata_views::views::common::InstrumentationScopeView;
 use otap_df_pdata_views::views::metrics::{
-    BucketsView, ExponentialHistogramDataPointView, HistogramDataPointView, NumberDataPointView,
-    SummaryDataPointView, Value, ValueAtQuantileView,
+    AggregationTemporality, BucketsView, ExponentialHistogramDataPointView, HistogramDataPointView,
+    MetricView, NumberDataPointView, SummaryDataPointView, Value, ValueAtQuantileView,
 };
+use otap_df_pdata_views::views::resource::ResourceView;
+
+use super::identity::MetricId;
+
+/// Snapshot of builder positions, used to slice back to the last valid position
+/// of each payload on error.
+#[derive(Debug)]
+pub struct Checkpoint {
+    metrics: usize,
+    resource_attrs: usize,
+    scope_attrs: usize,
+    ndp: usize,
+    ndp_attrs: usize,
+    hdp: usize,
+    hdp_attrs: usize,
+    ehdp: usize,
+    ehdp_attrs: usize,
+    sdp: usize,
+    sdp_attrs: usize,
+}
+
+/// Record batch builders for all metric signal payload types.
+///
+/// TODO: Exemplars are not currently supported and just dropped by this
+/// processor.
+pub struct MetricSignalBuilder {
+    metrics: MetricsRecordBatchBuilder,
+    resource_attrs: AttributesRecordBatchBuilder<u16>,
+    scope_attrs: AttributesRecordBatchBuilder<u16>,
+    ndp_attrs: AttributesRecordBatchBuilder<u32>,
+    hdp_attrs: AttributesRecordBatchBuilder<u32>,
+    ehdp_attrs: AttributesRecordBatchBuilder<u32>,
+    summary_attrs: AttributesRecordBatchBuilder<u32>,
+    number_dps: NumberDataPointBuilder,
+    histogram_dps: HistogramDataPointBuilder,
+    exp_histogram_dps: ExpHistogramDataPointBuilder,
+    summary_dps: SummaryDataPointBuilder,
+}
+
+impl MetricSignalBuilder {
+    pub fn new() -> Self {
+        Self {
+            metrics: MetricsRecordBatchBuilder::new(),
+            resource_attrs: AttributesRecordBatchBuilder::new(),
+            scope_attrs: AttributesRecordBatchBuilder::new(),
+            ndp_attrs: AttributesRecordBatchBuilder::new(),
+            hdp_attrs: AttributesRecordBatchBuilder::new(),
+            ehdp_attrs: AttributesRecordBatchBuilder::new(),
+            summary_attrs: AttributesRecordBatchBuilder::new(),
+            number_dps: NumberDataPointBuilder::new(),
+            histogram_dps: HistogramDataPointBuilder::new(),
+            exp_histogram_dps: ExpHistogramDataPointBuilder::new(),
+            summary_dps: SummaryDataPointBuilder::new(),
+        }
+    }
+
+    /// Finish all builders and assemble an [`OtapArrowRecords`] batch.
+    ///
+    /// When `checkpoint` is `Some`, each output record batch is sliced to the
+    /// lengths captured in the checkpoint, discarding rows appended afterward.
+    /// This is used by [super::TemporalReaggregationProcessor::flush_at] to
+    /// discard some changes if we couldn't fully append an incoming pdata.
+    pub fn finish(
+        &mut self,
+        checkpoint: Option<&Checkpoint>,
+    ) -> otap_df_pdata::error::Result<OtapArrowRecords> {
+        let mut records = OtapArrowRecords::Metrics(Metrics::default());
+
+        finish_payload(
+            self.metrics.finish(),
+            ArrowPayloadType::UnivariateMetrics,
+            &mut records,
+            checkpoint.map(|c| c.metrics),
+        )?;
+        finish_payload(
+            self.resource_attrs.finish(),
+            ArrowPayloadType::ResourceAttrs,
+            &mut records,
+            checkpoint.map(|c| c.resource_attrs),
+        )?;
+        finish_payload(
+            self.scope_attrs.finish(),
+            ArrowPayloadType::ScopeAttrs,
+            &mut records,
+            checkpoint.map(|c| c.scope_attrs),
+        )?;
+        finish_payload(
+            self.number_dps.finish(),
+            ArrowPayloadType::NumberDataPoints,
+            &mut records,
+            checkpoint.map(|c| c.ndp),
+        )?;
+        finish_payload(
+            self.ndp_attrs.finish(),
+            ArrowPayloadType::NumberDpAttrs,
+            &mut records,
+            checkpoint.map(|c| c.ndp_attrs),
+        )?;
+        finish_payload(
+            self.histogram_dps.finish(),
+            ArrowPayloadType::HistogramDataPoints,
+            &mut records,
+            checkpoint.map(|c| c.hdp),
+        )?;
+        finish_payload(
+            self.hdp_attrs.finish(),
+            ArrowPayloadType::HistogramDpAttrs,
+            &mut records,
+            checkpoint.map(|c| c.hdp_attrs),
+        )?;
+        finish_payload(
+            self.exp_histogram_dps.finish(),
+            ArrowPayloadType::ExpHistogramDataPoints,
+            &mut records,
+            checkpoint.map(|c| c.ehdp),
+        )?;
+        finish_payload(
+            self.ehdp_attrs.finish(),
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            &mut records,
+            checkpoint.map(|c| c.ehdp_attrs),
+        )?;
+        finish_payload(
+            self.summary_dps.finish(),
+            ArrowPayloadType::SummaryDataPoints,
+            &mut records,
+            checkpoint.map(|c| c.sdp),
+        )?;
+        finish_payload(
+            self.summary_attrs.finish(),
+            ArrowPayloadType::SummaryDpAttrs,
+            &mut records,
+            checkpoint.map(|c| c.sdp_attrs),
+        )?;
+
+        Ok(records)
+    }
+
+    /// Capture the current builder positions as a [`Checkpoint`].
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            metrics: self.metrics.len(),
+            resource_attrs: self.resource_attrs.len(),
+            scope_attrs: self.scope_attrs.len(),
+            ndp: self.number_dps.id.len(),
+            ndp_attrs: self.ndp_attrs.len(),
+            hdp: self.histogram_dps.id.len(),
+            hdp_attrs: self.hdp_attrs.len(),
+            ehdp: self.exp_histogram_dps.id.len(),
+            ehdp_attrs: self.ehdp_attrs.len(),
+            sdp: self.summary_dps.id.len(),
+            sdp_attrs: self.summary_attrs.len(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.metrics = MetricsRecordBatchBuilder::new();
+        self.resource_attrs = AttributesRecordBatchBuilder::new();
+        self.scope_attrs = AttributesRecordBatchBuilder::new();
+        self.ndp_attrs = AttributesRecordBatchBuilder::new();
+        self.hdp_attrs = AttributesRecordBatchBuilder::new();
+        self.ehdp_attrs = AttributesRecordBatchBuilder::new();
+        self.summary_attrs = AttributesRecordBatchBuilder::new();
+        self.number_dps.clear();
+        self.histogram_dps.clear();
+        self.exp_histogram_dps.clear();
+        self.summary_dps.clear();
+    }
+
+    /// Append resource attributes for a newly seen resource.
+    pub fn append_resource<R: ResourceView>(&mut self, id: u16, view: &R) {
+        for attr in view.attributes() {
+            self.resource_attrs.append_parent_id(&id);
+            let _ = append_attribute_value(&mut self.resource_attrs, &attr);
+        }
+    }
+
+    /// Append scope attributes for a newly seen scope.
+    pub fn append_scope<S: InstrumentationScopeView>(&mut self, id: u16, view: &S) {
+        for attr in view.attributes() {
+            self.scope_attrs.append_parent_id(&id);
+            let _ = append_attribute_value(&mut self.scope_attrs, &attr);
+        }
+    }
+
+    /// Append a complete metric row for a newly seen metric.
+    pub fn append_metric<M: MetricView>(
+        &mut self,
+        id: u16,
+        metric_id: &MetricId<'_>,
+        view: &M,
+        resource_meta: &ResourceMeta,
+        scope_meta: &ScopeMeta,
+        scope_schema_url: &[u8],
+    ) {
+        self.metrics.append_id(id);
+        self.metrics.resource.append_id(Some(resource_meta.id));
+        self.metrics
+            .resource
+            .append_schema_url(Some(&resource_meta.schema_url));
+        self.metrics
+            .resource
+            .append_dropped_attributes_count(resource_meta.dropped_attributes_count);
+        self.metrics.scope.append_id(Some(scope_meta.id));
+        self.metrics.scope.append_name(Some(&scope_meta.name));
+        self.metrics.scope.append_version(Some(&scope_meta.version));
+        self.metrics
+            .scope
+            .append_dropped_attributes_count(scope_meta.dropped_attributes_count);
+        self.metrics.append_scope_schema_url(scope_schema_url);
+        self.metrics.append_metric_type(metric_id.data_type);
+        self.metrics.append_name(view.name());
+        self.metrics.append_description(view.description());
+        self.metrics.append_unit(view.unit());
+
+        let agg_temp =
+            if metric_id.aggregation_temporality == AggregationTemporality::Unspecified as u8 {
+                None
+            } else {
+                Some(metric_id.aggregation_temporality as i32)
+            };
+        self.metrics.append_aggregation_temporality(agg_temp);
+        self.metrics
+            .append_is_monotonic(Some(metric_id.is_monotonic));
+    }
+
+    /// Append a new number data point row including its attributes.
+    pub fn append_number_dp<V: NumberDataPointView>(
+        &mut self,
+        dp_id: u32,
+        metric_id: u16,
+        dp: &V,
+    ) -> usize {
+        let row = self.number_dps.append(dp_id, metric_id, dp);
+        for attr in dp.attributes() {
+            self.ndp_attrs.append_parent_id(&dp_id);
+            let _ = append_attribute_value(&mut self.ndp_attrs, &attr);
+        }
+        row
+    }
+
+    /// Replace an existing number data point row with newer data.
+    ///
+    /// Attributes are not updated — they are part of stream identity and
+    /// never change for the same stream.
+    pub fn replace_number_dp<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
+        self.number_dps.replace(row, dp);
+    }
+
+    /// Append a new histogram data point row including its attributes.
+    pub fn append_histogram_dp<V: HistogramDataPointView>(
+        &mut self,
+        dp_id: u32,
+        metric_id: u16,
+        dp: &V,
+    ) -> usize {
+        let row = self.histogram_dps.append(dp_id, metric_id, dp);
+        for attr in dp.attributes() {
+            self.hdp_attrs.append_parent_id(&dp_id);
+            let _ = append_attribute_value(&mut self.hdp_attrs, &attr);
+        }
+        row
+    }
+
+    /// Replace an existing histogram data point row with newer data.
+    pub fn replace_histogram_dp<V: HistogramDataPointView>(&mut self, row: usize, dp: &V) {
+        self.histogram_dps.replace(row, dp);
+    }
+
+    /// Append a new exponential histogram data point row including its attributes.
+    pub fn append_exp_histogram_dp<V: ExponentialHistogramDataPointView>(
+        &mut self,
+        dp_id: u32,
+        metric_id: u16,
+        dp: &V,
+    ) -> usize {
+        let row = self.exp_histogram_dps.append(dp_id, metric_id, dp);
+        for attr in dp.attributes() {
+            self.ehdp_attrs.append_parent_id(&dp_id);
+            let _ = append_attribute_value(&mut self.ehdp_attrs, &attr);
+        }
+        row
+    }
+
+    /// Replace an existing exponential histogram data point row with newer data.
+    pub fn replace_exp_histogram_dp<V: ExponentialHistogramDataPointView>(
+        &mut self,
+        row: usize,
+        dp: &V,
+    ) {
+        self.exp_histogram_dps.replace(row, dp);
+    }
+
+    /// Append a new summary data point row including its attributes.
+    pub fn append_summary_dp<V: SummaryDataPointView>(
+        &mut self,
+        dp_id: u32,
+        metric_id: u16,
+        dp: &V,
+    ) -> usize {
+        let row = self.summary_dps.append(dp_id, metric_id, dp);
+        for attr in dp.attributes() {
+            self.summary_attrs.append_parent_id(&dp_id);
+            let _ = append_attribute_value(&mut self.summary_attrs, &attr);
+        }
+        row
+    }
+
+    /// Replace an existing summary data point row with newer data.
+    pub fn replace_summary_dp<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
+        self.summary_dps.replace(row, dp);
+    }
+}
+
+/// Finish building a payload type and set it on the output records.
+///
+/// When `truncate_len` is `Some(n)`, the record batch is sliced to `n` rows,
+/// discarding any rows appended after a checkpoint.
+fn finish_payload(
+    result: Result<RecordBatch, arrow::error::ArrowError>,
+    payload_type: ArrowPayloadType,
+    records: &mut OtapArrowRecords,
+    truncate_len: Option<usize>,
+) -> otap_df_pdata::error::Result<()> {
+    // safety: So long as the aggregation logic is keeping arrays
+    // the same length, this operation should be infallible.
+    let rb = result.expect("Valid record batch");
+    let rb = match truncate_len {
+        Some(len) => rb.slice(0, len),
+        None => rb,
+    };
+    if rb.num_rows() > 0 {
+        records.set(payload_type, rb)?;
+    }
+    Ok(())
+}
 
 /// A column of nullable primitive values that supports random-access writes.
 ///
@@ -833,4 +1169,25 @@ fn build_list_f64(data: &[Vec<f64>], field_name: &str) -> ListArray {
         Arc::new(values_array),
         None,
     )
+}
+
+/// Metadata for a unique resource, stored alongside its OTAP batch ID.
+pub(super) struct ResourceMeta {
+    pub(super) id: u16,
+    pub(super) schema_url: Vec<u8>,
+    pub(super) dropped_attributes_count: u32,
+}
+
+/// Metadata for a unique instrumentation scope, stored alongside its OTAP batch ID.
+pub(super) struct ScopeMeta {
+    pub(super) id: u16,
+    pub(super) name: Vec<u8>,
+    pub(super) version: Vec<u8>,
+    pub(super) dropped_attributes_count: u32,
+}
+
+/// Tracks the builder row index and latest timestamp for a data point stream.
+pub(super) struct StreamMeta {
+    pub(super) dp_row_index: usize,
+    pub(super) time_unix_nano: u64,
 }
