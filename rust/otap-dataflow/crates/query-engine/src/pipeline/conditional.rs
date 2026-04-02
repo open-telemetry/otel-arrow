@@ -400,7 +400,7 @@ impl PipelineStage for ConditionalPipelineStage {
 #[cfg(test)]
 mod test {
     use crate::pipeline::{
-        Pipeline,
+        Pipeline, PipelineOptions,
         test::{
             exec_logs_pipeline, exec_metrics_pipeline, exec_traces_pipeline, otap_to_logs_data,
         },
@@ -414,7 +414,7 @@ mod test {
             trace::v1::{Status, span::SpanKind},
         },
         schema::consts,
-        testing::round_trip::to_logs_data,
+        testing::round_trip::{otap_to_otlp, to_logs_data},
     };
     use otap_df_pdata::{
         proto::{
@@ -900,5 +900,75 @@ mod test {
             result.resource_metrics[0].scope_metrics[0].metrics,
             expected
         )
+    }
+
+    #[tokio::test]
+    async fn test_conditional_with_case_insensitive_attribute_key_match_in_condition() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("event1")
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event2")
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event3")
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val2"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event4")
+                .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val1"))])
+                .finish(),
+        ];
+
+        let query = r#"
+            logs |
+            if (attributes["key1"] == "val1") {
+                set attributes["modified"] = true
+            }
+        "#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("Invalid signal variant {result:?}")
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .event_name("event1")
+                .attributes(vec![
+                    KeyValue::new("key1", AnyValue::new_string("val1")),
+                    KeyValue::new("modified", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("event2")
+                .attributes(vec![
+                    KeyValue::new("KEY1", AnyValue::new_string("val1")),
+                    KeyValue::new("modified", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("event3")
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val2"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event4")
+                .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val1"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
     }
 }

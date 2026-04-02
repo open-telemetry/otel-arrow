@@ -613,7 +613,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 value,
             ))),
-            true,
+            false,
         ))
     }
 
@@ -952,7 +952,7 @@ mod tests {
                         ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "x"),
                         )),
-                        true,
+                        false,
                     )),
                 )),
             ),
@@ -1030,7 +1030,7 @@ mod tests {
                                 ScalarExpression::Static(StaticScalarExpression::String(
                                     StringScalarExpression::new(QueryLocation::new_fake(), "x"),
                                 )),
-                                true,
+                                false,
                             )),
                         )))
                         .with_target(MutableValueExpression::Argument(
@@ -1062,7 +1062,7 @@ mod tests {
                                 ScalarExpression::Static(StaticScalarExpression::String(
                                     StringScalarExpression::new(QueryLocation::new_fake(), "y"),
                                 )),
-                                true,
+                                false,
                             )),
                         )))
                         .with_target(MutableValueExpression::Argument(
@@ -1115,7 +1115,7 @@ mod tests {
                         ScalarExpression::Static(StaticScalarExpression::String(
                             StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
                         )),
-                        true,
+                        false,
                     )),
                     vec![DataExpression::Transform(TransformExpression::Set(
                         SetTransformExpression::new(
@@ -1189,7 +1189,7 @@ mod tests {
                             ScalarExpression::Static(StaticScalarExpression::String(
                                 StringScalarExpression::new(QueryLocation::new_fake(), "y"),
                             )),
-                            true,
+                            false,
                         )),
                     )))
                     .with_target(MutableValueExpression::Argument(
@@ -1229,7 +1229,7 @@ mod tests {
                             ScalarExpression::Static(StaticScalarExpression::String(
                                 StringScalarExpression::new(QueryLocation::new_fake(), "x"),
                             )),
-                            true,
+                            false,
                         )),
                     )))
                     .with_target(MutableValueExpression::Argument(
