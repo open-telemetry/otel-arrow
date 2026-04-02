@@ -144,7 +144,7 @@ Each pipeline runtime uses three channel families:
    There is one bounded node-control channel per node. Receivers consume this
    channel in competition with their external ingress sources and are expected
    to prioritize control. Processors and exporters consume node control together
-   with `pdata` through role-specific message channels.
+   with `pdata` through role-specific inboxes.
 3. **Pipeline runtime channels**
    Each pipeline runtime owns two bounded shared MPSC channels:
    - a **runtime-control channel** for timers, delayed-data requests,
@@ -200,7 +200,7 @@ A realistic example looks like this:
 # - one path being saturated no longer prevents the other from draining
 ```
 
-`ProcessorMessageChannel` and `ExporterMessageChannel` both prefer control over
+`ProcessorInbox` and `ExporterInbox` both prefer control over
 `pdata`, but neither gives control absolute priority. After a bounded burst of
 control messages, the channel forces one `pdata` receive attempt when node-level
 admission allows it, so control storms do not starve the forward data path.
@@ -213,18 +213,18 @@ backpressure upstream.
 Processors and exporters use that mechanism differently. Processors do not
 usually call `recv_when(...)` themselves because the engine owns their receive
 loop. Instead, a processor exposes `accept_pdata()`, and the engine feeds that
-policy into `ProcessorMessageChannel::recv_when(...)` on the processor's
+policy into `ProcessorInbox::recv_when(...)` on the processor's
 behalf. Exporters own their run loops directly, so they call
-`ExporterMessageChannel::recv()` or `ExporterMessageChannel::recv_when(...)`
+`ExporterInbox::recv()` or `ExporterInbox::recv_when(...)`
 themselves. The two mechanisms therefore serve the same admission-control goal
 at different layers: `accept_pdata()` is the processor-side readiness hook,
 while `recv_when(...)` is the channel primitive used by self-driven exporter
 loops.
 
-The shutdown contract is also role-specific. `ProcessorMessageChannel`
+The shutdown contract is also role-specific. `ProcessorInbox`
 continues to honor closed admission during shutdown, so a processor that keeps
 `accept_pdata() == false` until the deadline may still strand buffered `pdata`.
-`ExporterMessageChannel` is different: once shutdown is latched, it still
+`ExporterInbox` is different: once shutdown is latched, it still
 force-drains already buffered channel data even if the exporter has temporarily
 closed normal admission.
 
@@ -245,12 +245,12 @@ behavior:
 1. **Forward `pdata` flow**
    Receivers admit external work and emit `OtapPdata` on `pdata` channels.
    Processors and exporters then consume that `pdata` through
-   `ProcessorMessageChannel` and `ExporterMessageChannel`.
+   `ProcessorInbox` and `ExporterInbox`.
 
 2. **Node-control delivery**
    Receivers consume node control in competition with external ingress. By
    contrast, processors and exporters consume node control and `pdata` through
-   their role-specific message channels, which give control preferred but
+   their role-specific inboxes, which give control preferred but
    bounded-fair treatment.
 
 3. **Runtime-control flow**
@@ -285,7 +285,7 @@ The runtime is organized around a small set of guarantees:
   progress under sustained control traffic.
 - **Explicit node-level admission control:** processors can temporarily pause
   `pdata` delivery through `accept_pdata()`, and exporters can apply the same
-  pattern in their run loops with `ExporterMessageChannel::recv_when(false)`.
+  pattern in their run loops with `ExporterInbox::recv_when(false)`.
   The engine uses two entry points because processor receive loops are
   engine-owned while exporter receive loops are node-owned. During shutdown,
   exporters still drain already buffered channel data, while processors keep
@@ -497,9 +497,9 @@ Once ingress is closed and receiver-local drain work is complete, the receiver
 reports `RuntimeControlMsg::ReceiverDrained`.
 
 After all receivers have reported `ReceiverDrained`, the control manager sends
-`NodeControlMsg::Shutdown` to processors and exporters. `ProcessorMessageChannel`
+`NodeControlMsg::Shutdown` to processors and exporters. `ProcessorInbox`
 continues delivering control messages while only draining `pdata` when the
-processor reopens admission. `ExporterMessageChannel` also continues delivering
+processor reopens admission. `ExporterInbox` also continues delivering
 control messages, but it force-drains already buffered input-channel `pdata`
 even if the exporter has temporarily closed normal admission. In both cases,
 the channel returns final shutdown once inputs are drained or the shutdown
@@ -557,8 +557,8 @@ The DST approach combines:
 
 This is important for the control plane because many of the interesting failure
 classes are about ordering and bounded progress, not only about local business
-logic. The DST harness therefore runs real `ProcessorMessageChannel`,
-`ExporterMessageChannel`, `RuntimeCtrlMsgManager`, and
+logic. The DST harness therefore runs real `ProcessorInbox`,
+`ExporterInbox`, `RuntimeCtrlMsgManager`, and
 `PipelineCompletionMsgDispatcher` logic inside the engine's single-threaded
 runtime model.
 
@@ -661,6 +661,7 @@ questions:
 
 ### Predefined Attributes
 
+<!-- markdownlint-disable MD013 -->
 | Scope    | Attribute           | Type    | Description                                                  |
 |----------|---------------------|---------|--------------------------------------------------------------|
 | Resource | process_instance_id | string  | Unique process instance identifier (base32-encoded UUID v7). |
@@ -671,6 +672,7 @@ questions:
 | Pipeline | pipeline_id         | string  | Pipeline identifier.                                         |
 | Node     | node_id             | string  | Node unique identifier (in scope of the pipeline).           |
 | Node     | node_type           | string  | Node type (e.g. "receiver", "processor", "exporter").        |
+<!-- markdownlint-enable MD013 -->
 
 ### Drain Lifecycle Events
 

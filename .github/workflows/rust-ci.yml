@@ -133,7 +133,7 @@ jobs:
       # (including integration tests that are skipped on Windows).
       - name: Upload to codecov.io
         if: matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
@@ -451,7 +451,7 @@ jobs:
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload to codecov.io
         if: matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
