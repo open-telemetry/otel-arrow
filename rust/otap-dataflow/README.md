@@ -440,7 +440,7 @@ for Memory profiling that need to be rendered by uploading it to:
 CPU profiling output will be automatically rendered on browser.
 
 Note: `dhat` needs a clean shutdown to generate `dhat-heap.json` file. In `df_engine`
-      this can be done manually with <kbd>Ctrl</kbd>+<kbd>C</kbd>.
+      this can be done manually with Ctrl+C.
 
 ## Contributing
 
