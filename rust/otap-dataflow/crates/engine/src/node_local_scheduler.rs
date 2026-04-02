@@ -4,8 +4,7 @@
 //! Node-local wakeup scheduling for processor inboxes.
 
 use crate::control::WakeupSlot;
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::Notify;
@@ -20,51 +19,17 @@ pub enum WakeupError {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct WakeupState {
-    when: Instant,
-    generation: u64,
-    sequence: u64,
-}
-
-#[derive(Debug)]
 struct ScheduledWakeup {
     slot: WakeupSlot,
     when: Instant,
-    generation: u64,
     sequence: u64,
 }
-
-impl Ord for ScheduledWakeup {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .when
-            .cmp(&self.when)
-            .then_with(|| other.sequence.cmp(&self.sequence))
-    }
-}
-
-impl PartialOrd for ScheduledWakeup {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for ScheduledWakeup {
-    fn eq(&self, other: &Self) -> bool {
-        self.slot == other.slot
-            && self.when == other.when
-            && self.generation == other.generation
-            && self.sequence == other.sequence
-    }
-}
-
-impl Eq for ScheduledWakeup {}
 
 struct NodeLocalScheduler {
     wakeup_capacity: usize,
     next_sequence: u64,
-    wakeups: BinaryHeap<ScheduledWakeup>,
-    wakeup_state: HashMap<WakeupSlot, WakeupState>,
+    wakeups: Vec<ScheduledWakeup>,
+    wakeup_indices: HashMap<WakeupSlot, usize>,
     shutting_down: bool,
 }
 
@@ -73,8 +38,8 @@ impl NodeLocalScheduler {
         Self {
             wakeup_capacity,
             next_sequence: 0,
-            wakeups: BinaryHeap::new(),
-            wakeup_state: HashMap::new(),
+            wakeups: Vec::new(),
+            wakeup_indices: HashMap::new(),
             shutting_down: false,
         }
     }
@@ -85,38 +50,123 @@ impl NodeLocalScheduler {
         next
     }
 
+    fn wakeup_precedes(left: &ScheduledWakeup, right: &ScheduledWakeup) -> bool {
+        left.when < right.when || (left.when == right.when && left.sequence < right.sequence)
+    }
+
+    fn swap_entries(&mut self, left: usize, right: usize) {
+        if left == right {
+            return;
+        }
+
+        self.wakeups.swap(left, right);
+
+        let left_slot = self.wakeups[left].slot;
+        let right_slot = self.wakeups[right].slot;
+        let _ = self
+            .wakeup_indices
+            .insert(left_slot, left)
+            .expect("left slot index should exist");
+        let _ = self
+            .wakeup_indices
+            .insert(right_slot, right)
+            .expect("right slot index should exist");
+    }
+
+    fn sift_up(&mut self, mut index: usize) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !Self::wakeup_precedes(&self.wakeups[index], &self.wakeups[parent]) {
+                break;
+            }
+            self.swap_entries(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize) {
+        let len = self.wakeups.len();
+        loop {
+            let left = index * 2 + 1;
+            if left >= len {
+                break;
+            }
+
+            let right = left + 1;
+            let mut smallest = left;
+            if right < len && Self::wakeup_precedes(&self.wakeups[right], &self.wakeups[left]) {
+                smallest = right;
+            }
+
+            if !Self::wakeup_precedes(&self.wakeups[smallest], &self.wakeups[index]) {
+                break;
+            }
+
+            self.swap_entries(index, smallest);
+            index = smallest;
+        }
+    }
+
+    fn repair_heap_at(&mut self, index: usize) {
+        if index > 0 {
+            let parent = (index - 1) / 2;
+            if Self::wakeup_precedes(&self.wakeups[index], &self.wakeups[parent]) {
+                self.sift_up(index);
+                return;
+            }
+        }
+        self.sift_down(index);
+    }
+
+    fn remove_heap_entry(&mut self, index: usize) -> ScheduledWakeup {
+        let last = self
+            .wakeups
+            .len()
+            .checked_sub(1)
+            .expect("heap entry removal requires a non-empty heap");
+
+        if index == last {
+            return self.wakeups.pop().expect("last wakeup should exist");
+        }
+
+        self.wakeups.swap(index, last);
+        let removed = self.wakeups.pop().expect("removed wakeup should exist");
+
+        let moved_slot = self.wakeups[index].slot;
+        let _ = self
+            .wakeup_indices
+            .insert(moved_slot, index)
+            .expect("moved slot index should exist");
+        self.repair_heap_at(index);
+        removed
+    }
+
     fn set_wakeup(&mut self, slot: WakeupSlot, when: Instant) -> Result<(), WakeupError> {
         if self.shutting_down {
             return Err(WakeupError::ShuttingDown);
         }
 
         let sequence = self.next_sequence();
-        let generation = if let Some(state) = self.wakeup_state.get_mut(&slot) {
-            state.when = when;
-            state.generation = state.generation.saturating_add(1);
-            state.sequence = sequence;
-            state.generation
+        if let Some(&index) = self.wakeup_indices.get(&slot) {
+            self.wakeups[index].when = when;
+            self.wakeups[index].sequence = sequence;
+            self.repair_heap_at(index);
         } else {
-            if self.wakeup_state.len() >= self.wakeup_capacity {
+            if self.wakeup_indices.len() >= self.wakeup_capacity {
                 return Err(WakeupError::Capacity);
             }
-            let _ = self.wakeup_state.insert(
+            let index = self.wakeups.len();
+            self.wakeups.push(ScheduledWakeup {
                 slot,
-                WakeupState {
-                    when,
-                    generation: 0,
-                    sequence,
-                },
+                when,
+                sequence,
+            });
+            assert!(
+                self.wakeup_indices.insert(slot, index).is_none(),
+                "new wakeup slot should not already exist"
             );
-            0
-        };
-
-        self.wakeups.push(ScheduledWakeup {
-            slot,
-            when,
-            generation,
-            sequence,
-        });
+            self.sift_up(index);
+        }
         Ok(())
     }
 
@@ -124,38 +174,63 @@ impl NodeLocalScheduler {
         if self.shutting_down {
             return false;
         }
-        self.wakeup_state.remove(&slot).is_some()
+
+        let Some(index) = self.wakeup_indices.remove(&slot) else {
+            return false;
+        };
+
+        let removed = self.remove_heap_entry(index);
+        debug_assert_eq!(removed.slot, slot);
+        true
     }
 
-    fn discard_stale_wakeup_head(&mut self) {
-        while let Some(head) = self.wakeups.peek() {
-            let Some(state) = self.wakeup_state.get(&head.slot) else {
-                let _ = self.wakeups.pop();
-                continue;
-            };
-            if state.generation != head.generation || state.when != head.when {
-                let _ = self.wakeups.pop();
-                continue;
+    #[cfg(debug_assertions)]
+    fn assert_consistent(&self) {
+        assert_eq!(self.wakeups.len(), self.wakeup_indices.len());
+
+        for (index, wakeup) in self.wakeups.iter().enumerate() {
+            assert_eq!(
+                self.wakeup_indices.get(&wakeup.slot).copied(),
+                Some(index),
+                "heap index must match map entry"
+            );
+
+            if index > 0 {
+                let parent = (index - 1) / 2;
+                assert!(
+                    !Self::wakeup_precedes(&self.wakeups[index], &self.wakeups[parent]),
+                    "heap child must not precede parent"
+                );
             }
-            break;
         }
     }
 
     fn next_expiry(&mut self) -> Option<Instant> {
-        self.discard_stale_wakeup_head();
-        self.wakeups.peek().map(|wakeup| wakeup.when)
+        #[cfg(debug_assertions)]
+        self.assert_consistent();
+        self.wakeups.first().map(|wakeup| wakeup.when)
     }
 
     fn pop_due(&mut self, now: Instant) -> Option<(WakeupSlot, Instant)> {
-        self.discard_stale_wakeup_head();
+        #[cfg(debug_assertions)]
+        self.assert_consistent();
 
-        let next_due = self.wakeups.peek().map(|wakeup| wakeup.when)?;
+        let next_due = self.wakeups.first().map(|wakeup| wakeup.when)?;
         if next_due > now {
             return None;
         }
 
-        let wakeup = self.wakeups.pop().expect("wakeup must exist");
-        let _ = self.wakeup_state.remove(&wakeup.slot);
+        let slot = self
+            .wakeups
+            .first()
+            .expect("due wakeup should exist")
+            .slot;
+        let removed_index = self
+            .wakeup_indices
+            .remove(&slot)
+            .expect("due wakeup slot index should exist");
+        debug_assert_eq!(removed_index, 0);
+        let wakeup = self.remove_heap_entry(0);
         Some((wakeup.slot, wakeup.when))
     }
 
@@ -164,12 +239,12 @@ impl NodeLocalScheduler {
             return;
         }
         self.shutting_down = true;
-        self.wakeup_state.clear();
+        self.wakeup_indices.clear();
         self.wakeups.clear();
     }
 
     fn is_drained(&self) -> bool {
-        self.wakeup_state.is_empty()
+        self.wakeup_indices.is_empty()
     }
 }
 
@@ -248,6 +323,16 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    fn assert_heap_bound(scheduler: &NodeLocalScheduler) {
+        assert_eq!(
+            scheduler.wakeups.len(),
+            scheduler.wakeup_indices.len(),
+            "scheduler should keep exactly one heap entry per live slot"
+        );
+        #[cfg(debug_assertions)]
+        scheduler.assert_consistent();
+    }
+
     #[test]
     fn set_wakeup_schedules_a_wakeup() {
         let mut scheduler = NodeLocalScheduler::new(2);
@@ -255,9 +340,11 @@ mod tests {
         let when = now + Duration::from_secs(1);
 
         assert_eq!(scheduler.set_wakeup(WakeupSlot(7), when), Ok(()));
+        assert_heap_bound(&scheduler);
         assert_eq!(scheduler.next_expiry(), Some(when));
         assert_eq!(scheduler.pop_due(now), None);
         assert_eq!(scheduler.pop_due(when), Some((WakeupSlot(7), when)));
+        assert_heap_bound(&scheduler);
         assert_eq!(scheduler.next_expiry(), None);
     }
 
@@ -270,8 +357,11 @@ mod tests {
 
         assert_eq!(scheduler.set_wakeup(WakeupSlot(3), later), Ok(()));
         assert_eq!(scheduler.set_wakeup(WakeupSlot(3), sooner), Ok(()));
+        assert_heap_bound(&scheduler);
+        assert_eq!(scheduler.wakeups.len(), 1);
         assert_eq!(scheduler.next_expiry(), Some(sooner));
         assert_eq!(scheduler.pop_due(sooner), Some((WakeupSlot(3), sooner)));
+        assert_heap_bound(&scheduler);
         assert_eq!(scheduler.pop_due(later), None);
     }
 
@@ -281,7 +371,9 @@ mod tests {
         let when = Instant::now() + Duration::from_secs(1);
 
         assert_eq!(scheduler.set_wakeup(WakeupSlot(5), when), Ok(()));
+        assert_heap_bound(&scheduler);
         assert!(scheduler.cancel_wakeup(WakeupSlot(5)));
+        assert_heap_bound(&scheduler);
         assert!(!scheduler.cancel_wakeup(WakeupSlot(5)));
         assert_eq!(scheduler.next_expiry(), None);
         assert_eq!(scheduler.pop_due(when), None);
@@ -301,22 +393,39 @@ mod tests {
             scheduler.set_wakeup(WakeupSlot(0), when + Duration::from_secs(1)),
             Ok(())
         );
+        assert_heap_bound(&scheduler);
     }
 
     #[test]
-    fn stale_heap_entries_are_ignored() {
+    fn repeated_reschedules_keep_single_heap_entry() {
         let mut scheduler = NodeLocalScheduler::new(2);
         let now = Instant::now();
-        let first = now + Duration::from_secs(5);
-        let replacement = now + Duration::from_secs(1);
+        for offset in (1..=32).rev() {
+            let when = now + Duration::from_secs(offset);
+            assert_eq!(scheduler.set_wakeup(WakeupSlot(9), when), Ok(()));
+            assert_heap_bound(&scheduler);
+            assert_eq!(scheduler.wakeups.len(), 1);
+            assert_eq!(scheduler.next_expiry(), Some(when));
+        }
 
-        assert_eq!(scheduler.set_wakeup(WakeupSlot(9), first), Ok(()));
-        assert_eq!(scheduler.set_wakeup(WakeupSlot(9), replacement), Ok(()));
-        assert_eq!(
-            scheduler.pop_due(replacement),
-            Some((WakeupSlot(9), replacement))
-        );
-        assert_eq!(scheduler.pop_due(first), None);
+        let expected = now + Duration::from_secs(1);
+        assert_eq!(scheduler.pop_due(expected), Some((WakeupSlot(9), expected)));
         assert_eq!(scheduler.next_expiry(), None);
+    }
+
+    #[test]
+    fn equal_deadlines_follow_schedule_sequence() {
+        let mut scheduler = NodeLocalScheduler::new(4);
+        let when = Instant::now() + Duration::from_secs(1);
+
+        assert_eq!(scheduler.set_wakeup(WakeupSlot(1), when), Ok(()));
+        assert_eq!(scheduler.set_wakeup(WakeupSlot(2), when), Ok(()));
+        assert_eq!(scheduler.set_wakeup(WakeupSlot(3), when), Ok(()));
+        assert_heap_bound(&scheduler);
+
+        assert_eq!(scheduler.pop_due(when), Some((WakeupSlot(1), when)));
+        assert_eq!(scheduler.pop_due(when), Some((WakeupSlot(2), when)));
+        assert_eq!(scheduler.pop_due(when), Some((WakeupSlot(3), when)));
+        assert_heap_bound(&scheduler);
     }
 }
