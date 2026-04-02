@@ -22,13 +22,4 @@ pub struct TemporalReaggregationMetrics {
     /// specified limit or fail to be processed into a view.
     #[metric(unit = "{batch}")]
     pub batches_rejected: Counter<u64>,
-
-    /// Number of batches passed through entirely (no aggregatable metrics).
-    #[metric(unit = "{batch}")]
-    pub full_passthrough_batches: Counter<u64>,
-
-    /// Number of partial passthrough batches emitted (batch contained a mix of
-    /// aggregatable and non-aggregatable metrics).
-    #[metric(unit = "{batch}")]
-    pub passthrough_batches: Counter<u64>,
 }

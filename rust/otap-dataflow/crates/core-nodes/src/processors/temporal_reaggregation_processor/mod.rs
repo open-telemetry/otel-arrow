@@ -396,13 +396,11 @@ impl TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         match result {
             ProcessResult::NoAggregations => {
-                self.metrics.full_passthrough_batches.inc();
                 effect_handler
                     .send_message_with_source_node(original_pdata)
                     .await?;
             }
             ProcessResult::SomeAggregations(records) => {
-                self.metrics.passthrough_batches.inc();
                 let pt_pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(records));
                 effect_handler
                     .send_message_with_source_node(pt_pdata)
