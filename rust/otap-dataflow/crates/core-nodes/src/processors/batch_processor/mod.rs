@@ -78,21 +78,29 @@ pub const DEFAULT_MAX_BATCH_DURATION_MS: u64 = 200;
 const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
 const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 
-const WAKEUP_SLOT_OTAP_LOGS: WakeupSlot = WakeupSlot(0);
-const WAKEUP_SLOT_OTAP_METRICS: WakeupSlot = WakeupSlot(1);
-const WAKEUP_SLOT_OTAP_TRACES: WakeupSlot = WakeupSlot(2);
-const WAKEUP_SLOT_OTLP_LOGS: WakeupSlot = WakeupSlot(3);
-const WAKEUP_SLOT_OTLP_METRICS: WakeupSlot = WakeupSlot(4);
-const WAKEUP_SLOT_OTLP_TRACES: WakeupSlot = WakeupSlot(5);
+// Encodes each supported (format, signal) pair into a distinct batch-local
+// wakeup slot.
+const fn wakeup_slot(format: SignalFormat, signal: SignalType) -> WakeupSlot {
+    let format_base = match format {
+        SignalFormat::OtapRecords => 0,
+        SignalFormat::OtlpBytes => 3,
+    };
+    let signal_offset = match signal {
+        SignalType::Logs => 0,
+        SignalType::Metrics => 1,
+        SignalType::Traces => 2,
+    };
+    WakeupSlot(format_base + signal_offset)
+}
 
 const fn signal_from_wakeup_slot(slot: WakeupSlot) -> Option<(SignalFormat, SignalType)> {
-    match slot {
-        WAKEUP_SLOT_OTAP_LOGS => Some((SignalFormat::OtapRecords, SignalType::Logs)),
-        WAKEUP_SLOT_OTAP_METRICS => Some((SignalFormat::OtapRecords, SignalType::Metrics)),
-        WAKEUP_SLOT_OTAP_TRACES => Some((SignalFormat::OtapRecords, SignalType::Traces)),
-        WAKEUP_SLOT_OTLP_LOGS => Some((SignalFormat::OtlpBytes, SignalType::Logs)),
-        WAKEUP_SLOT_OTLP_METRICS => Some((SignalFormat::OtlpBytes, SignalType::Metrics)),
-        WAKEUP_SLOT_OTLP_TRACES => Some((SignalFormat::OtlpBytes, SignalType::Traces)),
+    match slot.0 {
+        0 => Some((SignalFormat::OtapRecords, SignalType::Logs)),
+        1 => Some((SignalFormat::OtapRecords, SignalType::Metrics)),
+        2 => Some((SignalFormat::OtapRecords, SignalType::Traces)),
+        3 => Some((SignalFormat::OtlpBytes, SignalType::Logs)),
+        4 => Some((SignalFormat::OtlpBytes, SignalType::Metrics)),
+        5 => Some((SignalFormat::OtlpBytes, SignalType::Traces)),
         _ => None,
     }
 }
@@ -764,11 +772,7 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
     }
 
     fn wakeup_slot(signal: SignalType) -> WakeupSlot {
-        match signal {
-            SignalType::Logs => WAKEUP_SLOT_OTAP_LOGS,
-            SignalType::Metrics => WAKEUP_SLOT_OTAP_METRICS,
-            SignalType::Traces => WAKEUP_SLOT_OTAP_TRACES,
-        }
+        wakeup_slot(SignalFormat::OtapRecords, signal)
     }
 }
 
@@ -792,11 +796,7 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
     }
 
     fn wakeup_slot(signal: SignalType) -> WakeupSlot {
-        match signal {
-            SignalType::Logs => WAKEUP_SLOT_OTLP_LOGS,
-            SignalType::Metrics => WAKEUP_SLOT_OTLP_METRICS,
-            SignalType::Traces => WAKEUP_SLOT_OTLP_TRACES,
-        }
+        wakeup_slot(SignalFormat::OtlpBytes, signal)
     }
 }
 
@@ -1715,12 +1715,12 @@ mod tests {
 
     const fn all_wakeup_slots() -> [WakeupSlot; 6] {
         [
-            WAKEUP_SLOT_OTAP_LOGS,
-            WAKEUP_SLOT_OTAP_METRICS,
-            WAKEUP_SLOT_OTAP_TRACES,
-            WAKEUP_SLOT_OTLP_LOGS,
-            WAKEUP_SLOT_OTLP_METRICS,
-            WAKEUP_SLOT_OTLP_TRACES,
+            wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
+            wakeup_slot(SignalFormat::OtapRecords, SignalType::Metrics),
+            wakeup_slot(SignalFormat::OtapRecords, SignalType::Traces),
+            wakeup_slot(SignalFormat::OtlpBytes, SignalType::Logs),
+            wakeup_slot(SignalFormat::OtlpBytes, SignalType::Metrics),
+            wakeup_slot(SignalFormat::OtlpBytes, SignalType::Traces),
         ]
     }
 
@@ -2049,6 +2049,35 @@ mod tests {
         test_timer_flush(datagen.generate_logs().into(), true);
     }
 
+    #[test]
+    fn test_wakeup_slot_round_trip_and_uniqueness() {
+        let slots = [
+            (SignalFormat::OtapRecords, SignalType::Logs),
+            (SignalFormat::OtapRecords, SignalType::Metrics),
+            (SignalFormat::OtapRecords, SignalType::Traces),
+            (SignalFormat::OtlpBytes, SignalType::Logs),
+            (SignalFormat::OtlpBytes, SignalType::Metrics),
+            (SignalFormat::OtlpBytes, SignalType::Traces),
+        ];
+
+        for (expected_format, expected_signal) in slots {
+            let slot = wakeup_slot(expected_format, expected_signal);
+            assert_eq!(
+                signal_from_wakeup_slot(slot),
+                Some((expected_format, expected_signal))
+            );
+        }
+
+        let mut unique = std::collections::HashSet::new();
+        for (format, signal) in slots {
+            assert!(
+                unique.insert(wakeup_slot(format, signal)),
+                "slot mapping should be unique for each format/signal pair"
+            );
+        }
+        assert_eq!(unique.len(), 6);
+    }
+
     // The processor replaces wakeups per slot. This test proves that an early
     // wakeup is ignored and that the current wakeup still flushes the buffered
     // input later.
@@ -2099,7 +2128,7 @@ mod tests {
 
                 let stale_when = Instant::now();
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                    slot: WAKEUP_SLOT_OTAP_LOGS,
+                    slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
                     when: stale_when,
                 }))
                 .await
@@ -2111,7 +2140,7 @@ mod tests {
 
                 let current_when = Instant::now() + Duration::from_secs(1);
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                    slot: WAKEUP_SLOT_OTAP_LOGS,
+                    slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
                     when: current_when,
                 }))
                 .await
@@ -2727,7 +2756,10 @@ mod tests {
 
                 // Trigger timeout for both active batching slots.
                 let when = Instant::now() + Duration::from_secs(1);
-                for slot in [WAKEUP_SLOT_OTLP_LOGS, WAKEUP_SLOT_OTAP_LOGS] {
+                for slot in [
+                    wakeup_slot(SignalFormat::OtlpBytes, SignalType::Logs),
+                    wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
+                ] {
                     ctx.process(Message::Control(NodeControlMsg::Wakeup { slot, when }))
                         .await
                         .expect("process wakeup");
