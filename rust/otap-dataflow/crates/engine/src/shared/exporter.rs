@@ -35,7 +35,7 @@
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
-use crate::message::{Message, SharedExporterMessageChannel};
+use crate::message::{Message, SharedExporterInbox};
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
@@ -48,13 +48,13 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::time::Duration;
 
-/// Send-friendly exporter message channel for shared exporter runtimes.
-pub struct ExporterMessageChannel<PData> {
-    inner: SharedExporterMessageChannel<PData>,
+/// Send-friendly exporter inbox for shared exporter runtimes.
+pub struct ExporterInbox<PData> {
+    inner: SharedExporterInbox<PData>,
 }
 
-impl<PData> ExporterMessageChannel<PData> {
-    /// Creates a new shared exporter message channel.
+impl<PData> ExporterInbox<PData> {
+    /// Creates a new shared exporter inbox.
     #[must_use]
     pub(crate) fn new(
         control_rx: SharedReceiver<NodeControlMsg<PData>>,
@@ -63,14 +63,12 @@ impl<PData> ExporterMessageChannel<PData> {
         interests: Interests,
     ) -> Self {
         Self {
-            inner: SharedExporterMessageChannel::new_internal(
-                control_rx, pdata_rx, node_id, interests,
-            ),
+            inner: SharedExporterInbox::new_internal(control_rx, pdata_rx, node_id, interests),
         }
     }
 }
 
-impl<PData: ReceivedAtNode> ExporterMessageChannel<PData> {
+impl<PData: ReceivedAtNode> ExporterInbox<PData> {
     /// Receives the next message with pdata admission enabled.
     pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
         self.inner.recv_internal().await
@@ -89,7 +87,7 @@ pub trait Exporter<PData> {
     /// Similar to local::exporter::Exporter::start, but operates in a Send context.
     async fn start(
         self: Box<Self>,
-        msg_chan: ExporterMessageChannel<PData>,
+        inbox: ExporterInbox<PData>,
         effect_handler: EffectHandler<PData>,
     ) -> Result<TerminalState, Error>;
 }
