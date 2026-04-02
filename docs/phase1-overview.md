@@ -105,7 +105,7 @@ as the compression window is sufficiently large, but even in this case, the new
 protocol remains superior. As previously mentioned, these compression gains can
 be higher for traffic predominantly containing multivariate metrics.
 
-![Avg % of compressed size improvement of OTAP over OTLP 
+![Avg % of compressed size improvement of OTAP over OTLP
 (zstd compression)](img/average_improvement_heatmap.png)
 
 For detailed Phase 1 benchmark results, see the [Phase 1

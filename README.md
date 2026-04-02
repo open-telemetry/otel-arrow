@@ -213,8 +213,12 @@ contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-ar
 
 ## Documentation
 
+Here are some of our important documents. You can find more
+work-in-progress documentation about the OTAP Datflow Engine
+[here](./rust/otap-dataflow/docs).
+
 | Document | Description |
-|---|---|
+| --- | --- |
 | [OTAP Spec](docs/otap-spec.md) | Formal protocol specification |
 | [OTAP Basics](docs/otap_basics.md) | Introduction to the OTAP protocol |
 | [Data Model](docs/data_model.md) | Arrow schema mappings for OTLP entities |
