@@ -183,12 +183,12 @@ struct ExporterMetrics {
     pub log_bytes_uploaded: Counter<u64>,
 
     /// Per-upload latency for successful log batches in milliseconds (min/max/sum/count).
-    #[metric(name = "log_upload.success.duration", unit = "ms")]
-    pub log_upload_duration: Mmsc,
+    #[metric(unit = "ms")]
+    pub log_upload_success_duration: Mmsc,
 
     /// Per-upload latency for failed log batches in milliseconds (min/max/sum/count).
-    #[metric(name = "log_upload.failed.duration", unit = "ms")]
-    pub log_upload_error_duration: Mmsc,
+    #[metric(unit = "ms")]
+    pub log_upload_failed_duration: Mmsc,
 
     /// Encode + compress latency for logs in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
@@ -220,12 +220,12 @@ struct ExporterMetrics {
     pub trace_bytes_uploaded: Counter<u64>,
 
     /// Per-upload latency for successful trace batches in milliseconds (min/max/sum/count).
-    #[metric(name = "trace_upload.success.duration", unit = "ms")]
-    pub trace_upload_duration: Mmsc,
+    #[metric(unit = "ms")]
+    pub trace_upload_success_duration: Mmsc,
 
     /// Per-upload latency for failed trace batches in milliseconds (min/max/sum/count).
-    #[metric(name = "trace_upload.failed.duration", unit = "ms")]
-    pub trace_upload_error_duration: Mmsc,
+    #[metric(unit = "ms")]
+    pub trace_upload_failed_duration: Mmsc,
 
     /// Encode + compress latency for traces in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
@@ -399,10 +399,10 @@ impl GenevaExporter {
                 Ok(()) => {
                     match signal_type {
                         SignalType::Logs => {
-                            self.metrics.log_upload_duration.record(duration_ms);
+                            self.metrics.log_upload_success_duration.record(duration_ms);
                         }
                         SignalType::Traces => {
-                            self.metrics.trace_upload_duration.record(duration_ms);
+                            self.metrics.trace_upload_success_duration.record(duration_ms);
                         }
                         _ => {}
                     }
@@ -413,10 +413,10 @@ impl GenevaExporter {
                 Err(e) => {
                     match signal_type {
                         SignalType::Logs => {
-                            self.metrics.log_upload_error_duration.record(duration_ms);
+                            self.metrics.log_upload_failed_duration.record(duration_ms);
                         }
                         SignalType::Traces => {
-                            self.metrics.trace_upload_error_duration.record(duration_ms);
+                            self.metrics.trace_upload_failed_duration.record(duration_ms);
                         }
                         _ => {}
                     }
