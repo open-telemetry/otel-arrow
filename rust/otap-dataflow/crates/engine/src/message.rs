@@ -183,7 +183,7 @@ impl<T> Receiver<T> {
     }
 }
 
-/// Small private adapter trait used by [`MessageChannelCore`].
+/// Small private adapter trait used by [`InboxCore`].
 ///
 /// The core receive state machine is shared by:
 ///
@@ -230,7 +230,7 @@ impl<T> ChannelReceiver<T> for SharedReceiver<T> {
     }
 }
 
-/// Shutdown-drain policy for [`MessageChannelCore::recv_with_policy`].
+/// Shutdown-drain policy for [`InboxCore::recv_with_policy`].
 ///
 /// Both processor and exporter channels share the same multiplexing and
 /// shutdown machinery, but they intentionally diverge once shutdown has been
@@ -254,7 +254,7 @@ enum DrainPolicy {
     ForceDrainDuringShutdown,
 }
 
-struct MessageChannelCore<PData, ControlRx, PDataRx> {
+struct InboxCore<PData, ControlRx, PDataRx> {
     control_rx: Option<ControlRx>,
     pdata_rx: Option<PDataRx>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` representing the drain deadline.
@@ -269,7 +269,7 @@ struct MessageChannelCore<PData, ControlRx, PDataRx> {
     consecutive_control: usize,
 }
 
-impl<PData, ControlRx, PDataRx> MessageChannelCore<PData, ControlRx, PDataRx> {
+impl<PData, ControlRx, PDataRx> InboxCore<PData, ControlRx, PDataRx> {
     fn new(control_rx: ControlRx, pdata_rx: PDataRx, node_id: usize, interests: Interests) -> Self {
         Self {
             control_rx: Some(control_rx),
@@ -290,7 +290,7 @@ impl<PData, ControlRx, PDataRx> MessageChannelCore<PData, ControlRx, PDataRx> {
     }
 }
 
-impl<PData, ControlRx, PDataRx> MessageChannelCore<PData, ControlRx, PDataRx>
+impl<PData, ControlRx, PDataRx> InboxCore<PData, ControlRx, PDataRx>
 where
     PData: ReceivedAtNode,
     ControlRx: ChannelReceiver<NodeControlMsg<PData>>,
@@ -339,7 +339,7 @@ where
 
         loop {
             if self.control_rx.is_none() || self.pdata_rx.is_none() {
-                // MessageChannel has been shutdown
+                // Inbox has been shutdown
                 return Err(RecvError::Closed);
             }
 
@@ -562,12 +562,12 @@ where
 /// This preserves the existing processor contract: pdata admission is
 /// controlled by the engine via `accept_pdata()`, and the admission guard
 /// remains authoritative during shutdown draining.
-pub struct ProcessorMessageChannel<PData> {
-    core: MessageChannelCore<PData, Receiver<NodeControlMsg<PData>>, Receiver<PData>>,
+pub struct ProcessorInbox<PData> {
+    core: InboxCore<PData, Receiver<NodeControlMsg<PData>>, Receiver<PData>>,
 }
 
-impl<PData> ProcessorMessageChannel<PData> {
-    /// Creates a new processor message channel.
+impl<PData> ProcessorInbox<PData> {
+    /// Creates a new processor inbox.
     #[must_use]
     pub fn new(
         control_rx: Receiver<NodeControlMsg<PData>>,
@@ -576,12 +576,12 @@ impl<PData> ProcessorMessageChannel<PData> {
         interests: Interests,
     ) -> Self {
         Self {
-            core: MessageChannelCore::new(control_rx, pdata_rx, node_id, interests),
+            core: InboxCore::new(control_rx, pdata_rx, node_id, interests),
         }
     }
 }
 
-impl<PData: ReceivedAtNode> ProcessorMessageChannel<PData> {
+impl<PData: ReceivedAtNode> ProcessorInbox<PData> {
     /// Receives the next message while honoring the current processor
     /// admission state, including during shutdown draining.
     pub async fn recv_when(&mut self, accept_pdata: bool) -> Result<Message<PData>, RecvError> {
@@ -596,15 +596,15 @@ impl<PData: ReceivedAtNode> ProcessorMessageChannel<PData> {
 /// Exporters own their receive loop directly. During shutdown draining,
 /// buffered pdata is force-drained even when the exporter has temporarily
 /// closed normal pdata admission.
-pub struct ExporterMessageChannel<
+pub struct ExporterInbox<
     PData,
     ControlRx = Receiver<NodeControlMsg<PData>>,
     PDataRx = Receiver<PData>,
 > {
-    core: MessageChannelCore<PData, ControlRx, PDataRx>,
+    core: InboxCore<PData, ControlRx, PDataRx>,
 }
 
-impl<PData, ControlRx, PDataRx> ExporterMessageChannel<PData, ControlRx, PDataRx> {
+impl<PData, ControlRx, PDataRx> ExporterInbox<PData, ControlRx, PDataRx> {
     #[must_use]
     pub(crate) fn new_internal(
         control_rx: ControlRx,
@@ -613,13 +613,13 @@ impl<PData, ControlRx, PDataRx> ExporterMessageChannel<PData, ControlRx, PDataRx
         interests: Interests,
     ) -> Self {
         Self {
-            core: MessageChannelCore::new(control_rx, pdata_rx, node_id, interests),
+            core: InboxCore::new(control_rx, pdata_rx, node_id, interests),
         }
     }
 }
 
 #[allow(private_bounds)]
-impl<PData, ControlRx, PDataRx> ExporterMessageChannel<PData, ControlRx, PDataRx>
+impl<PData, ControlRx, PDataRx> ExporterInbox<PData, ControlRx, PDataRx>
 where
     PData: ReceivedAtNode,
     ControlRx: ChannelReceiver<NodeControlMsg<PData>>,
@@ -639,8 +639,8 @@ where
     }
 }
 
-impl<PData> ExporterMessageChannel<PData> {
-    /// Creates a new exporter message channel.
+impl<PData> ExporterInbox<PData> {
+    /// Creates a new exporter inbox.
     #[must_use]
     pub fn new(
         control_rx: Receiver<NodeControlMsg<PData>>,
@@ -652,7 +652,7 @@ impl<PData> ExporterMessageChannel<PData> {
     }
 }
 
-impl<PData: ReceivedAtNode> ExporterMessageChannel<PData> {
+impl<PData: ReceivedAtNode> ExporterInbox<PData> {
     /// Receives the next message with pdata admission enabled.
     pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
         self.recv_internal().await
@@ -665,6 +665,6 @@ impl<PData: ReceivedAtNode> ExporterMessageChannel<PData> {
     }
 }
 
-/// Send-friendly exporter channel type for shared exporter runtimes.
-pub(crate) type SharedExporterMessageChannel<PData> =
-    ExporterMessageChannel<PData, SharedReceiver<NodeControlMsg<PData>>, SharedReceiver<PData>>;
+/// Send-friendly exporter inbox type for shared exporter runtimes.
+pub(crate) type SharedExporterInbox<PData> =
+    ExporterInbox<PData, SharedReceiver<NodeControlMsg<PData>>, SharedReceiver<PData>>;
