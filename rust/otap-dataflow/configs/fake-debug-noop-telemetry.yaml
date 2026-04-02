@@ -12,6 +12,7 @@ engine:
                 endpoint: "http://127.0.0.1:43480"
       views:
         - selector:
+            scope_name: "fake_data_generator.receiver.metrics"
             instrument_name: "logs.produced"
           stream:
             name: "otlp.logs.produced.count"
@@ -22,11 +23,6 @@ engine:
           stream:
             name: "debug.logs.consumed.count"
             description: "Count of log messages consumed by debug processor"
-        - selector:
-            scope_name: "fake_data_generator.receiver.metrics"
-          stream:
-            name: "fake_data_generator.receiver.metrics"
-            description: "Metrics from the fake data generator receiver"
     resource:
       service.name: "fake-debug-noop-service"
       service.instance.id: "${env:STATEFULSET_ORDINAL:-unknown}"
