@@ -78,16 +78,10 @@ support a number of types, including scalars of various width, strings
 and binary data, arrays, lists, structs, maps, as well as
 dictionary-encodings over the other types.
 
-Apache Arrow libraries follow standard patterns and naming
-conventions, organized around specification documents, and as with
-OpenTelemetry, the libraries have each their own ways to address
-language-specific challenges. Using an Apache Arrow library to
-construct a record batch makes it easy and efficient to exchange data
-across language, process, and network boundaries. You can build a
-record batch in one language, and pass it to another language without
-copying the data. Record batches support zero-copy operations, and for
-network and file-based communications, each library includes a reader
-and writer for [Arrow IPC][ARROW-IPC].
+With Apache Arrow, we can build a record batch in one language and
+pass it to another language using shared memory. Apache Arrow
+specifies [Arrow IPC][ARROW-IPC], an encoding for column-oriented data
+that extends zero-copy to network and file-based communications.
 
 ## What is OTAP?
 
@@ -101,13 +95,16 @@ to work with, because of vectorization, and compresses dramatically
 better, especially over long-lived streams with the use of [Arrow
 IPC][ARROW-IPC] stream encoding.
 
-OTAP maintains 100% compatibility with the OpenTelemetry data model,
-with a straight-forward and non-lossy round trip from OTLP to OTAP and
-back.  In both our Rust and Golang implementations, we support
-combined OTLP and OTAP services on a single port, making OTel-Arrow
-OTAP/OTLP receivers and exporters effective as drop-in replacements
-for OTLP receivers and exporters, and making it easy migrate between
-the two protocols.
+OTAP maintains 100% compatibility with the OpenTelemetry data model
+for logs, traces, and metrics, with a straight-forward and non-lossy
+round trip from OTLP to OTAP and back, and support for the
+OpenTelemetry Profiles signal in OTAP is important future work.
+
+In both our Rust and Golang implementations, we support combined OTAP
+and OTLP services on a single port, making OTel-Arrow OTAP/OTLP
+receivers and exporters effective as drop-in replacements for OTLP
+receivers and exporters, and making it easy migrate between OTAP and
+OTLP.
 
 In the OTAP Dataflow Engine, batches of OTAP data are represented
 using **multiple record batches** in an arrangement referred to as a
@@ -152,6 +149,7 @@ number of examples (e.g.,
 [syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to print
 syslog records to the console on port 5140:
 
+> [!NOTE]
 > Warning: this is insecure! See the [Syslog/CEF Receiver
 > documentation][SYSLOG-CEF] for secure configuration examples.
 
@@ -168,11 +166,7 @@ Linux/MacOS users can test this with:
 PowerShell users can test this with:
 
 ```
-﻿$t=Get-Date -Format 'MMM dd HH:mm:ss';
-$u=New-Object Net.Sockets.UdpClient; 
-$b=[Text.Encoding]::ASCII.GetBytes("<14>$t powershell test: hello world"); 
-$u.Send($b,$b.Length,'127.0.0.1',5140); 
-$u.Close()
+﻿$t=Get-Date -Format 'MMM dd HH:mm:ss';$u=New-Object Net.Sockets.UdpClient;$b=[Text.Encoding]::ASCII.GetBytes("<14>$t powershell test: hello world");$u.Send($b,$b.Length,'127.0.0.1',5140);$u.Close()
 ```
 
 See the admin console on port 8080, or visit
