@@ -56,9 +56,7 @@ pub fn scope_id_of<'a, S: InstrumentationScopeView>(
 }
 
 /// Extract (data_type, aggregation_temporality, is_monotonic) from a
-/// [`DataView`] without constructing a full [`MetricId`]. Used by the
-/// passthrough path where we need type info for the metric row but don't
-/// need identity-based dedup.
+/// [`DataView`] without constructing a full [`MetricId`].
 pub fn metric_type_info_of<'a>(data: &impl DataView<'a>) -> (u8, u8, bool) {
     let dt = data.value_type();
     let (is_monotonic, temporality) = match dt {
