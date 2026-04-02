@@ -10,21 +10,21 @@
     Hardware: Apple M1 Max
     Total Number of Cores: 10 (8 performance and 2 efficiency)
     RAM: 32.0 GB
-    | Test                                        | Average time |
-    |---------------------------------------------|--------------|
-    | parse_auto_detect/rfc3164                   | 24.480 ns    |
-    | parse_auto_detect/rfc5424                   | 37.627 ns    |
-    | parse_auto_detect/cef                       | 37.327 ns    |
-    | parse_auto_detect/cef_with_rfc3164          | 103.18 ns    |
-    | parse_auto_detect/cef_with_rfc5424          | 64.122 ns    |
-    | timestamp_extraction/rfc3164                | 540.88 ns    |
-    | timestamp_extraction/rfc5424                | 22.944 ns    |
-    | cef_extensions/one_extension                | 20.168 ns    |
-    | cef_extensions/ten_extensions               | 191.17 ns    |
-    | cef_extensions/ten_extensions_with_escape   | 212.95 ns    |
-    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 96.492 µs    |
-    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 46.538 µs    |
-    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 43.568 µs    |
+    | Test                                              | Average time |
+    |---------------------------------------------------|--------------|
+    | parse_auto_detect/rfc3164                         | 23.429 ns    |
+    | parse_auto_detect/rfc5424                         | 35.812 ns    |
+    | parse_auto_detect/cef                             | 38.745 ns    |
+    | parse_auto_detect/cef_with_rfc3164                | 107.40 ns    |
+    | parse_auto_detect/cef_with_rfc5424                | 64.228 ns    |
+    | timestamp_extraction/rfc3164                      | 580.73 ns    |
+    | timestamp_extraction/rfc5424                      | 23.816 ns    |
+    | cef_extensions/one_extension                      | 21.113 ns    |
+    | cef_extensions/ten_extensions                     | 200.95 ns    |
+    | cef_extensions/ten_extensions_with_escape          | 219.42 ns    |
+    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 102.49 µs    |
+    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 51.058 µs    |
+    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 45.241 µs    |
 */
 
 #![allow(missing_docs)]
