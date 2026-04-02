@@ -113,10 +113,12 @@ In the OTAP Dataflow Engine, batches of OTAP data are represented
 using **multiple record batches** in an arrangement referred to as a
 "star schema". The number of record batches varies by OpenTelemetry
 signal type, see our [data model documentation](./docs/data_model.md)
-for details. Adapter libraries for conversion between OTAP and OTLP
-representations are provided in
-[Rust](./rust/otap-dataflow/crates/pdata/README.md) and
-[Golang](./go/README.md) in this repository.
+for details. OTAP Dataflow Engine also transports OTLP protocol bytes
+directly and efficiently by avoiding protocol message objects.
+
+Adapter libraries for conversion between OTAP and OTLP representations
+are provided in [Rust](./rust/otap-dataflow/crates/pdata/README.md)
+and [Golang](./go/README.md) in this repository.
 
 ## Quick Start
 
@@ -130,36 +132,37 @@ Collector configuration.  To locate one, see [OpenTelemetry Collector
 releases](https://opentelemetry.io/docs/collector/#releases).
 
 See the [Exporter][EXPORTER] and [Receiver][RECEIVER] docs for
-complete and up-to-date configuration details.
+complete and up-to-date configuration details and Collector-specific
+examples.
 
 ### OTAP Dataflow Engine example
 
 **We are not at this time providing pre-built OTAP Dataflow Engine
-releases.** Developers can build and test our code with the following:
+releases.** Developers can build the OTAP Dataflow Engine in a minimal
+configuration with the following:
 
 ```bash
 git clone https://github.com/open-telemetry/otel-arrow.git
 cd otel-arrow/rust/otap-dataflow
-cargo test --workspace
-cargo build --release --workspace
+cargo build --bin df_engine --no-default-features
 ```
 
-A [directory of example
-configurations](./rust/otap-dataflow/configs/README.md) is provided,
-for example [syslog-console.yaml][SYSLOG-CONSOLE-YAML]. For example,
-to print syslog records to the console on port 5140:
+A [directory of example configurations][EXAMPLE-CONFIGS] provides a
+number of examples (e.g.,
+[syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to print
+syslog records to the console on port 5140:
 
 ```
-./target/release/df_engine -c ./configs/syslog-console.yaml --num-cores=1
+./target/debug/df_engine -c ./configs/syslog-console.yaml --num-cores=1
 ```
 
-Linux/MacOS users, to test this:
+Linux/MacOS users can test this with:
 
 ```
 ﻿logger -n 127.0.0.1 -P 5140 -d --rfc3164 "hello world"
 ```
 
-PowerShell users, to test this:
+PowerShell users can test this with:
 
 ```
 ﻿$t=Get-Date -Format 'MMM dd HH:mm:ss';
@@ -169,111 +172,32 @@ $u.Send($b,$b.Length,'127.0.0.1',5140);
 $u.Close()
 ```
 
-Note! This is insecure, see the [`syslog_cef` documentation][SYSLOG-CEF] for more details.
+Warning: this is insecure! See the [Syslog/CEF Receiver
+documentation][SYSLOG-CEF] for more details.
 
 See the [OTAP Dataflow Engine
 documentation](rust/otap-dataflow/README.md) for more details.
 
-[COLLECTOR-CONTRIB]: https://github.com/open-telemetry/opentelemetry-collector-contrib
-[RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
-[EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
-[ARROW-IPC]: https://arrow.apache.org/docs/format/IPC.html
-[ARROW-RELEASED]: https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.104.0
-[SYSLOG-CEF]: ./rust/otap-dataflow/crates/core-nodes/src/receivers/syslog_cef_receiver/README.md
-[SYSLOG-CONSOLE-YAML]: ./rust/otap-dataflow/configs/syslog-console.yaml
+## Roadmap
 
-## Project History
+See our [project phases document](./docs/project-phases.md) for
+project goals and history. Phase 1 established the OTAP representation
+and proved that a column-oriented representation for OpenTelemetry is
+good for compression performance.
 
-### Phase 1 — Wire Protocol ✅
+We are currently completing Phase 2, delivering the OTAP Dataflow
+engine. Phase 2 has demonstrated that a column-oriented, Arrow- based
+pipeline delivers new levels of performance for OpenTelemetry. See our
+[live continuous benchmarks](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/),
+[nightly benchmark suite](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/).
 
-*Completed 2023–2024*
-
-Phase 1 delivered OTAP as a wire protocol between OpenTelemetry
-Collectors, achieving 30–50%+ better compression than OTLP+ZSTD. The
-`otelarrow` exporter and receiver are production-ready in
-Collector-Contrib at Beta stability.
-
-→ [Phase 1 overview and benchmark results](docs/phase1-overview.md)
-
-### Phase 2 — OTAP Dataflow Engine 🚀
-
-*Substantially complete — 2025*
-
-Phase 2 took the columnar approach end-to-end: a full dataflow engine
-in Rust where Apache Arrow record batches are the native in-memory
-representation throughout the pipeline.
-
-**Why it matters:**
-
-| Capability | Detail |
-|---|---|
-| **Zero-copy conversion** | Custom protobuf implementation converts between OTLP bytes and OTAP records without intermediate objects |
-| **Thread-per-core architecture** | Share-nothing design with single-threaded async per CPU core — no lock contention on the data path |
-| **20+ specialized crates** | Receivers, processors, exporters for OTAP, OTLP, Syslog/CEF, Parquet, and more |
-| **Column-oriented processing** | Operations like attribute renaming are O(1) schema mutations, not per-record work |
-| **Durable buffering** | Arrow IPC-based persistent queue with write-ahead log |
-| **Built-in observability** | Admin HTTP portal, Prometheus metrics, self-diagnostic telemetry |
-
-**Performance highlights** — on a single CPU core:
-
-- **100k+ logs/sec** throughput (standard load)
-- **Linear scaling** across cores (1, 2, 4, 8, 16 core benchmarks)
-- **Predictable memory** — `Memory (MiB) = C + N × R` per-core model
-- **Minimal idle overhead** validated across core counts
-
-→ [Live continuous benchmarks](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/) ·
-[Nightly benchmark suite](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/) ·
-[Full benchmark details](docs/benchmarks.md) ·
-[OTAP Dataflow Engine](rust/otap-dataflow/README.md) ·
-[Phase 2 design document](docs/phase2-design.md)
-
-### Phase 3 — What's Next 🗺️
-
-Phase 2 has demonstrated that a column-oriented, Arrow-native pipeline
-delivers transformative performance for OpenTelemetry. Now we're ready
-to work with the community on what comes next. Ideas under discussion
-include:
-
-- Extending OpenTelemetry client SDKs with native OTAP support
-- Integrating OTAP pipelines with the OpenTelemetry Collector (via FFI, WASM, or direct support)
-- DataFusion-powered query and transformation of telemetry data
-- Native multi-variate metrics support
-- Parquet output for the Arrow ecosystem
-
-Phase 3 planning is happening now — [join the
-conversation](https://cloud-native.slack.com/archives/C07S4Q67LTF).
-
-→ [Project phases overview](docs/project-phases.md)
-
----
-
-## Repository Layout
-
-```
-go/                  Golang reference implementation (Phase 1 — OTLP↔OTAP conversion)
-rust/otap-dataflow/  OTAP Dataflow Engine (Phase 2 — 20+ Rust crates)
-proto/               OTAP protocol buffer definitions
-collector/           Test collector (otelarrowcol) and examples
-docs/                Specifications, benchmarks, and design documents
-```
-
-## Documentation
-
-| Document | Description |
-|---|---|
-| [OTAP Spec](docs/otap-spec.md) | Formal protocol specification |
-| [Data Model](docs/data_model.md) | Arrow schema mappings for OTLP entities |
-| [OTAP Basics](docs/otap_basics.md) | Introduction to the OTAP protocol |
-| [Phase 2 Design](docs/phase2-design.md) | End-to-end pipeline architecture |
-| [Benchmarks](docs/benchmarks.md) | Current performance results |
-| [Phase 1 Overview](docs/phase1-overview.md) | Wire protocol details and historical benchmarks |
-| [Dataflow Engine](rust/otap-dataflow/README.md) | Rust crate architecture and component reference |
+As a community, we are planning phase 3, see below to join us!
 
 ## Contributing
 
-We meet weekly — alternating between Tuesday at 4:00 PM PT and
-Thursday at 8:00 AM PT. Check the [OpenTelemetry community
-calendar][OTELCAL] for dates and Zoom links.
+We meet weekly, alternating between Tuesday at 4:00 PM PT and Thursday
+at 8:00 AM PT. Check the [OpenTelemetry community calendar][OTELCAL]
+for dates and Zoom links.
 
 The meeting is open to everyone, regardless of experience level. We'd
 love to have you!
@@ -282,10 +206,23 @@ love to have you!
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
 - [CNCF Slack `#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF)
 
-### Thanks to All Contributors
+Thanks to all contributors.
 
 [![OpenTelemetry-Arrow
 contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [OTAP Spec](docs/otap-spec.md) | Formal protocol specification |
+| [OTAP Basics](docs/otap_basics.md) | Introduction to the OTAP protocol |
+| [Data Model](docs/data_model.md) | Arrow schema mappings for OTLP entities |
+| [Phase 1 Overview](docs/phase1-overview.md) | Wire protocol details and historical benchmarks |
+| [Phase 2 Design](docs/phase2-design.md) | End-to-end pipeline architecture |
+| [Engine Design](rust/otap-dataflow/crates/engine/README.md) | Engine architecture |
+| [Benchmarks](docs/benchmarks.md) | Current performance results |
+| [Dataflow Engine](rust/otap-dataflow/README.md) | Rust crate architecture and component reference |
 
 ## References
 
@@ -298,4 +235,12 @@ contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-ar
 - [OTel-Arrow blog: Introduction](https://opentelemetry.io/blog/2023/otel-arrow/)
 - [OTel-Arrow blog: Production Readiness](https://opentelemetry.io/blog/2024/otel-arrow-production)
 
+[COLLECTOR-CONTRIB]: https://github.com/open-telemetry/opentelemetry-collector-contrib
+[RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
+[EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
+[ARROW-IPC]: https://arrow.apache.org/docs/format/IPC.html
+[ARROW-RELEASED]: https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.104.0
+[SYSLOG-CEF]: ./rust/otap-dataflow/crates/core-nodes/src/receivers/syslog_cef_receiver/README.md
+[SYSLOG-CONSOLE-YAML]: ./rust/otap-dataflow/configs/syslog-console.yaml
+[EXAMPLE-CONFIGS]: ./rust/otap-dataflow/configs/README.md
 [OTELCAL]: https://github.com/open-telemetry/community/blob/main/README.md#calendar
