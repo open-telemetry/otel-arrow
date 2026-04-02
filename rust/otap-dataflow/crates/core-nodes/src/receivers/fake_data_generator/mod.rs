@@ -378,23 +378,10 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         }) => {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }
-                        Ok(NodeControlMsg::DrainIngress { .. }) => {
+                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             otel_info!("fake_data_generator.drain_ingress");
                             effect_handler.notify_receiver_drained().await?;
-                            // Stop generating data; wait for Shutdown to complete teardown.
-                            loop {
-                                match ctrl_msg_recv.recv().await {
-                                    Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                        otel_info!("fake_data_generator.shutdown");
-                                        return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
-                                    }
-                                    Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                                        _ = metrics_reporter.report(&mut self.metrics);
-                                    }
-                                    Err(e) => return Err(Error::ChannelRecvError(e)),
-                                    _ => {}
-                                }
-                            }
+                            return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
                         }
                         Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
                             otel_info!(
