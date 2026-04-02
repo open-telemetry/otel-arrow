@@ -231,6 +231,36 @@ pub enum Error {
         /// The id of the pipeline that was duplicated.
         pipeline_id: PipelineId,
     },
+
+    /// A config URI uses an unrecognized scheme.
+    #[error("Unknown config URI scheme '{scheme}:'. Supported schemes are: file:, env:")]
+    #[diagnostic(code(data_plane::config_uri_unknown_scheme), url(docsrs))]
+    ConfigUriUnknownScheme {
+        /// The unrecognized scheme prefix.
+        scheme: String,
+    },
+
+    /// An env: config URI references an environment variable that is not set.
+    #[error(
+        "Could not resolve config from 'env:{var}': environment variable {var} is not set\n\nHint: Set the {var} environment variable with your pipeline configuration, or use:\n  --config=file:/path/to/config.yaml\n  --config=env:OTHER_VAR_NAME"
+    )]
+    #[diagnostic(code(data_plane::config_env_var_not_set), url(docsrs))]
+    ConfigEnvVarNotSet {
+        /// The name of the missing environment variable.
+        var: String,
+    },
+
+    /// No config was provided and no well-known config file was found.
+    #[error(
+        "No configuration provided and no config file found at well-known paths.\n\nSearched:\n{searched_display}\n\nProvide a configuration using one of:\n  --config=file:/path/to/config.yaml\n  --config=env:MY_CONFIG_VAR"
+    )]
+    #[diagnostic(code(data_plane::config_no_file_found), url(docsrs))]
+    ConfigNoFileFound {
+        /// The well-known paths that were searched.
+        searched: Vec<String>,
+        /// Pre-formatted display of searched paths.
+        searched_display: String,
+    },
 }
 
 /// Information that all errors provide to help identify
