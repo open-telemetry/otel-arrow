@@ -445,7 +445,7 @@ or
 
 **Result**:
 
-On successful termination of df_engine.exe, it will generate dhat-heap.json file
+On successful termination of df_engine, it will generate dhat-heap.json file
 for Memory profiling that need to be rendered by uploading it to:
 <https://nnethercote.github.io/dh_view/>.
 
