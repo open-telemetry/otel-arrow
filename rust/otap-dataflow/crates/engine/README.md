@@ -250,7 +250,7 @@ behavior:
 2. **Node-control delivery**
    Receivers consume node control in competition with external ingress. By
    contrast, processors and exporters consume node control and `pdata` through
-   their role-specific message channels, which give control preferred but
+   their role-specific inboxes, which give control preferred but
    bounded-fair treatment.
 
 3. **Runtime-control flow**
