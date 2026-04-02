@@ -1,8 +1,9 @@
 # Phase 1: Arrow as a Wire Protocol
 
-Phase 1 of the OTel-Arrow project (2023–2024) established the mapping between
-OpenTelemetry data types and the Apache Arrow columnar format, with emphasis on
-streaming compression results between OpenTelemetry Collectors.
+Phase 1 of the OTel-Arrow project, active 2023 through 2024,
+established the mapping between OpenTelemetry data types and the
+Apache Arrow columnar format, with emphasis on streaming compression
+results between OpenTelemetry Collectors.
 
 For context on all project phases, see [project-phases.md](./project-phases.md).
 

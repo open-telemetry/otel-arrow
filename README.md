@@ -68,7 +68,7 @@ The [Apache Arrow](https://arrow.apache.org/) is a major open-source
 project for in-memory and on-wire data exchange using a
 columnn-oriented representation. For OpenTelemetry readers, Apache
 Arrow is a lot like us, as the project encompasses a data format, a
-set of libraries, and an ecosystem. 
+set of libraries, and an ecosystem.
 
 The Apache Arrow format is a specification for the in-memory layout of
 a **record batch**, including details about the schema, the column
@@ -160,13 +160,13 @@ syslog records to the console on port 5140:
 Linux/MacOS users can test this with:
 
 ```
-﻿logger -n 127.0.0.1 -P 5140 -d --rfc3164 "hello world"
+logger -n 127.0.0.1 -P 5140 -d --rfc3164 "hello world"
 ```
 
 PowerShell users can test this with:
 
 ```
-﻿$t=Get-Date -Format 'MMM dd HH:mm:ss';$u=New-Object Net.Sockets.UdpClient;$b=[Text.Encoding]::ASCII.GetBytes("<14>$t powershell test: hello world");$u.Send($b,$b.Length,'127.0.0.1',5140);$u.Close()
+$t=Get-Date -Format 'MMM dd HH:mm:ss';$u=New-Object Net.Sockets.UdpClient;$b=[Text.Encoding]::ASCII.GetBytes("<14>$t powershell test: hello world");$u.Send($b,$b.Length,'127.0.0.1',5140);$u.Close()
 ```
 
 See the admin console on port 8080, or visit
