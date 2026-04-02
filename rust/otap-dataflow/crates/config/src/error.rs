@@ -20,6 +20,19 @@ pub struct HyperEdgeSpecDetails {
     pub missing_targets: Vec<NodeId>,
 }
 
+/// Wrapper for rendering a list of paths as bullet points.
+#[derive(Debug)]
+pub struct PathBulletList(pub Vec<String>);
+
+impl Display for PathBulletList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for path in &self.0 {
+            write!(f, "  - {path} (not found)\n")?;
+        }
+        Ok(())
+    }
+}
+
 /// Errors that can occur while processing the configuration of a data plane, a pipeline group, a
 /// pipeline, or a node.
 ///
@@ -252,14 +265,12 @@ pub enum Error {
 
     /// No config was provided and no well-known config file was found.
     #[error(
-        "No configuration provided and no config file found at well-known paths.\n\nSearched:\n{searched_display}\n\nProvide a configuration using one of:\n  --config=file:/path/to/config.yaml\n  --config=env:MY_CONFIG_VAR"
+        "No configuration provided and no config file found at well-known paths.\n\nSearched:\n{searched}\n\nProvide a configuration using one of:\n  --config=file:/path/to/config.yaml\n  --config=env:MY_CONFIG_VAR"
     )]
     #[diagnostic(code(data_plane::config_no_file_found), url(docsrs))]
     ConfigNoFileFound {
-        /// The well-known paths that were searched.
-        searched: Vec<String>,
-        /// Pre-formatted display of searched paths.
-        searched_display: String,
+        /// The well-known paths that were searched, rendered as bullet points by their Display impl.
+        searched: PathBulletList,
     },
 }
 

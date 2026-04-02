@@ -309,7 +309,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", system_info());
 
     let config_content = resolve_config(config.as_deref())?;
-    let mut engine_cfg = OtelDataflowSpec::from_yaml(&config_content)?;
+    let must_use_json = config.as_deref().is_some_and(|u| {
+        // Strip file: scheme if present to check the actual path extension.
+        let path = u.strip_prefix("file:").unwrap_or(u);
+        path.ends_with(".json")
+    });
+    let mut engine_cfg = if must_use_json {
+        OtelDataflowSpec::from_json(&config_content)?
+    } else {
+        OtelDataflowSpec::from_yaml(&config_content)?
+    };
     apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
 
     validate_engine_components(&engine_cfg)?;

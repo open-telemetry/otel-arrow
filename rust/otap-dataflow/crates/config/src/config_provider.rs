@@ -138,15 +138,10 @@ pub fn resolve_config(uri: Option<&str>) -> Result<String, Error> {
                     return resolver.resolve(path);
                 }
             }
-            let searched: Vec<String> = WELL_KNOWN_PATHS.iter().map(|p| (*p).to_string()).collect();
-            let searched_display = searched
-                .iter()
-                .map(|p| format!("  - {p} (not found)"))
-                .collect::<Vec<_>>()
-                .join("\n");
             Err(Error::ConfigNoFileFound {
-                searched,
-                searched_display,
+                searched: crate::error::PathBulletList(
+                    WELL_KNOWN_PATHS.iter().map(|p| (*p).to_string()).collect(),
+                ),
             })
         }
     }
@@ -269,8 +264,8 @@ mod tests {
         // On most test machines none of the well-known paths exist.
         if let Err(err) = result {
             match err {
-                Error::ConfigNoFileFound { searched, .. } => {
-                    assert_eq!(searched.len(), WELL_KNOWN_PATHS.len());
+                Error::ConfigNoFileFound { searched } => {
+                    assert_eq!(searched.0.len(), WELL_KNOWN_PATHS.len());
                 }
                 other => panic!("expected ConfigNoFileFound, got {other:?}"),
             }
