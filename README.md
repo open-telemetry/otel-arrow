@@ -153,19 +153,19 @@ syslog records to the console on port 5140:
 > This is insecure! See the [Syslog/CEF Receiver
 > documentation][SYSLOG-CEF] for secure configuration examples.
 
-```
+```bash
 ./target/debug/df_engine -c ./configs/syslog-console.yaml --num-cores=1
 ```
 
 Linux/MacOS users can test this with:
 
-```
+```bash
 logger -n 127.0.0.1 -P 5140 -d --rfc3164 "hello world"
 ```
 
 PowerShell users can test this with:
 
-```
+```powershell
 $t=Get-Date -Format 'MMM dd HH:mm:ss';$u=New-Object Net.Sockets.UdpClient;$b=[Text.Encoding]::ASCII.GetBytes("<14>$t powershell test: hello world");$u.Send($b,$b.Length,'127.0.0.1',5140);$u.Close()
 ```
 
