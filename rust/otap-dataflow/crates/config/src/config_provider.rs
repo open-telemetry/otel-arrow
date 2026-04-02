@@ -13,28 +13,33 @@
 //! | `/path/to/config.yaml` | Bare path, treated as `file:` |
 //! | `./relative/config.yaml` | Relative path, treated as `file:` |
 //!
-//! When no `--config` is provided, well-known paths are tried in order.
+//! When no `--config` is provided, a default path in the current directory is tried.
 
 use crate::error::Error;
 use std::path::Path;
 
-/// Well-known config file paths tried when `--config` is omitted.
-const WELL_KNOWN_PATHS: &[&str] = &[
-    "/etc/o11y-gateway/config.yaml",
-    "/etc/data-plane/configs/pipeline_config.yaml",
-    "/app/config.yaml",
-];
+/// Fallback config path tried when `--config` is omitted.
+const DEFAULT_CONFIG_PATH: &str = "config.yaml";
+
+/// The result of resolving a config URI: the original source URI and the loaded content.
+#[derive(Debug)]
+pub struct ResolvedConfig {
+    /// The original URI or path string used to load the config (e.g. "file:/etc/config.yaml", "env:MY_VAR").
+    pub source: String,
+    /// The raw configuration content (YAML or JSON string).
+    pub content: String,
+}
 
 /// A provider that can resolve configuration content from a URI with a specific scheme.
 pub trait ConfigProvider {
     /// The URI scheme this provider handles (e.g. "file", "env").
     fn scheme(&self) -> &str;
 
-    /// Resolve the given URI to configuration content as a string.
+    /// Resolve the given URI to configuration content.
     ///
     /// The `uri` is the full original URI string (including the scheme prefix).
     /// Implementations should strip their own scheme prefix.
-    fn resolve(&self, uri: &str) -> Result<String, Error>;
+    fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error>;
 }
 
 /// Reads configuration from a local file path.
@@ -45,11 +50,15 @@ impl ConfigProvider for FileConfigProvider {
         "file"
     }
 
-    fn resolve(&self, uri: &str) -> Result<String, Error> {
+    fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error> {
         let path = uri.strip_prefix("file:").unwrap_or(uri);
-        std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
+        let content = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
             context: crate::error::Context::default(),
             details: format!("{path}: {e}"),
+        })?;
+        Ok(ResolvedConfig {
+            source: uri.to_string(),
+            content,
         })
     }
 }
@@ -62,10 +71,14 @@ impl ConfigProvider for EnvConfigProvider {
         "env"
     }
 
-    fn resolve(&self, uri: &str) -> Result<String, Error> {
+    fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error> {
         let var = uri.strip_prefix("env:").unwrap_or(uri);
-        std::env::var(var).map_err(|_| Error::ConfigEnvVarNotSet {
+        let content = std::env::var(var).map_err(|_| Error::ConfigEnvVarNotSet {
             var: var.to_string(),
+        })?;
+        Ok(ResolvedConfig {
+            source: uri.to_string(),
+            content,
         })
     }
 }
@@ -83,7 +96,7 @@ impl ConfigResolver {
     }
 
     /// Resolve a URI to config content by matching the scheme to a registered provider.
-    pub fn resolve(&self, uri: &str) -> Result<String, Error> {
+    pub fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error> {
         // Determine the scheme from the URI.
         let scheme = parse_scheme(uri);
 
@@ -126,22 +139,18 @@ pub fn default_resolver() -> ConfigResolver {
 ///
 /// - `Some(uri)`: parse scheme and dispatch to the appropriate provider.
 ///   Bare paths (no scheme, starts with `/` or `.`) are treated as `file:`.
-/// - `None`: try well-known paths in order, returning the first found.
-pub fn resolve_config(uri: Option<&str>) -> Result<String, Error> {
+/// - `None`: try `DEFAULT_CONFIG_PATH` in the current working directory.
+pub fn resolve_config(uri: Option<&str>) -> Result<ResolvedConfig, Error> {
     let resolver = default_resolver();
 
     match uri {
         Some(u) => resolver.resolve(u),
         None => {
-            for path in WELL_KNOWN_PATHS {
-                if Path::new(path).exists() {
-                    return resolver.resolve(path);
-                }
+            if Path::new(DEFAULT_CONFIG_PATH).exists() {
+                return resolver.resolve(DEFAULT_CONFIG_PATH);
             }
             Err(Error::ConfigNoFileFound {
-                searched: crate::error::PathBulletList(
-                    WELL_KNOWN_PATHS.iter().map(|p| (*p).to_string()).collect(),
-                ),
+                path: DEFAULT_CONFIG_PATH.to_string(),
             })
         }
     }
@@ -149,19 +158,35 @@ pub fn resolve_config(uri: Option<&str>) -> Result<String, Error> {
 
 /// Parse the URI scheme, if any.
 ///
-/// Returns `None` for bare paths (starts with `/`, `.`, or no `:` before a path separator).
+/// Returns `None` for bare paths (absolute, relative starting with `.`, or no `:` before
+/// a path separator). Also returns `None` for Windows drive-letter paths like `C:\foo`.
 /// Returns `Some(scheme)` for `scheme:rest` patterns.
 fn parse_scheme(uri: &str) -> Option<&str> {
-    // Bare absolute or relative paths have no scheme.
-    if uri.starts_with('/') || uri.starts_with('.') {
+    // Absolute paths (works cross-platform: /foo on Unix, C:\foo on Windows).
+    if Path::new(uri).is_absolute() {
+        return None;
+    }
+
+    // Relative paths starting with ./ or ../
+    if uri.starts_with('.') {
         return None;
     }
 
     // Look for a colon. If there is no colon, it is a bare filename.
     let colon_pos = uri.find(':')?;
+    let before_colon = &uri[..colon_pos];
+
+    // Single-character "scheme" is a Windows drive letter (e.g. C:), not a URI scheme.
+    if before_colon.len() == 1
+        && before_colon
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_ascii_alphabetic())
+    {
+        return None;
+    }
 
     // If a path separator appears before the colon, treat as bare path.
-    let before_colon = &uri[..colon_pos];
     if before_colon.contains('/') || before_colon.contains('\\') {
         return None;
     }
@@ -183,8 +208,9 @@ mod tests {
 
         let provider = FileConfigProvider;
         let path = format!("file:{}", tmp.path().display());
-        let content = provider.resolve(&path).expect("should read file");
-        assert_eq!(content, "hello: world");
+        let resolved = provider.resolve(&path).expect("should read file");
+        assert_eq!(resolved.content, "hello: world");
+        assert_eq!(resolved.source, path);
     }
 
     #[test]
@@ -207,10 +233,12 @@ mod tests {
             env::set_var(var_name, "version: v1");
         }
         let provider = EnvConfigProvider;
-        let content = provider
-            .resolve(&format!("env:{var_name}"))
+        let uri = format!("env:{var_name}");
+        let resolved = provider
+            .resolve(&uri)
             .expect("should read env var");
-        assert_eq!(content, "version: v1");
+        assert_eq!(resolved.content, "version: v1");
+        assert_eq!(resolved.source, uri);
         unsafe {
             env::remove_var(var_name);
         }
@@ -239,10 +267,10 @@ mod tests {
         write!(tmp, "bare: path").expect("write temp file");
 
         let resolver = default_resolver();
-        let content = resolver
+        let resolved = resolver
             .resolve(&tmp.path().display().to_string())
             .expect("bare path should resolve as file");
-        assert_eq!(content, "bare: path");
+        assert_eq!(resolved.content, "bare: path");
     }
 
     #[test]
@@ -259,18 +287,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_config_none_with_no_well_known_paths() {
+    fn resolve_config_none_with_no_default_config() {
+        // Run from a temp directory to ensure config.yaml does not exist.
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+        let _guard = env::current_dir().ok();
+        env::set_current_dir(tmp_dir.path()).expect("set cwd to temp dir");
+
         let result = resolve_config(None);
-        // On most test machines none of the well-known paths exist.
-        if let Err(err) = result {
-            match err {
-                Error::ConfigNoFileFound { searched } => {
-                    assert_eq!(searched.0.len(), WELL_KNOWN_PATHS.len());
-                }
-                other => panic!("expected ConfigNoFileFound, got {other:?}"),
+        match result {
+            Err(Error::ConfigNoFileFound { path }) => {
+                assert_eq!(path, "config.yaml");
             }
+            Err(other) => panic!("expected ConfigNoFileFound, got {other:?}"),
+            Ok(_) => panic!("expected error when no config.yaml exists"),
         }
-        // If one of them happens to exist (e.g. in a container), that is fine too.
     }
 
     #[test]
@@ -297,10 +327,10 @@ groups:
         unsafe {
             env::set_var(var_name, yaml);
         }
-        let content =
+        let resolved =
             resolve_config(Some(&format!("env:{var_name}"))).expect("should resolve env config");
         // Verify it can be parsed as an OtelDataflowSpec.
-        let spec = crate::engine::OtelDataflowSpec::from_yaml(&content);
+        let spec = crate::engine::OtelDataflowSpec::from_yaml(&resolved.content);
         assert!(spec.is_ok(), "env config should parse as valid YAML spec");
         unsafe {
             env::remove_var(var_name);
@@ -316,5 +346,9 @@ groups:
         assert_eq!(parse_scheme("config.yaml"), None);
         assert_eq!(parse_scheme("some/path:with:colons"), None);
         assert_eq!(parse_scheme("http://example.com"), Some("http"));
+        // Windows drive-letter paths: the single-char scheme guard catches these
+        // even on Unix where Path::is_absolute() would return false for them.
+        assert_eq!(parse_scheme("C:\\config.yaml"), None);
+        assert_eq!(parse_scheme("D:/config.yaml"), None);
     }
 }

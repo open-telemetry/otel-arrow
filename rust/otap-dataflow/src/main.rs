@@ -101,7 +101,7 @@ static GLOBAL: Jemalloc = Jemalloc;
     )
 )]
 struct Args {
-    /// Configuration URI (file:/path, env:VAR, or bare path). If omitted, well-known paths are tried.
+    /// Configuration URI (file:/path, env:VAR, or bare path). If omitted, config.yaml in the current directory is tried.
     #[arg(short = 'c', long, value_name = "URI")]
     config: Option<String>,
 
@@ -308,24 +308,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}", system_info());
 
-    let config_content = resolve_config(config.as_deref())?;
-    let must_use_json = config.as_deref().is_some_and(|u| {
-        // Strip file: scheme if present to check the actual path extension.
-        let path = u.strip_prefix("file:").unwrap_or(u);
-        path.ends_with(".json")
-    });
+    let resolved = resolve_config(config.as_deref())?;
+    // Detect format from the source URI (strip file: prefix, check extension).
+    let source = &resolved.source;
+    let path_part = source.strip_prefix("file:").unwrap_or(source);
+    let must_use_json = path_part.ends_with(".json");
     let mut engine_cfg = if must_use_json {
-        OtelDataflowSpec::from_json(&config_content)?
+        OtelDataflowSpec::from_json(&resolved.content)?
     } else {
-        OtelDataflowSpec::from_yaml(&config_content)?
+        OtelDataflowSpec::from_yaml(&resolved.content)?
     };
     apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
 
     validate_engine_components(&engine_cfg)?;
 
     if validate_and_exit {
-        let source = config.as_deref().unwrap_or("<well-known path>");
-        println!("Configuration '{source}' is valid.");
+        println!("Configuration '{}' is valid.", resolved.source);
         std::process::exit(0);
     }
 
