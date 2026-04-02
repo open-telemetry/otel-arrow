@@ -182,9 +182,13 @@ struct ExporterMetrics {
     #[metric(unit = "By")]
     pub log_bytes_uploaded: Counter<u64>,
 
-    /// Per-upload latency for log batches in milliseconds (min/max/sum/count).
+    /// Per-upload latency for successful log batches in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
     pub log_upload_duration: Mmsc,
+
+    /// Per-upload latency for failed log batches in milliseconds (min/max/sum/count).
+    #[metric(unit = "ms")]
+    pub log_upload_error_duration: Mmsc,
 
     /// Encode + compress latency for logs in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
@@ -215,9 +219,13 @@ struct ExporterMetrics {
     #[metric(unit = "By")]
     pub trace_bytes_uploaded: Counter<u64>,
 
-    /// Per-upload latency for trace batches in milliseconds (min/max/sum/count).
+    /// Per-upload latency for successful trace batches in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
     pub trace_upload_duration: Mmsc,
+
+    /// Per-upload latency for failed trace batches in milliseconds (min/max/sum/count).
+    #[metric(unit = "ms")]
+    pub trace_upload_error_duration: Mmsc,
 
     /// Encode + compress latency for traces in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
@@ -359,25 +367,23 @@ impl GenevaExporter {
         let max_concurrent = self.config.max_concurrent_uploads.max(1);
         let client = &self.geneva_client;
 
-        // Run all uploads concurrently, collecting per-batch results.
-        let results: Vec<(Result<(), String>, f64, u64, u64)> =
-            futures::stream::iter(batches.iter())
-                .map(|batch| {
-                    let batch_size = batch.data.len() as u64;
-                    let row_count = batch.row_count as u64;
-                    async move {
-                        let start = Instant::now();
-                        let result = client
-                            .upload_batch(batch)
-                            .await
-                            .map_err(|e| format!("Failed to upload {:?} batch: {e}", signal_type));
-                        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-                        (result, duration_ms, batch_size, row_count)
-                    }
-                })
-                .buffer_unordered(max_concurrent)
-                .collect()
-                .await;
+        // Run all uploads concurrently, processing results inline via streaming
+        // to avoid an intermediate Vec allocation.
+        let mut stream = futures::stream::iter(batches.iter())
+            .map(|batch| {
+                let batch_size = batch.data.len() as u64;
+                let row_count = batch.row_count as u64;
+                async move {
+                    let start = Instant::now();
+                    let result = client
+                        .upload_batch(batch)
+                        .await
+                        .map_err(|e| format!("Failed to upload {:?} batch: {e}", signal_type));
+                    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    (result, duration_ms, batch_size, row_count)
+                }
+            })
+            .buffer_unordered(max_concurrent);
 
         // Aggregate results and update per-signal metrics.
         let mut first_error: Option<String> = None;
@@ -387,23 +393,36 @@ impl GenevaExporter {
         let mut records_err: u64 = 0;
         let mut bytes_ok: u64 = 0;
 
-        for (result, duration_ms, batch_size, row_count) in &results {
-            match signal_type {
-                SignalType::Logs => self.metrics.log_upload_duration.record(*duration_ms),
-                SignalType::Traces => self.metrics.trace_upload_duration.record(*duration_ms),
-                _ => {}
-            }
+        while let Some((result, duration_ms, batch_size, row_count)) = stream.next().await {
             match result {
                 Ok(()) => {
+                    match signal_type {
+                        SignalType::Logs => {
+                            self.metrics.log_upload_duration.record(duration_ms);
+                        }
+                        SignalType::Traces => {
+                            self.metrics.trace_upload_duration.record(duration_ms);
+                        }
+                        _ => {}
+                    }
                     succeeded += 1;
                     records_ok += row_count;
                     bytes_ok += batch_size;
                 }
                 Err(e) => {
+                    match signal_type {
+                        SignalType::Logs => {
+                            self.metrics.log_upload_error_duration.record(duration_ms);
+                        }
+                        SignalType::Traces => {
+                            self.metrics.trace_upload_error_duration.record(duration_ms);
+                        }
+                        _ => {}
+                    }
                     failed += 1;
                     records_err += row_count;
                     if first_error.is_none() {
-                        first_error = Some(e.clone());
+                        first_error = Some(e);
                     }
                 }
             }
