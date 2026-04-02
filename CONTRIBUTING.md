@@ -134,6 +134,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
 - [Lei Huang](https://github.com/v0y4g3r), Greptime
 - [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
+- [Jake Dern](https://github.com/JakeDern), F5
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
