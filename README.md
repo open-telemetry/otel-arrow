@@ -214,8 +214,8 @@ contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-ar
 ## Documentation
 
 Here are some of our important documents. You can find more
-work-in-progress documentation about the OTAP Datflow Engine
-[here](./rust/otap-dataflow/docs).
+work-in-progress [design documentation for the OTAP Datflow
+Engine](./rust/otap-dataflow/docs).
 
 | Document | Description |
 | --- | --- |
