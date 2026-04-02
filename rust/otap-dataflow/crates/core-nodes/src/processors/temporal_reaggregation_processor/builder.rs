@@ -44,6 +44,7 @@ use otap_df_pdata_views::views::metrics::{
     ValueAtQuantileView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
+use otap_df_telemetry::otel_warn;
 
 /// Snapshot of builder positions, used to slice back to the last valid position
 /// of each payload on error.
@@ -67,6 +68,8 @@ pub struct Checkpoint {
     sdp: usize,
     sdp_attrs: usize,
 }
+
+const ATTRIBUTE_ENCODE_FAILED_EVENT: &str = "temporal_reaggregation.attribute.encode_failed";
 
 /// Record batch builders for all metric signal payload types.
 pub struct MetricSignalBuilder {
@@ -278,7 +281,10 @@ impl MetricSignalBuilder {
     pub fn append_resource<R: ResourceView>(&mut self, id: u16, view: &R) {
         for attr in view.attributes() {
             self.resource_attrs.append_parent_id(&id);
-            let _ = append_attribute_value(&mut self.resource_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.resource_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.resource_attrs.any_values_builder.append_empty();
+            }
         }
     }
 
@@ -286,7 +292,10 @@ impl MetricSignalBuilder {
     pub fn append_scope<S: InstrumentationScopeView>(&mut self, id: u16, view: &S) {
         for attr in view.attributes() {
             self.scope_attrs.append_parent_id(&id);
-            let _ = append_attribute_value(&mut self.scope_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.scope_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.scope_attrs.any_values_builder.append_empty();
+            }
         }
     }
 
@@ -348,7 +357,10 @@ impl MetricSignalBuilder {
         let row = self.number_dps.append(dp_id, metric_id, dp);
         for attr in dp.attributes() {
             self.ndp_attrs.append_parent_id(&dp_id);
-            let _ = append_attribute_value(&mut self.ndp_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.ndp_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.ndp_attrs.any_values_builder.append_empty();
+            }
         }
         row
     }
@@ -371,7 +383,10 @@ impl MetricSignalBuilder {
         let row = self.histogram_dps.append(dp_id, metric_id, dp);
         for attr in dp.attributes() {
             self.hdp_attrs.append_parent_id(&dp_id);
-            let _ = append_attribute_value(&mut self.hdp_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.hdp_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.hdp_attrs.any_values_builder.append_empty();
+            }
         }
         row
     }
@@ -391,7 +406,10 @@ impl MetricSignalBuilder {
         let row = self.exp_histogram_dps.append(dp_id, metric_id, dp);
         for attr in dp.attributes() {
             self.ehdp_attrs.append_parent_id(&dp_id);
-            let _ = append_attribute_value(&mut self.ehdp_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.ehdp_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.ehdp_attrs.any_values_builder.append_empty();
+            }
         }
         row
     }
@@ -415,7 +433,10 @@ impl MetricSignalBuilder {
         let row = self.summary_dps.append(dp_id, metric_id, dp);
         for attr in dp.attributes() {
             self.summary_attrs.append_parent_id(&dp_id);
-            let _ = append_attribute_value(&mut self.summary_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.summary_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.summary_attrs.any_values_builder.append_empty();
+            }
         }
         row
     }
@@ -521,6 +542,8 @@ fn finish_exemplar_payload(
     records: &mut OtapArrowRecords,
     truncate_len: Option<usize>,
 ) -> otap_df_pdata::error::Result<()> {
+    // safety: So long as the aggregation logic is keeping arrays
+    // the same length, this operation should be infallible.
     let rb = result.expect("Valid record batch");
     let rb = match truncate_len {
         Some(len) if len < rb.num_rows() => rb.slice(0, len),
@@ -553,13 +576,20 @@ fn append_exemplar<E: ExemplarView>(
     exemplar_builder.append_double_value(double);
     exemplar_builder.append_int_value(integer);
 
-    // Ignore span_id/trace_id errors — they're non-fatal encoding issues
-    let _ = exemplar_builder.append_span_id(exemplar.span_id().unwrap_or(&[0; 8]));
-    let _ = exemplar_builder.append_trace_id(exemplar.trace_id().unwrap_or(&[0; 16]));
+    // safety: This should only fail if span id or trace_id are the wrong width
+    exemplar_builder
+        .append_span_id(exemplar.span_id().unwrap_or(&[0; 8]))
+        .expect("SpanId type guarantees 8-byte width");
+    exemplar_builder
+        .append_trace_id(exemplar.trace_id().unwrap_or(&[0; 16]))
+        .expect("TraceId type guarantees 16-byte width");
 
     for kv in exemplar.filtered_attributes() {
         attr_builder.append_parent_id(&id);
-        let _ = append_attribute_value(attr_builder, &kv);
+        if let Err(e) = append_attribute_value(attr_builder, &kv) {
+            otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+            attr_builder.any_values_builder.append_empty();
+        }
     }
 }
 
@@ -1357,4 +1387,305 @@ fn build_list_f64(data: &[Vec<f64>], field_name: &str) -> ListArray {
 pub(super) struct StreamMeta {
     pub(super) dp_row_index: usize,
     pub(super) time_unix_nano: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_pdata::otap::OtapBatchStore;
+    use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
+    use otap_df_pdata_views::views::metrics::{DataPointFlags, ExemplarView, NumberDataPointView};
+    use otap_df_pdata_views::views::resource::ResourceView;
+
+    /// A flexible mock AnyValueView that can represent different value types.
+    /// Used to test CBOR encoding failures with invalid UTF-8 in nested structures.
+    #[derive(Clone)]
+    enum MockAnyValue {
+        /// A string value with invalid UTF-8 bytes
+        InvalidUtf8,
+        /// An array containing an element with invalid UTF-8
+        ArrayWithInvalidUtf8,
+        /// A valid string value
+        Valid(&'static [u8]),
+    }
+
+    #[rustfmt::skip]
+    impl<'a> AnyValueView<'a> for MockAnyValue {
+        type KeyValue = MockKeyValue;
+        type ArrayIter<'arr>
+            = std::vec::IntoIter<MockAnyValue>
+        where
+            Self: 'arr;
+        type KeyValueIter<'kv>
+            = std::iter::Empty<Self::KeyValue>
+        where
+            Self: 'kv;
+
+        fn value_type(&self) -> ValueType {
+            match self {
+                MockAnyValue::InvalidUtf8 | MockAnyValue::Valid(_) => ValueType::String,
+                MockAnyValue::ArrayWithInvalidUtf8 => ValueType::Array,
+            }
+        }
+
+        fn as_string(&self) -> Option<Str<'_>> {
+            match self {
+                MockAnyValue::InvalidUtf8 => Some(&[0xFF, 0xFE, 0x82]),
+                MockAnyValue::Valid(s) => Some(s),
+                MockAnyValue::ArrayWithInvalidUtf8 => None,
+            }
+        }
+
+        fn as_bool(&self) -> Option<bool> { None }
+        fn as_int64(&self) -> Option<i64> { None }
+        fn as_double(&self) -> Option<f64> { None }
+        fn as_bytes(&self) -> Option<&[u8]> { None }
+
+        fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
+            match self {
+                MockAnyValue::ArrayWithInvalidUtf8 => {
+                    // Return an array containing a string with invalid UTF-8
+                    Some(vec![MockAnyValue::InvalidUtf8].into_iter())
+                }
+                _ => None,
+            }
+        }
+
+        fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> { None }
+    }
+
+    /// Mock KeyValue (attribute) that can hold different value types
+    #[derive(Clone)]
+    struct MockKeyValue {
+        key: &'static [u8],
+        value: MockAnyValue,
+    }
+
+    impl MockKeyValue {
+        fn with_invalid_array() -> Self {
+            Self {
+                key: b"test_key",
+                value: MockAnyValue::ArrayWithInvalidUtf8,
+            }
+        }
+
+        fn with_valid_string(key: &'static [u8], value: &'static [u8]) -> Self {
+            Self {
+                key,
+                value: MockAnyValue::Valid(value),
+            }
+        }
+    }
+
+    impl AttributeView for MockKeyValue {
+        type Val<'val>
+            = MockAnyValue
+        where
+            Self: 'val;
+
+        fn key(&self) -> Str<'_> {
+            self.key
+        }
+
+        fn value(&self) -> Option<Self::Val<'_>> {
+            Some(self.value.clone())
+        }
+    }
+
+    /// Mock resource with configurable attributes
+    struct MockResource {
+        attrs: Vec<MockKeyValue>,
+    }
+
+    impl ResourceView for MockResource {
+        type Attribute<'att>
+            = MockKeyValue
+        where
+            Self: 'att;
+        type AttributesIter<'att>
+            = std::vec::IntoIter<MockKeyValue>
+        where
+            Self: 'att;
+
+        fn attributes(&self) -> Self::AttributesIter<'_> {
+            self.attrs.clone().into_iter()
+        }
+        fn dropped_attributes_count(&self) -> u32 {
+            0
+        }
+    }
+
+    /// Mock NumberDataPointView with configurable attributes
+    struct MockNumberDataPoint {
+        attrs: Vec<MockKeyValue>,
+    }
+
+    /// Mock exemplar (unused in these tests but needed for trait bounds)
+    struct MockExemplar;
+
+    #[rustfmt::skip]
+    impl ExemplarView for MockExemplar {
+        type Attribute<'att>
+            = MockKeyValue
+        where
+            Self: 'att;
+        type AttributeIter<'att>
+            = std::iter::Empty<MockKeyValue>
+        where
+            Self: 'att;
+
+        fn time_unix_nano(&self) -> u64 { 0 }
+        fn value(&self) -> Option<Value> { None }
+        fn span_id(&self) -> Option<&[u8; 8]> { None }
+        fn trace_id(&self) -> Option<&[u8; 16]> { None }
+        fn filtered_attributes(&self) -> Self::AttributeIter<'_> { std::iter::empty() }
+    }
+
+    impl NumberDataPointView for MockNumberDataPoint {
+        type Attribute<'att>
+            = MockKeyValue
+        where
+            Self: 'att;
+        type AttributeIter<'att>
+            = std::vec::IntoIter<MockKeyValue>
+        where
+            Self: 'att;
+        type Exemplar<'ex>
+            = MockExemplar
+        where
+            Self: 'ex;
+        type ExemplarIter<'ex>
+            = std::iter::Empty<MockExemplar>
+        where
+            Self: 'ex;
+
+        fn start_time_unix_nano(&self) -> u64 {
+            1000
+        }
+
+        fn time_unix_nano(&self) -> u64 {
+            2000
+        }
+
+        fn value(&self) -> Option<Value> {
+            Some(Value::Double(42.0))
+        }
+
+        fn flags(&self) -> DataPointFlags {
+            DataPointFlags::new(0)
+        }
+
+        fn attributes(&self) -> Self::AttributeIter<'_> {
+            self.attrs.clone().into_iter()
+        }
+
+        fn exemplars(&self) -> Self::ExemplarIter<'_> {
+            std::iter::empty()
+        }
+    }
+
+    #[test]
+    fn test_append_resource_with_invalid_utf8_attribute_keeps_columns_aligned() {
+        let mut builder = MetricSignalBuilder::new();
+
+        // Create a resource with an attribute that will fail CBOR encoding
+        let resource = MockResource {
+            attrs: vec![MockKeyValue::with_invalid_array()],
+        };
+
+        // Append the resource - should not panic
+        builder.append_resource(0, &resource);
+
+        // The builder should have compensated for the error by appending an empty value
+        // Finish should succeed without panicking due to column length mismatch
+        let result = builder.finish(None);
+        assert!(
+            result.is_ok(),
+            "finish should succeed even with invalid attributes"
+        );
+
+        // Verify the resource_attrs payload was created (has 1 row with empty value)
+        let records = result.unwrap();
+        if let OtapArrowRecords::Metrics(metrics) = &records {
+            let attrs_rb = metrics.get(ArrowPayloadType::ResourceAttrs);
+            assert!(attrs_rb.is_some(), "resource attributes should be present");
+            let attrs_rb = attrs_rb.unwrap();
+            assert_eq!(
+                attrs_rb.num_rows(),
+                1,
+                "should have one attribute row (with empty value substituted)"
+            );
+        } else {
+            panic!("expected Metrics records");
+        }
+    }
+
+    #[test]
+    fn test_append_number_dp_with_invalid_utf8_attribute_keeps_columns_aligned() {
+        let mut builder = MetricSignalBuilder::new();
+
+        // Create a data point with an attribute that will fail CBOR encoding
+        let dp = MockNumberDataPoint {
+            attrs: vec![MockKeyValue::with_invalid_array()],
+        };
+
+        // Append a number data point with the invalid attribute
+        let row = builder.append_number_dp(0, 0, &dp);
+        assert_eq!(row, 0, "should return row index 0");
+
+        // Finish should succeed without panicking due to column length mismatch
+        let result = builder.finish(None);
+        assert!(
+            result.is_ok(),
+            "finish should succeed even with invalid attributes"
+        );
+
+        // Verify the ndp_attrs payload was created
+        let records = result.unwrap();
+        if let OtapArrowRecords::Metrics(metrics) = &records {
+            let attrs_rb = metrics.get(ArrowPayloadType::NumberDpAttrs);
+            assert!(
+                attrs_rb.is_some(),
+                "number data point attributes should be present"
+            );
+            let attrs_rb = attrs_rb.unwrap();
+            assert_eq!(
+                attrs_rb.num_rows(),
+                1,
+                "should have one attribute row (with empty value substituted)"
+            );
+        } else {
+            panic!("expected Metrics records");
+        }
+    }
+
+    #[test]
+    fn test_multiple_attributes_with_some_invalid_keeps_columns_aligned() {
+        // This tests that when we have multiple attributes and only some fail,
+        // the columns still stay aligned.
+        let mut builder = MetricSignalBuilder::new();
+
+        // Create a resource with two attributes: one valid, one invalid
+        let resource = MockResource {
+            attrs: vec![
+                MockKeyValue::with_valid_string(b"valid_key", b"valid_value"),
+                MockKeyValue::with_invalid_array(),
+            ],
+        };
+
+        builder.append_resource(0, &resource);
+
+        let result = builder.finish(None);
+        assert!(result.is_ok(), "finish should succeed");
+
+        let records = result.unwrap();
+        if let OtapArrowRecords::Metrics(metrics) = &records {
+            let attrs_rb = metrics.get(ArrowPayloadType::ResourceAttrs);
+            assert!(attrs_rb.is_some(), "resource attributes should be present");
+            let attrs_rb = attrs_rb.unwrap();
+            assert_eq!(attrs_rb.num_rows(), 2, "should have two attribute rows");
+        } else {
+            panic!("expected Metrics records");
+        }
+    }
 }
