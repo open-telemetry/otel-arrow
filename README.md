@@ -152,6 +152,9 @@ number of examples (e.g.,
 [syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to print
 syslog records to the console on port 5140:
 
+> Warning: this is insecure! See the [Syslog/CEF Receiver
+> documentation][SYSLOG-CEF] for secure configuration examples.
+
 ```
 ./target/debug/df_engine -c ./configs/syslog-console.yaml --num-cores=1
 ```
@@ -172,8 +175,11 @@ $u.Send($b,$b.Length,'127.0.0.1',5140);
 $u.Close()
 ```
 
-Warning: this is insecure! See the [Syslog/CEF Receiver
-documentation][SYSLOG-CEF] for more details.
+See the admin console on port 8080, or visit
+`http://localhost:8080/metrics` to see engine metrics in Prometheus
+format.
+
+![syslog-to-console admin console page](./docs/img/df_engine_screen.png)
 
 See the [OTAP Dataflow Engine
 documentation](rust/otap-dataflow/README.md) for more details.
@@ -191,7 +197,7 @@ pipeline delivers new levels of performance for OpenTelemetry. See our
 [live continuous benchmarks](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/),
 [nightly benchmark suite](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/).
 
-As a community, we are planning phase 3, see below to join us!
+As a community, we are planning phase 3, see the links below to join us.
 
 ## Contributing
 
