@@ -402,7 +402,9 @@ impl GenevaExporter {
                             self.metrics.log_upload_success_duration.record(duration_ms);
                         }
                         SignalType::Traces => {
-                            self.metrics.trace_upload_success_duration.record(duration_ms);
+                            self.metrics
+                                .trace_upload_success_duration
+                                .record(duration_ms);
                         }
                         _ => {}
                     }
@@ -416,7 +418,9 @@ impl GenevaExporter {
                             self.metrics.log_upload_failed_duration.record(duration_ms);
                         }
                         SignalType::Traces => {
-                            self.metrics.trace_upload_failed_duration.record(duration_ms);
+                            self.metrics
+                                .trace_upload_failed_duration
+                                .record(duration_ms);
                         }
                         _ => {}
                     }
