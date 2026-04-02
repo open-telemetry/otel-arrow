@@ -75,7 +75,13 @@ impl From<Context8u8> for f64 {
 /// numbers, deadline, num_items, etc.
 pub type CallData = SmallVec<[Context8u8; 3]>;
 
-/// Opaque key used to identify a node-local scheduled wakeup.
+/// Opaque key used to identify a processor-local scheduled wakeup.
+///
+/// Slots are scoped to a single processor instance. They do not need to be
+/// globally unique across the pipeline, so processors can define local
+/// constants such as `WakeupSlot(0)` for their own internal timers.
+///
+/// Re-scheduling the same slot replaces the previous wakeup for that slot.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WakeupSlot(pub u64);
@@ -228,10 +234,18 @@ pub enum NodeControlMsg<PData> {
     },
 
     /// A processor-local wakeup scheduled by the processor effect handler.
+    ///
+    /// This is delivered back through the processor inbox as normal control
+    /// traffic. The slot identifies which logical wakeup fired; processors are
+    /// expected to interpret the slot according to their own local namespace.
+    ///
+    /// Wakeups are best-effort runtime signals rather than durable work items:
+    /// once processor shutdown is latched, pending wakeups are dropped and no
+    /// further wakeups are accepted.
     Wakeup {
         /// Scheduled wakeup slot.
         slot: WakeupSlot,
-        /// Original scheduled wakeup instant.
+        /// Scheduled due time currently associated with this slot.
         when: Instant,
     },
 

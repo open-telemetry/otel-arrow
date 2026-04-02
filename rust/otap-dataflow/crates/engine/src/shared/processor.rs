@@ -68,7 +68,13 @@ pub trait Processor<PData> {
     /// - Transform the message and return a new message
     /// - Filter the message by returning None
     /// - Split the message into multiple messages by returning a vector
-    /// - Handle control messages (e.g., Config, TimerTick, Shutdown)
+    /// - Handle control messages (e.g., Config, TimerTick, Wakeup, Shutdown)
+    ///
+    /// Processor-local wakeups are scheduled through
+    /// [`EffectHandler::set_wakeup`]. They are delivered back to the processor
+    /// as `Message::Control(NodeControlMsg::Wakeup { .. })` through the normal
+    /// inbox path and participate in the same control-vs-pdata fairness rules
+    /// as other control traffic.
     ///
     /// # Parameters
     ///

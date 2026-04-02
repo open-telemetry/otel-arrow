@@ -408,6 +408,15 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Set or replace a processor-local wakeup.
+    ///
+    /// Wakeups are keyed by [`WakeupSlot`]. Scheduling the same slot again
+    /// replaces the previous due time for that slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WakeupError::ShuttingDown`] once processor shutdown has been
+    /// latched. Returns [`WakeupError::Capacity`] if the processor has reached
+    /// its configured live wakeup-slot capacity.
     pub fn set_wakeup(&self, slot: WakeupSlot, when: Instant) -> Result<(), WakeupError> {
         self.local_scheduler
             .as_ref()
@@ -416,6 +425,10 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Cancel a previously scheduled processor-local wakeup.
+    ///
+    /// Returns `true` when a live wakeup for `slot` was removed. Returns
+    /// `false` when the slot was not scheduled or when shutdown has already
+    /// been latched for the processor.
     #[must_use]
     pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
         self.local_scheduler
