@@ -222,6 +222,7 @@ impl<'a> CefExtensionsIter<'a> {
         }
     }
 
+    /// Returns the next key-value extension pair, or `None` when exhausted.
     pub(super) fn next_extension(&mut self) -> Option<(&[u8], &[u8])> {
         if self.pos >= self.data.len() {
             return None;
