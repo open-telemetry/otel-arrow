@@ -400,7 +400,7 @@ This section covers CPU and memory profiling for `df_engine` using `dhat-rs` and
 cargo install --locked samply
 ```
 
-Note: `dhat-rs` is a library crate designed for heap profiling in Rust programs.
+[!NOTE] `dhat-rs` is a library crate designed for heap profiling in Rust programs.
       Hence it does not require explicit installation.
 
 **Build**:
@@ -439,7 +439,7 @@ for Memory profiling that need to be rendered by uploading it to:
 
 CPU profiling output will be automatically rendered on browser.
 
-Note: `dhat` needs a clean shutdown to generate `dhat-heap.json` file. In `df_engine`
+[!NOTE] `dhat` needs a clean shutdown to generate `dhat-heap.json` file. In `df_engine`
       this can be done manually with Ctrl+C.
 
 ## Contributing
