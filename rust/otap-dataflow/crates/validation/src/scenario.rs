@@ -337,12 +337,14 @@ impl Scenario {
         for (label, container) in containers.iter_mut() {
             if let Some(ref tevs) = container.templated_env_vars {
                 for tev in tevs {
-                    if !container.mapped_ports.contains_key(&tev.internal_port) {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        container.mapped_ports.entry(tev.internal_port)
+                    {
                         let port = pick_port(&format!(
                             "templated env var '{}' on container '{label}'",
                             tev.key
                         ))?;
-                        let _ = container.mapped_ports.insert(tev.internal_port, port);
+                        let _ = e.insert(port);
                     }
                 }
             }
