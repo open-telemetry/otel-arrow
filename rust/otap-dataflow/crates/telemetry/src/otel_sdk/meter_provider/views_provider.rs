@@ -132,4 +132,40 @@ mod tests {
         let declarative_view = DeclarativeView::new(view_config);
         let _view_function = declarative_view.to_view_funtion();
     }
+
+    #[test]
+    fn test_views_provider_configure_with_scope_name() {
+        let view_config = ViewConfig {
+            selector: MetricSelector {
+                instrument_name: Some("requests.total".to_string()),
+                scope_name: Some("my.scope".to_string()),
+            },
+            stream: MetricStream {
+                name: Some("http.requests.total".to_string()),
+                description: Some("Total number of HTTP requests".to_string()),
+            },
+        };
+        let views_config = vec![view_config];
+        let sdk_meter_builder = SdkMeterProvider::builder();
+        let result = ViewsProvider::configure(sdk_meter_builder, views_config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_views_provider_configure_with_scope_name_only() {
+        let view_config = ViewConfig {
+            selector: MetricSelector {
+                instrument_name: None,
+                scope_name: Some("azure_monitor_exporter.metrics".to_string()),
+            },
+            stream: MetricStream {
+                name: None,
+                description: Some("Scoped metrics".to_string()),
+            },
+        };
+        let views_config = vec![view_config];
+        let sdk_meter_builder = SdkMeterProvider::builder();
+        let result = ViewsProvider::configure(sdk_meter_builder, views_config);
+        assert!(result.is_ok());
+    }
 }
