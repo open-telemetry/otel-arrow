@@ -11,6 +11,7 @@ use crate::receivers::fake_data_generator::config::{
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
+use otap_df_channel::error::RecvError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ReceiverConfig;
@@ -378,17 +379,10 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         }) => {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }
-                        Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
-                            otel_info!(
-                                "fake_data_generator.shutdown"
-                            );
-                            return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
-                        },
-                        Err(e) => {
-                            return Err(Error::ChannelRecvError(e));
-                        }
-                        _ => {
-                            // unknown control message do nothing
+                        msg => {
+                            if let Some(result) = handle_terminal_ctrl(msg, &effect_handler, &self.metrics).await {
+                                return result;
+                            }
                         }
                     }
                 }
@@ -421,7 +415,25 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                         sleep_duration_ms = remaining_time.as_millis() as u64,
                                         "Sleeping to maintain configured signal rate"
                                     );
-                                    sleep(remaining_time).await;
+                                    // Make the rate-limit sleep interruptible so that
+                                    // DrainIngress/Shutdown can be handled promptly
+                                    // even when sleeping for close to 1 second.
+                                    tokio::select! {
+                                        biased; // check for control messages before the sleep timer to handle shutdown promptly
+                                        ctrl_msg = ctrl_msg_recv.recv() => {
+                                            match ctrl_msg {
+                                                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                                                    _ = metrics_reporter.report(&mut self.metrics);
+                                                }
+                                                msg => {
+                                                    if let Some(result) = handle_terminal_ctrl(msg, &effect_handler, &self.metrics).await {
+                                                        return result;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ = sleep(remaining_time) => {}
+                                    }
                                 }
                                 // ToDo: Handle negative time, not able to keep up with specified rate limit
                             } else {
@@ -446,6 +458,37 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
 
             }
         }
+    }
+}
+
+/// Process a terminal control message during receiver operation.
+///
+/// Returns `Some(result)` when the receiver should exit:
+/// - `Some(Ok(state))` for `DrainIngress` (after notifying drained) or `Shutdown`
+/// - `Some(Err(_))` for channel receive errors
+///
+/// Returns `None` for non-terminal messages so the caller can continue the loop.
+/// `CollectTelemetry` is intentionally not handled here; callers must deal with it
+/// separately because it requires mutable access to the receiver's metric set.
+async fn handle_terminal_ctrl(
+    ctrl_msg: Result<NodeControlMsg<OtapPdata>, RecvError>,
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    metrics: &MetricSet<FakeSignalReceiverMetrics>,
+) -> Option<Result<TerminalState, Error>> {
+    match ctrl_msg {
+        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+            otel_info!("fake_data_generator.drain_ingress");
+            // Best-effort: ignore channel-closed errors that can occur when the
+            // control plane tears down before the receiver finishes draining.
+            let _ = effect_handler.notify_receiver_drained().await;
+            Some(Ok(TerminalState::new(deadline, [metrics.snapshot()])))
+        }
+        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+            otel_info!("fake_data_generator.shutdown");
+            Some(Ok(TerminalState::new(deadline, [metrics.snapshot()])))
+        }
+        Err(e) => Some(Err(Error::ChannelRecvError(e))),
+        _ => None,
     }
 }
 
