@@ -41,7 +41,7 @@ use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -546,7 +546,7 @@ async fn finalize_completed_export(
     match route_export_result(result, context, saved_payload, effect_handler).await {
         Ok(()) => pdata_metrics.add_exported(signal_type, 1),
         Err(e) => {
-            otel_error!(
+            otel_warn!(
                 "otlp.exporter.http.export_error",
                 message = "OTLP Exporter gRPC service request did not succeed",
                 error = %e

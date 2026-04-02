@@ -52,7 +52,7 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
 
@@ -636,7 +636,7 @@ async fn finalize_completed_export(
     let export_and_notify_success = match err {
         None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
         Some((err_msg, retryable)) => {
-            otel_error!(
+            otel_warn!(
                 "otlp.exporter.http.export_error",
                 message = err_msg,
                 retryable = retryable
