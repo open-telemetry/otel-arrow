@@ -406,6 +406,9 @@ cargo install --locked samply
 cargo build --profile profiling --no-default-features --features dhat-heap --workspace
 ```
 
+[!NOTE] In this command, all default features are disabled.
+        Use specific flags to enable individual features.
+
 **Build for only CPU profiling**:
 
 ```cmd/pwsh/bash
@@ -416,19 +419,19 @@ cargo build --profile profiling --workspace
 
 **Run with both CPU and memory profiling enabled**:
 
-```cmd/pwsh/bash
+```pwsh/bash
 samply record ./target/profiling/df_engine --config ./configs/otap-noop.yaml
 ```
 
 **Run with only memory profiling enabled**:
 
-```cmd/pwsh/bash
+```pwsh/bash
 ./target/profiling/df_engine --config ./configs/otap-noop.yaml
 ```
 
 **Result**:
 
-On successful termination of `df_engine`, it will generate `dhat-heap.json` file
+On graceful shutdown of `df_engine`, it will generate `dhat-heap.json` file
 for Memory profiling that need to be rendered by uploading it to:
 <https://nnethercote.github.io/dh_view/>.
 
