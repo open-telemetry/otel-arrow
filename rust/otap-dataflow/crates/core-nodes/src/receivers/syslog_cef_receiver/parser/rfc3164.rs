@@ -16,7 +16,7 @@ pub struct Rfc3164Message<'a> {
     pub(super) input: &'a [u8],
 }
 
-/// Parse an RFC 3164 syslog message given a pre-parsed priority and the remaining bytes after `>`.
+/// Parse an RFC 3164 syslog message given an optional pre-parsed priority and the remaining bytes after `>`.
 ///
 /// This parser identifies and extracts fields from syslog messages but does not
 /// act as a relay. Messages without valid PRI headers are accepted and parsed
