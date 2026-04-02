@@ -421,25 +421,13 @@ cargo build --profile profiling --workspace
 
 **Run with both Memory & CPU profiling enabled**:
 
-```cmd/pwsh
-samply record .\target\profiling\df_engine.exe --config .\configs\otap-noop.yaml
-```
-
-or
-
-```bash
-samply record ./target/profiling/df_engine --config ./configs/otap-noop.yaml
+```cmd/pwsh/bash
+samply record .\target\profiling\df_engine --config .\configs\otap-noop.yaml
 ```
 
 **Run with only Memory profiling enabled**:
 
-```cmd/pwsh
-.\target\profiling\df_engine.exe --config .\configs\otap-noop.yaml
-```
-
-or
-
-```bash
+```cmd/pwsh/bash
 ./target/profiling/df_engine --config ./configs/otap-noop.yaml
 ```
 
