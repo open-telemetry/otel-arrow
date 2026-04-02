@@ -50,6 +50,7 @@ otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
 otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
+otap-df-control-channel = { path = "crates/control-channel" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
@@ -95,6 +96,7 @@ futures-core = "0.3.32"
 futures-channel = "0.3.32"
 futures-timer = "3.0.3"
 async-channel = { version = "2.5.0" }
+hashbrown = { version = "0.16", features = ["equivalent"] }
 http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
@@ -196,6 +198,7 @@ weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0
 weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=4.2.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"

@@ -10,7 +10,7 @@ require (
 	github.com/axiomhq/hyperloglog v0.2.6
 	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/dustin/go-humanize v1.0.1
-	github.com/fxamacker/cbor/v2 v2.9.0
+	github.com/fxamacker/cbor/v2 v2.9.1
 	github.com/klauspost/compress v1.18.5
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.6.1+incompatible
