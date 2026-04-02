@@ -56,9 +56,6 @@ use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
 
-#[cfg(feature = "experimental-tls")]
-use otap_df_telemetry::otel_warn;
-
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
