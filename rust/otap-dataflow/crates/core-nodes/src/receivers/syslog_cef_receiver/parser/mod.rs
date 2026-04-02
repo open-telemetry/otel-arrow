@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use core::str;
-
 /// Parser for Common Event Format (CEF) messages
 pub mod cef;
 /// Parser for the unified representation of parsed syslog messages
@@ -45,7 +43,11 @@ pub enum ParseError {
 }
 
 /// Parse a syslog message from bytes, automatically detecting the format
-pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+    if input.is_empty() {
+        return Err(ParseError::EmptyInput);
+    }
+
     // Try pure CEF first - it's the simplest check
     if input.starts_with(b"CEF:") {
         if let Ok(cef_msg) = parse_cef(input) {
@@ -53,66 +55,89 @@ pub(super) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
         }
     }
 
-    // Try RFC 5424 (has version number after priority)
-    if let Ok(rfc5424_msg) = parse_rfc5424(input) {
-        // Check if the message contains CEF
-        if let Some(msg) = rfc5424_msg.message {
-            if msg.starts_with(b"CEF:") {
-                if let Ok(cef_msg) = parse_cef(msg) {
-                    return Ok(ParsedSyslogMessage::CefWithRfc5424(rfc5424_msg, cef_msg));
+    // Parse priority once — both RFC 5424 and RFC 3164 start with <priority>.
+    // Messages without a valid priority prefix skip straight to RFC 3164 (no-PRI path).
+    if input.starts_with(b"<") {
+        if let Ok((priority, remaining)) = parse_priority(input) {
+            // Try RFC 5424 first (has version number after priority)
+            if let Ok(rfc5424_msg) = parse_rfc5424(priority.clone(), remaining, input) {
+                // Check if the message contains CEF
+                if let Some(msg) = rfc5424_msg.message {
+                    if msg.starts_with(b"CEF:") {
+                        if let Ok(cef_msg) = parse_cef(msg) {
+                            return Ok(ParsedSyslogMessage::CefWithRfc5424(rfc5424_msg, cef_msg));
+                        }
+                    }
                 }
+                return Ok(ParsedSyslogMessage::Rfc5424(rfc5424_msg));
+            }
+
+            // Fall through to RFC 3164 with the already-parsed priority
+            if let Ok(rfc3164_msg) = parse_rfc3164(Some(priority), remaining, input) {
+                return try_rfc3164_cef(rfc3164_msg, input);
+            }
+        } else {
+            // Invalid PRI format — RFC 3164 no-PRI path (entire input as content)
+            if let Ok(rfc3164_msg) = parse_rfc3164(None, input, input) {
+                return try_rfc3164_cef(rfc3164_msg, input);
             }
         }
-        return Ok(ParsedSyslogMessage::Rfc5424(rfc5424_msg));
+    } else {
+        // No '<' prefix — RFC 3164 no-PRI path
+        if let Ok(rfc3164_msg) = parse_rfc3164(None, input, input) {
+            return try_rfc3164_cef(rfc3164_msg, input);
+        }
     }
 
-    // Try RFC 3164
-    if let Ok(rfc3164_msg) = parse_rfc3164(input) {
-        // Check if the content contains CEF
-        if let Some(content) = rfc3164_msg.content {
-            if content.starts_with(b"CEF:") {
-                if let Ok(cef_msg) = parse_cef(content) {
-                    return Ok(ParsedSyslogMessage::CefWithRfc3164(rfc3164_msg, cef_msg));
-                }
+    Err(ParseError::UnknownFormat)
+}
+
+/// Given a parsed RFC 3164 message, check for embedded CEF content and return
+/// the appropriate `ParsedSyslogMessage` variant.
+fn try_rfc3164_cef<'a>(
+    rfc3164_msg: rfc3164::Rfc3164Message<'a>,
+    input: &'a [u8],
+) -> Result<ParsedSyslogMessage<'a>, ParseError> {
+    // Check if the content contains CEF
+    if let Some(content) = rfc3164_msg.content {
+        if content.starts_with(b"CEF:") {
+            if let Ok(cef_msg) = parse_cef(content) {
+                return Ok(ParsedSyslogMessage::CefWithRfc3164(rfc3164_msg, cef_msg));
             }
         }
+    }
 
-        // Special case: If tag is "CEF", the full CEF message spans from "CEF:" in the input
-        // This handles the case where RFC3164 parser splits "CEF:1|..." into tag="CEF" and content="1|..."
-        if rfc3164_msg.tag == Some(&b"CEF"[..]) && rfc3164_msg.content.is_some() {
-            // Find where "CEF:" appears in the original input after the hostname
-            if let Some(hostname) = rfc3164_msg.hostname {
-                // Find hostname position in input
-                if let Some(hostname_pos) =
-                    input.windows(hostname.len()).position(|w| w == hostname)
-                {
-                    // Look for "CEF:" after hostname position
-                    let search_start = hostname_pos + hostname.len();
-                    let after_hostname = &input[search_start..];
+    // Special case: If tag is "CEF", the full CEF message spans from "CEF:" in the input
+    // This handles the case where RFC3164 parser splits "CEF:1|..." into tag="CEF" and content="1|..."
+    if rfc3164_msg.tag == Some(&b"CEF"[..]) && rfc3164_msg.content.is_some() {
+        // Find where "CEF:" appears in the original input after the hostname
+        if let Some(hostname) = rfc3164_msg.hostname {
+            // Find hostname position in input
+            if let Some(hostname_pos) = input.windows(hostname.len()).position(|w| w == hostname) {
+                // Look for "CEF:" after hostname position
+                let search_start = hostname_pos + hostname.len();
+                let after_hostname = &input[search_start..];
 
-                    // Find "CEF:" in the remaining input
-                    if let Some(cef_pos) = after_hostname.windows(4).position(|w| w == b"CEF:") {
-                        // The CEF message starts at this position and goes to the end
-                        let cef_message = &after_hostname[cef_pos..];
+                // Find "CEF:" in the remaining input
+                if let Some(cef_pos) = after_hostname.windows(4).position(|w| w == b"CEF:") {
+                    // The CEF message starts at this position and goes to the end
+                    let cef_message = &after_hostname[cef_pos..];
 
-                        if let Ok(cef_msg) = parse_cef(cef_message) {
-                            // Update the rfc3164 content to point to the full CEF message
-                            let mut modified_rfc3164 = rfc3164_msg;
-                            modified_rfc3164.content = Some(cef_message);
-                            return Ok(ParsedSyslogMessage::CefWithRfc3164(
-                                modified_rfc3164,
-                                cef_msg,
-                            ));
-                        }
+                    if let Ok(cef_msg) = parse_cef(cef_message) {
+                        // Update the rfc3164 content to point to the full CEF message
+                        let mut modified_rfc3164 = rfc3164_msg;
+                        modified_rfc3164.content = Some(cef_message);
+                        return Ok(ParsedSyslogMessage::CefWithRfc3164(
+                            modified_rfc3164,
+                            cef_msg,
+                        ));
                     }
                 }
             }
         }
-
-        return Ok(ParsedSyslogMessage::Rfc3164(rfc3164_msg));
     }
 
-    Err(ParseError::UnknownFormat)
+    Ok(ParsedSyslogMessage::Rfc3164(rfc3164_msg))
 }
 
 /// Parse priority from the beginning of a syslog message
@@ -139,15 +164,20 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
         return Err(ParseError::InvalidPriority);
     }
 
-    let priority_str = str::from_utf8(priority_bytes).map_err(|_| ParseError::InvalidUtf8)?;
-    let priority_num: u8 = priority_str
-        .parse()
-        .map_err(|_| ParseError::InvalidPriority)?;
+    // Parse 1-3 ASCII digits directly from bytes.
+    let mut priority_num: u16 = 0;
+    for &b in priority_bytes {
+        if !b.is_ascii_digit() {
+            return Err(ParseError::InvalidPriority);
+        }
+        priority_num = priority_num * 10 + (b - b'0') as u16;
+    }
 
-    // RFC 3164: Maximum valid priority is 191 (facility 23, severity 7)
     if priority_num > 191 {
         return Err(ParseError::InvalidPriority);
     }
+
+    let priority_num = priority_num as u8;
 
     let facility = priority_num >> 3; // Upper 5 bits are facility. This is equivalent to priority_num / 8
     let severity = priority_num & 0x07; // Lower 3 bits are severity. This is equivalent to priority_num % 8
@@ -199,6 +229,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_empty_input() {
+        assert_eq!(parse(b""), Err(ParseError::EmptyInput));
+    }
+
+    #[test]
     fn test_parse_auto_detection() {
         // Test RFC 5424
         let input = b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test";
@@ -235,5 +270,44 @@ mod tests {
             assert_eq!(msg.priority.facility, 23);
             assert_eq!(msg.priority.severity, 7);
         }
+    }
+
+    #[test]
+    fn test_parse_priority_invalid() {
+        // Priority exceeds maximum (191)
+        assert_eq!(
+            parse_priority(b"<192>rest"),
+            Err(ParseError::InvalidPriority)
+        );
+
+        // Non-digit characters in priority
+        assert_eq!(
+            parse_priority(b"<abc>rest"),
+            Err(ParseError::InvalidPriority)
+        );
+
+        // Empty priority value
+        assert_eq!(parse_priority(b"<>rest"), Err(ParseError::InvalidPriority));
+
+        // No closing angle bracket
+        assert_eq!(parse_priority(b"<1rest"), Err(ParseError::InvalidPriority));
+
+        // Leading zeros
+        assert_eq!(
+            parse_priority(b"<01>rest"),
+            Err(ParseError::InvalidPriority)
+        );
+
+        // Empty input
+        assert_eq!(parse_priority(b""), Err(ParseError::InvalidPriority));
+
+        // No opening angle bracket
+        assert_eq!(parse_priority(b"34>rest"), Err(ParseError::InvalidPriority));
+
+        // Priority too long (>3 digits)
+        assert_eq!(
+            parse_priority(b"<1234>rest"),
+            Err(ParseError::InvalidPriority)
+        );
     }
 }
