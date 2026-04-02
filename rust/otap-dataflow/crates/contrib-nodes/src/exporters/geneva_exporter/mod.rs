@@ -345,10 +345,11 @@ impl GenevaExporter {
     /// `Err` and the caller NACKs the entire payload. The retry processor then
     /// resends the whole payload, re-uploading already-successful batches and
     /// causing duplicates (Geneva assigns a fresh UUID per upload, so there is
-    /// no server-side dedup). The Azure Monitor exporter solves this with
-    /// per-message batch tracking and deferred ACK/NACK (see
-    /// `azure_monitor_exporter/state.rs`). A similar approach should be
-    /// adopted here.
+    /// no server-side dedup). Unlike the Azure Monitor exporter, cross-message
+    /// batch dedup doesn't apply here because Geneva maps one `OtapPdata` to N
+    /// batches with no sharing. The real fix requires engine-level support for
+    /// per-batch retry tracking (partial ACK/NACK or exporter-attached retry
+    /// context on `OtapPdata`).
     async fn upload_batches_concurrent(
         &mut self,
         batches: &[EncodedBatch],
