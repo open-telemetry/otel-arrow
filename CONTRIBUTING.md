@@ -1,4 +1,4 @@
-# Contributing to the OpenTelemetry Protocol with Apache Arrow project
+# Contributing to OTel-Arrow
 
 ## Introduction
 
@@ -10,9 +10,6 @@ Arrow.
 We value all contributions, whether big or small, and encourage you to join us
 in improving this project. If you have questions, don't hesitate to reach out to
 the OpenTelemetry community - we're here to help!
-
-Looking for a place to start? See the repository's
-[Contribute page](https://github.com/open-telemetry/otel-arrow/contribute).
 
 ## Pre-requisites
 
@@ -115,41 +112,6 @@ Instructions for signing the CLA:
 Visit [OpenTelemetry CLA
 Portal](https://docs.linuxfoundation.org/lfx/easycla/contributors) and follow
 the steps to sign electronically.
-
-## Project Roles
-
-### Maintainers
-
-- [Albert Lockett](https://github.com/albertlockett), F5
-- [Drew Relmas](https://github.com/drewrelmas), Microsoft
-- [Joshua MacDonald](https://github.com/jmacd), Microsoft
-- [Laurent Quérel](https://github.com/lquerel), F5
-
-For more information about the maintainer role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
-
-### Approvers
-
-- [Cijo Thomas](https://github.com/cijothomas), Microsoft
-- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
-- [Lei Huang](https://github.com/v0y4g3r), Greptime
-- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
-- [Jake Dern](https://github.com/JakeDern), F5
-
-For more information about the approver role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
-
-### Emeritus Approvers
-
-- [Alex Boten](https://github.com/codeboten)
-- [Moh Osman](https://github.com/moh-osman3)
-
-### Triagers
-
-- [Tom Tan](https://github.com/ThomsonTan), Microsoft
-
-For more information about the triager role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
 
 ## Further Help
 
@@ -259,6 +221,42 @@ to upgrade this repository is:
    the new collector release).
 3. Regenerate `otelarrowcol` via `make genotelarrowcol`
 4. Run `go work sync` to update the other modules with fresh dependencies.
+
+## Project Team
+
+### Maintainers
+
+- [Albert Lockett](https://github.com/albertlockett), F5
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Laurent Quérel](https://github.com/lquerel), F5
+
+For more information about the maintainer role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
+
+### Approvers
+
+- [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Jake Dern](https://github.com/JakeDern), F5
+- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
+- [Lei Huang](https://github.com/v0y4g3r), Greptime
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
+
+For more information about the approver role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
+
+### Emeritus Approvers
+
+- [Alex Boten](https://github.com/codeboten)
+- [Moh Osman](https://github.com/moh-osman3)
+
+### Triagers
+
+- [Tom Tan](https://github.com/ThomsonTan), Microsoft
+
+For more information about the triager role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
+
 
 [RELEASING.md]: ./RELEASING.md
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
