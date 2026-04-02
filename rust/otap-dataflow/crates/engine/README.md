@@ -144,7 +144,7 @@ Each pipeline runtime uses three channel families:
    There is one bounded node-control channel per node. Receivers consume this
    channel in competition with their external ingress sources and are expected
    to prioritize control. Processors and exporters consume node control together
-   with `pdata` through role-specific message channels.
+   with `pdata` through role-specific inboxes.
 3. **Pipeline runtime channels**
    Each pipeline runtime owns two bounded shared MPSC channels:
    - a **runtime-control channel** for timers, delayed-data requests,
