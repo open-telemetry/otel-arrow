@@ -2,11 +2,81 @@
 
 ## Overview
 
-This document describes the current architecture of the
-extension system in the OTAP dataflow engine. It covers
-extensions, capabilities, the local/shared split, the
-Active/Passive lifecycle model, and how to implement new
-extensions and capabilities.
+This document describes the proposed Phase 1 architecture
+for the extension system in the OTAP dataflow engine,
+building on the [extension system proposal](
+extensions.md) which establishes the vision, goals, and
+phased rollout plan.
+
+A working proof of concept is available on the
+[PoC branch](https://github.com/gouslu/otel-arrow/tree/gouslu/extension-system-p1-local-shared).
+
+### How this document relates to the proposal
+
+The proposal defines *what* the extension system should do
+and *why*. This document describes *how* each requirement
+is addressed in the Phase 1 implementation:
+
+| Proposal Requirement | Phase 1 Approach |
+| --- | --- |
+| Capability-based access | `#[capability]` proc macro generates typed traits; consumers resolve via `require_local()` / `require_shared()` |
+| Multiple implementations of same capability | `CapabilityRegistry` keyed by `(extension_name, TypeId)` -- different extensions can provide the same capability |
+| Multiple configured instances | `extensions:` section in YAML, each with a unique name; nodes bind by name in `capabilities:` |
+| Existing config model integration | Extensions are siblings to `nodes` in the pipeline config hierarchy |
+| Preserve performance model (thread-per-core) | Local extensions use `Rc` (no locks); shared extensions use `Clone + Send` with `Arc`-wrapped state |
+| Background tasks | Active extensions get their own event loop via `Extension::start()` |
+| Explicit capability binding | Nodes declare `capabilities: { name: extension_instance }` -- no implicit discovery |
+| No hot-path registry lookup | Capabilities resolved once at factory time; nodes hold typed handles for their lifetime |
+| Future hierarchical scopes | `CapabilityRegistry` and `resolve_bindings()` are scope-agnostic by design |
+
+In addition to implementing the proposal's requirements,
+this design introduces two capabilities beyond what the
+proposal envisioned:
+
+- **Active/Passive lifecycle distinction.** The proposal
+  describes extensions with background tasks, but does not
+  distinguish extensions that only provide capabilities
+  without running a task. The Active/Passive model (via
+  `Active<E>` / `Passive<E>` wrappers) makes this
+  explicit at the type level -- passive extensions skip
+  task spawning, control channels, and shutdown messaging
+  entirely, with zero runtime overhead.
+- **Shared-to-local transparent fallback.** The proposal
+  treats local and shared as separate execution models.
+  This design adds automatic fallback: a shared-only
+  extension can transparently serve local consumers via
+  a `SharedAsLocal` adapter, without the extension author
+  writing any additional code. This means most extensions
+  only need a shared implementation -- local consumers
+  are served automatically. Extension authors who need
+  the lock-free performance of a local-only implementation
+  (e.g., `Rc<RefCell>` instead of `Arc<RwLock>`) can
+  still opt in by providing a dedicated local variant.
+
+### Ownership and cloning model
+
+Local capabilities return `Rc<dyn local::Trait>` -- all
+local consumers share the same instance via reference
+counting. No cloning, no locks.
+
+Shared capabilities return `Box<dyn shared::Trait>` --
+each consumer gets an independent clone. For shared
+extensions to share mutable state across clones (e.g.,
+token senders, connection pools), fields should be wrapped
+in `Arc`, similar to how `tokio`, `axum`, and `reqwest`
+handle shared state:
+
+```rust
+#[derive(Clone)]
+struct MyExtension {
+    // Shared mutable state -- Arc ensures clones
+    // see the same data
+    token_sender: Arc<watch::Sender<Option<BearerToken>>>,
+    credential: Arc<dyn TokenCredential>,
+    // Plain data -- cloned independently per consumer
+    scope: String,
+}
+```
 
 ## What Are Extensions?
 
@@ -691,11 +761,11 @@ for configuration hygiene.
 
 ## Future: Hierarchical Extension Scopes
 
-The current implementation supports **pipeline-scoped**
+The Phase 1 design supports **pipeline-scoped**
 extensions only. The extension system is designed to
 evolve toward hierarchical scoping in future phases.
 
-### Current: Pipeline Scope (Phase 1)
+### Pipeline Scope (Phase 1)
 
 Extensions are declared at the pipeline level and consumed
 by nodes within that pipeline. Each pipeline instance (one
@@ -731,7 +801,7 @@ groups:
       group-kv-store: ...
     pipelines:
       main:
-        extensions:        # pipeline-scoped (current)
+        extensions:        # pipeline-scoped (Phase 1)
           local-cache: ...
 ```
 
@@ -754,7 +824,7 @@ extension wins.
   (`Send + Clone`) since they are accessed from multiple
   pipeline instances running on different cores.
 
-**No architectural changes required:** the current
+**No architectural changes required:** the Phase 1
 `CapabilityRegistry`, `resolve_bindings()`, and
 `require_local()` / `require_shared()` mechanisms are
 scope-agnostic. Adding higher scopes requires:
