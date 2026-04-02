@@ -113,7 +113,8 @@ async fn shutdown_all_pipelines(
             sender
                 .try_send_shutdown(
                     deadline,
-                    "Shutdown requested via the `/api/v1/pipeline-groups/shutdown` endpoint.".to_owned(),
+                    "Shutdown requested via the `/api/v1/pipeline-groups/shutdown` endpoint."
+                        .to_owned(),
                 )
                 .err()
         })
