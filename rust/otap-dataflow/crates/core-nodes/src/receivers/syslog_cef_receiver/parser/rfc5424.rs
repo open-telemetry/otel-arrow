@@ -19,7 +19,7 @@ pub struct Rfc5424Message<'a> {
 }
 
 /// Parse an RFC 5424 message given a pre-parsed priority and the remaining bytes after `>`.
-pub(super) fn parse_rfc5424_with_priority<'a>(
+pub(super) fn parse_rfc5424<'a>(
     priority: crate::receivers::syslog_cef_receiver::parser::Priority,
     mut remaining: &'a [u8],
     input: &'a [u8],

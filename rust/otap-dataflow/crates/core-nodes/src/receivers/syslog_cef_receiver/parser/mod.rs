@@ -12,8 +12,8 @@ pub mod rfc5424;
 
 use self::cef::parse_cef;
 use self::parsed_message::ParsedSyslogMessage;
-use self::rfc3164::parse_rfc3164_with_priority;
-use self::rfc5424::parse_rfc5424_with_priority;
+use self::rfc3164::parse_rfc3164;
+use self::rfc5424::parse_rfc5424;
 
 /// Priority structure containing facility and severity
 #[derive(Debug, Clone, PartialEq)]
@@ -60,8 +60,7 @@ pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
     if input.starts_with(b"<") {
         if let Ok((priority, remaining)) = parse_priority(input) {
             // Try RFC 5424 first (has version number after priority)
-            if let Ok(rfc5424_msg) = parse_rfc5424_with_priority(priority.clone(), remaining, input)
-            {
+            if let Ok(rfc5424_msg) = parse_rfc5424(priority.clone(), remaining, input) {
                 // Check if the message contains CEF
                 if let Some(msg) = rfc5424_msg.message {
                     if msg.starts_with(b"CEF:") {
@@ -74,18 +73,18 @@ pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
             }
 
             // Fall through to RFC 3164 with the already-parsed priority
-            if let Ok(rfc3164_msg) = parse_rfc3164_with_priority(Some(priority), remaining, input) {
+            if let Ok(rfc3164_msg) = parse_rfc3164(Some(priority), remaining, input) {
                 return try_rfc3164_cef(rfc3164_msg, input);
             }
         } else {
             // Invalid PRI format — RFC 3164 no-PRI path (entire input as content)
-            if let Ok(rfc3164_msg) = parse_rfc3164_with_priority(None, input, input) {
+            if let Ok(rfc3164_msg) = parse_rfc3164(None, input, input) {
                 return try_rfc3164_cef(rfc3164_msg, input);
             }
         }
     } else {
         // No '<' prefix — RFC 3164 no-PRI path
-        if let Ok(rfc3164_msg) = parse_rfc3164_with_priority(None, input, input) {
+        if let Ok(rfc3164_msg) = parse_rfc3164(None, input, input) {
             return try_rfc3164_cef(rfc3164_msg, input);
         }
     }

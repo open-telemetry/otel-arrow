@@ -33,7 +33,7 @@ pub struct Rfc3164Message<'a> {
 /// a process ID in the format `appname[pid]`. This parser extracts:
 /// - `app_name`: The part before `[` (or the entire TAG if no `[` is present)
 /// - `proc_id`: The numeric content between `[` and `]` (only if it's a valid number)
-pub(super) fn parse_rfc3164_with_priority<'a>(
+pub(super) fn parse_rfc3164<'a>(
     priority: Option<Priority>,
     mut remaining: &'a [u8],
     input: &'a [u8],
