@@ -21,7 +21,7 @@
     | timestamp_extraction/rfc5424                      | 23.816 ns    |
     | cef_extensions/one_extension                      | 21.113 ns    |
     | cef_extensions/ten_extensions                     | 200.95 ns    |
-    | cef_extensions/ten_extensions_with_escape          | 219.42 ns    |
+    | cef_extensions/ten_extensions_with_escape         | 219.42 ns    |
     | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 102.49 µs    |
     | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 51.058 µs    |
     | arrow_batch_creation/cef_arrow_batch_100_msgs     | 45.241 µs    |
