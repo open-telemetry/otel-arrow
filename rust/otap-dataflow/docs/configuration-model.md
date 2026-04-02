@@ -21,7 +21,16 @@ The engine runtime accepts a single configuration file format (v1).
 - `engine`: optional engine-wide settings
 - `groups`: pipeline groups map
 
-The engine binary loads this configuration file via `--config`.
+The engine binary loads this configuration file via `--config`. The argument accepts a URI that selects the config source:
+
+| URI form | Behavior |
+| --- | --- |
+| `file:/path/to/config.yaml` | Read from a local file |
+| `env:MY_VAR` | Read the full config from an environment variable |
+| `/path/to/config.yaml` | Bare path, same as `file:` |
+
+If `--config` is omitted, the engine falls back to `config.yaml` in the current working directory.
+
 Standalone pipeline files are not a runtime root format.
 
 Contributor note: this top-level model is represented in code as

@@ -170,9 +170,18 @@ python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 514
 You can use these configurations with the following CLI command:
 
 ```bash
-# Use a specific configuration
+# Use a specific configuration (bare path)
 cargo run -- --config configs/otlp-otlp.yaml
+
+# Explicit file: URI
+cargo run -- --config file:configs/otlp-otlp.yaml
+
+# Load config from an environment variable
+export MY_CONFIG=$(cat configs/otlp-otlp.yaml)
+cargo run -- --config env:MY_CONFIG
 
 # Validate a configuration without starting the engine
 cargo run -- --config configs/otlp-otlp.yaml --validate-and-exit
 ```
+
+The `--config` argument supports `file:`, `env:`, and bare path forms. See `src/README.md` for the full URI reference.
