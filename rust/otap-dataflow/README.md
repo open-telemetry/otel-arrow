@@ -386,12 +386,10 @@ docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 
 ## Profiling
 
-This section covers CPU and memory profiling for `df_engine` using `dhat-rs` and
-`samply` profilers respectively.
+This section covers CPU and memory profiling for `df_engine`.
 
 **Requirements**:
 
-- `dhat-rs` <https://docs.rs/dhat/latest/dhat/>
 - `samply` <https://github.com/mstange/samply>
 
 **Installation**:
@@ -399,9 +397,6 @@ This section covers CPU and memory profiling for `df_engine` using `dhat-rs` and
 ```cmd/pwsh/bash
 cargo install --locked samply
 ```
-
-[!NOTE] `dhat-rs` is a library crate designed for heap profiling in Rust programs.
-      Hence it does not require explicit installation.
 
 **Build**:
 
