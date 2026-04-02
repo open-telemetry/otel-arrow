@@ -135,7 +135,6 @@ impl GzipBatcher {
 
         // Recompute after flush: uncompressed_size was reset so
         // next_size must be recalculated with current state.
-        let structural_overhead = if is_first_entry { 0 } else { 1 };
         let next_size =
             self.uncompressed_size + structural_overhead + data.len() + finalize_overhead;
         let must_finalize =
