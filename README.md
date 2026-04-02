@@ -150,7 +150,7 @@ number of examples (e.g.,
 syslog records to the console on port 5140:
 
 > [!NOTE]
-> Warning: this is insecure! See the [Syslog/CEF Receiver
+> This is insecure! See the [Syslog/CEF Receiver
 > documentation][SYSLOG-CEF] for secure configuration examples.
 
 ```
