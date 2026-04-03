@@ -7,6 +7,7 @@ use flate2::write::GzEncoder;
 use std::io::Write;
 
 use super::error::Error;
+
 /// Hard limit for gzip-compressed payload accepted by the Azure Monitor Gateway.
 const COMPRESSED_LIMIT: usize = 1024 * 1024;
 
@@ -19,15 +20,15 @@ const GZIP_OVERHEAD: usize = 4 * 1024;
 const TARGET_COMPRESSED_LIMIT: usize = COMPRESSED_LIMIT - GZIP_OVERHEAD;
 
 /// Hard limit for uncompressed (decompressed) payload size. The Azure Monitor
-/// Logs Ingestion API rejects payloads whose decompressed JSON exceeds 50 MiB
-/// (`MaxDcrChunkReadSizeInBytes`). The batcher finalizes the batch when the
-/// cumulative uncompressed input approaches this limit.
+/// Logs Ingestion API rejects payloads whose decompressed JSON exceeds 50 MiB.
+/// The batcher finalizes the batch when the cumulative uncompressed input
+/// approaches this limit.
 const UNCOMPRESSED_LIMIT: usize = 50 * 1024 * 1024;
 
 /// Maximum number of gzip sync flushes allowed per batch. Each flush adds a
 /// small amount of framing overhead. This cap prevents excessive overhead
-/// accumulation with highly compressible data. Extremely unlikely to reach this limit
-/// due to the uncompressed size limit.
+/// accumulation with highly compressible data. Extremely unlikely to reach
+/// this limit due to the uncompressed size limit.
 const MAX_GZIP_FLUSH_COUNT: usize = 128;
 
 /// Accumulates JSON entries into gzip-compressed batches that stay under a size limit.
@@ -129,8 +130,8 @@ impl GzipBatcher {
         // Include structural overhead: ',' for non-first entries, ']' for finalization.
         let structural_overhead = if is_first_entry { 0 } else { 1 }; // ','
         let finalize_overhead = 1; // ']'
-        let next_size =
-            self.uncompressed_size + structural_overhead + data.len() + finalize_overhead;
+        let entry_cost = structural_overhead + data.len() + finalize_overhead;
+        let next_size = self.uncompressed_size + entry_cost;
         let must_flush = next_size > self.remaining_size;
 
         if must_flush {
@@ -145,11 +146,9 @@ impl GzipBatcher {
 
         // Recompute after flush: uncompressed_size was reset so
         // next_size must be recalculated with current state.
-        let next_size =
-            self.uncompressed_size + structural_overhead + data.len() + finalize_overhead;
+        let next_size = self.uncompressed_size + entry_cost;
         let must_finalize = next_size > self.remaining_size
-            || self.total_uncompressed_size + structural_overhead + data.len() + finalize_overhead
-                >= UNCOMPRESSED_LIMIT
+            || self.total_uncompressed_size + entry_cost >= UNCOMPRESSED_LIMIT
             || self.flush_count >= MAX_GZIP_FLUSH_COUNT;
 
         if must_finalize {
@@ -574,7 +573,9 @@ mod tests {
         let batch = batcher.take_pending_batch().unwrap();
         let mut decoder = GzDecoder::new(&batch.compressed_data[..]);
         let mut decompressed = Vec::new();
-        _ = decoder.read_to_end(&mut decompressed).unwrap_or(0);
+        _ = decoder
+            .read_to_end(&mut decompressed)
+            .expect("gzip decode should succeed in test helper");
         BatchStats {
             size: batch.compressed_data.len(),
             flush_count: batch.flush_count,
@@ -845,6 +846,11 @@ mod tests {
                     stats.size <= ONE_MB,
                     "{label}: compressed batch {} exceeds 1 MiB",
                     stats.size
+                );
+                assert!(
+                    stats.decompressed_size <= UNCOMPRESSED_LIMIT,
+                    "{label}: decompressed batch {} exceeds 50 MiB limit ({UNCOMPRESSED_LIMIT})",
+                    stats.decompressed_size
                 );
             }
         }

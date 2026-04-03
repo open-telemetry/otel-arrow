@@ -45,6 +45,9 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 /// - Optimizing by group operations into efficient stages
 pub struct PipelinePlanner {
     plan_for_attributes: bool,
+
+    /// Whether to consider  attribute keys case sensitive in filtering pipeline stages
+    filter_attribute_keys_case_sensitive: bool,
 }
 
 impl PipelinePlanner {
@@ -52,13 +55,20 @@ impl PipelinePlanner {
     pub const fn new() -> Self {
         Self {
             plan_for_attributes: false,
+            filter_attribute_keys_case_sensitive: true,
         }
     }
 
     pub const fn new_for_attributes() -> Self {
         Self {
             plan_for_attributes: true,
+            filter_attribute_keys_case_sensitive: true,
         }
+    }
+
+    pub const fn with_filter_attribute_keys_case_sensitive(mut self, val: bool) -> Self {
+        self.filter_attribute_keys_case_sensitive = val;
+        self
     }
 
     /// Create pipeline stages from the pipeline definition.
@@ -291,7 +301,10 @@ impl PipelinePlanner {
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Composite<FilterExec>> {
-        let filter_plan = Composite::<FilterPlan>::try_from(logical_expr)?;
+        let filter_plan = Composite::<FilterPlan>::try_from(
+            logical_expr,
+            self.filter_attribute_keys_case_sensitive,
+        )?;
 
         // optimize the to the plan
         let filter_plan = if self.plan_for_attributes {

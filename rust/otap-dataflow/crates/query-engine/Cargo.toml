@@ -16,6 +16,7 @@ datafusion = { workspace = true, features = [
     "unicode_expressions",
 ] }
 futures-core = { workspace = true }
+memchr = { workspace = true }
 parking_lot = { workspace = true }
 roaring = { workspace = true }
 smallvec = { workspace = true }
