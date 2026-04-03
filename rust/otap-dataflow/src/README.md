@@ -33,7 +33,7 @@ cargo run --release -- --help
 
 ### Config URI schemes
 
-The `--config` argument accepts a URI that specifies both the source and the path:
+The `--config` argument accepts a URI that specifies the config source:
 
 | URI form | Behavior |
 | --- | --- |
@@ -42,5 +42,5 @@ The `--config` argument accepts a URI that specifies both the source and the pat
 | `/path/to/config.yaml` | Bare path, treated as `file:` |
 | `./relative/config.yaml` | Relative path, treated as `file:` |
 
-If `--config` is omitted, the engine looks for `config.yaml` in the current working directory.
-Both `.yaml` and `.json` files are supported.
+If `--config` is omitted, the engine looks for `config.yaml` in the
+current working directory. Both `.yaml` and `.json` files are supported.

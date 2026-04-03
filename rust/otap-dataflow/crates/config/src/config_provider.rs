@@ -181,7 +181,7 @@ fn parse_scheme(uri: &str) -> Option<&str> {
         && before_colon
             .chars()
             .next()
-            .map_or(false, |c| c.is_ascii_alphabetic())
+            .is_some_and(|c| c.is_ascii_alphabetic())
     {
         return None;
     }
@@ -234,9 +234,7 @@ mod tests {
         }
         let provider = EnvConfigProvider;
         let uri = format!("env:{var_name}");
-        let resolved = provider
-            .resolve(&uri)
-            .expect("should read env var");
+        let resolved = provider.resolve(&uri).expect("should read env var");
         assert_eq!(resolved.content, "version: v1");
         assert_eq!(resolved.source, uri);
         unsafe {

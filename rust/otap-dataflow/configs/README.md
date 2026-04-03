@@ -184,4 +184,5 @@ cargo run -- --config env:MY_CONFIG
 cargo run -- --config configs/otlp-otlp.yaml --validate-and-exit
 ```
 
-The `--config` argument supports `file:`, `env:`, and bare path forms. See `src/README.md` for the full URI reference.
+The `--config` argument supports `file:`, `env:`, and bare path forms.
+See `src/README.md` for the full URI reference.

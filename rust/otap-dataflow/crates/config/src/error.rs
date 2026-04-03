@@ -20,7 +20,6 @@ pub struct HyperEdgeSpecDetails {
     pub missing_targets: Vec<NodeId>,
 }
 
-
 /// Errors that can occur while processing the configuration of a data plane, a pipeline group, a
 /// pipeline, or a node.
 ///

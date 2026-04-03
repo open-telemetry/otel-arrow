@@ -48,7 +48,9 @@ and tests, but are not a runtime root format for the engine process.
 
 ## Config URI Resolution
 
-The engine binary resolves the `--config` argument through the `config_provider` module before passing content to the parsing APIs below. The resolver supports three URI forms:
+The engine binary resolves the `--config` argument through the
+`config_provider` module before passing content to the parsing APIs
+below. The resolver supports three URI forms:
 
 | URI | Source |
 | --- | --- |
@@ -56,15 +58,20 @@ The engine binary resolves the `--config` argument through the `config_provider`
 | `env:MY_VAR` | Environment variable (full config content) |
 | `/path/to/config.yaml` | Bare path, treated as `file:` |
 
-When `--config` is omitted the resolver falls back to `config.yaml` in the current working directory.
+When `--config` is omitted the resolver falls back to `config.yaml`
+in the current working directory.
 
-The top-level entry point is `config_provider::resolve_config(uri: Option<&str>) -> Result<ResolvedConfig, Error>`. `ResolvedConfig` carries both the original source URI and the loaded content string, so callers can detect format (YAML vs JSON) from the source without re-parsing it.
+The top-level entry point is `config_provider::resolve_config`.
+`ResolvedConfig` carries both the original source URI and the loaded
+content string, so callers can detect format (YAML vs JSON) from the
+source without re-parsing it.
 
 ## Parsing and Validation Entry Points
 
 Runtime/root APIs:
 
-- `OtelDataflowSpec::from_file` (used internally; prefer `config_provider::resolve_config` in the binary)
+- `OtelDataflowSpec::from_file` (used internally; prefer
+  `config_provider::resolve_config` in the binary)
 - `OtelDataflowSpec::from_yaml`
 - `OtelDataflowSpec::from_json`
 
