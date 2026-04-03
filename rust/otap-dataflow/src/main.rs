@@ -23,18 +23,71 @@ use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
+use cfg_if::cfg_if;
 
+// -----------------------------------------------------------------------------
+// Feature guard: jemalloc + mimalloc + dhat-heap any two together should fail.
+// -----------------------------------------------------------------------------
 #[cfg(all(
-    not(windows),
-    feature = "jemalloc",
-    feature = "mimalloc",
     not(any(test, doc)),
-    not(clippy)
+    not(clippy),
+    any(
+        all(feature = "dhat-heap", feature = "mimalloc"),
+        all(feature = "dhat-heap", feature = "jemalloc"),
+        all(feature = "jemalloc", feature = "mimalloc"),
+    )
 ))]
 compile_error!(
-    "Features `jemalloc` and `mimalloc` are mutually exclusive. \
-     To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
+    "Allocator features are mutually exclusive. Enable only one allocator: `dhat-heap`, `mimalloc`, `jemalloc`. \
+    Example: \
+        (mimalloc): cargo build --release --no-default-features --features mimalloc. \
+        (jemalloc): cargo build --release --no-default-features --features jemalloc. \
+        (dhat): cargo build --profile profiling --no-default-features --features dhat-heap."
 );
+
+#[cfg(feature = "dhat-heap")]
+use {
+    std::sync::{LazyLock, Mutex},
+    dhat::Profiler,
+};
+
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
+
+#[cfg(all(not(windows), feature = "jemalloc"))]
+use tikv_jemallocator::Jemalloc;
+
+// -----------------------------------------------------------------------------
+// Global allocator selection.
+// -----------------------------------------------------------------------------
+cfg_if! {
+    // dhat (profiling) — wins everywhere when enabled
+    if #[cfg(feature = "dhat-heap")] {
+        #[global_allocator]
+        static GLOBAL: dhat::Alloc = dhat::Alloc;
+        static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
+
+        fn dhat_start() {
+                let mut profiler = DHAT_PROFILER.lock().unwrap();
+                *profiler = Some(dhat::Profiler::new_heap());
+        }
+
+        fn dhat_finish() {
+                let mut profiler = DHAT_PROFILER.lock().unwrap();
+                let _ = profiler.take();
+	    }
+
+    // Windows default: mimalloc
+    } else if #[cfg(feature = "mimalloc")] {
+        #[global_allocator]
+        static GLOBAL: MiMalloc = MiMalloc;
+
+    // Linux default: jemalloc
+    } else if #[cfg(all(not(windows), feature = "jemalloc"))] {
+        #[global_allocator]
+        static GLOBAL: Jemalloc = Jemalloc;
+    }
+}
 
 // Crypto provider features are mutually exclusive.
 // The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
@@ -72,19 +125,6 @@ compile_error!(
      Use --no-default-features to disable the default crypto provider, then enable exactly one."
 );
 
-#[cfg(feature = "mimalloc")]
-use mimalloc::MiMalloc;
-
-#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
-use tikv_jemallocator::Jemalloc;
-
-#[cfg(feature = "mimalloc")]
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
-
-#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -291,6 +331,10 @@ fn validate_engine_components(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "dhat-heap")]
+    {
+        dhat_start();
+    }
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
     otap_df_otap::crypto::install_crypto_provider()
@@ -318,6 +362,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
+    #[cfg(feature = "dhat-heap")]
+    {
+        dhat_finish();
+    }
+
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
