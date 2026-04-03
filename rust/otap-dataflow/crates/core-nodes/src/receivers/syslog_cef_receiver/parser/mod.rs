@@ -107,7 +107,7 @@ fn try_rfc3164_cef<'a>(
         }
     }
 
-    // Special case: If tag is "CEF", the full CEF message spans from "CEF:" in the input.
+    // Special case: If tag is "CEF", the full CEF message spans from "CEF:" in the input
     // This handles the case where RFC3164 parser splits "CEF:1|..." into tag="CEF" and content="1|..."
     if let Some(tag) = rfc3164_msg.tag {
         if tag == b"CEF" && rfc3164_msg.content.is_some() {
