@@ -406,8 +406,9 @@ cargo install --locked samply
 cargo build --profile profiling --no-default-features --features dhat-heap --workspace
 ```
 
-[!NOTE] In this command, all default features are disabled.
-        Use specific flags to enable individual features.
+[!NOTE]
+In this command, all default features are disabled.
+Use specific flags to enable individual features.
 
 **Build for only CPU profiling**:
 
@@ -437,8 +438,9 @@ for Memory profiling that need to be rendered by uploading it to:
 
 CPU profiling output will be automatically rendered on browser.
 
-[!NOTE] `dhat` needs a clean shutdown to generate `dhat-heap.json` file. In `df_engine`
-      this can be done manually with Ctrl+C.
+[!NOTE]
+`dhat` needs a clean shutdown to generate `dhat-heap.json` file. 
+In `df_engine` this can be done manually with Ctrl+C.
 
 ## Contributing
 
