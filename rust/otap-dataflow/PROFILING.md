@@ -4,7 +4,7 @@ This section covers CPU and memory profiling for `df_engine`.
 
 **Requirements**:
 
-- ![samply] (https://github.com/mstange/samply)
+- [samply] (https://github.com/mstange/samply)
 
 **Installation**:
 
