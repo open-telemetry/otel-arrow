@@ -109,20 +109,21 @@ fn try_rfc3164_cef<'a>(
 
     // Special case: If tag is "CEF", the full CEF message spans from "CEF:" in the input
     // This handles the case where RFC3164 parser splits "CEF:1|..." into tag="CEF" and content="1|..."
-    if let Some(tag) = rfc3164_msg.tag {
-        if tag == b"CEF" && rfc3164_msg.content.is_some() {
-            let tag_offset = tag.as_ptr() as usize - input.as_ptr() as usize;
-            let cef_message = &input[tag_offset..];
-            debug_assert!(cef_message.starts_with(b"CEF:"));
+    if let Some(tag) = rfc3164_msg.tag
+        && tag == b"CEF"
+        && rfc3164_msg.content.is_some()
+    {
+        let tag_offset = tag.as_ptr() as usize - input.as_ptr() as usize;
+        let cef_message = &input[tag_offset..];
+        debug_assert!(cef_message.starts_with(b"CEF:"));
 
-            if let Ok(cef_msg) = parse_cef(cef_message) {
-                let mut modified_rfc3164 = rfc3164_msg;
-                modified_rfc3164.content = Some(cef_message);
-                return Ok(ParsedSyslogMessage::CefWithRfc3164(
-                    modified_rfc3164,
-                    cef_msg,
-                ));
-            }
+        if let Ok(cef_msg) = parse_cef(cef_message) {
+            let mut modified_rfc3164 = rfc3164_msg;
+            modified_rfc3164.content = Some(cef_message);
+            return Ok(ParsedSyslogMessage::CefWithRfc3164(
+                modified_rfc3164,
+                cef_msg,
+            ));
         }
     }
 
