@@ -1821,17 +1821,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("cpu")
-                            .data_gauge(Gauge::new(vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(1000u64)
-                                    .value_double(10.0f64)
-                                    .finish(),
-                            ]))
-                            .finish(),
-                    ],
+                    vec![make_gauge("cpu", 10.0)],
                 )],
             )]));
             let expected_data = MetricsData::new(vec![ResourceMetrics::new(
@@ -1871,21 +1861,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("requests")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Cumulative,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_int(100i64)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![make_sum("requests", true, 100, vec![])],
                 )],
             )]));
             let expected_data = MetricsData::new(vec![ResourceMetrics::new(
@@ -1929,23 +1905,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("latency")
-                            .data_histogram(Histogram::new(
-                                AggregationTemporality::Cumulative,
-                                vec![
-                                    HistogramDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .count(10u64)
-                                        .sum(100.0f64)
-                                        .bucket_counts(vec![2, 3, 5])
-                                        .explicit_bounds(vec![10.0, 50.0])
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![make_histogram("latency", true, vec![])],
                 )],
             )]));
             let expected_data = MetricsData::new(vec![ResourceMetrics::new(
@@ -1991,24 +1951,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("latency.exp")
-                            .data_exponential_histogram(ExponentialHistogram::new(
-                                AggregationTemporality::Cumulative,
-                                vec![
-                                    ExponentialHistogramDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .count(5u64)
-                                        .scale(2i32)
-                                        .zero_count(1u64)
-                                        .positive(Buckets::new(0, vec![1, 2]))
-                                        .negative(Buckets::new(0, vec![1, 1]))
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![make_exp_histogram("latency.exp", true, vec![])],
                 )],
             )]));
             let expected_data = MetricsData::new(vec![ResourceMetrics::new(
@@ -2118,17 +2061,7 @@ mod tests {
                     .finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("cpu")
-                            .data_gauge(Gauge::new(vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(1000u64)
-                                    .value_double(10.0f64)
-                                    .finish(),
-                            ]))
-                            .finish(),
-                    ],
+                    vec![make_gauge("cpu", 10.0)],
                 )],
             )]));
             let batch2 = make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
@@ -2137,17 +2070,7 @@ mod tests {
                     .finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("cpu")
-                            .data_gauge(Gauge::new(vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(1000u64)
-                                    .value_double(20.0f64)
-                                    .finish(),
-                            ]))
-                            .finish(),
-                    ],
+                    vec![make_gauge("cpu", 20.0)],
                 )],
             )]));
 
@@ -2260,17 +2183,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("cpu")
-                            .data_gauge(Gauge::new(vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(1000u64)
-                                    .value_double(10.0f64)
-                                    .finish(),
-                            ]))
-                            .finish(),
-                    ],
+                    vec![make_gauge("cpu", 10.0)],
                 )],
             )]));
             // Second batch via OTLP bytes.
