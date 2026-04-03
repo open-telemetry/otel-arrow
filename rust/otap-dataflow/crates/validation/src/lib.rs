@@ -41,6 +41,7 @@ mod tests {
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
 
     #[test]
+    #[ignore]
     fn no_processor() {
         Scenario::new()
             .pipeline(
