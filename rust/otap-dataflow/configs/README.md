@@ -133,6 +133,17 @@ OTLP receiver over both protocols:
 - Receives OTLP/HTTP on `127.0.0.1:4318`
 - Exports OTLP/gRPC traffic to `http://127.0.0.1:4319`
 
+### `otlp-grpc-http-forward.yaml`
+
+OTLP forwarding proxy with separate gRPC and HTTP pipelines:
+
+- Receives OTLP/gRPC on `127.0.0.1:4315` and forwards to `http://127.0.0.1:4317`
+- Receives OTLP/HTTP on `127.0.0.1:4316` and forwards to `http://127.0.0.1:4318`
+
+Note: In this configuration, the pipeline does not decode or
+encode OTLP messages; they are simply forwarded from one port
+to another.
+
 ### `otlp-perf.yaml`
 
 OTLP receiver with performance metrics:
