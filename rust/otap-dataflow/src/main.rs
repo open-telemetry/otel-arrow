@@ -4,7 +4,7 @@
 //! Create and run a multi-core pipeline
 
 use clap::Parser;
-use otap_df_config::config_provider::resolve_config;
+use otap_df_config::config_provider::{ConfigFormat, resolve_config};
 use otap_df_config::engine::{
     HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
@@ -309,14 +309,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", system_info());
 
     let resolved = resolve_config(config.as_deref())?;
-    // Detect format from the source URI (strip file: prefix, check extension).
-    let source = &resolved.source;
-    let path_part = source.strip_prefix("file:").unwrap_or(source);
-    let must_use_json = path_part.ends_with(".json");
-    let mut engine_cfg = if must_use_json {
-        OtelDataflowSpec::from_json(&resolved.content)?
-    } else {
-        OtelDataflowSpec::from_yaml(&resolved.content)?
+    let mut engine_cfg = match resolved.format {
+        ConfigFormat::Json => OtelDataflowSpec::from_json(&resolved.content)?,
+        ConfigFormat::Yaml => OtelDataflowSpec::from_yaml(&resolved.content)?,
     };
     apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
 

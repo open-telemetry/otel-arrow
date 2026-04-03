@@ -21,13 +21,26 @@ use std::path::Path;
 /// Fallback config path tried when `--config` is omitted.
 const DEFAULT_CONFIG_PATH: &str = "config.yaml";
 
-/// The result of resolving a config URI: the original source URI and the loaded content.
+/// The serialization format of resolved configuration content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFormat {
+    /// YAML format (the default for most config sources).
+    Yaml,
+    /// JSON format (detected by a `.json` file extension).
+    Json,
+}
+
+/// The result of resolving a config URI: the original source URI, the loaded
+/// content, and the detected serialization format.
 #[derive(Debug)]
 pub struct ResolvedConfig {
-    /// The original URI or path string used to load the config (e.g. "file:/etc/config.yaml", "env:MY_VAR").
+    /// The original URI or path string used to load the config
+    /// (e.g. "file:/etc/config.yaml", "env:MY_VAR").
     pub source: String,
     /// The raw configuration content (YAML or JSON string).
     pub content: String,
+    /// The serialization format of `content`, derived from the source URI.
+    pub format: ConfigFormat,
 }
 
 /// A provider that can resolve configuration content from a URI with a specific scheme.
@@ -56,9 +69,15 @@ impl ConfigProvider for FileConfigProvider {
             context: crate::error::Context::default(),
             details: format!("{path}: {e}"),
         })?;
+        let format = if path.ends_with(".json") {
+            ConfigFormat::Json
+        } else {
+            ConfigFormat::Yaml
+        };
         Ok(ResolvedConfig {
             source: uri.to_string(),
             content,
+            format,
         })
     }
 }
@@ -79,6 +98,8 @@ impl ConfigProvider for EnvConfigProvider {
         Ok(ResolvedConfig {
             source: uri.to_string(),
             content,
+            // Env vars are assumed to contain YAML; JSON is not common here.
+            format: ConfigFormat::Yaml,
         })
     }
 }
@@ -211,6 +232,21 @@ mod tests {
         let resolved = provider.resolve(&path).expect("should read file");
         assert_eq!(resolved.content, "hello: world");
         assert_eq!(resolved.source, path);
+        assert_eq!(resolved.format, ConfigFormat::Yaml);
+    }
+
+    #[test]
+    fn file_provider_detects_json_format() {
+        let mut tmp = tempfile::Builder::new()
+            .suffix(".json")
+            .tempfile()
+            .expect("create temp json file");
+        write!(tmp, r#"{{"key": "value"}}"#).expect("write temp file");
+
+        let provider = FileConfigProvider;
+        let path = format!("file:{}", tmp.path().display());
+        let resolved = provider.resolve(&path).expect("should read json file");
+        assert_eq!(resolved.format, ConfigFormat::Json);
     }
 
     #[test]
@@ -237,6 +273,7 @@ mod tests {
         let resolved = provider.resolve(&uri).expect("should read env var");
         assert_eq!(resolved.content, "version: v1");
         assert_eq!(resolved.source, uri);
+        assert_eq!(resolved.format, ConfigFormat::Yaml);
         unsafe {
             env::remove_var(var_name);
         }
