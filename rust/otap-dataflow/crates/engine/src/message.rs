@@ -957,6 +957,42 @@ mod tests {
         );
     }
 
+    /// Scenario: a normal control message is already buffered in the processor
+    /// inbox when a processor-local wakeup also becomes due.
+    /// Guarantees: the buffered control message is delivered first, and the
+    /// due wakeup follows as ordinary control traffic rather than bypassing the
+    /// existing control queue.
+    #[tokio::test]
+    async fn processor_inbox_keeps_buffered_control_ahead_of_due_wakeups() {
+        let (control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
+        let when = Instant::now();
+
+        control_tx
+            .send_async(NodeControlMsg::Config {
+                config: serde_json::json!({"mode": "keep-control-order"}),
+            })
+            .await
+            .expect("config should enqueue");
+        scheduler
+            .set_wakeup(crate::control::WakeupSlot(0), when)
+            .expect("wakeup should schedule");
+
+        let first = inbox.recv_when(true).await.expect("message should arrive");
+        assert!(matches!(
+            first,
+            Message::Control(NodeControlMsg::Config { .. })
+        ));
+
+        let second = inbox.recv_when(true).await.expect("message should arrive");
+        assert!(matches!(
+            second,
+            Message::Control(NodeControlMsg::Wakeup {
+                slot: crate::control::WakeupSlot(0),
+                when: observed,
+            }) if observed == when
+        ));
+    }
+
     #[tokio::test]
     async fn processor_inbox_rejects_wakeups_after_shutdown_latch() {
         let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);

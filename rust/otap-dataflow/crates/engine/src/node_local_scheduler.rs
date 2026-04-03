@@ -379,6 +379,42 @@ mod tests {
         assert_eq!(scheduler.pop_due(when), None);
     }
 
+    /// Scenario: a wakeup is rescheduled after heap reordering and then
+    /// canceled while it is tracked at a moved, non-root heap index.
+    /// Guarantees: cancellation removes the correct slot, preserves heap/index
+    /// consistency, and leaves the remaining wakeups due in the expected order.
+    #[test]
+    fn cancel_after_reschedule_removes_the_moved_entry() {
+        let mut scheduler = NodeLocalScheduler::new(4);
+        let now = Instant::now();
+        let first = now + Duration::from_secs(1);
+        let second = now + Duration::from_secs(10);
+        let third = now + Duration::from_secs(20);
+        let fourth = now + Duration::from_secs(30);
+        let moved = now + Duration::from_secs(2);
+
+        assert_eq!(scheduler.set_wakeup(WakeupSlot(1), first), Ok(()));
+        assert_eq!(scheduler.set_wakeup(WakeupSlot(2), second), Ok(()));
+        assert_eq!(scheduler.set_wakeup(WakeupSlot(3), third), Ok(()));
+        assert_eq!(scheduler.set_wakeup(WakeupSlot(4), fourth), Ok(()));
+        assert_eq!(scheduler.set_wakeup(WakeupSlot(3), moved), Ok(()));
+
+        let moved_index = scheduler
+            .wakeup_indices
+            .get(&WakeupSlot(3))
+            .copied()
+            .expect("rescheduled slot should still be tracked");
+        assert!(moved_index > 0, "rescheduled slot should be a non-root entry");
+
+        assert!(scheduler.cancel_wakeup(WakeupSlot(3)));
+        assert_heap_bound(&scheduler);
+        assert_eq!(scheduler.pop_due(first), Some((WakeupSlot(1), first)));
+        assert_eq!(scheduler.pop_due(moved), None);
+        assert_eq!(scheduler.pop_due(second), Some((WakeupSlot(2), second)));
+        assert_eq!(scheduler.pop_due(fourth), Some((WakeupSlot(4), fourth)));
+        assert_eq!(scheduler.next_expiry(), None);
+    }
+
     #[test]
     fn capacity_is_enforced_on_distinct_live_slots() {
         let mut scheduler = NodeLocalScheduler::new(1);

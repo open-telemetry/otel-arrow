@@ -2164,6 +2164,69 @@ mod tests {
             });
     }
 
+    /// Scenario: buffered input has armed a real batch wakeup, but the processor
+    /// first receives a foreign wakeup slot that does not decode to any local
+    /// `(format, signal)` timer.
+    /// Guarantees: the foreign wakeup is ignored without flushing or corrupting
+    /// state, and the real/current wakeup still flushes the buffered input later.
+    #[test]
+    fn test_unknown_wakeup_slot_is_ignored_without_side_effects() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 5,
+                "max_size": 10,
+                "sizer": "items",
+            },
+            "max_batch_duration": "50ms"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let mut datagen = DataGenerator::new(1);
+                let input = datagen.generate_logs();
+
+                let rec = encode_logs_otap_batch(&input).expect("encode logs");
+                ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                    .await
+                    .expect("process input");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "input should remain buffered until the real wakeup"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                    slot: WakeupSlot(99),
+                    when: Instant::now(),
+                }))
+                .await
+                .expect("process unknown wakeup");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "foreign wakeup should be ignored"
+                );
+
+                let current_when = Instant::now() + Duration::from_secs(1);
+                ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                    slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
+                    when: current_when,
+                }))
+                .await
+                .expect("process current wakeup");
+                let flushed = ctx.drain_pdata().await;
+                assert_eq!(flushed.len(), 1, "real wakeup should flush buffered input");
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
+            });
+    }
+
     // A partial batch that never reached the size threshold must still flush on
     // Shutdown, and its downstream Ack must release the upstream completion state
     // rather than leaving correlated requests stuck.
