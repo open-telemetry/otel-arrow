@@ -2430,7 +2430,7 @@ mod tests {
                                         .exemplars(vec![
                                             Exemplar::build()
                                                 .time_unix_nano(500u64)
-                                                .value_double(3.14)
+                                                .value_double(3.2)
                                                 .trace_id([
                                                     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
                                                     15, 16,
