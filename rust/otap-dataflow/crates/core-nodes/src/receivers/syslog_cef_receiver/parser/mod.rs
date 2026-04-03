@@ -109,31 +109,22 @@ fn try_rfc3164_cef<'a>(
 
     // Special case: If tag is "CEF", the full CEF message spans from "CEF:" in the input
     // This handles the case where RFC3164 parser splits "CEF:1|..." into tag="CEF" and content="1|..."
-    if rfc3164_msg.tag == Some(&b"CEF"[..]) && rfc3164_msg.content.is_some() {
-        // Find where "CEF:" appears in the original input after the hostname
-        if let Some(hostname) = rfc3164_msg.hostname {
-            // Find hostname position in input
-            if let Some(hostname_pos) = input.windows(hostname.len()).position(|w| w == hostname) {
-                // Look for "CEF:" after hostname position
-                let search_start = hostname_pos + hostname.len();
-                let after_hostname = &input[search_start..];
+    if let Some(tag) = rfc3164_msg.tag
+        && tag == b"CEF"
+        && rfc3164_msg.content.is_some()
+    {
+        let tag_offset = tag.as_ptr() as usize - input.as_ptr() as usize;
+        let cef_message = &input[tag_offset..];
+        debug_assert!(cef_message.starts_with(b"CEF:"));
 
-                // Find "CEF:" in the remaining input
-                if let Some(cef_pos) = after_hostname.windows(4).position(|w| w == b"CEF:") {
-                    // The CEF message starts at this position and goes to the end
-                    let cef_message = &after_hostname[cef_pos..];
-
-                    if let Ok(cef_msg) = parse_cef(cef_message) {
-                        // Update the rfc3164 content to point to the full CEF message
-                        let mut modified_rfc3164 = rfc3164_msg;
-                        modified_rfc3164.content = Some(cef_message);
-                        return Ok(ParsedSyslogMessage::CefWithRfc3164(
-                            modified_rfc3164,
-                            cef_msg,
-                        ));
-                    }
-                }
-            }
+        if let Ok(cef_msg) = parse_cef(cef_message) {
+            // Update the rfc3164 content to point to the full CEF message
+            let mut modified_rfc3164 = rfc3164_msg;
+            modified_rfc3164.content = Some(cef_message);
+            return Ok(ParsedSyslogMessage::CefWithRfc3164(
+                modified_rfc3164,
+                cef_msg,
+            ));
         }
     }
 
