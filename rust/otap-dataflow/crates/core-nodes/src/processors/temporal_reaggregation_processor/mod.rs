@@ -1704,110 +1704,6 @@ mod tests {
         assert_fn(res);
     }
 
-    fn try_create_processor(
-        config: serde_json::Value,
-    ) -> Result<(TestRuntime<OtapPdata>, ProcessorWrapper<OtapPdata>), ConfigError> {
-        let pipeline_ctx = create_test_pipeline_context();
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let node = test_node("temporal-reaggregation-config-test");
-
-        let mut node_config =
-            NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
-        node_config.config = config;
-
-        (TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY.create)(
-            pipeline_ctx,
-            node,
-            Arc::new(node_config),
-            rt.config(),
-        )
-        .map(|proc| (rt, proc))
-    }
-
-    /// Wrap [`OtapArrowRecords`] in an [`OtapPdata`].
-    fn make_pdata(records: OtapArrowRecords) -> OtapPdata {
-        OtapPdata::new_default(OtapPayload::OtapArrowRecords(records))
-    }
-
-    /// Convert OTLP [`MetricsData`] into an [`OtapPdata`] via OTAP encoding.
-    fn make_otlp_pdata(metrics_data: MetricsData) -> OtapPdata {
-        let otap_records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
-            metrics_data,
-        ));
-        OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
-    }
-
-    fn create_traces_pdata() -> OtapPdata {
-        let mut datagen = otap_df_pdata::testing::fixtures::DataGenerator::new(3);
-        let traces_data = datagen.generate_traces();
-        let otap_records =
-            otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Traces(traces_data));
-        OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
-    }
-
-    fn create_test_pipeline_context() -> PipelineContext {
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(telemetry_registry);
-        controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
-    }
-
-    /// Assert that the processor output is semantically equivalent to the
-    /// expected set of [`OtapArrowRecords`] batches combined.
-    fn assert_output_equivalent(output: &OtapPdata, expected: &[OtapArrowRecords]) {
-        let actual = match output.payload_ref() {
-            OtapPayload::OtapArrowRecords(r) => r,
-            _ => panic!("expected OtapArrowRecords payload"),
-        };
-        let expected_msgs: Vec<_> = expected.iter().map(otap_to_otlp).collect();
-        assert_equivalent(&[otap_to_otlp(actual)], &expected_msgs);
-    }
-
-    /// Assert that the processor output is semantically equivalent to the
-    /// expected OTLP [`MetricsData`].
-    fn assert_output_otlp_equivalent(output: &OtapPdata, expected: MetricsData) {
-        let actual = match output.payload_ref() {
-            OtapPayload::OtapArrowRecords(r) => r,
-            _ => panic!("expected OtapArrowRecords payload"),
-        };
-        assert_equivalent(
-            &[otap_to_otlp(actual)],
-            &[otap_df_pdata::proto::OtlpProtoMessage::Metrics(expected)],
-        );
-    }
-
-    /// Encode OTLP [`MetricsData`] into serialized protobuf bytes and wrap
-    /// as an [`OtapPdata`] with an [`OtlpBytes`] payload.
-    fn make_otlp_bytes_pdata(metrics_data: MetricsData) -> OtapPdata {
-        let msg = otap_df_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
-        let otlp_bytes = otlp_message_to_bytes(&msg);
-        OtapPdata::new_default(OtapPayload::OtlpBytes(otlp_bytes))
-    }
-
-    /// Build an OTLP [`MetricsData`] with `n` unique gauge metrics, each with
-    /// a single data point. All metrics share one resource and one scope.
-    fn make_n_gauge_metrics(n: usize) -> MetricsData {
-        let metrics: Vec<_> = (0..n)
-            .map(|i| {
-                Metric::build()
-                    .name(format!("metric_{i}"))
-                    .data_gauge(Gauge::new(vec![
-                        NumberDataPoint::build()
-                            .time_unix_nano(1000u64)
-                            .value_double(i as f64)
-                            .finish(),
-                    ]))
-                    .finish()
-            })
-            .collect();
-        MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build().finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::build().finish(),
-                metrics,
-            )],
-        )])
-    }
-
     #[test]
     fn test_metric_id_overflow_triggers_early_flush() {
         // Fill the accumulator with u16::MAX - 1 unique metrics (the maximum
@@ -2416,33 +2312,23 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("delta.requests")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Delta,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_int(50i64)
-                                        .exemplars(vec![
-                                            Exemplar::build()
-                                                .time_unix_nano(500u64)
-                                                .value_double(3.2)
-                                                .trace_id([1u8; 16])
-                                                .span_id([1u8; 8])
-                                                .filtered_attributes(vec![KeyValue::new(
-                                                    "exemplar.key",
-                                                    AnyValue::new_string("exemplar.val"),
-                                                )])
-                                                .finish(),
-                                        ])
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![make_sum(
+                        "delta.requests",
+                        false,
+                        50,
+                        vec![
+                            Exemplar::build()
+                                .time_unix_nano(500u64)
+                                .value_double(3.2)
+                                .trace_id([1u8; 16])
+                                .span_id([1u8; 8])
+                                .filtered_attributes(vec![KeyValue::new(
+                                    "exemplar.key",
+                                    AnyValue::new_string("exemplar.val"),
+                                )])
+                                .finish(),
+                        ],
+                    )],
                 )],
             )]);
 
@@ -2504,31 +2390,18 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("delta.latency")
-                            .data_histogram(Histogram::new(
-                                AggregationTemporality::Delta,
-                                vec![
-                                    HistogramDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .count(10u64)
-                                        .sum(100.0f64)
-                                        .bucket_counts(vec![2, 3, 5])
-                                        .explicit_bounds(vec![10.0, 50.0])
-                                        .exemplars(vec![
-                                            Exemplar::build()
-                                                .time_unix_nano(800u64)
-                                                .value_int(42i64)
-                                                .trace_id([2u8; 16])
-                                                .span_id([2u8; 8])
-                                                .finish(),
-                                        ])
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![make_histogram(
+                        "delta.latency",
+                        false,
+                        vec![
+                            Exemplar::build()
+                                .time_unix_nano(800u64)
+                                .value_int(42i64)
+                                .trace_id([2u8; 16])
+                                .span_id([2u8; 8])
+                                .finish(),
+                        ],
+                    )],
                 )],
             )]);
 
@@ -2552,40 +2425,14 @@ mod tests {
         // sum should be passed through immediately while the cumulative sum
         // should be buffered.
         run_processor_test(json!({}), |mut ctx| async move {
+            let aggregatable = make_sum("requests.total", true, 100, vec![]);
+            let passthrough = make_sum("requests.delta", false, 50, vec![]);
+
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        // Aggregatable: cumulative monotonic sum
-                        Metric::build()
-                            .name("requests.total")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Cumulative,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_int(100i64)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                        // Passthrough: delta sum
-                        Metric::build()
-                            .name("requests.delta")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Delta,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_int(50i64)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![aggregatable.clone(), passthrough.clone()],
                 )],
             )]);
 
@@ -2601,26 +2448,11 @@ mod tests {
                 "passthrough batch should be emitted immediately"
             );
 
-            // Verify the passthrough batch contains only the delta metric
             let expected_passthrough = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("requests.delta")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Delta,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_int(50i64)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![passthrough],
                 )],
             )]);
             assert_output_otlp_equivalent(&output[0], expected_passthrough);
@@ -2634,21 +2466,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("requests.total")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Cumulative,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_int(100i64)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![aggregatable],
                 )],
             )]);
             assert_output_otlp_equivalent(&flushed[0], expected_aggregated);
@@ -2664,17 +2482,7 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("cpu.gauge")
-                            .data_gauge(Gauge::new(vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(1000u64)
-                                    .value_double(42.0f64)
-                                    .finish(),
-                            ]))
-                            .finish(),
-                    ],
+                    vec![make_gauge("cpu.gauge", 42.0)],
                 )],
             )]));
 
@@ -2696,42 +2504,22 @@ mod tests {
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("delta.exp.latency")
-                            .data_exponential_histogram(ExponentialHistogram::new(
-                                AggregationTemporality::Delta,
-                                vec![
-                                    ExponentialHistogramDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .count(5u64)
-                                        .scale(2i32)
-                                        .zero_count(1u64)
-                                        .positive(Buckets::new(0, vec![1, 2]))
-                                        .negative(Buckets::new(0, vec![1, 1]))
-                                        .exemplars(vec![
-                                            Exemplar::build()
-                                                .time_unix_nano(900u64)
-                                                .value_double(1.5)
-                                                .trace_id([1u8; 16])
-                                                .span_id([2u8; 8])
-                                                .filtered_attributes(vec![
-                                                    KeyValue::new(
-                                                        "attr.one",
-                                                        AnyValue::new_string("v1"),
-                                                    ),
-                                                    KeyValue::new(
-                                                        "attr.two",
-                                                        AnyValue::new_string("v2"),
-                                                    ),
-                                                ])
-                                                .finish(),
-                                        ])
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![make_exp_histogram(
+                        "delta.exp.latency",
+                        false,
+                        vec![
+                            Exemplar::build()
+                                .time_unix_nano(900u64)
+                                .value_double(1.5)
+                                .trace_id([1u8; 16])
+                                .span_id([2u8; 8])
+                                .filtered_attributes(vec![
+                                    KeyValue::new("attr.one", AnyValue::new_string("v1")),
+                                    KeyValue::new("attr.two", AnyValue::new_string("v2")),
+                                ])
+                                .finish(),
+                        ],
+                    )],
                 )],
             )]);
 
@@ -2808,98 +2596,55 @@ mod tests {
         // A mixed batch forces the slow path through the builder so all three
         // exemplar append functions are exercised.
         run_processor_test(json!({}), |mut ctx| async move {
-            let aggregatable_sum = Metric::build()
-                .name("requests.total")
-                .data_sum(Sum::new(
-                    AggregationTemporality::Cumulative,
-                    true,
-                    vec![
-                        NumberDataPoint::build()
-                            .time_unix_nano(1000u64)
-                            .value_int(100i64)
-                            .finish(),
-                    ],
-                ))
-                .finish();
+            let aggregatable_sum = make_sum("requests.total", true, 100, vec![]);
 
-            let delta_sum = Metric::build()
-                .name("delta.requests")
-                .data_sum(Sum::new(
-                    AggregationTemporality::Delta,
-                    true,
-                    vec![
-                        NumberDataPoint::build()
-                            .time_unix_nano(1000u64)
-                            .value_int(50i64)
-                            .exemplars(vec![
-                                Exemplar::build()
-                                    .time_unix_nano(500u64)
-                                    .value_double(3.2)
-                                    .trace_id([1u8; 16])
-                                    .span_id([1u8; 8])
-                                    .filtered_attributes(vec![KeyValue::new(
-                                        "sum.exemplar.key",
-                                        AnyValue::new_string("sum.exemplar.val"),
-                                    )])
-                                    .finish(),
-                            ])
-                            .finish(),
-                    ],
-                ))
-                .finish();
+            let delta_sum = make_sum(
+                "delta.requests",
+                false,
+                50,
+                vec![
+                    Exemplar::build()
+                        .time_unix_nano(500u64)
+                        .value_double(3.2)
+                        .trace_id([1u8; 16])
+                        .span_id([1u8; 8])
+                        .filtered_attributes(vec![KeyValue::new(
+                            "sum.exemplar.key",
+                            AnyValue::new_string("sum.exemplar.val"),
+                        )])
+                        .finish(),
+                ],
+            );
 
-            let delta_histogram = Metric::build()
-                .name("delta.latency")
-                .data_histogram(Histogram::new(
-                    AggregationTemporality::Delta,
-                    vec![
-                        HistogramDataPoint::build()
-                            .time_unix_nano(1000u64)
-                            .count(10u64)
-                            .sum(100.0f64)
-                            .bucket_counts(vec![2, 3, 5])
-                            .explicit_bounds(vec![10.0, 50.0])
-                            .exemplars(vec![
-                                Exemplar::build()
-                                    .time_unix_nano(800u64)
-                                    .value_int(42i64)
-                                    .trace_id([2u8; 16])
-                                    .span_id([2u8; 8])
-                                    .finish(),
-                            ])
-                            .finish(),
-                    ],
-                ))
-                .finish();
+            let delta_histogram = make_histogram(
+                "delta.latency",
+                false,
+                vec![
+                    Exemplar::build()
+                        .time_unix_nano(800u64)
+                        .value_int(42i64)
+                        .trace_id([2u8; 16])
+                        .span_id([2u8; 8])
+                        .finish(),
+                ],
+            );
 
-            let delta_exp_histogram = Metric::build()
-                .name("delta.exp.latency")
-                .data_exponential_histogram(ExponentialHistogram::new(
-                    AggregationTemporality::Delta,
-                    vec![
-                        ExponentialHistogramDataPoint::build()
-                            .time_unix_nano(1000u64)
-                            .count(5u64)
-                            .scale(2i32)
-                            .zero_count(1u64)
-                            .positive(Buckets::new(0, vec![1, 2]))
-                            .negative(Buckets::new(0, vec![1, 1]))
-                            .exemplars(vec![
-                                Exemplar::build()
-                                    .time_unix_nano(900u64)
-                                    .value_double(1.5)
-                                    .trace_id([3u8; 16])
-                                    .span_id([3u8; 8])
-                                    .filtered_attributes(vec![
-                                        KeyValue::new("attr.one", AnyValue::new_string("v1")),
-                                        KeyValue::new("attr.two", AnyValue::new_string("v2")),
-                                    ])
-                                    .finish(),
-                            ])
-                            .finish(),
-                    ],
-                ))
-                .finish();
+            let delta_exp_histogram = make_exp_histogram(
+                "delta.exp.latency",
+                false,
+                vec![
+                    Exemplar::build()
+                        .time_unix_nano(900u64)
+                        .value_double(1.5)
+                        .trace_id([3u8; 16])
+                        .span_id([3u8; 8])
+                        .filtered_attributes(vec![
+                            KeyValue::new("attr.one", AnyValue::new_string("v1")),
+                            KeyValue::new("attr.two", AnyValue::new_string("v2")),
+                        ])
+                        .finish(),
+                ],
+            );
 
             let input = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
@@ -2951,25 +2696,17 @@ mod tests {
         // Two different resources: one with only aggregatable metrics, the
         // other with only passthrough metrics.
         run_processor_test(json!({}), |mut ctx| async move {
+            let passthrough = make_sum("requests.delta", false, 10, vec![]);
+
             let input_data = MetricsData::new(vec![
-                // Resource A: cumulative gauge (aggregatable)
+                // Resource A: gauge (aggregatable)
                 ResourceMetrics::new(
                     Resource::build()
                         .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
                         .finish(),
                     vec![ScopeMetrics::new(
                         InstrumentationScope::build().finish(),
-                        vec![
-                            Metric::build()
-                                .name("cpu")
-                                .data_gauge(Gauge::new(vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_double(75.0f64)
-                                        .finish(),
-                                ]))
-                                .finish(),
-                        ],
+                        vec![make_gauge("cpu", 75.0)],
                     )],
                 ),
                 // Resource B: delta sum (passthrough)
@@ -2979,21 +2716,7 @@ mod tests {
                         .finish(),
                     vec![ScopeMetrics::new(
                         InstrumentationScope::build().finish(),
-                        vec![
-                            Metric::build()
-                                .name("requests.delta")
-                                .data_sum(Sum::new(
-                                    AggregationTemporality::Delta,
-                                    true,
-                                    vec![
-                                        NumberDataPoint::build()
-                                            .time_unix_nano(1000u64)
-                                            .value_int(10i64)
-                                            .finish(),
-                                    ],
-                                ))
-                                .finish(),
-                        ],
+                        vec![passthrough.clone()],
                     )],
                 ),
             ]);
@@ -3011,21 +2734,7 @@ mod tests {
                     .finish(),
                 vec![ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("requests.delta")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Delta,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_int(10i64)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![passthrough],
                 )],
             )]);
             assert_output_otlp_equivalent(&output[0], expected_passthrough);
@@ -3065,17 +2774,7 @@ mod tests {
             let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
                 ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("cpu")
-                            .data_gauge(Gauge::new(vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(1000u64)
-                                    .value_double(42.0f64)
-                                    .finish(),
-                            ]))
-                            .finish(),
-                    ],
+                    vec![make_gauge("cpu", 42.0)],
                 ),
             ])]);
 
@@ -3103,17 +2802,7 @@ mod tests {
         run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
-                vec![scope_metrics_without_scope(vec![
-                    Metric::build()
-                        .name("mem")
-                        .data_gauge(Gauge::new(vec![
-                            NumberDataPoint::build()
-                                .time_unix_nano(2000u64)
-                                .value_double(1024.0f64)
-                                .finish(),
-                        ]))
-                        .finish(),
-                ])],
+                vec![scope_metrics_without_scope(vec![make_gauge("mem", 1024.0)])],
             )]);
 
             let pdata = make_otlp_pdata(input_data.clone());
@@ -3138,21 +2827,7 @@ mod tests {
             let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
                 ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
-                    vec![
-                        Metric::build()
-                            .name("delta.count")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Delta,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(1000u64)
-                                        .value_int(5i64)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+                    vec![make_sum("delta.count", false, 5, vec![])],
                 ),
             ])]);
 
@@ -3175,17 +2850,7 @@ mod tests {
         // Both resource=None and scope=None should still work.
         run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
-                scope_metrics_without_scope(vec![
-                    Metric::build()
-                        .name("temp")
-                        .data_gauge(Gauge::new(vec![
-                            NumberDataPoint::build()
-                                .time_unix_nano(3000u64)
-                                .value_double(98.6f64)
-                                .finish(),
-                        ]))
-                        .finish(),
-                ]),
+                scope_metrics_without_scope(vec![make_gauge("temp", 98.6)]),
             ])]);
 
             let pdata = make_otlp_bytes_pdata(input_data.clone());
@@ -3199,5 +2864,192 @@ mod tests {
             assert_eq!(flushed.len(), 1);
             assert_output_otlp_equivalent(&flushed[0], input_data);
         });
+    }
+
+    fn try_create_processor(
+        config: serde_json::Value,
+    ) -> Result<(TestRuntime<OtapPdata>, ProcessorWrapper<OtapPdata>), ConfigError> {
+        let pipeline_ctx = create_test_pipeline_context();
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let node = test_node("temporal-reaggregation-config-test");
+
+        let mut node_config =
+            NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
+        node_config.config = config;
+
+        (TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY.create)(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+        )
+        .map(|proc| (rt, proc))
+    }
+
+    /// Wrap [`OtapArrowRecords`] in an [`OtapPdata`].
+    fn make_pdata(records: OtapArrowRecords) -> OtapPdata {
+        OtapPdata::new_default(OtapPayload::OtapArrowRecords(records))
+    }
+
+    /// Convert OTLP [`MetricsData`] into an [`OtapPdata`] via OTAP encoding.
+    fn make_otlp_pdata(metrics_data: MetricsData) -> OtapPdata {
+        let otap_records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
+            metrics_data,
+        ));
+        OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
+    }
+
+    fn create_traces_pdata() -> OtapPdata {
+        let mut datagen = otap_df_pdata::testing::fixtures::DataGenerator::new(3);
+        let traces_data = datagen.generate_traces();
+        let otap_records =
+            otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Traces(traces_data));
+        OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
+    }
+
+    fn create_test_pipeline_context() -> PipelineContext {
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry);
+        controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
+    }
+
+    /// Assert that the processor output is semantically equivalent to the
+    /// expected set of [`OtapArrowRecords`] batches combined.
+    fn assert_output_equivalent(output: &OtapPdata, expected: &[OtapArrowRecords]) {
+        let actual = match output.payload_ref() {
+            OtapPayload::OtapArrowRecords(r) => r,
+            _ => panic!("expected OtapArrowRecords payload"),
+        };
+        let expected_msgs: Vec<_> = expected.iter().map(otap_to_otlp).collect();
+        assert_equivalent(&[otap_to_otlp(actual)], &expected_msgs);
+    }
+
+    /// Assert that the processor output is semantically equivalent to the
+    /// expected OTLP [`MetricsData`].
+    fn assert_output_otlp_equivalent(output: &OtapPdata, expected: MetricsData) {
+        let actual = match output.payload_ref() {
+            OtapPayload::OtapArrowRecords(r) => r,
+            _ => panic!("expected OtapArrowRecords payload"),
+        };
+        assert_equivalent(
+            &[otap_to_otlp(actual)],
+            &[otap_df_pdata::proto::OtlpProtoMessage::Metrics(expected)],
+        );
+    }
+
+    /// Encode OTLP [`MetricsData`] into serialized protobuf bytes and wrap
+    /// as an [`OtapPdata`] with an [`OtlpBytes`] payload.
+    fn make_otlp_bytes_pdata(metrics_data: MetricsData) -> OtapPdata {
+        let msg = otap_df_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
+        let otlp_bytes = otlp_message_to_bytes(&msg);
+        OtapPdata::new_default(OtapPayload::OtlpBytes(otlp_bytes))
+    }
+
+    /// Build an OTLP [`MetricsData`] with `n` unique gauge metrics, each with
+    /// a single data point. All metrics share one resource and one scope.
+    fn make_gauge(name: &str, value: f64) -> Metric {
+        Metric::build()
+            .name(name)
+            .data_gauge(Gauge::new(vec![
+                NumberDataPoint::build()
+                    .time_unix_nano(1000u64)
+                    .value_double(value)
+                    .finish(),
+            ]))
+            .finish()
+    }
+
+    fn make_sum(name: &str, aggregatable: bool, value: i64, exemplars: Vec<Exemplar>) -> Metric {
+        let temporality = if aggregatable {
+            AggregationTemporality::Cumulative
+        } else {
+            AggregationTemporality::Delta
+        };
+        Metric::build()
+            .name(name)
+            .data_sum(Sum::new(
+                temporality,
+                true,
+                vec![
+                    NumberDataPoint::build()
+                        .time_unix_nano(1000u64)
+                        .value_int(value)
+                        .exemplars(exemplars)
+                        .finish(),
+                ],
+            ))
+            .finish()
+    }
+
+    fn make_histogram(name: &str, aggregatable: bool, exemplars: Vec<Exemplar>) -> Metric {
+        let temporality = if aggregatable {
+            AggregationTemporality::Cumulative
+        } else {
+            AggregationTemporality::Delta
+        };
+        Metric::build()
+            .name(name)
+            .data_histogram(Histogram::new(
+                temporality,
+                vec![
+                    HistogramDataPoint::build()
+                        .time_unix_nano(1000u64)
+                        .count(10u64)
+                        .sum(100.0f64)
+                        .bucket_counts(vec![2, 3, 5])
+                        .explicit_bounds(vec![10.0, 50.0])
+                        .exemplars(exemplars)
+                        .finish(),
+                ],
+            ))
+            .finish()
+    }
+
+    fn make_exp_histogram(name: &str, aggregatable: bool, exemplars: Vec<Exemplar>) -> Metric {
+        let temporality = if aggregatable {
+            AggregationTemporality::Cumulative
+        } else {
+            AggregationTemporality::Delta
+        };
+        Metric::build()
+            .name(name)
+            .data_exponential_histogram(ExponentialHistogram::new(
+                temporality,
+                vec![
+                    ExponentialHistogramDataPoint::build()
+                        .time_unix_nano(1000u64)
+                        .count(5u64)
+                        .scale(2i32)
+                        .zero_count(1u64)
+                        .positive(Buckets::new(0, vec![1, 2]))
+                        .negative(Buckets::new(0, vec![1, 1]))
+                        .exemplars(exemplars)
+                        .finish(),
+                ],
+            ))
+            .finish()
+    }
+
+    fn make_n_gauge_metrics(n: usize) -> MetricsData {
+        let metrics: Vec<_> = (0..n)
+            .map(|i| {
+                Metric::build()
+                    .name(format!("metric_{i}"))
+                    .data_gauge(Gauge::new(vec![
+                        NumberDataPoint::build()
+                            .time_unix_nano(1000u64)
+                            .value_double(i as f64)
+                            .finish(),
+                    ]))
+                    .finish()
+            })
+            .collect();
+        MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build().finish(),
+                metrics,
+            )],
+        )])
     }
 }
