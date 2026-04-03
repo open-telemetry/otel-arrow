@@ -994,7 +994,6 @@ mod tests {
         ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::schema::{SpanId, TraceId};
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
     use otap_df_pdata::{metrics, record_batch};
@@ -2431,12 +2430,8 @@ mod tests {
                                             Exemplar::build()
                                                 .time_unix_nano(500u64)
                                                 .value_double(3.2)
-                                                .trace_id([
-                                                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
-                                                    15, 16,
-                                                ]
-                                                    as TraceId)
-                                                .span_id([1, 2, 3, 4, 5, 6, 7, 8] as SpanId)
+                                                .trace_id([1u8; 16])
+                                                .span_id([1u8; 8])
                                                 .filtered_attributes(vec![KeyValue::new(
                                                     "exemplar.key",
                                                     AnyValue::new_string("exemplar.val"),
@@ -2525,12 +2520,8 @@ mod tests {
                                             Exemplar::build()
                                                 .time_unix_nano(800u64)
                                                 .value_int(42i64)
-                                                .trace_id([
-                                                    16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4,
-                                                    3, 2, 1,
-                                                ]
-                                                    as TraceId)
-                                                .span_id([8, 7, 6, 5, 4, 3, 2, 1] as SpanId)
+                                                .trace_id([2u8; 16])
+                                                .span_id([2u8; 8])
                                                 .finish(),
                                         ])
                                         .finish(),
@@ -2722,8 +2713,8 @@ mod tests {
                                             Exemplar::build()
                                                 .time_unix_nano(900u64)
                                                 .value_double(1.5)
-                                                .trace_id([1u8; 16] as TraceId)
-                                                .span_id([2u8; 8] as SpanId)
+                                                .trace_id([1u8; 16])
+                                                .span_id([2u8; 8])
                                                 .filtered_attributes(vec![
                                                     KeyValue::new(
                                                         "attr.one",
@@ -2781,8 +2772,8 @@ mod tests {
                                             Exemplar::build()
                                                 .time_unix_nano(100u64)
                                                 .value_double(1.1)
-                                                .trace_id([1u8; 16] as TraceId)
-                                                .span_id([2u8; 8] as SpanId)
+                                                .trace_id([1u8; 16])
+                                                .span_id([2u8; 8])
                                                 .filtered_attributes(vec![KeyValue::new(
                                                     "ex.key",
                                                     AnyValue::new_string("ex.val"),
@@ -2791,8 +2782,8 @@ mod tests {
                                             Exemplar::build()
                                                 .time_unix_nano(200u64)
                                                 .value_int(7i64)
-                                                .trace_id([3u8; 16] as TraceId)
-                                                .span_id([4u8; 8] as SpanId)
+                                                .trace_id([3u8; 16])
+                                                .span_id([4u8; 8])
                                                 .finish(),
                                         ])
                                         .finish(),
@@ -2809,6 +2800,149 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "delta sum should pass through immediately");
             assert_output_otlp_equivalent(&output[0], input_data);
+        });
+    }
+
+    #[test]
+    fn test_mixed_batch_all_passthrough_types_with_exemplars() {
+        // A mixed batch forces the slow path through the builder so all three
+        // exemplar append functions are exercised.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let aggregatable_sum = Metric::build()
+                .name("requests.total")
+                .data_sum(Sum::new(
+                    AggregationTemporality::Cumulative,
+                    true,
+                    vec![
+                        NumberDataPoint::build()
+                            .time_unix_nano(1000u64)
+                            .value_int(100i64)
+                            .finish(),
+                    ],
+                ))
+                .finish();
+
+            let delta_sum = Metric::build()
+                .name("delta.requests")
+                .data_sum(Sum::new(
+                    AggregationTemporality::Delta,
+                    true,
+                    vec![
+                        NumberDataPoint::build()
+                            .time_unix_nano(1000u64)
+                            .value_int(50i64)
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .time_unix_nano(500u64)
+                                    .value_double(3.2)
+                                    .trace_id([1u8; 16])
+                                    .span_id([1u8; 8])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "sum.exemplar.key",
+                                        AnyValue::new_string("sum.exemplar.val"),
+                                    )])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                ))
+                .finish();
+
+            let delta_histogram = Metric::build()
+                .name("delta.latency")
+                .data_histogram(Histogram::new(
+                    AggregationTemporality::Delta,
+                    vec![
+                        HistogramDataPoint::build()
+                            .time_unix_nano(1000u64)
+                            .count(10u64)
+                            .sum(100.0f64)
+                            .bucket_counts(vec![2, 3, 5])
+                            .explicit_bounds(vec![10.0, 50.0])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .time_unix_nano(800u64)
+                                    .value_int(42i64)
+                                    .trace_id([2u8; 16])
+                                    .span_id([2u8; 8])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                ))
+                .finish();
+
+            let delta_exp_histogram = Metric::build()
+                .name("delta.exp.latency")
+                .data_exponential_histogram(ExponentialHistogram::new(
+                    AggregationTemporality::Delta,
+                    vec![
+                        ExponentialHistogramDataPoint::build()
+                            .time_unix_nano(1000u64)
+                            .count(5u64)
+                            .scale(2i32)
+                            .zero_count(1u64)
+                            .positive(Buckets::new(0, vec![1, 2]))
+                            .negative(Buckets::new(0, vec![1, 1]))
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .time_unix_nano(900u64)
+                                    .value_double(1.5)
+                                    .trace_id([3u8; 16])
+                                    .span_id([3u8; 8])
+                                    .filtered_attributes(vec![
+                                        KeyValue::new("attr.one", AnyValue::new_string("v1")),
+                                        KeyValue::new("attr.two", AnyValue::new_string("v2")),
+                                    ])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                ))
+                .finish();
+
+            let input = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        aggregatable_sum.clone(),
+                        delta_sum.clone(),
+                        delta_histogram.clone(),
+                        delta_exp_histogram.clone(),
+                    ],
+                )],
+            )]));
+            ctx.process(Message::PData(input)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(
+                output.len(),
+                1,
+                "passthrough batch should be emitted immediately"
+            );
+
+            let expected_passthrough = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![delta_sum, delta_histogram, delta_exp_histogram],
+                )],
+            )]);
+            assert_output_otlp_equivalent(&output[0], expected_passthrough);
+
+            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let flushed = ctx.drain_pdata().await;
+            assert_eq!(flushed.len(), 1, "aggregated metric should flush on timer");
+
+            let expected_aggregated = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![aggregatable_sum],
+                )],
+            )]);
+            assert_output_otlp_equivalent(&flushed[0], expected_aggregated);
         });
     }
 
