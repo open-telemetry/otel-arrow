@@ -482,6 +482,21 @@ impl std::io::Write for ProtoBuffer {
 /// )
 /// ```
 ///
+/// An optional fourth argument specifies how many bytes to reserve for the length
+/// placeholder varint (1–4). Fewer bytes save space but limit the maximum encodable
+/// child length:
+///
+/// | bytes | max child length |
+/// |-------|-----------------|
+/// | 1     | 127             |
+/// | 2     | 16 383          |
+/// | 3     | 2 097 151       |
+/// | 4     | 268 435 455     |
+///
+/// For convenience, named variants are provided:
+/// - [`proto_encode_len_delimited_small!`] — 2-byte placeholder (up to 16 KB)
+/// - [`proto_encode_len_delimited_large!`] — 4-byte placeholder (up to 256 MB)
+///
 /// Our proto encoding algorithm tries to encode in a single pass over the OTAP data, but it will
 /// not know the size of the nested child messages a priori. Because the length fields are encoded
 /// in a varint, we don't know how many bytes we need to set aside for the length before we start
@@ -497,37 +512,74 @@ impl std::io::Write for ProtoBuffer {
 /// Note: this is less efficient from a space perspective, so there's a tradeoff being made here
 /// between encoded size and CPU needed to compute the size of the length.
 ///
-/// TODO: currently we're always allocating 4 byte. This may often be too much but we over-allocate
-/// to be safe. Eventually we should maybe allow a size hint here and allocate fewer bytes.
-///
 #[macro_export]
 macro_rules! proto_encode_len_delimited_unknown_size {
     ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
-        let num_bytes = 4; // placeholder length
+        $crate::proto_encode_len_delimited_unknown_size!($field_tag, $encode_fn, $buf, 4)
+    }};
+    ($field_tag: expr, $encode_fn:expr, $buf:expr, $placeholder_bytes:literal) => {{
         $buf.encode_field_tag($field_tag, $crate::proto::consts::wire_types::LEN);
         let len_start_pos = $buf.len();
-        $crate::otlp::common::encode_len_placeholder($buf);
+        $crate::otlp::common::encode_len_placeholder::<$placeholder_bytes>($buf);
         $encode_fn;
-        let len = $buf.len() - len_start_pos - num_bytes;
-        $crate::otlp::common::patch_len_placeholder($buf, num_bytes, len, len_start_pos);
+        let len = $buf.len() - len_start_pos - $placeholder_bytes;
+        $crate::otlp::common::patch_len_placeholder::<$placeholder_bytes>($buf, len, len_start_pos);
     }};
 }
 
-/// Write a 4-byte length placeholder for later patching.
-/// Do not use directly, use proto_encode_len_delimited_unknown_size.
-pub fn encode_len_placeholder(buf: &mut ProtoBuffer) {
-    buf.buffer.extend_from_slice(&[0x80, 0x80, 0x80, 0x00]);
+/// 2-byte placeholder variant — sufficient for child messages up to 16 KB.
+///
+/// Use this for encoding into small, bounded buffers (e.g., internal logging).
+/// See [`proto_encode_len_delimited_unknown_size!`] for details.
+#[macro_export]
+macro_rules! proto_encode_len_delimited_small {
+    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
+        $crate::proto_encode_len_delimited_unknown_size!($field_tag, $encode_fn, $buf, 2)
+    }};
+}
+
+/// 4-byte placeholder variant — sufficient for child messages up to 256 MB.
+///
+/// This is equivalent to the default
+/// [`proto_encode_len_delimited_unknown_size!`] and is provided for
+/// symmetry with [`proto_encode_len_delimited_small!`].
+#[macro_export]
+macro_rules! proto_encode_len_delimited_large {
+    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
+        $crate::proto_encode_len_delimited_unknown_size!($field_tag, $encode_fn, $buf, 4)
+    }};
+}
+
+/// Write an `N`-byte length placeholder for later patching.
+///
+/// Each byte except the last has its continuation bit (MSB) set, with all
+/// value bits zeroed. `N` must be between 1 and 4 inclusive (enforced at
+/// compile time).
+///
+/// Do not call directly — use [`proto_encode_len_delimited_unknown_size!`].
+#[inline]
+pub fn encode_len_placeholder<const N: usize>(buf: &mut ProtoBuffer) {
+    const { assert!(N >= 1 && N <= 4, "placeholder must be 1-4 bytes") }
+    buf.buffer.extend_from_slice(&make_len_placeholder::<N>());
+}
+
+/// Build an `N`-byte zero-valued varint placeholder at compile time.
+const fn make_len_placeholder<const N: usize>() -> [u8; N] {
+    let mut arr = [0x80u8; N];
+    arr[N - 1] = 0x00;
+    arr
 }
 
 /// Patch a previously written length placeholder with the actual length.
-/// Do not use directly, use proto_encode_len_delimited_unknown_size.
-pub fn patch_len_placeholder(
+///
+/// Do not call directly — use [`proto_encode_len_delimited_unknown_size!`].
+#[inline]
+pub fn patch_len_placeholder<const N: usize>(
     buf: &mut ProtoBuffer,
-    num_bytes: usize,
     len: usize,
     len_start_pos: usize,
 ) {
-    for i in 0..num_bytes {
+    for i in 0..N {
         buf.buffer[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
     }
 }
@@ -1163,5 +1215,87 @@ mod test {
     #[test]
     fn test_metrics_with_no_metrics() {
         assert_empty_batch(metrics_with_no_metrics().into());
+    }
+
+    #[test]
+    fn test_encode_len_placeholder_sizes() {
+        use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
+
+        fn check<const N: usize>() {
+            let mut buf = ProtoBuffer::new();
+            encode_len_placeholder::<N>(&mut buf);
+            assert_eq!(buf.len(), N);
+            for i in 0..N - 1 {
+                assert_eq!(buf.as_ref()[i], 0x80, "byte {i} for {N}-byte placeholder");
+            }
+            assert_eq!(buf.as_ref()[N - 1], 0x00);
+        }
+
+        check::<1>();
+        check::<2>();
+        check::<3>();
+        check::<4>();
+    }
+
+    #[test]
+    fn test_patch_len_placeholder_roundtrip() {
+        use crate::otlp::common::{ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
+
+        // Verify that encoding+patching with each placeholder size produces
+        // valid varints that a standard decoder would read correctly.
+        fn check<const N: usize>(test_lengths: &[usize]) {
+            let max_len = (1usize << (7 * N)) - 1;
+            for &len in test_lengths {
+                if len > max_len {
+                    continue;
+                }
+                let mut buf = ProtoBuffer::new();
+                let start = buf.len();
+                encode_len_placeholder::<N>(&mut buf);
+                patch_len_placeholder::<N>(&mut buf, len, start);
+
+                let mut decoded: u64 = 0;
+                for i in 0..N {
+                    decoded |= ((buf.as_ref()[start + i] & 0x7f) as u64) << (i * 7);
+                }
+                assert_eq!(decoded, len as u64, "N={N}, expected len={len}");
+            }
+        }
+
+        let lengths: &[usize] = &[0, 1, 42, 127, 128, 1000, 16383];
+        check::<1>(lengths);
+        check::<2>(lengths);
+        check::<3>(lengths);
+        check::<4>(lengths);
+    }
+
+    #[test]
+    fn test_macro_with_custom_placeholder_size() {
+        use crate::otlp::common::ProtoBuffer;
+
+        // Encode a simple string field using the _large and _small variants,
+        // then verify the _small output is 2 bytes shorter.
+        let mut buf_large = ProtoBuffer::new();
+        proto_encode_len_delimited_large!(
+            1,
+            { buf_large.encode_string(1, "hello"); },
+            &mut buf_large
+        );
+
+        let mut buf_small = ProtoBuffer::new();
+        proto_encode_len_delimited_small!(
+            1,
+            { buf_small.encode_string(1, "hello"); },
+            &mut buf_small
+        );
+
+        // The _small variant should be exactly 2 bytes shorter.
+        assert_eq!(buf_large.len() - buf_small.len(), 2);
+
+        // Both should decode to valid protobuf with the same payload.
+        // Skip the outer tag+len to compare just the inner content.
+        // large: 1 byte tag + 4 byte len + payload
+        // small: 1 byte tag + 2 byte len + payload
+        assert_eq!(&buf_large.as_ref()[5..], &buf_small.as_ref()[3..]);
     }
 }
