@@ -2703,7 +2703,11 @@ mod tests {
                 .await
                 .expect("process armed retry wakeup");
                 let wakeup_retry = ctx.drain_pdata().await;
-                assert_eq!(wakeup_retry.len(), 1, "armed wakeup should still resume retry delivery");
+                assert_eq!(
+                    wakeup_retry.len(),
+                    1,
+                    "armed wakeup should still resume retry delivery"
+                );
             })
             .validate(|_| async {});
     }

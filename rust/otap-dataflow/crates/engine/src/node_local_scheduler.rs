@@ -220,11 +220,7 @@ impl NodeLocalScheduler {
             return None;
         }
 
-        let slot = self
-            .wakeups
-            .first()
-            .expect("due wakeup should exist")
-            .slot;
+        let slot = self.wakeups.first().expect("due wakeup should exist").slot;
         let removed_index = self
             .wakeup_indices
             .remove(&slot)
@@ -404,7 +400,10 @@ mod tests {
             .get(&WakeupSlot(3))
             .copied()
             .expect("rescheduled slot should still be tracked");
-        assert!(moved_index > 0, "rescheduled slot should be a non-root entry");
+        assert!(
+            moved_index > 0,
+            "rescheduled slot should be a non-root entry"
+        );
 
         assert!(scheduler.cancel_wakeup(WakeupSlot(3)));
         assert_heap_bound(&scheduler);
