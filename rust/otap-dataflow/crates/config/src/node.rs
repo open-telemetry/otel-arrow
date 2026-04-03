@@ -16,6 +16,44 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+/// Deserializes a `HashMap<String, String>` while rejecting duplicate keys.
+///
+/// Standard serde deserialization into `HashMap` silently overwrites earlier
+/// entries when keys are duplicated in the source. This function detects that
+/// and returns an error so the user gets immediate feedback.
+fn deserialize_no_dup_keys<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{MapAccess, Visitor};
+    use std::fmt;
+
+    struct NoDupVisitor;
+
+    impl<'de> Visitor<'de> for NoDupVisitor {
+        type Value = HashMap<String, String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map with no duplicate keys")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut result = HashMap::new();
+            while let Some((key, value)) = map.next_entry::<String, String>()? {
+                if result.contains_key(&key) {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate capability key '{key}'"
+                    )));
+                }
+                let _ = result.insert(key, value);
+            }
+            Ok(result)
+        }
+    }
+
+    deserializer.deserialize_map(NoDupVisitor)
+}
+
 /// User configuration for a node in the pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +96,23 @@ pub struct NodeUserConfig {
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub config: Value,
 
+    /// Capability bindings mapping capability names to extension instance names.
+    ///
+    /// Each entry maps a capability (e.g., `bearer_token_provider`) to the name
+    /// of an extension instance declared in the pipeline's `extensions` section.
+    ///
+    /// Example:
+    /// ```yaml
+    /// capabilities:
+    ///   bearer_token_provider: azure_auth
+    /// ```
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        deserialize_with = "deserialize_no_dup_keys"
+    )]
+    pub capabilities: HashMap<String, String>,
+
     /// Entity configuration for the node.
     ///
     /// Currently, we support entity::extend::identity_attributes, for example:
@@ -88,6 +143,8 @@ pub enum NodeKind {
     Processor,
     /// A sink of signals
     Exporter,
+    /// A provider of shared capabilities (e.g., auth, service discovery).
+    Extension,
 
     // ToDo(LQ) : Add more node kinds as needed.
     // A connector between two pipelines
@@ -102,6 +159,7 @@ impl From<NodeKind> for Cow<'static, str> {
             NodeKind::Receiver => "receiver".into(),
             NodeKind::Processor => "processor".into(),
             NodeKind::Exporter => "exporter".into(),
+            NodeKind::Extension => "extension".into(),
             NodeKind::ProcessorChain => "processor_chain".into(),
         }
     }
@@ -121,6 +179,7 @@ impl NodeUserConfig {
             default_output: None,
             entity: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
         }
     }
 
@@ -137,6 +196,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
         }
     }
 
@@ -153,6 +213,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
         }
     }
 
@@ -166,6 +227,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: user_config,
+            capabilities: HashMap::new(),
         }
     }
 
@@ -385,5 +447,40 @@ config: {}
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.entity.is_some());
         assert!(cfg.identity_attributes().is_empty());
+    }
+
+    #[test]
+    fn capabilities_rejects_duplicate_keys_yaml() {
+        let yaml = r#"
+type: "urn:otel:exporter:test"
+capabilities:
+  bearer_token_provider: ext_a
+  bearer_token_provider: ext_b
+"#;
+        let result: Result<NodeUserConfig, _> = serde_yaml::from_str(yaml);
+        let err = result.expect_err("should reject duplicate capability keys");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate"),
+            "error should mention duplicate: {msg}"
+        );
+    }
+
+    #[test]
+    fn capabilities_rejects_duplicate_keys_json() {
+        let json = r#"{
+            "type": "urn:otel:exporter:test",
+            "capabilities": {
+                "bearer_token_provider": "ext_a",
+                "bearer_token_provider": "ext_b"
+            }
+        }"#;
+        let result: Result<NodeUserConfig, _> = serde_json::from_str(json);
+        let err = result.expect_err("should reject duplicate capability keys");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate"),
+            "error should mention duplicate: {msg}"
+        );
     }
 }
