@@ -43,7 +43,7 @@ use otap_df_pdata::{
 };
 use otap_df_query_engine::{
     parser::default_parser_options,
-    pipeline::{Pipeline, routing::RouterExtType, state::ExecutionState},
+    pipeline::{Pipeline, PipelineOptions, routing::RouterExtType, state::ExecutionState},
 };
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
@@ -136,9 +136,13 @@ impl TransformProcessor {
         let mut execution_state = ExecutionState::new();
         execution_state.set_extension::<RouterExtType>(Box::new(RouterImpl::new()));
 
+        let pipeline_options = PipelineOptions {
+            filter_attribute_keys_case_sensitive: config.filter_attribute_keys_case_sensitive,
+        };
+
         Ok(Self {
             signal_scope: SignalScope::try_from(&pipeline_expr)?,
-            pipeline: Pipeline::new(pipeline_expr),
+            pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
             metrics: pipeline_ctx.register_metrics::<Metrics>(),
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             execution_state,
@@ -465,7 +469,7 @@ mod test {
             OtlpProtoMessage,
             opentelemetry::{
                 arrow::v1::ArrowPayloadType,
-                common::v1::InstrumentationScope,
+                common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
                 resource::v1::Resource,
@@ -737,6 +741,93 @@ mod test {
                             &[
                                 LogRecord::build().event_name("ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb").finish(),
                                 LogRecord::build().event_name("3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d").finish(),
+                            ]
+                        )
+                    }
+                    invalid => {
+                        panic!(
+                            "invalid signal type from output. Expected logs, received {invalid:?}"
+                        )
+                    }
+                }
+            })
+            .validate(|_ctx| async move {});
+    }
+
+    #[test]
+    fn test_calling_pipeline_with_case_insensitive_attrs_key_match() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "logs | where attributes[\"x\"] == \"y\"";
+        let processor = try_create_with_config(
+            json!({
+                "opl_query": query,
+                "filter_attribute_keys_case_sensitive": false
+            }),
+            &runtime,
+        )
+        .expect("created processor");
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = vec![
+                    LogRecord::build()
+                        .event_name("event1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event2")
+                        .attributes(vec![KeyValue::new("X", AnyValue::new_string("z"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event3")
+                        .attributes(vec![KeyValue::new("X", AnyValue::new_string("y"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event4")
+                        .attributes(vec![KeyValue::new("X", AnyValue::new_string("z"))])
+                        .finish(),
+                ];
+
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                let pdata = OtapPdata::new_default(otap_batch.into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
+                let otap_batch = out.into_iter().next().unwrap();
+                let result = otap_to_otlp(&otap_batch);
+
+                match result {
+                    OtlpProtoMessage::Logs(logs_data) => {
+                        assert_eq!(logs_data.resource_logs.len(), 1);
+                        assert_eq!(logs_data.resource_logs[0].scope_logs.len(), 1);
+                        assert_eq!(
+                            &logs_data.resource_logs[0].scope_logs[0].log_records,
+                            &[
+                                LogRecord::build()
+                                    .event_name("event1")
+                                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                                    .finish(),
+                                LogRecord::build()
+                                    .event_name("event3")
+                                    .attributes(vec![KeyValue::new("X", AnyValue::new_string("y"))])
+                                    .finish(),
                             ]
                         )
                     }
