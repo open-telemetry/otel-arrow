@@ -118,6 +118,7 @@ fn try_rfc3164_cef<'a>(
         debug_assert!(cef_message.starts_with(b"CEF:"));
 
         if let Ok(cef_msg) = parse_cef(cef_message) {
+            // Update the rfc3164 content to point to the full CEF message
             let mut modified_rfc3164 = rfc3164_msg;
             modified_rfc3164.content = Some(cef_message);
             return Ok(ParsedSyslogMessage::CefWithRfc3164(
