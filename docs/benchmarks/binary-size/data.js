@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775089682712,
+  "lastUpdate": 1775176252881,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3026,6 +3026,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 100.56,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7bb2ffd6c23efa2329112180107f8d4c2f078f79",
+          "message": "fix(geneva_exporter): per-signal metrics, accurate batch tracking, and per-upload latency (#2504)\n\nAddresses review comments from #2262 on the Geneva exporter's metrics\ninstrumentation.\n \n ### Changes\n \n**1. Fix `try_for_each_concurrent` short-circuit (inflated failure\ncounts)**\n \nReplaced `try_for_each_concurrent` with `buffer_unordered` + collect.\nAll batches are now attempted regardless of individual failures.\nSuccesses and failures are counted accurately per-batch using\n`EncodedBatch::row_count`, rather than attributing all records to either\nsuccess or failure.\n \n **2. Fix `upload_duration` recording aggregate wall-clock time**\n \nUpload latency is now recorded per individual batch upload, not once for\nthe entire concurrent block. Each upload produces its own timing sample,\ngiving accurate min/max/sum/count statistics.\n \n **3. Rename `unsupported_signals` to `metrics_payloads_dropped`**\n \nMetrics is the only unsupported signal type, so the generic name was\nmisleading.\n \n **4. Split shared counters into per-signal metrics**\n \nAll upload/failure/timing counters are now split into `log_*` and\n`trace_*` variants (e.g., `log_batches_uploaded`,\n`trace_upload_duration`). This lets operators identify which signal type\nis failing or experiencing latency. Signal-agnostic counters\n(`empty_payloads_skipped`, `conversion_errors`,\n`metrics_payloads_dropped`) remain shared.\n \n ### Known limitation (documented as TODO)\n \nWhen a payload is split into multiple Geneva batches and some fail, the\nentire payload is still NACKed and retried - potentially duplicating\nalready-uploaded batches. Geneva assigns a fresh UUID per upload, so\nthere is no server-side dedup. The Azure Monitor exporter solves this\nwith per-message batch tracking and deferred ACK/NACK; a similar\napproach should be adopted here in a follow-up.",
+          "timestamp": "2026-04-02T23:45:58Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7bb2ffd6c23efa2329112180107f8d4c2f078f79"
+        },
+        "date": 1775176247390,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 100.66,
             "unit": "MB"
           }
         ]
