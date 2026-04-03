@@ -89,7 +89,8 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
 - [ ] Protect `POST /pipeline-groups/shutdown` with stricter access controls
   than read-only endpoints.
 - [ ] Apply the same hardened response headers to API endpoints
-  (`/api/v1/status`, `/api/v1/livez`, `/api/v1/readyz`, `/api/v1/telemetry/*`, `/api/v1/metrics`), not only UI/static.
+  (`/api/v1/status`, `/api/v1/livez`, `/api/v1/readyz`,
+  `/api/v1/telemetry/*`, `/api/v1/metrics`), not only UI/static.
 - [ ] Harden CSP further by removing `style-src 'unsafe-inline'` (move toward
   nonce/hash-based style policies).
 - [ ] Add rate limiting / throttling to protect admin and telemetry endpoints.
