@@ -13,7 +13,8 @@ use crate::traffic::MessageType;
 use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::context;
 use portpicker::pick_unused_port;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -220,10 +221,22 @@ impl Scenario {
 
     /// update the config to wire the connections between the pipelines
     fn update_configs(&mut self) -> Result<(), ValidationError> {
-        // helper to get port and return error if no ports are found.
+        // Track ports already handed out so that back-to-back
+        // `pick_unused_port()` calls (which only probe availability)
+        // cannot return the same port twice (TOCTOU race).
+        let allocated = RefCell::new(HashSet::<u16>::new());
         let pick_port = |context: &str| -> Result<u16, ValidationError> {
-            pick_unused_port()
-                .ok_or_else(|| ValidationError::Config(format!("failed to get port for {context}")))
+            let mut set = allocated.borrow_mut();
+            for _ in 0..64 {
+                if let Some(port) = pick_unused_port() {
+                    if set.insert(port) {
+                        return Ok(port);
+                    }
+                }
+            }
+            Err(ValidationError::Config(format!(
+                "failed to get unique port for {context}"
+            )))
         };
 
         if self.generators.is_empty() {
