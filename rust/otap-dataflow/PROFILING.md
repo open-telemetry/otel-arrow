@@ -4,7 +4,7 @@ This section covers CPU and memory profiling for `df_engine`.
 
 **Requirements**:
 
-- [samply] (https://github.com/mstange/samply)
+- [samply](https://github.com/mstange/samply)
 
 **Installation**:
 
@@ -53,5 +53,5 @@ for memory profiling that needs to be rendered by uploading it to:
 CPU profiling output will be automatically rendered on browser.
 
 > [!NOTE]
-> `dhat` needs a clean shutdown to generate `dhat-heap.json` file. 
+> `dhat` needs a clean shutdown to generate `dhat-heap.json` file.
 > In `df_engine` this can be done manually with Ctrl+C.
