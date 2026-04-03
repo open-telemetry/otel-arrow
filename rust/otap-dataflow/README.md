@@ -433,7 +433,7 @@ samply record ./target/profiling/df_engine --config ./configs/otap-noop.yaml
 **Result**:
 
 On graceful shutdown of `df_engine`, it will generate `dhat-heap.json` file
-for Memory profiling that need to be rendered by uploading it to:
+for memory profiling that needs to be rendered by uploading it to:
 <https://nnethercote.github.io/dh_view/>.
 
 CPU profiling output will be automatically rendered on browser.
