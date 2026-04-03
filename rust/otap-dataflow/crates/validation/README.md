@@ -472,8 +472,44 @@ let localstack = ContainerConfig::new("localstack/localstack", "3.4")
   Docker image and tag
 - `.env(key, value)` - set an environment variable on the container
   - can be chained multiple times
+- `.env_host_port(key, value_template, internal_port)` - set an environment
+  variable whose value is a Jinja2 template; `{{ host_port }}` is replaced
+  with the host port mapped to `internal_port` after port allocation
+  - can be chained multiple times
+  - if no connection maps the given `internal_port`, the framework
+    auto-allocates a host port during config wiring
+  - the resolved host port is consistent with the port used for Docker
+    port mapping and any `ContainerConnection` or
+    `PipelineContainerConnection` referencing the same internal port
 - `.entrypoint(cmd)` - override the container's entrypoint
   - optional
+
+##### Templated environment variables
+
+Some containers require environment variables that reference the host port
+assigned to one of their exposed ports. For example, Kafka's advertised
+listeners must contain the host-reachable address so that clients outside
+the container can connect. Use `env_host_port` for this:
+
+```rust
+use otap_df_validation::ContainerConfig;
+
+let kafka = ContainerConfig::new("confluentinc/cp-kafka", "7.5.0")
+    .env("KAFKA_NODE_ID", "1")
+    .env_host_port(
+        "KAFKA_ADVERTISED_LISTENERS",
+        "PLAINTEXT://127.0.0.1:{{ host_port }}",
+        9092,
+    );
+```
+
+After config wiring, if host port 54321 was allocated for container port
+9092, the container starts with `KAFKA_ADVERTISED_LISTENERS` set to
+`PLAINTEXT://127.0.0.1:54321`.
+
+If a `PipelineContainerConnection` or `ContainerConnection` also
+references internal port 9092 on the same container, they all share the
+same allocated host port.
 
 Register the container on the scenario with `add_container`:
 
@@ -671,7 +707,12 @@ Scenario::new()
         "localstack",
         ContainerConfig::new("localstack/localstack", "3.4")
             .env("SERVICES", "s3")
-            .env("DEFAULT_REGION", "us-east-1"),
+            .env("DEFAULT_REGION", "us-east-1")
+            .env_host_port(
+                "LOCALSTACK_HOST",
+                "127.0.0.1:{{ host_port }}",
+                4566,
+            ),
     )
     .add_generator(
         "gen",
