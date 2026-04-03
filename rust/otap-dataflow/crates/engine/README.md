@@ -278,7 +278,9 @@ behavior:
 
 Processors can schedule local wakeups through the processor effect handler:
 
-- `set_wakeup(slot, when)` schedules or replaces the wakeup for `slot`
+- `set_wakeup(slot, when)` schedules or replaces the wakeup for `slot` and
+  returns whether that slot was inserted or replaced, along with the accepted
+  wakeup revision
 - `cancel_wakeup(slot)` removes the wakeup for `slot` if one is live
 
 This API is intentionally processor-local:
@@ -286,26 +288,31 @@ This API is intentionally processor-local:
 - `WakeupSlot` is scoped to one processor instance, not globally across the
   pipeline
 - a processor can define its own slot constants such as `WakeupSlot(0)`
+- a processor can also encode compact structured local identifiers directly in
+  the widened `WakeupSlot(pub u128)` payload when that is more natural
 - the engine does not interpret slot meaning; it only routes the slot back to
   the originating processor
 
 Wakeups are delivered through `ProcessorInbox` as
-`NodeControlMsg::Wakeup { slot, when }`. They therefore participate in the
-same receive loop and the same bounded fairness policy as other control
+`NodeControlMsg::Wakeup { slot, when, revision }`. They therefore participate
+in the same receive loop and the same bounded fairness policy as other control
 traffic.
 
 The current runtime properties and guarantees are:
 
 - **Keyed replacement:** there is at most one live wakeup per slot; scheduling
   the same slot again replaces the previous due time
+- **Revisioned delivery:** every accepted schedule gets a scheduler-assigned
+  revision; re-scheduling a live slot gives it a new revision so processors can
+  ignore stale wakeups for reused slots
 - **Cancellation:** canceling a live slot prevents that wakeup from being
   delivered later
 - **Bounded live state:** scheduler state is bounded by the number of live
   wakeup slots accepted for the processor
 - **Deterministic ordering:** if two wakeups have the same due time, they are
   delivered in schedule order
-- **No payload retention:** wakeups carry only `(slot, when)` and do not retain
-  deferred `pdata`
+- **No payload retention:** wakeups carry only `(slot, when, revision)` and do
+  not retain deferred `pdata`
 - **Shutdown rejection and drop:** once processor shutdown is latched, new
   wakeups are rejected and pending wakeups are dropped immediately
 - **No flush-on-shutdown guarantee:** pending wakeups are not drained or forced

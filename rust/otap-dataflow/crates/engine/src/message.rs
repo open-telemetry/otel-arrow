@@ -359,7 +359,13 @@ where
         self.local_scheduler
             .as_ref()
             .and_then(|scheduler| scheduler.pop_due(now))
-            .map(|(slot, when)| self.control_message(NodeControlMsg::Wakeup { slot, when }))
+            .map(|(slot, when, revision)| {
+                self.control_message(NodeControlMsg::Wakeup {
+                    slot,
+                    when,
+                    revision,
+                })
+            })
     }
 
     fn next_local_expiry_sleep(&self, now: Instant) -> Option<clock::Sleep> {
@@ -904,9 +910,10 @@ mod tests {
     async fn processor_inbox_emits_due_wakeup_as_control_message() {
         let (_control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
         let when = Instant::now();
-        scheduler
+        let outcome = scheduler
             .set_wakeup(crate::control::WakeupSlot(0), when)
             .expect("wakeup should schedule");
+        let revision = outcome.revision();
 
         let message = tokio::time::timeout(Duration::from_millis(50), inbox.recv_when(true))
             .await
@@ -917,7 +924,8 @@ mod tests {
             Message::Control(NodeControlMsg::Wakeup {
                 slot: crate::control::WakeupSlot(0),
                 when: observed,
-            }) if observed == when
+                revision: observed_revision,
+            }) if observed == when && observed_revision == revision
         ));
     }
 
@@ -930,7 +938,7 @@ mod tests {
             .expect("pdata should enqueue");
         let when = Instant::now();
         for slot in 0..40 {
-            scheduler
+            let _ = scheduler
                 .set_wakeup(crate::control::WakeupSlot(slot), when)
                 .expect("wakeup should schedule");
         }
@@ -973,9 +981,10 @@ mod tests {
             })
             .await
             .expect("config should enqueue");
-        scheduler
+        let outcome = scheduler
             .set_wakeup(crate::control::WakeupSlot(0), when)
             .expect("wakeup should schedule");
+        let revision = outcome.revision();
 
         let first = inbox.recv_when(true).await.expect("message should arrive");
         assert!(matches!(
@@ -989,7 +998,8 @@ mod tests {
             Message::Control(NodeControlMsg::Wakeup {
                 slot: crate::control::WakeupSlot(0),
                 when: observed,
-            }) if observed == when
+                revision: observed_revision,
+            }) if observed == when && observed_revision == revision
         ));
     }
 
@@ -1035,7 +1045,7 @@ mod tests {
             .send_async(TestMsg::new("buffered"))
             .await
             .expect("pdata should enqueue");
-        scheduler
+        let _ = scheduler
             .set_wakeup(crate::control::WakeupSlot(2), Instant::now())
             .expect("wakeup should schedule");
         control_tx

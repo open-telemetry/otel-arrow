@@ -79,7 +79,7 @@ pub mod terminal_state;
 pub mod testing;
 pub mod topic;
 pub mod wiring_contract;
-pub use node_local_scheduler::WakeupError;
+pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 
 /// Trait for factory types that expose a name.
 ///

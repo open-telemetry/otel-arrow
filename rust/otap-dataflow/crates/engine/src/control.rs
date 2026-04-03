@@ -82,9 +82,18 @@ pub type CallData = SmallVec<[Context8u8; 3]>;
 /// constants such as `WakeupSlot(0)` for their own internal timers.
 ///
 /// Re-scheduling the same slot replaces the previous wakeup for that slot.
+/// The widened `u128` payload lets processors encode compact structured local
+/// identifiers directly when that is more natural than allocating slot numbers.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct WakeupSlot(pub u64);
+pub struct WakeupSlot(pub u128);
+
+/// Monotonic wakeup revision assigned by the scheduler each time a slot is set.
+///
+/// Re-scheduling an existing slot gives it a new revision. Processors can use
+/// the revision carried back in [`NodeControlMsg::Wakeup`] to distinguish a
+/// current wakeup from a stale delivery for the same slot.
+pub type WakeupRevision = u64;
 
 /// Engine-managed call data envelope. Wraps the CallData with an envelope
 /// containing timestamp. Lives on the forward path (in context stack frames).
@@ -238,6 +247,8 @@ pub enum NodeControlMsg<PData> {
     /// This is delivered back through the processor inbox as normal control
     /// traffic. The slot identifies which logical wakeup fired; processors are
     /// expected to interpret the slot according to their own local namespace.
+    /// The revision changes every time the slot is (re-)scheduled and allows
+    /// processors to ignore stale wakeups for a reused slot.
     ///
     /// Wakeups are best-effort runtime signals rather than durable work items:
     /// once processor shutdown is latched, pending wakeups are dropped and no
@@ -247,6 +258,8 @@ pub enum NodeControlMsg<PData> {
         slot: WakeupSlot,
         /// Scheduled due time currently associated with this slot.
         when: Instant,
+        /// Scheduler-assigned revision for this slot schedule.
+        revision: WakeupRevision,
     },
 
     /// Delayed data returning to the node which delayed it.

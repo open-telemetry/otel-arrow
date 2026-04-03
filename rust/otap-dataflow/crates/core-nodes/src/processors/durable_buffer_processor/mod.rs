@@ -71,9 +71,10 @@
 
 mod bundle_adapter;
 mod config;
+mod retry_wakeup_state;
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -97,6 +98,9 @@ use bundle_adapter::{
     OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
 };
 pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
+use retry_wakeup_state::RetryWakeupState;
+#[cfg(test)]
+use retry_wakeup_state::{retry_key, retry_wakeup_slot};
 
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -104,7 +108,9 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::Context8u8;
-use otap_df_engine::control::{AckMsg, CallData, NackMsg, NodeControlMsg, WakeupSlot};
+use otap_df_engine::control::{
+    AckMsg, CallData, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot,
+};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::EffectHandler;
 use otap_df_engine::message::Message;
@@ -112,7 +118,6 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
-    WakeupError,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
@@ -319,10 +324,6 @@ fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
     })
 }
 
-fn retry_key(bundle_ref: BundleRef) -> (u64, u32) {
-    (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw())
-}
-
 /// State for tracking a pending downstream delivery.
 ///
 /// Holds the Quiver bundle handle to keep the bundle claimed while in-flight.
@@ -337,28 +338,6 @@ struct PendingBundle {
     item_count: u64,
     /// Signal type of this bundle.
     signal_type: SignalType,
-}
-
-/// Local retry state held between wakeup scheduling and wakeup delivery.
-#[derive(Clone, Copy)]
-struct RetryWakeup {
-    bundle_ref: BundleRef,
-    retry_count: u32,
-}
-
-#[derive(Clone, Copy)]
-struct OverflowRetry {
-    bundle_ref: BundleRef,
-    retry_count: u32,
-    retry_at: Instant,
-    sequence: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct OverflowRetryOrder {
-    retry_at: Instant,
-    sequence: u64,
-    key: (u64, u32),
 }
 
 /// Result of attempting to process a bundle with non-blocking send.
@@ -431,43 +410,8 @@ pub struct DurableBuffer {
     /// Key is the (segment_seq, bundle_index) pair encoded as a u128 for fast lookup.
     pending_bundles: HashMap<(u64, u32), PendingBundle>,
 
-    /// Bundles currently held out of the normal poll loop while backoff is active.
-    ///
-    /// Invariant: every key here is deferred for retry either by an armed wakeup
-    /// (`retry_wakeup_slots` + `retry_wakeups`) or by the local overflow queue
-    /// (`retry_overflow` + `retry_overflow_order`).
-    retry_scheduled: HashSet<(u64, u32)>,
-
-    /// Wakeup slot assigned to each bundle currently waiting for retry.
-    ///
-    /// Invariant: this only contains bundles that successfully acquired a slot
-    /// in the engine wakeup scheduler. Keys present only in `retry_overflow`
-    /// intentionally have no slot entry yet.
-    retry_wakeup_slots: HashMap<(u64, u32), WakeupSlot>,
-
-    /// Retry state keyed by wakeup slot.
-    ///
-    /// Invariant: for every `(key -> slot)` in `retry_wakeup_slots`, there is a
-    /// matching `(slot -> RetryWakeup)` entry here describing the same bundle.
-    retry_wakeups: HashMap<WakeupSlot, RetryWakeup>,
-
-    /// Retry state held locally while wakeup scheduling is at capacity.
-    ///
-    /// Guarantee: overflowed retries remain deferred and keep their target due
-    /// time even when the engine wakeup scheduler is full.
-    retry_overflow: HashMap<(u64, u32), OverflowRetry>,
-
-    /// Due-order index for locally deferred retries.
-    ///
-    /// Invariant: this contains exactly one ordering key for each entry in
-    /// `retry_overflow`, using `sequence` as a deterministic tie-breaker.
-    retry_overflow_order: BTreeSet<OverflowRetryOrder>,
-
-    /// Monotonic slot allocator for retry wakeups.
-    next_retry_wakeup_slot: u64,
-
-    /// Monotonic tie-breaker for locally deferred retry ordering.
-    next_retry_overflow_sequence: u64,
+    /// Processor-local wakeup bookkeeping for retry deferral and overflow.
+    retry_wakeup_state: RetryWakeupState,
 
     /// Configuration.
     config: DurableBufferConfig,
@@ -561,13 +505,7 @@ impl DurableBuffer {
         Ok(Self {
             engine_state: EngineState::Uninitialized,
             pending_bundles: HashMap::new(),
-            retry_scheduled: HashSet::new(),
-            retry_wakeup_slots: HashMap::new(),
-            retry_wakeups: HashMap::new(),
-            retry_overflow: HashMap::new(),
-            retry_overflow_order: BTreeSet::new(),
-            next_retry_wakeup_slot: 0,
-            next_retry_overflow_sequence: 0,
+            retry_wakeup_state: RetryWakeupState::new(),
             config,
             core_id,
             num_cores,
@@ -663,120 +601,6 @@ impl DurableBuffer {
         self.pending_bundles.len() < self.config.max_in_flight
     }
 
-    /// Allocates a new processor-local wakeup slot for a retrying bundle.
-    ///
-    /// Guarantee: slot values are never reused within one processor instance,
-    /// which keeps stale wakeups from aliasing a newer retry.
-    fn next_retry_wakeup_slot(&mut self) -> WakeupSlot {
-        let slot = WakeupSlot(self.next_retry_wakeup_slot);
-        self.next_retry_wakeup_slot = self.next_retry_wakeup_slot.saturating_add(1);
-        slot
-    }
-
-    /// Builds the deterministic ordering key for an overflowed retry.
-    fn overflow_retry_order(key: (u64, u32), retry: OverflowRetry) -> OverflowRetryOrder {
-        OverflowRetryOrder {
-            retry_at: retry.retry_at,
-            sequence: retry.sequence,
-            key,
-        }
-    }
-
-    /// Removes one overflowed retry from both local indexes.
-    ///
-    /// Invariant preserved: `retry_overflow` and `retry_overflow_order` stay in
-    /// lockstep after every insertion/removal.
-    fn remove_retry_overflow(&mut self, key: (u64, u32)) -> Option<OverflowRetry> {
-        let retry = self.retry_overflow.remove(&key)?;
-        let _ = self
-            .retry_overflow_order
-            .remove(&Self::overflow_retry_order(key, retry));
-        Some(retry)
-    }
-
-    /// Defers a retry in local processor state when the engine wakeup scheduler
-    /// has no free slot.
-    ///
-    /// Guarantees:
-    /// - the bundle remains in `retry_scheduled`, so `poll_next_bundle()` keeps
-    ///   skipping it
-    /// - the most recent `(retry_count, retry_at)` replaces any older local
-    ///   overflow record for the same bundle
-    /// - equal due times are processed deterministically by `sequence`
-    fn insert_retry_overflow(
-        &mut self,
-        bundle_ref: BundleRef,
-        retry_count: u32,
-        retry_at: Instant,
-    ) {
-        let key = retry_key(bundle_ref);
-        let _ = self.remove_retry_overflow(key);
-        let retry = OverflowRetry {
-            bundle_ref,
-            retry_count,
-            retry_at,
-            sequence: self.next_retry_overflow_sequence,
-        };
-        self.next_retry_overflow_sequence = self.next_retry_overflow_sequence.saturating_add(1);
-        let _ = self.retry_scheduled.insert(key);
-        let _ = self.retry_overflow.insert(key, retry);
-        let _ = self
-            .retry_overflow_order
-            .insert(Self::overflow_retry_order(key, retry));
-    }
-
-    /// Pops the next locally deferred retry only when its due time has arrived.
-    ///
-    /// Guarantee: returning a retry clears all local overflow bookkeeping for
-    /// that bundle so it can be resumed exactly once.
-    fn take_due_retry_overflow(&mut self, now: Instant) -> Option<RetryWakeup> {
-        let order = *self.retry_overflow_order.first()?;
-        if order.retry_at > now {
-            return None;
-        }
-
-        let _ = self.retry_overflow_order.remove(&order);
-        let retry = self.retry_overflow.remove(&order.key)?;
-        let _ = self.retry_scheduled.remove(&order.key);
-
-        Some(RetryWakeup {
-            bundle_ref: retry.bundle_ref,
-            retry_count: retry.retry_count,
-        })
-    }
-
-    /// Opportunistically moves overflowed retries back into engine wakeup slots.
-    ///
-    /// Guarantees:
-    /// - never drops a deferred retry when slot acquisition fails
-    /// - preserves retry due time when promotion succeeds
-    /// - stops as soon as the scheduler reports `Capacity` or shutdown
-    fn promote_retry_overflow_to_wakeups(&mut self, effect_handler: &mut EffectHandler<OtapPdata>) {
-        while let Some(order) = self.retry_overflow_order.first().copied() {
-            let Some(retry) = self.retry_overflow.get(&order.key).copied() else {
-                let _ = self.retry_overflow_order.remove(&order);
-                continue;
-            };
-
-            let slot = self.next_retry_wakeup_slot();
-            match effect_handler.set_wakeup(slot, retry.retry_at) {
-                Ok(()) => {
-                    let _ = self.retry_overflow_order.remove(&order);
-                    let _ = self.retry_overflow.remove(&order.key);
-                    let _ = self.retry_wakeup_slots.insert(order.key, slot);
-                    let _ = self.retry_wakeups.insert(
-                        slot,
-                        RetryWakeup {
-                            bundle_ref: retry.bundle_ref,
-                            retry_count: retry.retry_count,
-                        },
-                    );
-                }
-                Err(WakeupError::Capacity | WakeupError::ShuttingDown) => break,
-            }
-        }
-    }
-
     /// Schedule a retry for a bundle via a processor-local wakeup.
     ///
     /// This is the single point of coordination between wakeup scheduling and
@@ -795,55 +619,9 @@ impl DurableBuffer {
         delay: Duration,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> bool {
-        let key = retry_key(bundle_ref);
-        let _ = self.remove_retry_overflow(key);
-        let (slot, is_new_slot) = if let Some(slot) = self.retry_wakeup_slots.get(&key).copied() {
-            (slot, false)
-        } else {
-            let slot = self.next_retry_wakeup_slot();
-            let _ = self.retry_wakeup_slots.insert(key, slot);
-            (slot, true)
-        };
         let retry_at = Instant::now() + delay;
-        match effect_handler.set_wakeup(slot, retry_at) {
-            Ok(()) => {
-                // Track that this bundle is scheduled - poll_next_bundle will skip it
-                let _ = self.retry_scheduled.insert(key);
-                let _ = self.retry_wakeups.insert(
-                    slot,
-                    RetryWakeup {
-                        bundle_ref,
-                        retry_count,
-                    },
-                );
-                true
-            }
-            Err(WakeupError::Capacity) => {
-                if is_new_slot {
-                    let _ = self.retry_wakeup_slots.remove(&key);
-                }
-                self.insert_retry_overflow(bundle_ref, retry_count, retry_at);
-                true
-            }
-            Err(WakeupError::ShuttingDown) => {
-                if is_new_slot {
-                    let _ = self.retry_wakeup_slots.remove(&key);
-                }
-                false
-            }
-        }
-    }
-
-    /// Remove retry-wakeup tracking for a bundle now being resumed.
-    ///
-    /// Guarantee: taking a wakeup clears the armed-wakeup bookkeeping for that
-    /// bundle before retry resumption starts.
-    fn take_retry_wakeup(&mut self, slot: WakeupSlot) -> Option<RetryWakeup> {
-        let wakeup = self.retry_wakeups.remove(&slot)?;
-        let key = retry_key(wakeup.bundle_ref);
-        let _ = self.retry_scheduled.remove(&key);
-        let _ = self.retry_wakeup_slots.remove(&key);
-        Some(wakeup)
+        self.retry_wakeup_state
+            .schedule_at(bundle_ref, retry_count, retry_at, effect_handler)
     }
 
     /// Resumes one deferred retry, either by sending it downstream again or by
@@ -959,15 +737,14 @@ impl DurableBuffer {
                 break;
             }
 
-            let Some(RetryWakeup {
-                bundle_ref,
-                retry_count,
-            }) = self.take_due_retry_overflow(Instant::now())
+            let Some(retry) = self
+                .retry_wakeup_state
+                .take_due_retry_overflow(Instant::now())
             else {
                 break;
             };
 
-            self.resume_retry(bundle_ref, retry_count, effect_handler)
+            self.resume_retry(retry.bundle_ref(), retry.retry_count(), effect_handler)
                 .await?;
         }
 
@@ -1503,11 +1280,11 @@ impl DurableBuffer {
         // First, resume any overflowed retries whose backoff has elapsed.
         // This preserves the retry delay guarantee even when the shared wakeup
         // scheduler is saturated and some retries had to stay local.
-        self.handle_due_retry_overflow(deadline, effect_handler)
-            .await?;
+        self.handle_due_retry_overflow(deadline, effect_handler).await?;
         // If wakeup capacity became available while handling due overflowed
         // retries, move waiting retries back to the normal wakeup path.
-        self.promote_retry_overflow_to_wakeups(effect_handler);
+        self.retry_wakeup_state
+            .promote_overflow_to_wakeups(effect_handler);
 
         // Track the first skipped bundle to detect when we've cycled through all
         // available bundles without making progress (all are in-flight or scheduled).
@@ -1562,7 +1339,7 @@ impl DurableBuffer {
                                     "durable_buffer.drain.all_blocked",
                                     bundles_processed = bundles_processed,
                                     in_flight = self.pending_bundles.len(),
-                                    retry_scheduled = self.retry_scheduled.len()
+                                    retry_scheduled = self.retry_wakeup_state.scheduled_len()
                                 );
                                 break;
                             }
@@ -1657,7 +1434,7 @@ impl DurableBuffer {
         // Skip if this bundle is scheduled for retry (waiting for backoff).
         // This enforces the exponential backoff - poll_next_bundle() returns
         // deferred bundles immediately, but we should wait for the retry delay.
-        if self.retry_scheduled.contains(&key) {
+        if self.retry_wakeup_state.is_deferred_key(key) {
             // Bundle is waiting for backoff. Release the claim; it will be
             // re-claimed when a retry wakeup or due overflow retry resumes it.
             drop(handle); // Implicit defer
@@ -1904,21 +1681,25 @@ impl DurableBuffer {
     async fn handle_retry_wakeup(
         &mut self,
         slot: WakeupSlot,
+        revision: WakeupRevision,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let Some(RetryWakeup {
-            bundle_ref,
-            retry_count,
-        }) = self.take_retry_wakeup(slot)
+        let Some(retry) = self.retry_wakeup_state.take_retry_wakeup(slot, revision)
         else {
-            otel_warn!("durable_buffer.retry.unknown_wakeup", wakeup_slot = slot.0);
-            self.promote_retry_overflow_to_wakeups(effect_handler);
+            otel_warn!(
+                "durable_buffer.retry.unknown_wakeup",
+                wakeup_slot = slot.0.to_string(),
+                wakeup_revision = revision
+            );
+            self.retry_wakeup_state
+                .promote_overflow_to_wakeups(effect_handler);
             return Ok(());
         };
 
-        self.resume_retry(bundle_ref, retry_count, effect_handler)
+        self.resume_retry(retry.bundle_ref(), retry.retry_count(), effect_handler)
             .await?;
-        self.promote_retry_overflow_to_wakeups(effect_handler);
+        self.retry_wakeup_state
+            .promote_overflow_to_wakeups(effect_handler);
 
         Ok(())
     }
@@ -2124,8 +1905,9 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                     Ok(())
                 }
                 NodeControlMsg::DrainIngress { .. } => Ok(()),
-                NodeControlMsg::Wakeup { slot, .. } => {
-                    self.handle_retry_wakeup(slot, effect_handler).await
+                NodeControlMsg::Wakeup { slot, revision, .. } => {
+                    self.handle_retry_wakeup(slot, revision, effect_handler)
+                        .await
                 }
                 NodeControlMsg::DelayedData { .. } => {
                     otel_warn!("durable_buffer.delayed_data.unexpected");
@@ -2209,207 +1991,6 @@ mod tests {
         assert!(decode_bundle_ref(&calldata).is_none());
     }
 
-    #[test]
-    fn test_take_retry_wakeup_clears_tracking() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-
-        let registry = TelemetryRegistryHandle::default();
-        let controller_ctx = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
-
-        let config = DurableBufferConfig {
-            path: std::path::PathBuf::from("/tmp/test-retry-wakeup"),
-            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
-            max_age: None,
-            size_cap_policy: SizeCapPolicy::Backpressure,
-            poll_interval: Duration::from_millis(100),
-            otlp_handling: OtlpHandling::PassThrough,
-            max_segment_open_duration: Duration::from_secs(1),
-            initial_retry_interval: Duration::from_secs(1),
-            max_retry_interval: Duration::from_secs(30),
-            retry_multiplier: 2.0,
-            max_in_flight: 1000,
-        };
-
-        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
-        let bundle_ref = BundleRef {
-            segment_seq: SegmentSeq::new(98765),
-            bundle_index: BundleIndex::new(123),
-        };
-        let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
-        let slot = WakeupSlot(7);
-        let _ = processor.retry_scheduled.insert(key);
-        let _ = processor.retry_wakeup_slots.insert(key, slot);
-        let _ = processor.retry_wakeups.insert(
-            slot,
-            RetryWakeup {
-                bundle_ref,
-                retry_count: 3,
-            },
-        );
-
-        let taken = processor
-            .take_retry_wakeup(slot)
-            .expect("retry wakeup should exist");
-        assert_eq!(taken.bundle_ref.segment_seq.raw(), 98765);
-        assert_eq!(taken.bundle_ref.bundle_index.raw(), 123);
-        assert_eq!(taken.retry_count, 3);
-        assert!(!processor.retry_scheduled.contains(&key));
-        assert!(!processor.retry_wakeup_slots.contains_key(&key));
-        assert!(!processor.retry_wakeups.contains_key(&slot));
-    }
-
-    #[test]
-    fn test_take_retry_wakeup_unknown_slot_is_ignored() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-
-        let registry = TelemetryRegistryHandle::default();
-        let controller_ctx = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
-
-        let config = DurableBufferConfig {
-            path: std::path::PathBuf::from("/tmp/test-retry-wakeup-miss"),
-            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
-            max_age: None,
-            size_cap_policy: SizeCapPolicy::Backpressure,
-            poll_interval: Duration::from_millis(100),
-            otlp_handling: OtlpHandling::PassThrough,
-            max_segment_open_duration: Duration::from_secs(1),
-            initial_retry_interval: Duration::from_secs(1),
-            max_retry_interval: Duration::from_secs(30),
-            retry_multiplier: 2.0,
-            max_in_flight: 1000,
-        };
-
-        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
-        assert!(processor.take_retry_wakeup(WakeupSlot(999)).is_none());
-    }
-
-    /// Scenario: a retry was deferred in local overflow state because wakeup
-    /// capacity was exhausted, and its due time has now arrived.
-    /// Guarantees: taking that retry clears all overflow bookkeeping, removes it
-    /// from `retry_scheduled`, and returns the original `(bundle_ref, retry_count)`.
-    #[test]
-    fn test_take_due_retry_overflow_clears_tracking() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-
-        let registry = TelemetryRegistryHandle::default();
-        let controller_ctx = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
-
-        let config = DurableBufferConfig {
-            path: std::path::PathBuf::from("/tmp/test-retry-overflow"),
-            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
-            max_age: None,
-            size_cap_policy: SizeCapPolicy::Backpressure,
-            poll_interval: Duration::from_millis(100),
-            otlp_handling: OtlpHandling::PassThrough,
-            max_segment_open_duration: Duration::from_secs(1),
-            initial_retry_interval: Duration::from_secs(1),
-            max_retry_interval: Duration::from_secs(30),
-            retry_multiplier: 2.0,
-            max_in_flight: 1000,
-        };
-
-        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
-        let bundle_ref = BundleRef {
-            segment_seq: SegmentSeq::new(321),
-            bundle_index: BundleIndex::new(7),
-        };
-        let key = retry_key(bundle_ref);
-        let retry_at = Instant::now();
-
-        processor.insert_retry_overflow(bundle_ref, 4, retry_at);
-
-        assert!(processor.retry_scheduled.contains(&key));
-        assert!(processor.retry_overflow.contains_key(&key));
-        assert_eq!(processor.retry_overflow_order.len(), 1);
-
-        let retry = processor
-            .take_due_retry_overflow(retry_at + Duration::from_millis(1))
-            .expect("retry should be due");
-
-        assert_eq!(retry.bundle_ref.segment_seq.raw(), 321);
-        assert_eq!(retry.bundle_ref.bundle_index.raw(), 7);
-        assert_eq!(retry.retry_count, 4);
-        assert!(!processor.retry_scheduled.contains(&key));
-        assert!(!processor.retry_overflow.contains_key(&key));
-        assert!(processor.retry_overflow_order.is_empty());
-    }
-
-    /// Scenario: multiple retries overflow the wakeup scheduler and are stored
-    /// locally with the same due timestamp.
-    /// Guarantees: equal-deadline overflow retries are resumed in insertion
-    /// order using the local sequence tie-breaker.
-    #[test]
-    fn test_equal_deadline_overflow_retries_follow_sequence_order() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-
-        let registry = TelemetryRegistryHandle::default();
-        let controller_ctx = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
-
-        let config = DurableBufferConfig {
-            path: std::path::PathBuf::from("/tmp/test-retry-overflow-order"),
-            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
-            max_age: None,
-            size_cap_policy: SizeCapPolicy::Backpressure,
-            poll_interval: Duration::from_millis(100),
-            otlp_handling: OtlpHandling::PassThrough,
-            max_segment_open_duration: Duration::from_secs(1),
-            initial_retry_interval: Duration::from_secs(1),
-            max_retry_interval: Duration::from_secs(30),
-            retry_multiplier: 2.0,
-            max_in_flight: 1000,
-        };
-
-        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
-        let retry_at = Instant::now();
-        let first = BundleRef {
-            segment_seq: SegmentSeq::new(111),
-            bundle_index: BundleIndex::new(1),
-        };
-        let second = BundleRef {
-            segment_seq: SegmentSeq::new(111),
-            bundle_index: BundleIndex::new(2),
-        };
-        let third = BundleRef {
-            segment_seq: SegmentSeq::new(111),
-            bundle_index: BundleIndex::new(3),
-        };
-
-        processor.insert_retry_overflow(first, 1, retry_at);
-        processor.insert_retry_overflow(second, 2, retry_at);
-        processor.insert_retry_overflow(third, 3, retry_at);
-
-        let first_retry = processor
-            .take_due_retry_overflow(retry_at + Duration::from_millis(1))
-            .expect("first retry should be due");
-        let second_retry = processor
-            .take_due_retry_overflow(retry_at + Duration::from_millis(1))
-            .expect("second retry should be due");
-        let third_retry = processor
-            .take_due_retry_overflow(retry_at + Duration::from_millis(1))
-            .expect("third retry should be due");
-
-        assert_eq!(first_retry.bundle_ref.bundle_index.raw(), 1);
-        assert_eq!(first_retry.retry_count, 1);
-        assert_eq!(second_retry.bundle_ref.bundle_index.raw(), 2);
-        assert_eq!(second_retry.retry_count, 2);
-        assert_eq!(third_retry.bundle_ref.bundle_index.raw(), 3);
-        assert_eq!(third_retry.retry_count, 3);
-        assert!(processor.retry_overflow.is_empty());
-        assert!(processor.retry_overflow_order.is_empty());
-    }
-
     /// Scenario: one transient NACK arms a normal processor-local wakeup and the
     /// wakeup control message is later delivered through the processor inbox.
     /// Guarantees: the retry stays deferred until the wakeup arrives, and that
@@ -2475,6 +2056,9 @@ mod tests {
                 let sent = outputs.pop().expect("sent bundle");
                 let (_, nack) =
                     next_nack(NackMsg::new("retry", sent)).expect("expected nack subscriber");
+                let bundle_ref =
+                    decode_bundle_ref(&nack.unwind.route.calldata).expect("bundle ref in nack");
+                let armed_slot = retry_wakeup_slot(retry_key(bundle_ref));
                 ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
                     .await
                     .expect("process nack");
@@ -2484,8 +2068,9 @@ mod tests {
                 );
 
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                    slot: WakeupSlot(0),
+                    slot: armed_slot,
                     when: Instant::now() + Duration::from_secs(1),
+                    revision: 0,
                 }))
                 .await
                 .expect("process retry wakeup");
@@ -2561,18 +2146,26 @@ mod tests {
                     .expect("process timer tick");
                 let mut outputs = ctx.drain_pdata().await;
                 assert_eq!(outputs.len(), 2, "timer tick should emit two bundles");
+                let mut armed_slot = None;
 
-                for sent in outputs.drain(..) {
+                for (index, sent) in outputs.drain(..).enumerate() {
                     let (_, nack) =
                         next_nack(NackMsg::new("retry", sent)).expect("expected nack subscriber");
+                    if index == 0 {
+                        let bundle_ref = decode_bundle_ref(&nack.unwind.route.calldata)
+                            .expect("bundle ref in nack");
+                        armed_slot = Some(retry_wakeup_slot(retry_key(bundle_ref)));
+                    }
                     ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
                         .await
                         .expect("process nack");
                 }
+                let armed_slot = armed_slot.expect("first nack should arm a wakeup");
 
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
                     slot: WakeupSlot(999),
                     when: Instant::now(),
+                    revision: 0,
                 }))
                 .await
                 .expect("process unknown wakeup");
@@ -2593,8 +2186,9 @@ mod tests {
                 );
 
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                    slot: WakeupSlot(0),
+                    slot: armed_slot,
                     when: Instant::now(),
+                    revision: 0,
                 }))
                 .await
                 .expect("process armed retry wakeup");
@@ -2668,14 +2262,21 @@ mod tests {
                     .expect("process timer tick");
                 let mut outputs = ctx.drain_pdata().await;
                 assert_eq!(outputs.len(), 2, "timer tick should emit two bundles");
+                let mut armed_slot = None;
 
-                for sent in outputs.drain(..) {
+                for (index, sent) in outputs.drain(..).enumerate() {
                     let (_, nack) =
                         next_nack(NackMsg::new("retry", sent)).expect("expected nack subscriber");
+                    if index == 0 {
+                        let bundle_ref = decode_bundle_ref(&nack.unwind.route.calldata)
+                            .expect("bundle ref in nack");
+                        armed_slot = Some(retry_wakeup_slot(retry_key(bundle_ref)));
+                    }
                     ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
                         .await
                         .expect("process nack");
                 }
+                let armed_slot = armed_slot.expect("first nack should arm a wakeup");
 
                 ctx.process(Message::Control(NodeControlMsg::TimerTick {}))
                     .await
@@ -2697,8 +2298,9 @@ mod tests {
                 );
 
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                    slot: WakeupSlot(0),
+                    slot: armed_slot,
                     when: Instant::now(),
+                    revision: 0,
                 }))
                 .await
                 .expect("process armed retry wakeup");

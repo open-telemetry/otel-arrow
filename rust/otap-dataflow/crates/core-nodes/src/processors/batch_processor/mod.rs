@@ -1136,7 +1136,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                         message: e.to_string(),
                     }
                 }),
-                NodeControlMsg::Wakeup { slot, when } => {
+                NodeControlMsg::Wakeup { slot, when, .. } => {
                     let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
                         return Ok(());
                     };
@@ -1390,6 +1390,7 @@ where
 
         effect
             .set_wakeup(Self::wakeup_slot(signal), now + timeout)
+            .map(|_| ())
             .map_err(|_| EngineError::ProcessorError {
                 processor: effect.processor_id(),
                 kind: ProcessorErrorKind::Other,
@@ -1809,6 +1810,7 @@ mod tests {
                                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
                                     slot,
                                     when,
+                                    revision: 0,
                                 }))
                                 .await
                                 .expect("process wakeup");
@@ -2134,6 +2136,7 @@ mod tests {
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
                     slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
                     when: stale_when,
+                    revision: 0,
                 }))
                 .await
                 .expect("process stale wakeup");
@@ -2146,6 +2149,7 @@ mod tests {
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
                     slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
                     when: current_when,
+                    revision: 1,
                 }))
                 .await
                 .expect("process current wakeup");
@@ -2201,6 +2205,7 @@ mod tests {
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
                     slot: WakeupSlot(99),
                     when: Instant::now(),
+                    revision: 0,
                 }))
                 .await
                 .expect("process unknown wakeup");
@@ -2213,6 +2218,7 @@ mod tests {
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
                     slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
                     when: current_when,
+                    revision: 1,
                 }))
                 .await
                 .expect("process current wakeup");
@@ -2827,7 +2833,11 @@ mod tests {
                     wakeup_slot(SignalFormat::OtlpBytes, SignalType::Logs),
                     wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
                 ] {
-                    ctx.process(Message::Control(NodeControlMsg::Wakeup { slot, when }))
+                    ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                        slot,
+                        when,
+                        revision: 0,
+                    }))
                         .await
                         .expect("process wakeup");
                 }

@@ -4,7 +4,7 @@
 //! Common foundation of all effect handlers.
 
 use crate::Interests;
-use crate::WakeupError;
+use crate::{WakeupError, WakeupSetOutcome};
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::control::{
     AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
@@ -410,14 +410,24 @@ impl<PData> EffectHandlerCore<PData> {
     /// Set or replace a processor-local wakeup.
     ///
     /// Wakeups are keyed by [`WakeupSlot`]. Scheduling the same slot again
-    /// replaces the previous due time for that slot.
+    /// replaces the previous due time for that slot and assigns a new
+    /// scheduler revision for that slot.
+    ///
+    /// The returned [`WakeupSetOutcome`] tells the caller whether the slot was
+    /// newly inserted or whether an existing live wakeup was replaced, and
+    /// carries the accepted revision that will later be returned in
+    /// `NodeControlMsg::Wakeup`.
     ///
     /// # Errors
     ///
     /// Returns [`WakeupError::ShuttingDown`] once processor shutdown has been
     /// latched. Returns [`WakeupError::Capacity`] if the processor has reached
     /// its configured live wakeup-slot capacity.
-    pub fn set_wakeup(&self, slot: WakeupSlot, when: Instant) -> Result<(), WakeupError> {
+    pub fn set_wakeup(
+        &self,
+        slot: WakeupSlot,
+        when: Instant,
+    ) -> Result<WakeupSetOutcome, WakeupError> {
         self.local_scheduler
             .as_ref()
             .expect("node-local scheduler not set for processor effect handler")

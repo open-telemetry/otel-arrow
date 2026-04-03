@@ -32,7 +32,7 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
-use crate::WakeupError;
+use crate::{WakeupError, WakeupSetOutcome};
 use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupSlot};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -243,7 +243,11 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Set or replace a processor-local wakeup.
-    pub fn set_wakeup(&self, slot: WakeupSlot, when: Instant) -> Result<(), WakeupError> {
+    pub fn set_wakeup(
+        &self,
+        slot: WakeupSlot,
+        when: Instant,
+    ) -> Result<WakeupSetOutcome, WakeupError> {
         self.core.set_wakeup(slot, when)
     }
 
