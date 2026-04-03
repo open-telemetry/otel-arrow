@@ -989,11 +989,12 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-        AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
-        Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
-        ScopeMetrics, Sum, Summary, SummaryDataPoint,
+        AggregationTemporality, Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint,
+        Gauge, Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint,
+        ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::schema::{SpanId, TraceId};
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
     use otap_df_pdata::{metrics, record_batch};
@@ -2426,6 +2427,22 @@ mod tests {
                                     NumberDataPoint::build()
                                         .time_unix_nano(1000u64)
                                         .value_int(50i64)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(500u64)
+                                                .value_double(3.14)
+                                                .trace_id([
+                                                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+                                                    15, 16,
+                                                ]
+                                                    as TraceId)
+                                                .span_id([1, 2, 3, 4, 5, 6, 7, 8] as SpanId)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "exemplar.key",
+                                                    AnyValue::new_string("exemplar.val"),
+                                                )])
+                                                .finish(),
+                                        ])
                                         .finish(),
                                 ],
                             ))
@@ -2504,6 +2521,18 @@ mod tests {
                                         .sum(100.0f64)
                                         .bucket_counts(vec![2, 3, 5])
                                         .explicit_bounds(vec![10.0, 50.0])
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(800u64)
+                                                .value_int(42i64)
+                                                .trace_id([
+                                                    16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4,
+                                                    3, 2, 1,
+                                                ]
+                                                    as TraceId)
+                                                .span_id([8, 7, 6, 5, 4, 3, 2, 1] as SpanId)
+                                                .finish(),
+                                        ])
                                         .finish(),
                                 ],
                             ))
@@ -2689,6 +2718,24 @@ mod tests {
                                         .zero_count(1u64)
                                         .positive(Buckets::new(0, vec![1, 2]))
                                         .negative(Buckets::new(0, vec![1, 1]))
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(900u64)
+                                                .value_double(1.5)
+                                                .trace_id([1u8; 16] as TraceId)
+                                                .span_id([2u8; 8] as SpanId)
+                                                .filtered_attributes(vec![
+                                                    KeyValue::new(
+                                                        "attr.one",
+                                                        AnyValue::new_string("v1"),
+                                                    ),
+                                                    KeyValue::new(
+                                                        "attr.two",
+                                                        AnyValue::new_string("v2"),
+                                                    ),
+                                                ])
+                                                .finish(),
+                                        ])
                                         .finish(),
                                 ],
                             ))
@@ -2706,6 +2753,61 @@ mod tests {
                 1,
                 "delta exp histogram should pass through immediately"
             );
+            assert_output_otlp_equivalent(&output[0], input_data);
+        });
+    }
+
+    #[test]
+    fn test_passthrough_multiple_exemplars_per_data_point() {
+        // Multiple exemplars on a single data point should all survive
+        // the passthrough path, exercising the exemplar loop and ID
+        // allocation in append_number_dp_exemplars.
+        run_processor_test(json!({}), |mut ctx| async move {
+            let input_data = MetricsData::new(vec![ResourceMetrics::new(
+                Resource::build().finish(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::build().finish(),
+                    vec![
+                        Metric::build()
+                            .name("delta.multi_exemplar")
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Delta,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64)
+                                        .value_double(99.9f64)
+                                        .exemplars(vec![
+                                            Exemplar::build()
+                                                .time_unix_nano(100u64)
+                                                .value_double(1.1)
+                                                .trace_id([1u8; 16] as TraceId)
+                                                .span_id([2u8; 8] as SpanId)
+                                                .filtered_attributes(vec![KeyValue::new(
+                                                    "ex.key",
+                                                    AnyValue::new_string("ex.val"),
+                                                )])
+                                                .finish(),
+                                            Exemplar::build()
+                                                .time_unix_nano(200u64)
+                                                .value_int(7i64)
+                                                .trace_id([3u8; 16] as TraceId)
+                                                .span_id([4u8; 8] as SpanId)
+                                                .finish(),
+                                        ])
+                                        .finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                )],
+            )]);
+
+            let pdata = make_otlp_pdata(input_data.clone());
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1, "delta sum should pass through immediately");
             assert_output_otlp_equivalent(&output[0], input_data);
         });
     }
