@@ -49,7 +49,7 @@ http = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+reqwest = { workspace = true, optional = true }
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 

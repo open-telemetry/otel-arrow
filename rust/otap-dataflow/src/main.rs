@@ -71,6 +71,21 @@ compile_error!(
     "Features `crypto-aws-lc` and `crypto-openssl` are mutually exclusive. \
      Use --no-default-features to disable the default crypto provider, then enable exactly one."
 );
+#[cfg(all(
+    feature = "crypto-native-tls",
+    any(
+        feature = "crypto-ring",
+        feature = "crypto-aws-lc",
+        feature = "crypto-openssl"
+    ),
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Feature `crypto-native-tls` is mutually exclusive with `crypto-ring`, `crypto-aws-lc`, \
+     and `crypto-openssl`. Use --no-default-features to disable the default crypto provider, \
+     then enable exactly one."
+);
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
