@@ -2049,6 +2049,10 @@ mod tests {
         test_timer_flush(datagen.generate_logs().into(), true);
     }
 
+    /// Scenario: the batch processor derives wakeup slots from the supported
+    /// `(format, signal)` pairs used by its internal timers.
+    /// Guarantees: every supported pair round-trips through the encoder/decoder,
+    /// and each pair maps to a distinct wakeup slot.
     #[test]
     fn test_wakeup_slot_round_trip_and_uniqueness() {
         let slots = [
