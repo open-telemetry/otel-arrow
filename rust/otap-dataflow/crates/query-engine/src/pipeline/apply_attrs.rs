@@ -1421,4 +1421,40 @@ mod test {
             &[OtlpProtoMessage::Logs(expected)],
         );
     }
+
+    #[tokio::test]
+    async fn test_can_update_attribute_conditionally_on_case_insensitive_key_match() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("abc")),
+                    KeyValue::new("K1", AnyValue::new_string("abc")),
+                    KeyValue::new("k2", AnyValue::new_string("def")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                if (key =~ "k1") {
+                    set value = "updated"
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("updated")),
+                    KeyValue::new("K1", AnyValue::new_string("updated")),
+                    KeyValue::new("k2", AnyValue::new_string("def")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
 }

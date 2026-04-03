@@ -241,6 +241,20 @@ impl PlannedPipeline {
     }
 }
 
+/// Options for pipeline
+pub struct PipelineOptions {
+    /// Whether to treat attribute key match as case sensitive during filtering stages
+    pub filter_attribute_keys_case_sensitive: bool,
+}
+
+impl Default for PipelineOptions {
+    fn default() -> Self {
+        Self {
+            filter_attribute_keys_case_sensitive: true,
+        }
+    }
+}
+
 /// The main entrypoint for transform pipeline execution
 pub struct Pipeline {
     /// The expression tree (AST) defining this pipeline
@@ -249,15 +263,29 @@ pub struct Pipeline {
     /// The compiled pipeline - this is initialized lazily on the first call to execute
     /// as some stages may need to inspect the schema of the data for planning
     planned_pipeline: Option<PlannedPipeline>,
+
+    /// Options controlling planning and execution of transformation pipeline
+    options: PipelineOptions,
 }
 
 impl Pipeline {
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`]
     #[must_use]
-    pub const fn new(pipeline_definition: PipelineExpression) -> Self {
+    pub fn new(pipeline_definition: PipelineExpression) -> Self {
+        Self::new_with_options(pipeline_definition, PipelineOptions::default())
+    }
+
+    /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`]
+    /// with the specified options
+    #[must_use]
+    pub const fn new_with_options(
+        pipeline_definition: PipelineExpression,
+        options: PipelineOptions,
+    ) -> Self {
         Self {
             pipeline_definition,
             planned_pipeline: None,
+            options,
         }
     }
 
@@ -294,7 +322,9 @@ impl Pipeline {
         // lazily plan the pipeline if have not already done so
         if self.planned_pipeline.is_none() {
             let session_ctx = Self::create_session_context();
-            let planner = PipelinePlanner::new();
+            let planner = PipelinePlanner::new().with_filter_attribute_keys_case_sensitive(
+                self.options.filter_attribute_keys_case_sensitive,
+            );
             let stages =
                 planner.plan_stages(&self.pipeline_definition, &session_ctx, &otap_batch)?;
             self.planned_pipeline = Some(PlannedPipeline::new(stages, session_ctx));
@@ -489,6 +519,7 @@ mod test {
         let mut pipeline = Pipeline {
             pipeline_definition: PipelineExpression::default(),
             planned_pipeline: Some(planned_pipeline),
+            options: PipelineOptions::default(),
         };
 
         let input1_logs = otap_batch1.get(ArrowPayloadType::Logs).unwrap().clone();
