@@ -179,7 +179,12 @@ impl RetryWakeupState {
     /// - the most recent `(retry_count, retry_at)` replaces any older local
     ///   overflow record for the same bundle
     /// - equal due times are processed deterministically by `sequence`
-    fn insert_retry_overflow(&mut self, bundle_ref: BundleRef, retry_count: u32, retry_at: Instant) {
+    fn insert_retry_overflow(
+        &mut self,
+        bundle_ref: BundleRef,
+        retry_count: u32,
+        retry_at: Instant,
+    ) {
         let key = retry_key(bundle_ref);
         let _ = self.remove_retry_overflow(key);
         let retry = OverflowRetry {
@@ -236,11 +241,7 @@ impl RetryWakeupState {
                     let _ = self.retry_overflow.remove(&order.key);
                     let _ = self.retry_wakeups.insert(
                         slot,
-                        RetryWakeup::new(
-                            retry.bundle_ref,
-                            retry.retry_count,
-                            outcome.revision(),
-                        ),
+                        RetryWakeup::new(retry.bundle_ref, retry.retry_count, outcome.revision()),
                     );
                 }
                 Err(WakeupError::Capacity | WakeupError::ShuttingDown) => break,
@@ -267,7 +268,9 @@ impl RetryWakeupState {
         let _ = self.remove_retry_overflow(key);
         let slot = retry_wakeup_slot(key);
         match effect_handler.set_wakeup(slot, retry_at) {
-            Ok(WakeupSetOutcome::Inserted { revision } | WakeupSetOutcome::Replaced { revision }) => {
+            Ok(
+                WakeupSetOutcome::Inserted { revision } | WakeupSetOutcome::Replaced { revision },
+            ) => {
                 let _ = self.retry_scheduled.insert(key);
                 let _ = self
                     .retry_wakeups

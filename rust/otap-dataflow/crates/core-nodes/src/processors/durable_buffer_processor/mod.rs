@@ -324,6 +324,10 @@ fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pending Bundle Tracking
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// State for tracking a pending downstream delivery.
 ///
 /// Holds the Quiver bundle handle to keep the bundle claimed while in-flight.
@@ -1280,7 +1284,8 @@ impl DurableBuffer {
         // First, resume any overflowed retries whose backoff has elapsed.
         // This preserves the retry delay guarantee even when the shared wakeup
         // scheduler is saturated and some retries had to stay local.
-        self.handle_due_retry_overflow(deadline, effect_handler).await?;
+        self.handle_due_retry_overflow(deadline, effect_handler)
+            .await?;
         // If wakeup capacity became available while handling due overflowed
         // retries, move waiting retries back to the normal wakeup path.
         self.retry_wakeup_state
@@ -1684,8 +1689,7 @@ impl DurableBuffer {
         revision: WakeupRevision,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let Some(retry) = self.retry_wakeup_state.take_retry_wakeup(slot, revision)
-        else {
+        let Some(retry) = self.retry_wakeup_state.take_retry_wakeup(slot, revision) else {
             otel_warn!(
                 "durable_buffer.retry.unknown_wakeup",
                 wakeup_slot = slot.0.to_string(),

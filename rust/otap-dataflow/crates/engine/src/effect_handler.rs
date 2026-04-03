@@ -4,7 +4,6 @@
 //! Common foundation of all effect handlers.
 
 use crate::Interests;
-use crate::{WakeupError, WakeupSetOutcome};
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::control::{
     AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
@@ -13,6 +12,7 @@ use crate::control::{
 use crate::error::Error;
 use crate::node::NodeId;
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
+use crate::{WakeupError, WakeupSetOutcome};
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};

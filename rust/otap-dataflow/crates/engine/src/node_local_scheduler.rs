@@ -175,8 +175,8 @@ impl NodeLocalScheduler {
             return Err(WakeupError::ShuttingDown);
         }
 
-        let revision = self.next_revision();
         if let Some(&index) = self.wakeup_indices.get(&slot) {
+            let revision = self.next_revision();
             self.wakeups[index].when = when;
             self.wakeups[index].revision = revision;
             self.repair_heap_at(index);
@@ -185,6 +185,7 @@ impl NodeLocalScheduler {
             if self.wakeup_indices.len() >= self.wakeup_capacity {
                 return Err(WakeupError::Capacity);
             }
+            let revision = self.next_revision();
             let index = self.wakeups.len();
             self.wakeups.push(ScheduledWakeup {
                 slot,
@@ -512,7 +513,10 @@ mod tests {
         }
 
         let expected = now + Duration::from_secs(1);
-        assert_eq!(scheduler.pop_due(expected), Some((WakeupSlot(9), expected, 31)));
+        assert_eq!(
+            scheduler.pop_due(expected),
+            Some((WakeupSlot(9), expected, 31))
+        );
         assert_eq!(scheduler.next_expiry(), None);
     }
 

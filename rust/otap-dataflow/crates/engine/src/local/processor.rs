@@ -33,7 +33,6 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
-use crate::{WakeupError, WakeupSetOutcome};
 use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupSlot};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -43,6 +42,7 @@ use crate::message::{Message, Sender};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
+use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;

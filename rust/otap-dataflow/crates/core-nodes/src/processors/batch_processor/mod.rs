@@ -2838,8 +2838,8 @@ mod tests {
                         when,
                         revision: 0,
                     }))
-                        .await
-                        .expect("process wakeup");
+                    .await
+                    .expect("process wakeup");
                 }
 
                 // Drain outputs after timeout
