@@ -386,7 +386,7 @@ docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 
 ## Profiling
 
-[See profiling Page](./PROFILING.md)
+[Refer profiling Page](./PROFILING.md)
 
 ## Contributing
 
