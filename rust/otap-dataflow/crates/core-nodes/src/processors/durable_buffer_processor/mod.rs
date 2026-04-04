@@ -1674,8 +1674,9 @@ impl DurableBuffer {
     ///
     /// The shutdown sequence is:
     /// 1. Flush to finalize any open segment (makes data visible to subscribers)
-    /// 2. Drain remaining bundles to downstream (best-effort, respects deadline)
-    /// 3. Engine shutdown (always attempted - also finalizes open segment if flush was skipped)
+    /// 2. Clear deferred-retry gating so parked retry bundles become drainable
+    /// 3. Drain remaining bundles to downstream (best-effort, respects deadline)
+    /// 4. Engine shutdown (always attempted - also finalizes open segment if flush was skipped)
     ///
     /// Note: Quiver's `shutdown()` internally calls `finalize_current_segment()`, so even
     /// if we skip the explicit flush due to deadline pressure, the engine shutdown will
@@ -1695,6 +1696,12 @@ impl DurableBuffer {
         if !matches!(self.engine_state, EngineState::Ready { .. }) {
             return Ok(());
         }
+
+        // Shutdown is terminal for this processor instance, so retry backoff no
+        // longer matters. Clear local deferred-retry gating up front so bundles
+        // that were parked behind backoff become drainable through the normal
+        // Quiver poll loop below.
+        self.deferred_retry_state.clear_for_shutdown();
 
         // Check deadline before flush/drain sequence
         if Instant::now() >= deadline {
@@ -2244,6 +2251,98 @@ mod tests {
                     2,
                     "shared wakeup should resume all due retry deliveries"
                 );
+            })
+            .validate(|_| async {});
+    }
+
+    /// Scenario: a bundle is transiently NACKed, becomes deferred behind the
+    /// durable-buffer retry wakeup, and shutdown starts before that wakeup
+    /// fires.
+    /// Guarantees: shutdown clears deferred-retry gating so the existing drain
+    /// loop can forward that parked bundle instead of leaving it restart-dependent.
+    #[test]
+    fn test_shutdown_drains_deferred_retry_bundle() {
+        use otap_df_config::node::NodeUserConfig;
+        use otap_df_engine::config::ProcessorConfig;
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_engine::control::pipeline_completion_msg_channel;
+        use otap_df_engine::message::Message;
+        use otap_df_engine::testing::processor::TestRuntime;
+        use otap_df_engine::testing::test_node;
+        use otap_df_otap::testing::next_nack;
+        use otap_df_pdata::encode::encode_logs_otap_batch;
+        use otap_df_pdata::testing::fixtures::DataGenerator;
+        use serde_json::json;
+
+        let rt = TestRuntime::new();
+        let controller = ControllerContext::new(rt.metrics_registry());
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+
+        let mut node_config = NodeUserConfig::new_processor_config(DURABLE_BUFFER_URN);
+        node_config.config = json!({
+            "path": temp_dir.path(),
+            "retention_size_cap": "256 MiB",
+            "poll_interval": "100ms",
+            "max_segment_open_duration": "1s",
+            "initial_retry_interval": "10s",
+            "max_retry_interval": "10s",
+            "retry_multiplier": 2.0,
+            "max_in_flight": 1000
+        });
+
+        let processor = create_durable_buffer(
+            pipeline_ctx,
+            test_node("durable-buffer-shutdown-drain-deferred"),
+            Arc::new(node_config),
+            &ProcessorConfig::new("durable-buffer-shutdown-drain-deferred"),
+        )
+        .expect("create durable buffer");
+
+        rt.set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                let input = datagen.generate_logs();
+                let rec = encode_logs_otap_batch(&input).expect("encode logs");
+                ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                    .await
+                    .expect("process input");
+
+                ctx.process(Message::Control(NodeControlMsg::TimerTick {}))
+                    .await
+                    .expect("process timer tick");
+                let mut outputs = ctx.drain_pdata().await;
+                assert_eq!(outputs.len(), 1, "timer tick should emit one bundle");
+
+                let sent = outputs.pop().expect("sent bundle");
+                let (_, nack) =
+                    next_nack(NackMsg::new("retry", sent)).expect("expected nack subscriber");
+                ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
+                    .await
+                    .expect("process nack");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "nack should defer delivery until either wakeup or shutdown drain"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "shutdown".to_owned(),
+                }))
+                .await
+                .expect("process shutdown");
+
+                let drained = ctx.drain_pdata().await;
+                assert_eq!(
+                    drained.len(),
+                    1,
+                    "shutdown drain should forward the deferred retry bundle"
+                );
+                assert_eq!(drained[0].signal_type(), SignalType::Logs);
             })
             .validate(|_| async {});
     }

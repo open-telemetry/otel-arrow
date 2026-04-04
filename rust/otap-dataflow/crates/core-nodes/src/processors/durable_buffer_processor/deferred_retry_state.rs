@@ -296,6 +296,19 @@ impl DeferredRetryState {
         Some(retry)
     }
 
+    /// Drop all deferred retry gating at shutdown entry.
+    ///
+    /// Guarantees:
+    /// - no bundle remains blocked behind local retry backoff state
+    /// - the armed wakeup record is cleared
+    /// - previously deferred bundles can be drained through the normal Quiver
+    ///   poll path during shutdown
+    pub(super) fn clear_for_shutdown(&mut self) {
+        self.deferred.clear();
+        self.deferred_order.clear();
+        self.armed_wakeup = None;
+    }
+
     /// Re-arm the single durable-buffer wakeup after retry processing.
     ///
     /// `no_earlier_than` lets the caller push the next retry attempt out when
@@ -508,5 +521,34 @@ mod tests {
         );
         assert!(state.deferred.is_empty());
         assert!(state.deferred_order.is_empty());
+    }
+
+    /// Scenario: durable buffer starts shutdown while it still has deferred
+    /// retries tracked locally behind its single retry wakeup.
+    /// Guarantees: shutdown clearing removes all local retry gating and the
+    /// armed wakeup record so those bundles can be drained through the normal
+    /// poll path.
+    #[test]
+    fn clear_for_shutdown_drops_deferred_tracking() {
+        let mut state = DeferredRetryState::new();
+        let retry_at = Instant::now() + Duration::from_secs(1);
+        state.insert_deferred(
+            BundleRef {
+                segment_seq: SegmentSeq::new(7),
+                bundle_index: BundleIndex::new(1),
+            },
+            1,
+            retry_at,
+        );
+        state.armed_wakeup = Some(ArmedRetryWakeup {
+            when: retry_at,
+            revision: 9,
+        });
+
+        state.clear_for_shutdown();
+
+        assert!(state.deferred.is_empty());
+        assert!(state.deferred_order.is_empty());
+        assert!(state.armed_wakeup.is_none());
     }
 }
