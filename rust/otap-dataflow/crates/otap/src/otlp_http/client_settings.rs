@@ -66,8 +66,28 @@ impl HttpClientSettings {
 
     /// Returns a configured client-builder
     pub async fn client_builder(&self) -> Result<ClientBuilder, HttpClientError> {
-        let mut client_builder = ClientBuilder::new()
-            .use_rustls_tls()
+        let mut client_builder = ClientBuilder::new();
+
+        // Select the TLS backend based on the active crypto feature.
+        #[cfg(any(
+            feature = "crypto-ring",
+            feature = "crypto-aws-lc",
+            feature = "crypto-openssl"
+        ))]
+        {
+            client_builder = client_builder.use_rustls_tls();
+        }
+        #[cfg(all(
+            feature = "crypto-native-tls",
+            not(feature = "crypto-ring"),
+            not(feature = "crypto-aws-lc"),
+            not(feature = "crypto-openssl")
+        ))]
+        {
+            client_builder = client_builder.use_native_tls();
+        }
+
+        client_builder = client_builder
             .connect_timeout(self.connect_timeout)
             .tcp_nodelay(self.tcp_nodelay)
             .connector_layer(ConcurrencyLimitLayer::new(

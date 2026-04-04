@@ -376,6 +376,9 @@ jobs:
       - name: cargo check benchmarks --no-default-features
         run: cargo check -p benchmarks --benches --no-default-features
         working-directory: ./rust/${{ matrix.folder }}
+      - name: cargo check --no-default-features --features crypto-native-tls
+        run: cargo check --no-default-features --features crypto-native-tls --workspace
+        working-directory: ./rust/${{ matrix.folder }}
 
   # Required matrix combinations for test_and_coverage: otap-dataflow on ubuntu and windows
   test_and_coverage_required:

@@ -7,11 +7,12 @@
 //! [`CryptoProvider`](rustls::crypto::CryptoProvider) based on compile-time
 //! feature flags.  Exactly one of the `crypto-*` features must be enabled:
 //!
-//! | Feature          | Backend          | Use-case                           |
-//! |------------------|------------------|------------------------------------|
-//! | `crypto-ring`    | `ring`           | Default, backward-compatible       |
-//! | `crypto-aws-lc`  | `aws-lc-rs`      | AWS environments, broader algos    |
-//! | `crypto-openssl` | `rustls-openssl`  | Regulated / FIPS environments      |
+//! | Feature             | Backend          | Use-case                               |
+//! |---------------------|------------------|----------------------------------------|
+//! | `crypto-ring`       | `ring`           | Default, backward-compatible           |
+//! | `crypto-aws-lc`     | `aws-lc-rs`      | AWS environments, broader algos        |
+//! | `crypto-openssl`    | `rustls-openssl` | Regulated / FIPS environments          |
+//! | `crypto-native-tls` | `native-tls`     | Platform-native TLS (SChannel/OpenSSL) |
 
 /// Installs the selected rustls `CryptoProvider` as the process-wide default.
 ///
@@ -51,16 +52,29 @@ pub fn install_crypto_provider() -> Result<(), String> {
             .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
     }
 
+    #[cfg(all(
+        feature = "crypto-native-tls",
+        not(feature = "crypto-ring"),
+        not(feature = "crypto-aws-lc"),
+        not(feature = "crypto-openssl")
+    ))]
+    {
+        // native-tls uses the platform's TLS stack (SChannel/OpenSSL/Security.framework)
+        // and does not require a rustls CryptoProvider.
+    }
+
     #[cfg(not(any(
         feature = "crypto-ring",
         feature = "crypto-aws-lc",
-        feature = "crypto-openssl"
+        feature = "crypto-openssl",
+        feature = "crypto-native-tls"
     )))]
     {
         otap_df_telemetry::otel_warn!(
             "crypto.no_provider",
             message = "no crypto-* feature enabled: TLS operations will fail at runtime. \
-                       Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-openssl"
+                       Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-openssl, \
+                       crypto-native-tls"
         );
     }
 
@@ -79,7 +93,8 @@ pub fn ensure_crypto_provider() {
         #[cfg(any(
             feature = "crypto-ring",
             feature = "crypto-aws-lc",
-            feature = "crypto-openssl"
+            feature = "crypto-openssl",
+            feature = "crypto-native-tls"
         ))]
         {
             let _ = install_crypto_provider();
@@ -88,7 +103,8 @@ pub fn ensure_crypto_provider() {
         #[cfg(not(any(
             feature = "crypto-ring",
             feature = "crypto-aws-lc",
-            feature = "crypto-openssl"
+            feature = "crypto-openssl",
+            feature = "crypto-native-tls"
         )))]
         {
             let _ = rustls::crypto::ring::default_provider().install_default();
