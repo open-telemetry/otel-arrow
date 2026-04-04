@@ -21,22 +21,64 @@ use otap_df_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramView, HistogramView,
     MetricView, SumView,
 };
+use otap_df_pdata_views::views::resource::ResourceView;
 
-pub fn resource_id_of(attrs: AttributeHash) -> ResourceId {
+/// Compute a [`ResourceId`] from an optional resource view. When the view is
+/// `None`, the identity uses `AttributeHash::EMPTY`.
+pub fn resource_id_of<R: ResourceView>(
+    hash_buf: &mut HashBuffer,
+    resource: Option<&R>,
+) -> ResourceId {
+    let attrs = resource
+        .map(|r| AttributeHash::compute(hash_buf, r.attributes()))
+        .unwrap_or(AttributeHash::EMPTY);
     ResourceId { attrs }
 }
 
+/// Compute a [`ScopeId`] from an optional scope view. When the view is `None`,
+/// the identity uses empty name/version and `AttributeHash::EMPTY`.
 pub fn scope_id_of<'a, S: InstrumentationScopeView>(
+    hash_buf: &mut HashBuffer,
     resource_id: ResourceId,
-    scope: &'a S,
-    attrs: AttributeHash,
+    scope: Option<&'a S>,
 ) -> ScopeId<'a> {
+    let attrs = scope
+        .map(|s| AttributeHash::compute(hash_buf, s.attributes()))
+        .unwrap_or(AttributeHash::EMPTY);
+    let name = scope.and_then(|s| s.name()).unwrap_or(b"");
+    let version = scope.and_then(|s| s.version()).unwrap_or(b"");
     ScopeId {
         resource: resource_id,
-        name: Cow::Borrowed(scope.name().unwrap_or(b"")),
-        version: Cow::Borrowed(scope.version().unwrap_or(b"")),
+        name: Cow::Borrowed(name),
+        version: Cow::Borrowed(version),
         attrs,
     }
+}
+
+/// Extract (data_type, aggregation_temporality, is_monotonic) from a
+/// [`DataView`] without constructing a full [`MetricId`].
+pub fn metric_type_info_of<'a>(data: &impl DataView<'a>) -> (u8, u8, bool) {
+    let dt = data.value_type();
+    let (is_monotonic, temporality) = match dt {
+        DataType::Sum => {
+            let sum = data.as_sum().expect("DataType::Sum should have sum data");
+            (sum.is_monotonic(), sum.aggregation_temporality())
+        }
+        DataType::Histogram => {
+            let hist = data
+                .as_histogram()
+                .expect("DataType::Histogram should have histogram data");
+            (true, hist.aggregation_temporality())
+        }
+        DataType::ExponentialHistogram => {
+            let exp = data
+                .as_exponential_histogram()
+                .expect("DataType::ExponentialHistogram should have exp histogram data");
+            (true, exp.aggregation_temporality())
+        }
+        DataType::Gauge | DataType::Summary => (false, AggregationTemporality::Unspecified),
+    };
+    (dt as u8, temporality as u8, is_monotonic)
 }
 
 // Helper for computing metric id from a view.
@@ -77,11 +119,15 @@ pub fn metric_id_of<'a, M: MetricView>(
     })
 }
 
-/// Compute a [`StreamId`] from a [`MetricId`] and a pre-computed attribute hash.
-pub fn stream_id_of<'a>(metric_id: MetricId<'a>, attrs: AttributeHash) -> StreamId<'a> {
+/// Compute a [`StreamId`] from a [`MetricId`] and a data point's attributes.
+pub fn stream_id_of<'a, A: AttributeView>(
+    hash_buf: &mut HashBuffer,
+    metric_id: MetricId<'a>,
+    attrs: impl Iterator<Item = A>,
+) -> StreamId<'a> {
     StreamId {
         metric: metric_id,
-        attrs,
+        attrs: AttributeHash::compute(hash_buf, attrs),
     }
 }
 
