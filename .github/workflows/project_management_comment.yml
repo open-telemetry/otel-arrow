@@ -14,12 +14,12 @@ jobs:
       issues: write
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: audit
 
       - name: Add comment
-        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9
+        uses: peter-evans/create-or-update-comment@57232238742e38b2ccc27136ce596ccae7ca28b4
         with:
           issue-number: ${{ github.event.issue.number }}
           body: |
