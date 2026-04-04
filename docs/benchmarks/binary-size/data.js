@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775176252881,
+  "lastUpdate": 1775262453917,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3053,6 +3053,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 100.66,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "kamilon",
+            "username": "kamilon",
+            "email": "kennedybushnell@kamilon.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "467df7a5d913f6f040d53c7b6262070b4d5ac85b",
+          "message": "perf: syslog_cef_receiver avoid windowing in cef_with_rfc3164 path (#2532)\n\n# Change Summary\n\nRemove window scanning in cef_with_rfc3164 path. Instead use pure\nforward scanning. 50% improvement in bench.\n\n107.40 ns -> 50.547 ns\n\n## What issue does this PR close?\n\nNo issue filed.\n\n## How are these changes tested?\n\ncargo test and cargo bench\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-04-03T21:39:23Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/467df7a5d913f6f040d53c7b6262070b4d5ac85b"
+        },
+        "date": 1775262448171,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 100.67,
             "unit": "MB"
           }
         ]
