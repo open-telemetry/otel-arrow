@@ -12,6 +12,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+
 /// Transport headers policy controlling capture at receivers and
 /// propagation at exporters.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -34,19 +36,97 @@ pub struct TransportHeadersPolicy {
 pub struct HeaderCapturePolicy {
     /// Default limits applied to all captured headers.
     #[serde(default)]
-    pub defaults: CaptureDefaults,
+    pub(crate) defaults: CaptureDefaults,
     /// Per-header capture rules. Only headers matching at least one rule
     /// are captured.
     #[serde(default)]
-    pub headers: Vec<CaptureRule>,
+    pub(crate) headers: Vec<CaptureRule>,
 }
 
 impl HeaderCapturePolicy {
+    /// Create a new capture policy from the given defaults and rules.
+    #[must_use]
+    pub fn new(defaults: CaptureDefaults, headers: Vec<CaptureRule>) -> Self {
+        Self { defaults, headers }
+    }
+
     /// Returns `true` when no capture rules are defined, meaning the policy
     /// will not capture any headers.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.headers.is_empty()
+    }
+
+    /// Capture headers from an iterator of `(wire_name, value)` pairs.
+    ///
+    /// Each pair is matched against the capture rules. Only headers
+    /// matching at least one rule are captured, subject to the configured
+    /// limits.
+    pub fn capture_from_pairs<'a>(
+        &self,
+        pairs: impl Iterator<Item = (&'a str, &'a [u8])>,
+    ) -> TransportHeaders {
+        if self.is_empty() {
+            return TransportHeaders::new();
+        }
+
+        let defaults = &self.defaults;
+        let mut result = TransportHeaders::with_capacity(defaults.max_entries.min(16));
+
+        for (wire_name, value) in pairs {
+            if result.len() >= defaults.max_entries {
+                break;
+            }
+
+            if let Some(matched_rule) = self.find_matching_rule(wire_name) {
+                // Enforce name length limit — drop oversized names.
+                if wire_name.len() > defaults.max_name_bytes {
+                    continue;
+                }
+
+                // Enforce value length limit — drop oversized values.
+                if value.len() > defaults.max_value_bytes {
+                    continue;
+                }
+
+                let name = matched_rule
+                    .store_as
+                    .clone()
+                    .unwrap_or_else(|| wire_name.to_ascii_lowercase());
+
+                let value_kind = match matched_rule.value_kind {
+                    Some(ValueKindConfig::Text) => ValueKind::Text,
+                    Some(ValueKindConfig::Binary) => ValueKind::Binary,
+                    None => {
+                        if wire_name.ends_with("-bin") {
+                            ValueKind::Binary
+                        } else {
+                            ValueKind::Text
+                        }
+                    }
+                };
+
+                result.push(TransportHeader {
+                    name,
+                    wire_name: wire_name.to_string(),
+                    value_kind,
+                    value: value.to_vec(),
+                });
+            }
+        }
+
+        result
+    }
+
+    /// Find the first capture rule whose `match_names` contains the given
+    /// wire name (case-insensitive comparison).
+    fn find_matching_rule(&self, wire_name: &str) -> Option<&CaptureRule> {
+        let wire_lower = wire_name.to_ascii_lowercase();
+        self.headers.iter().find(|rule| {
+            rule.match_names
+                .iter()
+                .any(|m| m.to_ascii_lowercase() == wire_lower)
+        })
     }
 }
 
@@ -135,10 +215,80 @@ pub enum ValueKindConfig {
 pub struct HeaderPropagationPolicy {
     /// Default propagation behavior applied to all captured headers.
     #[serde(default)]
-    pub default: PropagationDefault,
+    pub(crate) default: PropagationDefault,
     /// Per-header overrides applied after the default.
     #[serde(default)]
-    pub overrides: Vec<PropagationOverride>,
+    pub(crate) overrides: Vec<PropagationOverride>,
+}
+
+impl HeaderPropagationPolicy {
+    /// Create a new propagation policy from the given default behavior and overrides.
+    #[must_use]
+    pub fn new(default: PropagationDefault, overrides: Vec<PropagationOverride>) -> Self {
+        Self { default, overrides }
+    }
+
+    /// Apply the propagation policy to a set of captured headers,
+    /// returning only those headers that should be sent on egress.
+    #[must_use]
+    pub fn propagate(&self, captured: &TransportHeaders) -> TransportHeaders {
+        let mut result = TransportHeaders::with_capacity(captured.len());
+
+        for header in captured.iter() {
+            let (action, name_strategy) = self.resolve_action(header);
+            if action == PropagationAction::Drop {
+                continue;
+            }
+
+            let wire_name = match name_strategy {
+                NameStrategy::Preserve => header.wire_name.clone(),
+                NameStrategy::StoredName => header.name.clone(),
+            };
+
+            result.push(TransportHeader {
+                name: header.name.clone(),
+                wire_name,
+                value_kind: header.value_kind.clone(),
+                value: header.value.clone(),
+            });
+        }
+
+        result
+    }
+
+    /// Determine the action and name strategy for a single header by
+    /// checking overrides first, then falling back to the default.
+    fn resolve_action(&self, header: &TransportHeader) -> (PropagationAction, NameStrategy) {
+        // Check overrides first.
+        for ov in &self.overrides {
+            let name_lower = header.name.to_ascii_lowercase();
+            if ov
+                .match_rule
+                .stored_names
+                .iter()
+                .any(|s| s.to_ascii_lowercase() == name_lower)
+            {
+                let name_strategy = ov.name.unwrap_or(self.default.name);
+                return (ov.action, name_strategy);
+            }
+        }
+
+        // Check whether the header passes the default selector.
+        let selected = match &self.default.selector {
+            PropagationSelector::AllCaptured => true,
+            PropagationSelector::None => false,
+            PropagationSelector::Named(names) => {
+                let name_lower = header.name.to_ascii_lowercase();
+                names.iter().any(|n| n.to_ascii_lowercase() == name_lower)
+            }
+        };
+
+        if selected {
+            (self.default.action, self.default.name)
+        } else {
+            (PropagationAction::Drop, self.default.name)
+        }
+    }
 }
 
 /// Default propagation behavior.

@@ -8,25 +8,22 @@
 //! and re-exported here for backward compatibility and convenience.
 
 // Re-export all public items from the config crate's transport_headers module.
-pub use otap_df_config::transport_headers::{
-    CaptureEngine, PropagationEngine, TransportHeader, TransportHeaders, ValueKind,
-};
+pub use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+// Re-export policy types that include capture and propagation logic.
+pub use otap_df_config::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use otap_df_config::transport_headers_policy::{
-        CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
-        PropagationAction, PropagationDefault, PropagationMatch, PropagationOverride,
+        CaptureDefaults, CaptureRule, PropagationAction, PropagationDefault, PropagationMatch,
+        PropagationOverride,
     };
 
     // -- Helper functions for tests ------------------------------------------
 
     fn make_capture_policy(rules: Vec<CaptureRule>) -> HeaderCapturePolicy {
-        HeaderCapturePolicy {
-            defaults: CaptureDefaults::default(),
-            headers: rules,
-        }
+        HeaderCapturePolicy::new(CaptureDefaults::default(), rules)
     }
 
     fn rule(names: &[&str], store_as: Option<&str>) -> CaptureRule {
@@ -43,11 +40,11 @@ mod tests {
     /// End-to-end test demonstrating the full transport header lifecycle:
     ///
     /// 1. **Receiver extraction** — Simulate a receiver capturing headers from
-    ///    inbound gRPC metadata using `CaptureEngine`.
+    ///    inbound gRPC metadata using `HeaderCapturePolicy`.
     /// 2. **Pdata context attachment** — Attach captured headers to `OtapPdata`.
     /// 3. **Processor transparency** — Verify headers survive `clone_without_context()`
     ///    (what happens at pipeline boundaries / processor pass-through).
-    /// 4. **Exporter propagation** — Apply `PropagationEngine` to filter headers
+    /// 4. **Exporter propagation** — Apply `HeaderPropagationPolicy` to filter headers
     ///    for egress, including dropping sensitive headers like `authorization`.
     /// This test exercises the scenario from the design spec:
     /// - `otlp_ingest` captures `x-tenant-id`, `x-request-id`, `authorization`
@@ -62,7 +59,6 @@ mod tests {
             rule(&["x-request-id"], None),
             rule(&["authorization"], None),
         ]);
-        let capture_engine = CaptureEngine::new(capture_policy);
 
         let inbound_metadata: Vec<(&str, &[u8])> = vec![
             ("X-Tenant-Id", b"tenant-abc-123"),
@@ -71,7 +67,7 @@ mod tests {
             ("X-Unrelated-Header", b"should-be-ignored"),
         ];
 
-        let captured = capture_engine.capture_from_pairs(inbound_metadata.into_iter());
+        let captured = capture_policy.capture_from_pairs(inbound_metadata.into_iter());
 
         assert_eq!(
             captured.len(),
@@ -107,9 +103,9 @@ mod tests {
 
         // ========== Step 4: Simulate exporter propagation ==========
 
-        let propagation_policy = HeaderPropagationPolicy {
-            default: PropagationDefault::default(),
-            overrides: vec![PropagationOverride {
+        let propagation_policy = HeaderPropagationPolicy::new(
+            PropagationDefault::default(),
+            vec![PropagationOverride {
                 match_rule: PropagationMatch {
                     stored_names: vec!["authorization".to_string()],
                 },
@@ -117,10 +113,9 @@ mod tests {
                 name: None,
                 on_error: None,
             }],
-        };
-        let propagation_engine = PropagationEngine::new(propagation_policy);
+        );
 
-        let propagated = propagation_engine.propagate(headers_after);
+        let propagated = propagation_policy.propagate(headers_after);
 
         assert_eq!(
             propagated.len(),
@@ -145,7 +140,6 @@ mod tests {
     #[test]
     fn end_to_end_duplicate_headers_preserved() {
         let capture_policy = make_capture_policy(vec![rule(&["x-forwarded-for"], None)]);
-        let capture_engine = CaptureEngine::new(capture_policy);
 
         let inbound: Vec<(&str, &[u8])> = vec![
             ("X-Forwarded-For", b"10.0.0.1"),
@@ -153,7 +147,7 @@ mod tests {
             ("X-Forwarded-For", b"172.16.0.1"),
         ];
 
-        let captured = capture_engine.capture_from_pairs(inbound.into_iter());
+        let captured = capture_policy.capture_from_pairs(inbound.into_iter());
         assert_eq!(
             captured.len(),
             3,
@@ -170,8 +164,8 @@ mod tests {
             "duplicates must survive clone_without_context"
         );
 
-        let engine = PropagationEngine::new(HeaderPropagationPolicy::default());
-        let propagated = engine.propagate(headers);
+        let propagation_policy = HeaderPropagationPolicy::default();
+        let propagated = propagation_policy.propagate(headers);
         assert_eq!(propagated.len(), 3, "duplicates must survive propagation");
 
         let values: Vec<&[u8]> = propagated
@@ -187,12 +181,11 @@ mod tests {
     #[test]
     fn end_to_end_binary_headers_preserved() {
         let capture_policy = make_capture_policy(vec![rule(&["trace-context-bin"], None)]);
-        let capture_engine = CaptureEngine::new(capture_policy);
 
         let binary_value: Vec<u8> = vec![0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F];
         let inbound: Vec<(&str, &[u8])> = vec![("trace-context-bin", &binary_value)];
 
-        let captured = capture_engine.capture_from_pairs(inbound.into_iter());
+        let captured = capture_policy.capture_from_pairs(inbound.into_iter());
         assert_eq!(captured.len(), 1);
         assert_eq!(captured.as_slice()[0].value_kind, ValueKind::Binary);
         assert_eq!(captured.as_slice()[0].value, binary_value);
@@ -201,8 +194,8 @@ mod tests {
         let pdata_after = pdata.clone_without_context();
 
         let headers = pdata_after.transport_headers().unwrap();
-        let engine = PropagationEngine::new(HeaderPropagationPolicy::default());
-        let propagated = engine.propagate(headers);
+        let propagation_policy = HeaderPropagationPolicy::default();
+        let propagated = propagation_policy.propagate(headers);
 
         assert_eq!(propagated.as_slice()[0].value_kind, ValueKind::Binary);
         assert_eq!(propagated.as_slice()[0].value, binary_value);

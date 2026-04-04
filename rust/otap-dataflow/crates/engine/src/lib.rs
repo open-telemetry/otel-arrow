@@ -34,8 +34,9 @@ use otap_df_config::{
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
     policy::{ChannelCapacityPolicy, TelemetryPolicy},
-    transport_headers::{CaptureEngine, PropagationEngine},
-    transport_headers_policy::TransportHeadersPolicy,
+    transport_headers_policy::{
+        HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
+    },
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -1362,7 +1363,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        let capture_engine = resolve_capture_engine(&node_config, transport_headers_policy);
+        let capture_policy = resolve_capture_policy(&node_config, transport_headers_policy);
 
         let receiver = create(
             (*pipeline_ctx).clone(),
@@ -1371,7 +1372,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             &runtime_config,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_capture_engine(capture_engine);
+        .with_capture_policy(capture_policy);
 
         otel_debug!(
             "receiver.create.complete",
@@ -1488,7 +1489,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        let propagation_engine = resolve_propagation_engine(&node_config, transport_headers_policy);
+        let propagation_policy = resolve_propagation_policy(&node_config, transport_headers_policy);
 
         let exporter = create(
             (*pipeline_ctx).clone(),
@@ -1497,7 +1498,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             &exporter_config,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_propagation_engine(propagation_engine);
+        .with_propagation_policy(propagation_policy);
 
         otel_debug!(
             "exporter.create.complete",
@@ -1511,14 +1512,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     }
 }
 
-/// Resolves the effective capture engine for a receiver node.
+/// Resolves the effective capture policy for a receiver node.
 ///
 /// Node-level `header_capture` takes precedence over the pipeline-level
 /// `transport_headers_policy`. Returns `None` when neither is configured.
-fn resolve_capture_engine(
+fn resolve_capture_policy(
     node_config: &NodeUserConfig,
     transport_headers_policy: &Option<TransportHeadersPolicy>,
-) -> Option<CaptureEngine> {
+) -> Option<HeaderCapturePolicy> {
     node_config
         .header_capture
         .as_ref()
@@ -1527,17 +1528,17 @@ fn resolve_capture_engine(
                 .as_ref()
                 .map(|thp| &thp.header_capture)
         })
-        .map(|p| CaptureEngine::new(p.clone()))
+        .cloned()
 }
 
-/// Resolves the effective propagation engine for an exporter node.
+/// Resolves the effective propagation policy for an exporter node.
 ///
 /// Node-level `header_propagation` takes precedence over the pipeline-level
 /// `transport_headers_policy`. Returns `None` when neither is configured.
-fn resolve_propagation_engine(
+fn resolve_propagation_policy(
     node_config: &NodeUserConfig,
     transport_headers_policy: &Option<TransportHeadersPolicy>,
-) -> Option<PropagationEngine> {
+) -> Option<HeaderPropagationPolicy> {
     node_config
         .header_propagation
         .as_ref()
@@ -1546,7 +1547,7 @@ fn resolve_propagation_engine(
                 .as_ref()
                 .map(|thp| &thp.header_propagation)
         })
-        .map(|p| PropagationEngine::new(p.clone()))
+        .cloned()
 }
 
 trait TelemetryWrapped: Sized {
@@ -2057,8 +2058,8 @@ fn stable_hash64(value: &str) -> u64 {
 mod test {
     use super::*;
     use otap_df_config::transport_headers_policy::{
-        CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy, PropagationAction,
-        PropagationDefault, PropagationSelector,
+        CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
+        PropagationAction, PropagationDefault, PropagationSelector,
     };
 
     #[test]
@@ -2066,22 +2067,22 @@ mod test {
         assert_eq!(Interests::ACKS | Interests::NACKS, Interests::ACKS_OR_NACKS);
     }
 
-    // -- resolve_capture_engine tests -----------------------------------------
+    // -- resolve_capture_policy tests -----------------------------------------
 
     fn make_capture_policy_with_rule(name: &str) -> HeaderCapturePolicy {
-        HeaderCapturePolicy {
-            headers: vec![CaptureRule {
+        HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
                 match_names: vec![name.to_owned()],
                 store_as: None,
                 sensitive: false,
                 value_kind: None,
             }],
-            ..Default::default()
-        }
+        )
     }
 
     #[test]
-    fn test_resolve_capture_engine_node_overrides_pipeline() {
+    fn test_resolve_capture_policy_node_overrides_pipeline() {
         let node_policy = make_capture_policy_with_rule("x-node-header");
         let pipeline_policy = make_capture_policy_with_rule("x-pipeline-header");
 
@@ -2093,21 +2094,21 @@ mod test {
             ..Default::default()
         });
 
-        let engine = resolve_capture_engine(&node_config, &transport_headers_policy);
-        assert!(engine.is_some(), "should resolve an engine");
+        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_some(), "should resolve a policy");
 
         // Verify the node-level policy was used by checking that a
         // "x-node-header" is captured while "x-pipeline-header" is not.
-        let engine = engine.unwrap();
-        let captured = engine.capture_from_pairs([("x-node-header", b"val" as &[u8])].into_iter());
+        let policy = policy.unwrap();
+        let captured = policy.capture_from_pairs([("x-node-header", b"val" as &[u8])].into_iter());
         assert_eq!(captured.len(), 1);
         let captured =
-            engine.capture_from_pairs([("x-pipeline-header", b"val" as &[u8])].into_iter());
+            policy.capture_from_pairs([("x-pipeline-header", b"val" as &[u8])].into_iter());
         assert_eq!(captured.len(), 0);
     }
 
     #[test]
-    fn test_resolve_capture_engine_falls_back_to_pipeline() {
+    fn test_resolve_capture_policy_falls_back_to_pipeline() {
         let pipeline_policy = make_capture_policy_with_rule("x-pipeline-header");
 
         let node_config = NodeUserConfig::new_receiver_config("test_receiver");
@@ -2118,39 +2119,39 @@ mod test {
             ..Default::default()
         });
 
-        let engine = resolve_capture_engine(&node_config, &transport_headers_policy);
-        assert!(engine.is_some(), "should fall back to pipeline policy");
+        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_some(), "should fall back to pipeline policy");
 
-        let engine = engine.unwrap();
+        let policy = policy.unwrap();
         let captured =
-            engine.capture_from_pairs([("x-pipeline-header", b"val" as &[u8])].into_iter());
+            policy.capture_from_pairs([("x-pipeline-header", b"val" as &[u8])].into_iter());
         assert_eq!(captured.len(), 1);
     }
 
     #[test]
-    fn test_resolve_capture_engine_none_when_both_absent() {
+    fn test_resolve_capture_policy_none_when_both_absent() {
         let node_config = NodeUserConfig::new_receiver_config("test_receiver");
         let transport_headers_policy = None;
 
-        let engine = resolve_capture_engine(&node_config, &transport_headers_policy);
-        assert!(engine.is_none());
+        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_none());
     }
 
-    // -- resolve_propagation_engine tests -------------------------------------
+    // -- resolve_propagation_policy tests -------------------------------------
 
     fn make_propagation_policy(action: PropagationAction) -> HeaderPropagationPolicy {
-        HeaderPropagationPolicy {
-            default: PropagationDefault {
+        HeaderPropagationPolicy::new(
+            PropagationDefault {
                 selector: PropagationSelector::AllCaptured,
                 action,
                 ..Default::default()
             },
-            ..Default::default()
-        }
+            vec![],
+        )
     }
 
     #[test]
-    fn test_resolve_propagation_engine_node_overrides_pipeline() {
+    fn test_resolve_propagation_policy_node_overrides_pipeline() {
         let node_policy = make_propagation_policy(PropagationAction::Propagate);
         let pipeline_policy = make_propagation_policy(PropagationAction::Drop);
 
@@ -2162,21 +2163,21 @@ mod test {
             ..Default::default()
         });
 
-        let engine = resolve_propagation_engine(&node_config, &transport_headers_policy);
-        assert!(engine.is_some(), "should resolve an engine");
+        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_some(), "should resolve a policy");
 
         // Verify node-level policy (Propagate) was used, not pipeline (Drop).
-        let engine = engine.unwrap();
+        let policy = policy.unwrap();
         let mut headers = otap_df_config::transport_headers::TransportHeaders::new();
         headers.push(otap_df_config::transport_headers::TransportHeader::text(
             "x-test", "x-test", b"val",
         ));
-        let propagated = engine.propagate(&headers);
+        let propagated = policy.propagate(&headers);
         assert_eq!(propagated.len(), 1, "node policy should propagate");
     }
 
     #[test]
-    fn test_resolve_propagation_engine_falls_back_to_pipeline() {
+    fn test_resolve_propagation_policy_falls_back_to_pipeline() {
         let pipeline_policy = make_propagation_policy(PropagationAction::Propagate);
 
         let node_config = NodeUserConfig::new_exporter_config("test_exporter");
@@ -2187,24 +2188,24 @@ mod test {
             ..Default::default()
         });
 
-        let engine = resolve_propagation_engine(&node_config, &transport_headers_policy);
-        assert!(engine.is_some(), "should fall back to pipeline policy");
+        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_some(), "should fall back to pipeline policy");
 
-        let engine = engine.unwrap();
+        let policy = policy.unwrap();
         let mut headers = otap_df_config::transport_headers::TransportHeaders::new();
         headers.push(otap_df_config::transport_headers::TransportHeader::text(
             "x-test", "x-test", b"val",
         ));
-        let propagated = engine.propagate(&headers);
+        let propagated = policy.propagate(&headers);
         assert_eq!(propagated.len(), 1, "pipeline policy should propagate");
     }
 
     #[test]
-    fn test_resolve_propagation_engine_none_when_both_absent() {
+    fn test_resolve_propagation_policy_none_when_both_absent() {
         let node_config = NodeUserConfig::new_exporter_config("test_exporter");
         let transport_headers_policy = None;
 
-        let engine = resolve_propagation_engine(&node_config, &transport_headers_policy);
-        assert!(engine.is_none());
+        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_none());
     }
 }

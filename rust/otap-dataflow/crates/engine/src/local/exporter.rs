@@ -41,7 +41,7 @@ use crate::message::ExporterMessageChannel;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
-use otap_df_config::transport_headers::PropagationEngine;
+use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -97,9 +97,9 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
-    /// Propagation engine for filtering captured headers on egress.
+    /// Propagation policy for filtering captured headers on egress.
     /// `None` when no propagation policy is configured (zero overhead).
-    propagation_engine: Option<PropagationEngine>,
+    propagation_policy: Option<HeaderPropagationPolicy>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -110,7 +110,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
-            propagation_engine: None,
+            propagation_policy: None,
         }
     }
 
@@ -126,17 +126,17 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the propagation engine if a header propagation policy is configured.
+    /// Returns the propagation policy if a header propagation policy is configured.
     ///
     /// Returns `None` when no propagation policy is active (zero overhead).
     #[must_use]
-    pub fn propagation_engine(&self) -> Option<&PropagationEngine> {
-        self.propagation_engine.as_ref()
+    pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
+        self.propagation_policy.as_ref()
     }
 
-    /// Sets the propagation engine for transport header filtering.
-    pub fn set_propagation_engine(&mut self, engine: Option<PropagationEngine>) {
-        self.propagation_engine = engine;
+    /// Sets the propagation policy for transport header filtering.
+    pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
+        self.propagation_policy = policy;
     }
 
     /// Print an info message to stdout.

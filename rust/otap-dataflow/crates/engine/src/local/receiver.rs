@@ -45,7 +45,7 @@ use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
-use otap_df_config::transport_headers::CaptureEngine;
+use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -135,9 +135,9 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<Sender<PData>>,
-    /// Capture engine for extracting transport headers from inbound metadata.
+    /// Capture policy for extracting transport headers from inbound metadata.
     /// `None` when no capture policy is configured (zero overhead).
-    capture_engine: Option<CaptureEngine>,
+    capture_policy: Option<HeaderCapturePolicy>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -157,7 +157,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            capture_engine: None,
+            capture_policy: None,
         }
     }
 
@@ -191,17 +191,17 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the capture engine if a header capture policy is configured.
+    /// Returns the capture policy if a header capture policy is configured.
     ///
     /// Returns `None` when no capture policy is active (zero overhead).
     #[must_use]
-    pub fn capture_engine(&self) -> Option<&CaptureEngine> {
-        self.capture_engine.as_ref()
+    pub fn capture_policy(&self) -> Option<&HeaderCapturePolicy> {
+        self.capture_policy.as_ref()
     }
 
-    /// Sets the capture engine for transport header extraction.
-    pub fn set_capture_engine(&mut self, engine: Option<CaptureEngine>) {
-        self.capture_engine = engine;
+    /// Sets the capture policy for transport header extraction.
+    pub fn set_capture_policy(&mut self, policy: Option<HeaderCapturePolicy>) {
+        self.capture_policy = policy;
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
