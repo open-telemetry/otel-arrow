@@ -23,6 +23,9 @@
 //!   or explicitly re-deferred
 //! - due retries are resumed in deadline order, with deterministic ordering for
 //!   equal deadlines
+//! - this module does not introduce any growth path beyond the number of
+//!   deferred bundles: it keeps one authoritative map entry and one ordered
+//!   index entry per deferred bundle, plus at most one armed wakeup record
 //! - durable buffer retry scheduling does not depend on having one engine
 //!   wakeup slot per deferred bundle
 
@@ -31,8 +34,8 @@ use otap_df_engine::control::{WakeupRevision, WakeupSlot};
 use otap_df_engine::local::processor::EffectHandler;
 use otap_df_otap::pdata::OtapPdata;
 use quiver::subscriber::BundleRef;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::time::Instant;
+use std::collections::{BTreeSet, HashMap};
+use std::time::{Duration, Instant};
 
 /// Durable buffer uses one processor-local wakeup slot for "the earliest retry
 /// currently pending in local state".
@@ -107,12 +110,6 @@ struct DeferredRetryOrder {
 /// path on a single scheduling mechanism instead of splitting between many
 /// armed wakeups and a separate overflow queue.
 pub(super) struct DeferredRetryState {
-    /// Bundles currently held out of the normal poll loop while retry backoff
-    /// is active.
-    ///
-    /// Invariant: every key here appears exactly once in `deferred`.
-    retry_scheduled: HashSet<(u64, u32)>,
-
     /// Authoritative retry state keyed by bundle identity.
     ///
     /// Invariant: every deferred bundle appears exactly once here and exactly
@@ -136,7 +133,6 @@ pub(super) struct DeferredRetryState {
 impl DeferredRetryState {
     pub(super) fn new() -> Self {
         Self {
-            retry_scheduled: HashSet::new(),
             deferred: HashMap::new(),
             deferred_order: BTreeSet::new(),
             armed_wakeup: None,
@@ -145,11 +141,11 @@ impl DeferredRetryState {
     }
 
     pub(super) fn scheduled_len(&self) -> usize {
-        self.retry_scheduled.len()
+        self.deferred.len()
     }
 
     pub(super) fn is_deferred_key(&self, key: (u64, u32)) -> bool {
-        self.retry_scheduled.contains(&key)
+        self.deferred.contains_key(&key)
     }
 
     fn deferred_order(key: (u64, u32), retry: DeferredRetry) -> DeferredRetryOrder {
@@ -165,7 +161,6 @@ impl DeferredRetryState {
         let _ = self
             .deferred_order
             .remove(&Self::deferred_order(key, retry));
-        let _ = self.retry_scheduled.remove(&key);
         Some(retry)
     }
 
@@ -174,7 +169,6 @@ impl DeferredRetryState {
         let _ = self.remove_deferred(key);
         let retry = DeferredRetry::new(bundle_ref, retry_count, retry_at, self.next_sequence);
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let _ = self.retry_scheduled.insert(key);
         let _ = self.deferred.insert(key, retry);
         let _ = self.deferred_order.insert(Self::deferred_order(key, retry));
     }
@@ -243,6 +237,26 @@ impl DeferredRetryState {
         }
     }
 
+    /// Schedule or re-schedule retry deferral after a relative delay.
+    ///
+    /// Guarantees:
+    /// - equivalent to `schedule_at(now + delay)`
+    /// - keeps the delay-to-deadline conversion local to deferred retry state
+    pub(super) fn schedule_after(
+        &mut self,
+        bundle_ref: BundleRef,
+        retry_count: u32,
+        delay: Duration,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> bool {
+        self.schedule_at(
+            bundle_ref,
+            retry_count,
+            Instant::now() + delay,
+            effect_handler,
+        )
+    }
+
     /// Accept one wakeup delivery only when it matches the currently armed
     /// durable-buffer slot and revision.
     ///
@@ -279,7 +293,6 @@ impl DeferredRetryState {
 
         let _ = self.deferred_order.remove(&order);
         let retry = self.deferred.remove(&order.key)?;
-        let _ = self.retry_scheduled.remove(&order.key);
         Some(retry)
     }
 
@@ -435,7 +448,6 @@ mod tests {
 
         state.insert_deferred(bundle_ref, 4, retry_at);
 
-        assert!(state.retry_scheduled.contains(&key));
         assert!(state.deferred.contains_key(&key));
         assert_eq!(state.deferred_order.len(), 1);
 
@@ -446,7 +458,6 @@ mod tests {
         assert_eq!(retry.bundle_ref().segment_seq.raw(), 321);
         assert_eq!(retry.bundle_ref().bundle_index.raw(), 7);
         assert_eq!(retry.retry_count(), 4);
-        assert!(!state.retry_scheduled.contains(&key));
         assert!(!state.deferred.contains_key(&key));
         assert!(state.deferred_order.is_empty());
     }

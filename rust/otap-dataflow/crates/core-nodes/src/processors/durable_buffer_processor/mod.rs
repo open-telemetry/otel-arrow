@@ -98,9 +98,9 @@ use bundle_adapter::{
     OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
 };
 pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
+use deferred_retry_state::DeferredRetryState;
 #[cfg(test)]
 use deferred_retry_state::RETRY_WAKEUP_SLOT;
-use deferred_retry_state::DeferredRetryState;
 
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -616,25 +616,6 @@ impl DurableBuffer {
         self.pending_bundles.len() < self.config.max_in_flight
     }
 
-    /// Schedule a retry for a bundle in local deferred state and ensure the
-    /// single durable-buffer wakeup tracks the earliest pending retry.
-    ///
-    /// Guarantees:
-    /// - on success, the bundle remains deferred until a wakeup resumes it
-    /// - the engine wakeup slot is always re-armed to the earliest retry deadline
-    /// - returns `false` only when the wakeup could not be armed
-    async fn schedule_retry(
-        &mut self,
-        bundle_ref: BundleRef,
-        retry_count: u32,
-        delay: Duration,
-        effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> bool {
-        let retry_at = Instant::now() + delay;
-        self.deferred_retry_state
-            .schedule_at(bundle_ref, retry_count, retry_at, effect_handler)
-    }
-
     /// Resumes one deferred retry, either by sending it downstream again or by
     /// re-deferring it if downstream/backpressure constraints still apply.
     ///
@@ -643,7 +624,7 @@ impl DurableBuffer {
     /// - re-defers blocked retries with `poll_interval`
     /// - returns enough outcome information for the caller to decide whether
     ///   the current wakeup pass should keep resuming more due retries
-    async fn resume_retry(
+    fn resume_retry(
         &mut self,
         bundle_ref: BundleRef,
         retry_count: u32,
@@ -658,15 +639,12 @@ impl DurableBuffer {
                 max_in_flight = self.config.max_in_flight
             );
 
-            if !self
-                .schedule_retry(
-                    bundle_ref,
-                    retry_count,
-                    self.config.poll_interval,
-                    effect_handler,
-                )
-                .await
-            {
+            if !self.deferred_retry_state.schedule_after(
+                bundle_ref,
+                retry_count,
+                self.config.poll_interval,
+                effect_handler,
+            ) {
                 otel_warn!("durable_buffer.retry.reschedule_failed");
             }
             return Ok(RetryResumeOutcome::Deferred);
@@ -707,15 +685,12 @@ impl DurableBuffer {
                         bundle_index = bundle_ref.bundle_index.raw()
                     );
 
-                    if !self
-                        .schedule_retry(
-                            bundle_ref,
-                            retry_count,
-                            self.config.poll_interval,
-                            effect_handler,
-                        )
-                        .await
-                    {
+                    if !self.deferred_retry_state.schedule_after(
+                        bundle_ref,
+                        retry_count,
+                        self.config.poll_interval,
+                        effect_handler,
+                    ) {
                         otel_warn!("durable_buffer.retry.reschedule_failed");
                     }
                     Ok(RetryResumeOutcome::Deferred)
@@ -1625,10 +1600,12 @@ impl DurableBuffer {
             drop(pending.handle);
 
             // Schedule the retry
-            if self
-                .schedule_retry(bundle_ref, retry_count, backoff, effect_handler)
-                .await
-            {
+            if self.deferred_retry_state.schedule_after(
+                bundle_ref,
+                retry_count,
+                backoff,
+                effect_handler,
+            ) {
                 self.metrics.retries_scheduled.add(1);
             } else {
                 otel_warn!(
@@ -1673,10 +1650,7 @@ impl DurableBuffer {
                 break;
             };
 
-            match self
-                .resume_retry(retry.bundle_ref(), retry.retry_count(), effect_handler)
-                .await?
-            {
+            match self.resume_retry(retry.bundle_ref(), retry.retry_count(), effect_handler)? {
                 RetryResumeOutcome::Sent | RetryResumeOutcome::Skipped => {}
                 RetryResumeOutcome::Deferred => {
                     rearm_no_earlier_than = Some(now + self.config.poll_interval);

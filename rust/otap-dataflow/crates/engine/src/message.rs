@@ -865,13 +865,6 @@ impl<PData: ReceivedAtNode> ExporterInbox<PData> {
     }
 }
 
-/// Backward-compatible exporter inbox alias.
-pub type ExporterMessageChannel<
-    PData,
-    ControlRx = Receiver<NodeControlMsg<PData>>,
-    PDataRx = Receiver<PData>,
-> = ExporterInbox<PData, ControlRx, PDataRx>;
-
 /// Send-friendly exporter inbox type for shared exporter runtimes.
 pub(crate) type SharedExporterInbox<PData> =
     ExporterInbox<PData, SharedReceiver<NodeControlMsg<PData>>, SharedReceiver<PData>>;
@@ -906,6 +899,11 @@ mod tests {
         (control_tx, pdata_tx, scheduler, inbox)
     }
 
+    /// Scenario: a processor-local wakeup is scheduled for immediate delivery
+    /// while the processor inbox is otherwise idle.
+    /// Guarantees: the inbox surfaces the due wakeup as
+    /// `NodeControlMsg::Wakeup` with the scheduled slot, deadline, and
+    /// accepted revision.
     #[tokio::test]
     async fn processor_inbox_emits_due_wakeup_as_control_message() {
         let (_control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -929,6 +927,11 @@ mod tests {
         ));
     }
 
+    /// Scenario: a processor inbox has both pending pdata and a burst of due
+    /// processor-local wakeups.
+    /// Guarantees: wakeups still count as ordinary control traffic for the
+    /// existing fairness policy, so pdata is eventually delivered instead of
+    /// starving behind an unbounded wakeup burst.
     #[tokio::test]
     async fn processor_inbox_wakeup_preserves_control_fairness() {
         let (_control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(64);
@@ -1003,6 +1006,11 @@ mod tests {
         ));
     }
 
+    /// Scenario: shutdown has been latched and the processor-local scheduler
+    /// receives a new wakeup request while the inbox is draining buffered
+    /// messages.
+    /// Guarantees: new wakeup requests are rejected with
+    /// `WakeupError::ShuttingDown` once shutdown has been latched.
     #[tokio::test]
     async fn processor_inbox_rejects_wakeups_after_shutdown_latch() {
         let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -1038,6 +1046,11 @@ mod tests {
         );
     }
 
+    /// Scenario: a processor-local wakeup is pending when shutdown is latched
+    /// and the inbox still has buffered pdata to drain.
+    /// Guarantees: pending wakeups are dropped immediately on shutdown latch,
+    /// buffered pdata still drains according to the inbox contract, and the
+    /// latched shutdown is delivered after draining completes.
     #[tokio::test]
     async fn processor_inbox_drops_pending_wakeups_on_shutdown_latch() {
         let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
