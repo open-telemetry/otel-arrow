@@ -344,6 +344,26 @@ impl Scenario {
             pipeline.set_node_config_value(&conn.node_name, &conn.config_key_path, &address)?;
         }
 
+        // Resolve templated environment variables now that all connection
+        // ports are allocated. For any templated env var whose internal_port
+        // has no mapping yet, allocate a new host port and add the mapping.
+        for (label, container) in containers.iter_mut() {
+            if let Some(ref tevs) = container.templated_env_vars {
+                for tev in tevs {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        container.mapped_ports.entry(tev.internal_port)
+                    {
+                        let port = pick_port(&format!(
+                            "templated env var '{}' on container '{label}'",
+                            tev.key
+                        ))?;
+                        let _ = e.insert(port);
+                    }
+                }
+            }
+            container.resolve_templated_env_vars()?;
+        }
+
         self.admin_addr = format!("127.0.0.1:{}", pick_port("admin")?);
 
         Ok(())
@@ -693,5 +713,112 @@ nodes:
             .expect_err("missing internal_port should error");
         assert!(matches!(err, ValidationError::Config(_)));
         assert!(err.to_string().contains("missing internal_port"));
+    }
+
+    #[test]
+    fn update_configs_resolves_templated_env_vars() {
+        let pipeline = Pipeline::from_yaml(
+            r#"
+nodes:
+  receiver:
+    config:
+      protocols:
+        grpc:
+          listening_addr: "0.0.0.0:4317"
+  kafka_sink:
+    config:
+      broker: "placeholder:9092"
+      topic: "otlp-logs"
+  exporter:
+    config:
+      grpc_endpoint: "http://default-export"
+"#,
+        )
+        .unwrap()
+        .connect_container(
+            PipelineContainerConnection::new("kafka")
+                .internal_port(9092)
+                .node("kafka_sink")
+                .config_key("broker")
+                .address_template("127.0.0.1:{{ port }}"),
+        );
+
+        let mut scenario = Scenario::new()
+            .pipeline(pipeline)
+            .add_container(
+                "kafka",
+                ContainerConfig::new("confluentinc/cp-kafka", "7.5.0").env_host_port(
+                    "KAFKA_ADVERTISED_LISTENERS",
+                    "PLAINTEXT://127.0.0.1:{{ host_port }}",
+                    9092,
+                ),
+            )
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+            .add_capture(
+                "cap",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .control_streams(["gen"]),
+            );
+
+        scenario
+            .update_configs()
+            .expect("update_configs should succeed");
+
+        let kafka = scenario.containers.get("kafka").unwrap();
+
+        // The pipeline connection and the templated env var share the same
+        // internal port 9092, so they must use the same host port.
+        let host_port = kafka.mapped_ports[&9092];
+        assert_ne!(host_port, 0);
+
+        // The templated env var should have been resolved and moved to env_vars.
+        assert!(kafka.templated_env_vars.is_none());
+        assert!(kafka.env_vars.contains(&(
+            "KAFKA_ADVERTISED_LISTENERS".into(),
+            format!("PLAINTEXT://127.0.0.1:{host_port}")
+        )));
+    }
+
+    #[test]
+    fn update_configs_auto_allocates_for_templated_env_var() {
+        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
+
+        let mut scenario = Scenario::new()
+            .pipeline(pipeline)
+            .add_container(
+                "db",
+                ContainerConfig::new("postgres", "16").env_host_port(
+                    "PG_HOST_PORT",
+                    "{{ host_port }}",
+                    5432,
+                ),
+            )
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+            .add_capture(
+                "cap",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .control_streams(["gen"]),
+            );
+
+        scenario
+            .update_configs()
+            .expect("update_configs should succeed");
+
+        let db = scenario.containers.get("db").unwrap();
+
+        // The internal port 5432 was not referenced by any connection, so
+        // the framework should have auto-allocated a host port.
+        assert!(db.mapped_ports.contains_key(&5432));
+        let host_port = db.mapped_ports[&5432];
+        assert_ne!(host_port, 0);
+
+        // The templated env var should be resolved with the auto-allocated port.
+        assert!(db.templated_env_vars.is_none());
+        assert!(
+            db.env_vars
+                .contains(&("PG_HOST_PORT".into(), format!("{host_port}")))
+        );
     }
 }

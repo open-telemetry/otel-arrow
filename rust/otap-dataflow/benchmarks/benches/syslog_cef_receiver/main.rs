@@ -12,19 +12,19 @@
     RAM: 32.0 GB
     | Test                                              | Average time |
     |---------------------------------------------------|--------------|
-    | parse_auto_detect/rfc3164                         | 23.429 ns    |
-    | parse_auto_detect/rfc5424                         | 35.812 ns    |
-    | parse_auto_detect/cef                             | 38.745 ns    |
-    | parse_auto_detect/cef_with_rfc3164                | 107.40 ns    |
-    | parse_auto_detect/cef_with_rfc5424                | 64.228 ns    |
-    | timestamp_extraction/rfc3164                      | 580.73 ns    |
-    | timestamp_extraction/rfc5424                      | 23.816 ns    |
-    | cef_extensions/one_extension                      | 21.113 ns    |
-    | cef_extensions/ten_extensions                     | 200.95 ns    |
-    | cef_extensions/ten_extensions_with_escape         | 219.42 ns    |
-    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 102.49 µs    |
-    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 51.058 µs    |
-    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 45.241 µs    |
+    | parse_auto_detect/rfc3164                         | 22.298 ns    |
+    | parse_auto_detect/rfc5424                         | 34.430 ns    |
+    | parse_auto_detect/cef                             | 36.681 ns    |
+    | parse_auto_detect/cef_with_rfc3164                | 50.547 ns    |
+    | parse_auto_detect/cef_with_rfc5424                | 61.485 ns    |
+    | timestamp_extraction/rfc3164                      | 525.84 ns    |
+    | timestamp_extraction/rfc5424                      | 22.971 ns    |
+    | cef_extensions/one_extension                      | 20.282 ns    |
+    | cef_extensions/ten_extensions                     | 188.09 ns    |
+    | cef_extensions/ten_extensions_with_escape         | 207.15 ns    |
+    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 95.808 µs    |
+    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 47.463 µs    |
+    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 43.892 µs    |
 */
 
 #![allow(missing_docs)]
