@@ -24,10 +24,23 @@ use otap_df_engine::{
 };
 use otap_df_pdata::OtapPayload;
 
-/// Context for OTAP requests
+use crate::transport_headers::TransportHeaders;
+
+/// Context for OTAP requests.
+///
+/// Carries two independent concerns:
+/// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
+///   for result notification. Reset at transport boundaries (topic hops).
+/// - **Transport headers**: Protocol-neutral request-scoped metadata captured
+///   from inbound transport headers. Preserved across transport boundaries.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
+    /// Transport headers captured from inbound protocol metadata.
+    ///
+    /// `None` when no headers have been captured (the common case, zero
+    /// additional allocation).
+    transport_headers: Option<TransportHeaders>,
 }
 
 impl Context {
@@ -37,6 +50,7 @@ impl Context {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             stack: Vec::with_capacity(capacity),
+            transport_headers: None,
         }
     }
 
@@ -272,6 +286,17 @@ impl Context {
         });
     }
 
+    /// Returns a reference to the captured transport headers, if any.
+    #[must_use]
+    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
+        self.transport_headers.as_ref()
+    }
+
+    /// Set the transport headers for this context.
+    pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
+        self.transport_headers = Some(headers);
+    }
+
     /// Get the source node for this context.
     #[must_use]
     pub fn source_node(&self) -> Option<usize> {
@@ -392,15 +417,22 @@ impl OtapPdata {
         &self.payload
     }
 
-    /// Clone this pdata while resetting transport context to default.
+    /// Clone this pdata while resetting Ack/Nack routing state to default.
     ///
     /// This is used at transport boundaries (for example topic hops between
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
+    ///
+    /// Transport headers are **preserved** because they represent
+    /// request-scoped metadata (tenant ID, auth, trace context) that should
+    /// survive cross-pipeline hops.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
-            context: Context::default(),
+            context: Context {
+                stack: Vec::new(),
+                transport_headers: self.context.transport_headers.clone(),
+            },
             payload: self.payload.clone(),
         }
     }
@@ -513,6 +545,24 @@ impl OtapPdata {
     #[must_use]
     pub fn has_ack_or_nack_interests(&self) -> bool {
         self.context.has_ack_or_nack_subscribers()
+    }
+
+    /// Returns a reference to the captured transport headers, if any.
+    #[must_use]
+    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
+        self.context.transport_headers()
+    }
+
+    /// Set transport headers on this pdata's context.
+    pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
+        self.context.set_transport_headers(headers);
+    }
+
+    /// Builder-style method to attach transport headers.
+    #[must_use]
+    pub fn with_transport_headers(mut self, headers: TransportHeaders) -> Self {
+        self.context.set_transport_headers(headers);
+        self
     }
 }
 

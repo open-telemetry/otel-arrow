@@ -34,6 +34,10 @@ pub mod settings;
 /// TLS configuration.
 pub mod tls;
 pub mod topic;
+/// Transport header core types and capture/propagation engines.
+pub mod transport_headers;
+/// Transport header capture and propagation policy declarations.
+pub mod transport_headers_policy;
 pub use topic::{
     SubscriptionGroupName, TopicAckPropagationMode, TopicAckPropagationPolicies, TopicBackendKind,
     TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName,

@@ -55,6 +55,7 @@ use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
     TopicSpec,
 };
+use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
 use otap_df_config::{
     DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, SubscriptionGroupName,
     TopicName, pipeline::PipelineConfig,
@@ -1183,6 +1184,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 .to_string();
             let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
             let telemetry_policy = pipeline_entry.policies.telemetry;
+            let transport_headers_policy = pipeline_entry.policies.transport_headers;
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
             let pipeline_id = pipeline_entry.pipeline_id;
             let pipeline = pipeline_entry.pipeline;
@@ -1240,6 +1242,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 let engine_evt_reporter = engine_evt_reporter.clone();
                 let effective_channel_capacity_policy = channel_capacity_policy.clone();
                 let effective_telemetry_policy = telemetry_policy.clone();
+                let effective_transport_headers_policy = transport_headers_policy.clone();
                 let handle = thread::Builder::new()
                     .name(thread_name.clone())
                     .spawn(move || {
@@ -1249,6 +1252,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             pipeline_config,
                             effective_channel_capacity_policy,
                             effective_telemetry_policy,
+                            effective_transport_headers_policy,
                             telemetry_reporting_interval,
                             pipeline_factory,
                             pipeline_handle,
@@ -1586,6 +1590,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     internal_config,
                     internal_channel_capacity_policy,
                     internal_telemetry_policy,
+                    None, // no transport headers for the internal observability pipeline
                     telemetry_reporting_interval,
                     pipeline_factory,
                     internal_pipeline_ctx,
@@ -1636,6 +1641,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        transport_headers_policy: Option<TransportHeadersPolicy>,
         telemetry_reporting_interval: std::time::Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -1689,6 +1695,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
+                    transport_headers_policy,
                     its_settings,
                 )
                 .map_err(|e| {
