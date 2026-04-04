@@ -28,6 +28,11 @@ impl ArrayPrefixBuilder {
         }
     }
 
+    /// Returns the number of elements tracked by the prefix.
+    pub fn len(&self) -> usize {
+        self.null_buffer_builder.len()
+    }
+
     pub fn append_value(&mut self) {
         self.null_buffer_builder.append_non_null();
     }

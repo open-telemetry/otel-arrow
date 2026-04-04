@@ -42,6 +42,7 @@ tonic-prost = { workspace = true }
 tokio-stream = { workspace = true }
 prost = { workspace = true }
 criterion = { workspace = true }
+portpicker = { workspace = true }
 
 [lints]
 workspace = true
