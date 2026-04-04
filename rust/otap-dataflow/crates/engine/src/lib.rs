@@ -80,6 +80,7 @@ pub mod testing;
 pub mod topic;
 pub mod wiring_contract;
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
+pub use processor::ProcessorRuntimeCapabilities;
 
 /// Trait for factory types that expose a name.
 ///

@@ -12,6 +12,8 @@ use tokio::sync::Notify;
 /// Error returned when a wakeup request cannot be accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WakeupError {
+    /// Processor-local wakeups were not enabled for this processor runtime.
+    Unsupported,
     /// The processor has already latched shutdown.
     ShuttingDown,
     /// The bounded live wakeup slot set is full.

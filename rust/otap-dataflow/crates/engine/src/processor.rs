@@ -36,6 +36,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+bitflags::bitflags! {
+/// Optional runtime features that a processor can request from the engine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessorRuntimeCapabilities: u8 {
+    /// Enable processor-local wakeup scheduling and delivery through `ProcessorInbox`.
+    const LOCAL_WAKEUPS = 1 << 0;
+}
+}
+
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
 /// Note: This is useful for creating a single interface for the processor regardless of the effect
@@ -335,20 +344,34 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let local_scheduler =
-                    NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity);
-                let inbox = ProcessorInbox::new_with_local_scheduler(
-                    Receiver::Local(control_receiver),
-                    pdata_receiver.ok_or_else(|| Error::ProcessorError {
-                        processor: node_id.clone(),
-                        kind: ProcessorErrorKind::Configuration,
-                        error: "The pdata receiver must be defined at this stage".to_owned(),
-                        source_detail: String::new(),
-                    })?,
-                    local_scheduler.clone(),
-                    node_id.index,
-                    node_interests,
-                );
+                let runtime_capabilities = processor.runtime_capabilities();
+                let pdata_receiver = pdata_receiver.ok_or_else(|| Error::ProcessorError {
+                    processor: node_id.clone(),
+                    kind: ProcessorErrorKind::Configuration,
+                    error: "The pdata receiver must be defined at this stage".to_owned(),
+                    source_detail: String::new(),
+                })?;
+                let maybe_local_scheduler = runtime_capabilities
+                    .contains(ProcessorRuntimeCapabilities::LOCAL_WAKEUPS)
+                    .then(|| {
+                        NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity)
+                    });
+                let inbox = if let Some(local_scheduler) = maybe_local_scheduler.clone() {
+                    ProcessorInbox::new_with_local_scheduler(
+                        Receiver::Local(control_receiver),
+                        pdata_receiver,
+                        local_scheduler,
+                        node_id.index,
+                        node_interests,
+                    )
+                } else {
+                    ProcessorInbox::new(
+                        Receiver::Local(control_receiver),
+                        pdata_receiver,
+                        node_id.index,
+                        node_interests,
+                    )
+                };
                 let default_port = user_config.default_output.clone();
                 let mut effect_handler = local::EffectHandler::new(
                     node_id,
@@ -357,7 +380,9 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
-                effect_handler.core.set_local_scheduler(local_scheduler);
+                if let Some(local_scheduler) = maybe_local_scheduler {
+                    effect_handler.core.set_local_scheduler(local_scheduler);
+                }
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -375,20 +400,35 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let local_scheduler =
-                    NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity);
-                let inbox = ProcessorInbox::new_with_local_scheduler(
-                    Receiver::Shared(control_receiver),
+                let runtime_capabilities = processor.runtime_capabilities();
+                let pdata_receiver =
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
                         kind: ProcessorErrorKind::Configuration,
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
-                    })?),
-                    local_scheduler.clone(),
-                    node_id.index,
-                    node_interests,
-                );
+                    })?);
+                let maybe_local_scheduler = runtime_capabilities
+                    .contains(ProcessorRuntimeCapabilities::LOCAL_WAKEUPS)
+                    .then(|| {
+                        NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity)
+                    });
+                let inbox = if let Some(local_scheduler) = maybe_local_scheduler.clone() {
+                    ProcessorInbox::new_with_local_scheduler(
+                        Receiver::Shared(control_receiver),
+                        pdata_receiver,
+                        local_scheduler,
+                        node_id.index,
+                        node_interests,
+                    )
+                } else {
+                    ProcessorInbox::new(
+                        Receiver::Shared(control_receiver),
+                        pdata_receiver,
+                        node_id.index,
+                        node_interests,
+                    )
+                };
                 let default_port = user_config.default_output.clone();
                 let mut effect_handler = shared::EffectHandler::new(
                     node_id,
@@ -397,7 +437,9 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
-                effect_handler.core.set_local_scheduler(local_scheduler);
+                if let Some(local_scheduler) = maybe_local_scheduler {
+                    effect_handler.core.set_local_scheduler(local_scheduler);
+                }
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,

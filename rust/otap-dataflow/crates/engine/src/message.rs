@@ -751,13 +751,9 @@ impl<PData> ProcessorInbox<PData> {
         node_id: usize,
         interests: Interests,
     ) -> Self {
-        Self::new_with_local_scheduler(
-            control_rx,
-            pdata_rx,
-            NodeLocalSchedulerHandle::new(32),
-            node_id,
-            interests,
-        )
+        Self {
+            core: InboxCore::new(control_rx, pdata_rx, None, node_id, interests),
+        }
     }
 
     /// Creates a new processor inbox with an explicit processor-local scheduler.

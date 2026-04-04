@@ -36,7 +36,8 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, Interests, ProcessorRuntimeCapabilities,
+    ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     control::{AckMsg, CallData, NackMsg, NodeControlMsg, WakeupSlot},
     error::{Error as EngineError, ProcessorErrorKind},
@@ -1117,6 +1118,10 @@ pub fn create_otap_batch_processor(
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for BatchProcessor {
+    fn runtime_capabilities(&self) -> ProcessorRuntimeCapabilities {
+        ProcessorRuntimeCapabilities::LOCAL_WAKEUPS
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,

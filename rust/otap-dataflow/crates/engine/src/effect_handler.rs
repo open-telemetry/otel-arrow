@@ -420,9 +420,11 @@ impl<PData> EffectHandlerCore<PData> {
     ///
     /// # Errors
     ///
-    /// Returns [`WakeupError::ShuttingDown`] once processor shutdown has been
-    /// latched. Returns [`WakeupError::Capacity`] if the processor has reached
-    /// its configured live wakeup-slot capacity.
+    /// Returns [`WakeupError::Unsupported`] when the processor runtime did not
+    /// enable processor-local wakeups. Returns [`WakeupError::ShuttingDown`]
+    /// once processor shutdown has been latched. Returns
+    /// [`WakeupError::Capacity`] if the processor has reached its configured
+    /// live wakeup-slot capacity.
     pub fn set_wakeup(
         &self,
         slot: WakeupSlot,
@@ -430,7 +432,7 @@ impl<PData> EffectHandlerCore<PData> {
     ) -> Result<WakeupSetOutcome, WakeupError> {
         self.local_scheduler
             .as_ref()
-            .expect("node-local scheduler not set for processor effect handler")
+            .ok_or(WakeupError::Unsupported)?
             .set_wakeup(slot, when)
     }
 
@@ -443,8 +445,8 @@ impl<PData> EffectHandlerCore<PData> {
     pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
         self.local_scheduler
             .as_ref()
-            .expect("node-local scheduler not set for processor effect handler")
-            .cancel_wakeup(slot)
+            .map(|scheduler| scheduler.cancel_wakeup(slot))
+            .unwrap_or(false)
     }
 
     /// Notifies the runtime control manager that this receiver has completed

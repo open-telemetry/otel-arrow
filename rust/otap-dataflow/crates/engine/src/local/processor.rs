@@ -42,6 +42,7 @@ use crate::message::{Message, Sender};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
+use crate::processor::ProcessorRuntimeCapabilities;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
@@ -103,6 +104,14 @@ pub trait Processor<PData> {
     /// messages (acks/nacks) until the processor signals it is ready again. Defaults to `true`.
     fn accept_pdata(&self) -> bool {
         true
+    }
+
+    /// Returns optional runtime features that this processor needs from the engine.
+    ///
+    /// Processors should only opt into capabilities they actually use so the
+    /// engine can avoid wiring unused runtime machinery onto the common path.
+    fn runtime_capabilities(&self) -> ProcessorRuntimeCapabilities {
+        ProcessorRuntimeCapabilities::empty()
     }
 }
 
@@ -339,12 +348,13 @@ mod tests {
     use crate::completion_emission_metrics::make_completion_emission_metrics;
     use crate::context::ControllerContext;
     use crate::control::{
-        AckMsg, Frame, NackMsg, PipelineCompletionMsg, RouteData, pipeline_completion_msg_channel,
+        AckMsg, Frame, NackMsg, PipelineCompletionMsg, RouteData, WakeupSlot,
+        pipeline_completion_msg_channel,
     };
     use crate::entity_context::NodeTelemetryHandle;
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
-    use crate::{Interests, Unwindable};
+    use crate::{Interests, Unwindable, WakeupError};
     use otap_df_channel::error::SendError;
     use otap_df_channel::mpsc;
     use otap_df_config::{MetricLevel, node::NodeKind};
@@ -474,6 +484,25 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// Scenario: a processor effect handler has not been wired with the
+    /// processor-local wakeup runtime capability and attempts to schedule a
+    /// wakeup anyway.
+    /// Guarantees: the call fails with `WakeupError::Unsupported` instead of
+    /// panicking, so non-opting processors do not require the wakeup runtime
+    /// machinery to exist.
+    #[test]
+    fn effect_handler_set_wakeup_without_runtime_support_returns_unsupported() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+
+        assert_eq!(
+            eh.set_wakeup(WakeupSlot(0), Instant::now()),
+            Err(WakeupError::Unsupported)
+        );
+        assert!(!eh.cancel_wakeup(WakeupSlot(0)));
     }
 
     #[tokio::test]

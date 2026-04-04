@@ -40,6 +40,7 @@ use crate::error::{Error, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::processor::ProcessorRuntimeCapabilities;
 use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
@@ -102,6 +103,14 @@ pub trait Processor<PData> {
     /// messages (acks/nacks) until the processor signals it is ready again. Defaults to `true`.
     fn accept_pdata(&self) -> bool {
         true
+    }
+
+    /// Returns optional runtime features that this processor needs from the engine.
+    ///
+    /// Processors should only opt into capabilities they actually use so the
+    /// engine can avoid wiring unused runtime machinery onto the common path.
+    fn runtime_capabilities(&self) -> ProcessorRuntimeCapabilities {
+        ProcessorRuntimeCapabilities::empty()
     }
 }
 
