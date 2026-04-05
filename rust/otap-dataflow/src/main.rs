@@ -4,6 +4,7 @@
 //! Create and run a multi-core pipeline
 
 use clap::Parser;
+use otap_df_config::config_provider::{ConfigFormat, resolve_config};
 use otap_df_config::engine::{
     HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
@@ -21,7 +22,6 @@ use otap_df_controller::Controller;
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use std::path::PathBuf;
 use sysinfo::System;
 
 #[cfg(all(
@@ -95,13 +95,15 @@ static GLOBAL: Jemalloc = Jemalloc;
     after_help = system_info(),
     after_long_help = concat!(
         "EXAMPLES:\n",
-        "  ", env!("CARGO_BIN_NAME"), " --config  config.yaml\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config file:/etc/config.yaml\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config env:MY_CONFIG_VAR\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config /path/to/config.yaml\n",
     )
 )]
 struct Args {
-    /// Path to the engine configuration file (.json, .yaml, or .yml)
-    #[arg(short = 'c', long, value_name = "FILE")]
-    config: PathBuf,
+    /// Configuration URI (file:/path, env:VAR, or bare path). If omitted, config.yaml in the current directory is tried.
+    #[arg(short = 'c', long, value_name = "URI")]
+    config: Option<String>,
 
     /// Number of cores to use (0 for all available cores)
     #[arg(long, conflicts_with = "core_id_range")]
@@ -306,13 +308,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}", system_info());
 
-    let mut engine_cfg = OtelDataflowSpec::from_file(&config)?;
+    let resolved = resolve_config(config.as_deref())?;
+    let mut engine_cfg = match resolved.format {
+        ConfigFormat::Json => OtelDataflowSpec::from_json(&resolved.content)?,
+        ConfigFormat::Yaml => OtelDataflowSpec::from_yaml(&resolved.content)?,
+    };
     apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
 
     validate_engine_components(&engine_cfg)?;
 
     if validate_and_exit {
-        println!("Configuration '{}' is valid.", config.display());
+        println!("Configuration '{}' is valid.", resolved.source);
         std::process::exit(0);
     }
 
@@ -415,7 +421,6 @@ Example configuration files can be found in the configs/ directory.{}",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::error::ErrorKind;
     use otap_df_config::policy::Policies;
 
     fn minimal_engine_yaml() -> &'static str {
@@ -550,16 +555,14 @@ groups:
             "--validate-and-exit",
         ]);
         assert!(args.validate_and_exit);
-        assert_eq!(args.config, PathBuf::from("config.yaml"));
+        assert_eq!(args.config.as_deref(), Some("config.yaml"));
     }
 
     #[test]
-    fn missing_config_even_with_validate_flag() {
-        let result = Args::try_parse_from(["df_engine", "--validate-and-exit"]);
-        match result {
-            Ok(_) => panic!("Expected missing required argument error"),
-            Err(err) => assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument),
-        }
+    fn config_is_optional() {
+        let args = Args::parse_from(["df_engine", "--validate-and-exit"]);
+        assert!(args.config.is_none());
+        assert!(args.validate_and_exit);
     }
 
     #[test]
