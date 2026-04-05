@@ -38,6 +38,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_otap::memory_pressure_layer::MemoryPressureLayer;
 use otap_df_otap::otap_grpc::common;
 use otap_df_otap::otap_grpc::common::AckRegistry;
 use otap_df_otap::otap_grpc::server_settings::GrpcServerSettings;
@@ -184,6 +185,7 @@ pub struct OTLPReceiver {
     // Arc<Mutex<...>> so we can share metrics with the gRPC services which are `Send` due to
     // tonic requirements.
     metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    memory_pressure_state: otap_df_engine::memory_limiter::MemoryPressureState,
     // Global concurrency cap derived from downstream capacity. When both gRPC and HTTP are
     // enabled, this prevents combined ingress from exceeding what the pipeline can absorb.
     global_max_concurrent_requests: Option<usize>,
@@ -264,6 +266,7 @@ impl OTLPReceiver {
         Ok(Self {
             config,
             metrics,
+            memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             global_max_concurrent_requests: None,
         })
     }
@@ -531,11 +534,22 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             let limit_layer = if let Some(global) = global_semaphore.clone() {
                 Either::Left(
                     ServiceBuilder::new()
+                        .layer(MemoryPressureLayer::with_otlp_metrics(
+                            self.memory_pressure_state.clone(),
+                            self.metrics.clone(),
+                        ))
                         .layer(GlobalConcurrencyLimitLayer::new(grpc_max))
                         .layer(SharedConcurrencyLayer::new(global)),
                 )
             } else {
-                Either::Right(GlobalConcurrencyLimitLayer::new(grpc_max))
+                Either::Right(
+                    ServiceBuilder::new()
+                        .layer(MemoryPressureLayer::with_otlp_metrics(
+                            self.memory_pressure_state.clone(),
+                            self.metrics.clone(),
+                        ))
+                        .layer(GlobalConcurrencyLimitLayer::new(grpc_max)),
+                )
             };
 
             let mut server =
@@ -606,6 +620,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     http_config,
                     ack_registry.clone(),
                     self.metrics.clone(),
+                    self.memory_pressure_state.clone(),
                     global_semaphore.clone(),
                     http_shutdown.clone(),
                 )))
@@ -1059,6 +1074,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
                 global_max_concurrent_requests: None,
             };
             receiver.tune_max_concurrent_requests(16);
@@ -1878,6 +1894,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1923,6 +1940,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2013,6 +2031,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2110,6 +2129,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2170,6 +2190,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2239,6 +2260,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2327,6 +2349,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2389,6 +2412,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2450,6 +2474,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2547,6 +2572,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
                 global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -2628,6 +2654,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
                 global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -2725,6 +2752,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2807,6 +2835,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2869,6 +2898,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2932,6 +2962,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -3018,6 +3049,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -3117,6 +3149,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -3197,6 +3230,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -3285,6 +3319,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -3339,6 +3374,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -3398,6 +3434,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: None,
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -3517,6 +3554,7 @@ mod tests {
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
                 global_max_concurrent_requests: Some(1),
+                memory_pressure_state: pipeline_ctx.memory_pressure_state(),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,

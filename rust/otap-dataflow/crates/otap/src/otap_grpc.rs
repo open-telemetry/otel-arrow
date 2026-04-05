@@ -13,7 +13,7 @@
 use crate::pdata::{Context, OtapPdata};
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
-    shared::receiver as shared,
+    memory_limiter::MemoryPressureState, shared::receiver as shared,
 };
 use otap_df_pdata::{
     Consumer,
@@ -60,6 +60,8 @@ pub struct Settings {
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
     pub wait_for_result: bool,
+    /// Shared process-wide memory pressure state.
+    pub memory_pressure_state: MemoryPressureState,
 }
 
 /// struct that implements the ArrowLogsService trait
@@ -155,6 +157,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
         let effect_handler_clone = self.effect_handler.clone();
         let state_clone = self.state.clone();
+        let memory_pressure_state = self.settings.memory_pressure_state.clone();
 
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
@@ -173,6 +176,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
                     batch,
                     &effect_handler_clone,
                     state_clone.clone(),
+                    &memory_pressure_state,
                     &tx,
                 )
                 .await
@@ -200,6 +204,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
         let effect_handler_clone = self.effect_handler.clone();
         let state_clone = self.state.clone();
+        let memory_pressure_state = self.settings.memory_pressure_state.clone();
 
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
@@ -217,6 +222,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
                     batch,
                     &effect_handler_clone,
                     state_clone.clone(),
+                    &memory_pressure_state,
                     &tx,
                 )
                 .await
@@ -244,6 +250,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
         let effect_handler_clone = self.effect_handler.clone();
         let state_clone = self.state.clone();
+        let memory_pressure_state = self.settings.memory_pressure_state.clone();
 
         // create a stream to output result to
         let output = ReceiverStream::new(rx);
@@ -261,6 +268,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
                     batch,
                     &effect_handler_clone,
                     state_clone.clone(),
+                    &memory_pressure_state,
                     &tx,
                 )
                 .await
@@ -283,12 +291,32 @@ async fn accept_data<T: OtapBatchStore, F>(
     mut batch: BatchArrowRecords,
     effect_handler: &shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
+    memory_pressure_state: &MemoryPressureState,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> Result<(), ()>
 where
     F: Fn(T) -> OtapArrowRecords,
 {
     let batch_id = batch.batch_id;
+    if memory_pressure_state.should_shed_ingress() {
+        otel_error!(
+            "otap.request.memory_pressure",
+            message = "Process memory pressure active while receiving streamed batch"
+        );
+
+        tx.send(Ok(BatchStatus {
+            batch_id,
+            status_code: StatusCode::Unavailable as i32,
+            status_message: "Process memory pressure".to_string(),
+        }))
+        .await
+        .map_err(|e| {
+            otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
+        })?;
+
+        return Ok(());
+    }
+
     let batch = consumer.consume_bar(&mut batch).map_err(|e| {
         otel_error!("otap.batch.decode_failed", error = ?e, message = "Error decoding OTAP Batch. Closing stream");
     })?;

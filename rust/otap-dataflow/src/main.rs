@@ -9,7 +9,7 @@ use otap_df_config::engine::{
 };
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{CoreAllocation, CoreRange, ResourcesPolicy};
+use otap_df_config::policy::{CoreAllocation, CoreRange, Policies};
 use otap_df_config::{PipelineGroupId, PipelineId};
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (contrib nodes) are visible
@@ -190,9 +190,9 @@ fn apply_cli_overrides(
     http_admin_bind: Option<String>,
 ) {
     if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
-        engine_cfg
-            .policies
-            .set_resources(ResourcesPolicy { core_allocation });
+        let mut resources = Policies::resolve([&engine_cfg.policies]).resources;
+        resources.core_allocation = core_allocation;
+        engine_cfg.policies.set_resources(resources);
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
         engine_cfg.engine.http_admin = Some(http_admin);

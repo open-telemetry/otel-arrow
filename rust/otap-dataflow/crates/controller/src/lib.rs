@@ -50,6 +50,7 @@ use otap_df_config::engine::{
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otap_df_config::node::{NodeKind, NodeUserConfig};
+use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
@@ -71,6 +72,9 @@ use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
+use otap_df_engine::memory_limiter::{
+    EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureLevel,
+};
 use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
@@ -1018,6 +1022,73 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
+        let memory_pressure_state = controller_ctx.memory_pressure_state();
+        let mut memory_limiter_handle = None;
+        if let Some(memory_limiter_policy) = engine_config
+            .policies
+            .resources()
+            .and_then(|resources| resources.memory_limiter.as_ref())
+        {
+            memory_pressure_state.configure(MemoryPressureBehaviorConfig {
+                retry_after_secs: memory_limiter_policy.retry_after_secs,
+                fail_readiness_on_hard: memory_limiter_policy.fail_readiness_on_hard,
+                mode: memory_limiter_policy.mode,
+            });
+
+            let mut limiter = EffectiveMemoryLimiter::from_policy(memory_limiter_policy)
+                .map_err(|message| Error::MemoryLimiterError { message })?;
+            if memory_limiter_policy.mode == MemoryLimiterMode::ObserveOnly {
+                if memory_limiter_policy.purge_on_hard {
+                    otel_warn!(
+                        "process_memory_limiter.observe_only_ignored_setting",
+                        setting = "purge_on_hard",
+                        message =
+                            "purge_on_hard is ignored when memory_limiter.mode is observe_only"
+                    );
+                }
+            } else if limiter.purge_on_hard() && !limiter.purge_supported() {
+                otel_warn!(
+                    "process_memory_limiter.purge_unavailable",
+                    source = format!("{:?}", memory_limiter_policy.source),
+                    message = "purge_on_hard is enabled, but no allocator purge backend is available for this build"
+                );
+            }
+            let initial_tick = limiter
+                .tick(&memory_pressure_state)
+                .map_err(|message| Error::MemoryLimiterError { message })?;
+            Self::log_memory_limiter_tick(initial_tick);
+
+            let limiter_state = memory_pressure_state.clone();
+            memory_limiter_handle = Some(spawn_thread_local_task(
+                "process-memory-limiter",
+                admin_tracing_setup.clone(),
+                move |cancellation_token| async move {
+                    use tokio::time::{MissedTickBehavior, interval};
+
+                    let mut ticker = interval(limiter.check_interval());
+                    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+                    loop {
+                        tokio::select! {
+                            _ = cancellation_token.cancelled() => {
+                                return Ok::<(), otap_df_telemetry::error::Error>(());
+                            }
+                            _ = ticker.tick() => {
+                                match limiter.tick(&limiter_state) {
+                                    Ok(tick) => Self::log_memory_limiter_tick(tick),
+                                    Err(err) => {
+                                        otel_warn!(
+                                            "process_memory_limiter.sample_failed",
+                                            error = err.as_str()
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            )?);
+        }
         // Declare all topics up front before any pipeline thread starts.
         let declared_topics = Self::declare_topics(&engine_config)?;
 
@@ -1126,6 +1197,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let engine_entity_key = controller_ctx.register_engine_entity();
         let engine_registry = controller_ctx.telemetry_registry();
         let engine_reporter = metrics_reporter.clone();
+        let engine_metrics_memory_pressure_state = memory_pressure_state.clone();
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",
             admin_tracing_setup.clone(),
@@ -1137,8 +1209,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 // TODO: Make this interval configurable via engine config.
                 const ENGINE_METRICS_INTERVAL: Duration = Duration::from_secs(5);
 
-                let mut monitor =
-                    EngineMetricsMonitor::new(engine_registry, engine_entity_key, engine_reporter);
+                let mut monitor = EngineMetricsMonitor::new(
+                    engine_registry,
+                    engine_entity_key,
+                    engine_reporter,
+                    engine_metrics_memory_pressure_state.clone(),
+                );
 
                 let mut ticker = interval(ENGINE_METRICS_INTERVAL);
                 ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1294,6 +1370,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     obs_state_handle,
                     admin_senders,
                     telemetry_registry,
+                    memory_pressure_state,
                     log_tap_handle,
                     cancellation_token,
                 )
@@ -1351,6 +1428,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         engine_metrics_handle.shutdown_and_join()?;
+        if let Some(handle) = memory_limiter_handle {
+            handle.shutdown_and_join()?;
+        }
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
         if let Some(handle) = metrics_dispatcher_handle {
@@ -1360,6 +1440,75 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         telemetry_system.shutdown_otel()?;
 
         Ok(())
+    }
+
+    fn log_memory_limiter_tick(tick: MemoryLimiterTick) {
+        if let Some(purge_error) = tick.purge_error.as_deref() {
+            otel_warn!(
+                "process_memory_limiter.purge_failed",
+                source = tick.sample.source.as_str(),
+                pre_purge_usage_bytes = tick
+                    .pre_purge_usage_bytes
+                    .unwrap_or(tick.sample.usage_bytes),
+                usage_bytes = tick.sample.usage_bytes,
+                error = purge_error
+            );
+        }
+
+        if let Some(purge_duration) = tick.purge_duration {
+            otel_info!(
+                "process_memory_limiter.purge",
+                source = tick.sample.source.as_str(),
+                pre_purge_usage_bytes = tick
+                    .pre_purge_usage_bytes
+                    .unwrap_or(tick.sample.usage_bytes),
+                post_purge_usage_bytes = tick.sample.usage_bytes,
+                purge_duration_ms = purge_duration.as_millis() as u64,
+                current = format!("{:?}", tick.current_level)
+            );
+        }
+
+        if !tick.transitioned() {
+            return;
+        }
+
+        let usage_bytes = tick.sample.usage_bytes;
+        let source = tick.sample.source.as_str();
+        match tick.current_level {
+            MemoryPressureLevel::Hard => {
+                otel_warn!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = format!("{:?}", tick.current_level),
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+            MemoryPressureLevel::Soft => {
+                otel_info!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = "Soft",
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+            MemoryPressureLevel::Normal => {
+                otel_info!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = "Normal",
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+        }
     }
 
     /// Selects which CPU cores to use based on the given allocation.
@@ -1822,7 +1971,10 @@ connections:
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy { core_allocation },
+                resources: ResourcesPolicy {
+                    core_allocation,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             role: ResolvedPipelineRole::Regular,

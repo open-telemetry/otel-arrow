@@ -13,6 +13,7 @@
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::compression::CompressionMethod;
+use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, MemoryPressureRejectionMetrics};
 use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otap_df_otap::otap_grpc::{
@@ -110,6 +111,7 @@ const fn default_wait_for_result() -> bool {
 pub struct OTAPReceiver {
     config: Config,
     metrics: MetricSet<OtapReceiverMetrics>,
+    memory_pressure_state: otap_df_engine::memory_limiter::MemoryPressureState,
 }
 
 /// Declares the OTAP receiver as a shared receiver factory
@@ -150,7 +152,11 @@ impl OTAPReceiver {
         // Register OTAP receiver metrics for this node.
         let metrics = pipeline_ctx.register_metrics::<OtapReceiverMetrics>();
 
-        Ok(OTAPReceiver { config, metrics })
+        Ok(OTAPReceiver {
+            config,
+            metrics,
+            memory_pressure_state: pipeline_ctx.memory_pressure_state(),
+        })
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
@@ -220,6 +226,24 @@ pub struct OtapReceiverMetrics {
     /// Number of invalid/expired acks/nacks.
     #[metric(unit = "{ack_or_nack}")]
     pub acks_nacks_invalid_or_expired: Counter<u64>,
+
+    /// Number of OTAP RPCs rejected before entering the pipeline.
+    #[metric(unit = "{requests}")]
+    pub rejected_requests: Counter<u64>,
+
+    /// Number of OTAP RPCs rejected specifically because memory pressure was active.
+    #[metric(unit = "{requests}")]
+    pub refused_memory_pressure: Counter<u64>,
+}
+
+struct OtapMemoryPressureMetrics(parking_lot::Mutex<MetricSet<OtapReceiverMetrics>>);
+
+impl MemoryPressureRejectionMetrics for OtapMemoryPressureMetrics {
+    fn record_memory_pressure_rejection(&self) {
+        let mut metrics = self.0.lock();
+        metrics.rejected_requests.inc();
+        metrics.refused_memory_pressure.inc();
+    }
 }
 
 /// State shared between gRPC server task and the effect handler.
@@ -272,6 +296,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
             wait_for_result: self.config.wait_for_result,
+            memory_pressure_state: self.memory_pressure_state.clone(),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -326,6 +351,12 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
 
         let server = server_builder
+            .layer(MemoryPressureLayer::with_metrics(
+                self.memory_pressure_state.clone(),
+                Arc::new(OtapMemoryPressureMetrics(parking_lot::Mutex::new(
+                    self.metrics.clone(),
+                ))),
+            ))
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_server)
             .add_service(metrics_server)
