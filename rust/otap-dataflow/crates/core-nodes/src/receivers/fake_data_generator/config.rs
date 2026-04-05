@@ -155,8 +155,9 @@ pub struct TrafficConfig {
     log_weight: u32,
 
     /// Target size of each log record body in bytes (Static data source only).
-    /// When set, generates a log body string of approximately this size.
-    /// When unset, uses the default hardcoded body ("Order processed successfully").
+    /// When set, the body is exactly this many bytes: a generated base string
+    /// is shortened to make room for a per-record `[idx=N]` suffix.
+    /// When unset, uses the default base body ("Order processed successfully").
     #[serde(default)]
     log_body_size_bytes: Option<usize>,
 
