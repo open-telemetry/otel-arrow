@@ -21,6 +21,21 @@ pub trait MemoryPressureRejectionMetrics: Send + Sync {
     fn record_memory_pressure_rejection(&self);
 }
 
+/// Builds a gRPC `resource_exhausted` status with retry pushback metadata.
+#[must_use]
+pub fn grpc_memory_pressure_status(state: &MemoryPressureState) -> Status {
+    let mut metadata = MetadataMap::new();
+    let retry_pushback_ms = state.retry_after_secs().max(1) * 1_000;
+    let _ = metadata.insert(
+        "grpc-retry-pushback-ms",
+        retry_pushback_ms
+            .to_string()
+            .parse()
+            .expect("retry pushback metadata should be valid ASCII"),
+    );
+    Status::with_metadata(Code::ResourceExhausted, "memory pressure", metadata)
+}
+
 impl MemoryPressureRejectionMetrics for Mutex<MetricSet<OtlpReceiverMetrics>> {
     fn record_memory_pressure_rejection(&self) {
         let mut metrics = self.lock();
@@ -117,18 +132,7 @@ where
             if let Some(metrics) = &self.metrics {
                 metrics.record_memory_pressure_rejection();
             }
-            let mut metadata = MetadataMap::new();
-            let retry_pushback_ms = self.state.retry_after_secs().max(1) * 1_000;
-            let _ = metadata.insert(
-                "grpc-retry-pushback-ms",
-                retry_pushback_ms
-                    .to_string()
-                    .parse()
-                    .expect("retry pushback metadata should be valid ASCII"),
-            );
-            let response =
-                Status::with_metadata(Code::ResourceExhausted, "memory pressure", metadata)
-                    .into_http();
+            let response = grpc_memory_pressure_status(&self.state).into_http();
             return Box::pin(async move { Ok(response) });
         }
 

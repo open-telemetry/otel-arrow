@@ -287,7 +287,7 @@ receivers continue accepting requests regardless of pressure level.
 | --- | --- |
 | OTLP HTTP | `503 Service Unavailable` with `Retry-After: <retry_after_secs>` header |
 | OTLP gRPC | `RESOURCE_EXHAUSTED` with `grpc-retry-pushback-ms: <retry_ms>` metadata |
-| OTAP gRPC stream open | `RESOURCE_EXHAUSTED` + `grpc-retry-pushback-ms` (via Tower middleware) |
+| OTAP gRPC stream open / next-read boundary | `RESOURCE_EXHAUSTED` + `grpc-retry-pushback-ms` before stream admission, and for already-open streams at the next read boundary |
 | OTAP gRPC per-batch | `Unavailable` in the OTAP Arrow batch status (ArrowStatus code 14) |
 | Syslog / CEF TCP | Reject new connections at accept; close active connections mid-stream |
 | Syslog / CEF UDP | Drop incoming datagrams |
@@ -321,9 +321,10 @@ stalling. For TCP, holding large numbers of stalled open connections under
 pressure can consume more resources than the data they carry. Explicit close or
 refusal is observable, bounded, and gives senders a clear signal to back off.
 
-**Known gap:** per-batch OTAP rejections are not yet tracked in receiver
-metrics. Connection-level and datagram-level rejection counters are tracked for
-syslog and OTLP paths.
+**Known gap:** OTAP stream reads are checked for memory pressure at the next
+read boundary. If pressure flips to `Hard` while a stream task is already
+blocked in `message().await`, one additional batch may still be read before the
+stream is rejected.
 
 ## Readiness Integration
 
