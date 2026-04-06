@@ -5,13 +5,8 @@
 
 use clap::Parser;
 use otap_df_config::config_provider::{ConfigFormat, resolve_config};
-use otap_df_config::engine::{
-    HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
-};
-use otap_df_config::node::NodeKind;
-use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{CoreAllocation, CoreRange, ResourcesPolicy};
-use otap_df_config::{PipelineGroupId, PipelineId};
+use otap_df_config::engine::OtelDataflowSpec;
+use otap_df_config::policy::{CoreAllocation, CoreRange};
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (contrib nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
@@ -23,7 +18,6 @@ use otap_df_controller::startup;
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use std::path::PathBuf;
 
 fn memory_allocator_name() -> &'static str {
     if cfg!(feature = "mimalloc") {
@@ -34,7 +28,6 @@ fn memory_allocator_name() -> &'static str {
         "system"
     }
 }
-use sysinfo::System;
 
 #[cfg(all(
     not(windows),
@@ -205,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ConfigFormat::Json => OtelDataflowSpec::from_json(&resolved.content)?,
         ConfigFormat::Yaml => OtelDataflowSpec::from_yaml(&resolved.content)?,
     };
-    apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
+    startup::apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
 
     startup::validate_engine_components(&engine_cfg, &OTAP_PIPELINE_FACTORY)?;
 
@@ -231,31 +224,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::error::ErrorKind;
-    use otap_df_config::policy::Policies;
-
-    fn minimal_engine_yaml() -> &'static str {
-        r#"
-version: otel_dataflow/v1
-engine:
-  http_admin:
-    bind_address: "127.0.0.1:18080"
-groups:
-  default:
-    pipelines:
-      main:
-        nodes:
-          receiver:
-            type: "urn:test:receiver:example"
-            config: null
-          exporter:
-            type: "urn:test:exporter:example"
-            config: null
-        connections:
-          - from: receiver
-            to: exporter
-"#
-    }
 
     #[test]
     fn parse_core_range_ok() {
