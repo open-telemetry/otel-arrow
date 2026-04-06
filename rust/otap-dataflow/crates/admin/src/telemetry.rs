@@ -3,10 +3,10 @@
 
 //! Telemetry endpoints.
 //!
-//! - /telemetry/live-schema - current semantic conventions registry
-//! - /telemetry/logs - retained internal logs from the in-memory log tap
-//! - /telemetry/metrics - current aggregated metrics in JSON, line protocol, or Prometheus text format
-//! - /telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
+//! - /api/v1/telemetry/live-schema - current semantic conventions registry
+//! - /api/v1/telemetry/logs - retained internal logs from the in-memory log tap
+//! - /api/v1/telemetry/metrics - current aggregated metrics in JSON, line protocol, or Prometheus text format
+//! - /api/v1/telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
 
 use crate::AppState;
 use axum::extract::{Query, State};
@@ -94,7 +94,7 @@ pub enum OutputFormat {
     Prometheus,
 }
 
-/// Query parameters for /telemetry/metrics
+/// Query parameters for /api/v1/telemetry/metrics
 #[derive(Debug, Default, Deserialize)]
 pub struct MetricsQuery {
     /// When true, reset metrics after reading. Default: false.
@@ -108,7 +108,7 @@ pub struct MetricsQuery {
     keep_all_zeroes: bool,
 }
 
-/// Query parameters for /telemetry/metrics/aggregate
+/// Query parameters for /api/v1/telemetry/metrics/aggregate
 #[derive(Debug, Default, Deserialize)]
 pub struct AggregateQuery {
     /// When true, reset metrics after reading. Default: false.
@@ -122,7 +122,7 @@ pub struct AggregateQuery {
     format: Option<OutputFormat>,
 }
 
-/// Query parameters for /telemetry/logs
+/// Query parameters for /api/v1/telemetry/logs
 #[derive(Debug, Default, Deserialize)]
 pub struct LogsQuery {
     /// Return logs strictly newer than this sequence number.
@@ -271,7 +271,7 @@ pub async fn get_logs(
     Ok(Json(logs_response(&state.metrics_registry, result)))
 }
 
-/// Handler for the `/telemetry/metrics` endpoint.
+/// Handler for the `/api/v1/telemetry/metrics` endpoint.
 /// Supports multiple output formats and optional reset.
 ///
 /// Query parameters:
@@ -346,7 +346,7 @@ pub async fn get_metrics(
     }
 }
 
-/// Handler for the /telemetry/metrics/aggregate endpoint.
+/// Handler for the /api/v1/telemetry/metrics/aggregate endpoint.
 /// Aggregates metrics by metric set name and optionally by a list of attributes.
 ///
 /// Query parameters:
