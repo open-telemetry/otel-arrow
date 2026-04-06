@@ -53,14 +53,14 @@ use data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CollectionScalarExpression,
     CombineScalarExpression, DoubleValue, Expression, IntegerValue, InvokeFunctionArgument,
     InvokeFunctionScalarExpression, JoinTextScalarExpression, MathScalarExpression,
-    PipelineFunction, PipelineFunctionImplementation, ScalarExpression, StaticScalarExpression,
-    StringValue, TextScalarExpression,
+    PipelineFunction, PipelineFunctionImplementation, ReplaceTextScalarExpression,
+    ScalarExpression, StaticScalarExpression, StringValue, TextScalarExpression,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
-use datafusion::functions::string::{concat, concat_ws};
+use datafusion::functions::string::{concat, concat_ws, replace};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
@@ -720,6 +720,29 @@ impl ExprLogicalPlanner {
         }
     }
 
+    fn plan_replace_text_expr(
+        &self,
+        replace_text_expr: &ReplaceTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let (df_udf_args, source_scope, _) = self.plan_function_args(
+            [
+                replace_text_expr.get_haystack_expression(),
+                replace_text_expr.get_needle_expression(),
+                replace_text_expr.get_replacement_expression(),
+            ]
+            .into_iter(),
+            functions,
+        )?;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(replace(), df_udf_args)),
+            expr_type: ExprLogicalType::String,
+            source: source_scope,
+            requires_dict_downcast: true,
+        })
+    }
+
     fn plan_text_expr(
         &self,
         text_expr: &TextScalarExpression,
@@ -731,6 +754,9 @@ impl ExprLogicalPlanner {
             }
             TextScalarExpression::Join(join_text_expr) => {
                 self.plan_join_text_expr(join_text_expr, functions)
+            }
+            TextScalarExpression::Replace(replace_text_expr) => {
+                self.plan_replace_text_expr(replace_text_expr, functions)
             }
             other_expr => Err(Error::NotYetSupportedError {
                 message: format!("text expression not yet supported {other_expr:?}"),

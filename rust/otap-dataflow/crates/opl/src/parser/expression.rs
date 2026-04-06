@@ -11,8 +11,8 @@ use data_engine_expressions::{
     IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
     ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
     NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
-    ScalarExpression, SliceScalarExpression, SourceScalarExpression, StaticScalarExpression,
-    StringScalarExpression, TextScalarExpression, ValueAccessor,
+    ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression, SourceScalarExpression,
+    StaticScalarExpression, StringScalarExpression, TextScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -794,6 +794,34 @@ fn parse_function_call(
                 rhs,
             ))
             .into())
+        }
+        "replace" => {
+            if args.len() != 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
+            // TODO - do I need to verify that these are all strings?
+            // (like we do in the KQL side)
+            let source = args.remove(0);
+            let substr = args.remove(0);
+            let replacement = args.remove(0);
+
+            return Ok(ScalarExpression::Text(TextScalarExpression::Replace(
+                ReplaceTextScalarExpression::new(
+                    query_location,
+                    source,
+                    substr,
+                    replacement,
+                    false, // case_insensitive = set to false for OPL
+                ),
+            ))
+            .into());
         }
         "substring" => {
             if args.len() < 2 || args.len() > 3 {

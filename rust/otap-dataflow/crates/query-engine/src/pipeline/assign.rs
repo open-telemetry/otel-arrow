@@ -4108,4 +4108,55 @@ mod test {
     async fn test_update_attr_to_concat_with_delim_with_scalars_kql_parser() {
         test_update_attr_to_concat_with_delim_with_scalars::<KqlParser>("strcat_delim").await
     }
+
+    async fn test_update_attr_to_replace_with_scalars<P: Parser>(replace_fn_name: &str) {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend 
+            attributes["s1"] = {replace_fn_name}(attributes["attr"], "world", "terry"),
+            attributes["s2"] = {replace_fn_name}(attributes["attr"], "hello", "bonjour")
+        "#
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello world")),
+                KeyValue::new("s1", AnyValue::new_string("hello terry")),
+                KeyValue::new("s2", AnyValue::new_string("bonjour world")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_replace_with_scalars_opl_parser() {
+        test_update_attr_to_replace_with_scalars::<OplParser>("replace").await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_replace_with_scalars_kql_parser() {
+        test_update_attr_to_replace_with_scalars::<KqlParser>("replace_string").await
+    }
 }
