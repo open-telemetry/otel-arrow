@@ -135,10 +135,14 @@ could produce dangerously high thresholds on large machines.
 
 ### Mode
 
-- `mode: enforce` is the default. `Hard` pressure sheds ingress and can fail
-  readiness.
+- `mode` is required when `memory_limiter` is configured. This is an explicit
+  operator choice, not an implicit default.
+- `mode: enforce` sheds ingress under `Hard` pressure and can fail readiness.
 - `mode: observe_only` keeps classification, logs, and metrics enabled but
   suppresses ingress shedding, readiness failure, and forced jemalloc purge.
+- For a first rollout, prefer `mode: observe_only` so you can validate sampled
+  usage, pressure transitions, dashboards, and readiness behavior before
+  enabling enforcement.
 
 Mode is set at startup and cannot be changed while the process is running.
 

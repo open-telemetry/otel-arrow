@@ -255,7 +255,6 @@ pub struct ResourcesPolicy {
 #[serde(deny_unknown_fields)]
 pub struct MemoryLimiterPolicy {
     /// Runtime behavior applied when the limiter classifies `Hard` pressure.
-    #[serde(default)]
     pub mode: MemoryLimiterMode,
     /// Preferred memory source used by the limiter.
     #[serde(default)]
@@ -302,29 +301,11 @@ pub struct MemoryLimiterPolicy {
     pub purge_min_interval: Duration,
 }
 
-impl Default for MemoryLimiterPolicy {
-    fn default() -> Self {
-        Self {
-            mode: MemoryLimiterMode::default(),
-            source: MemoryLimiterSource::default(),
-            check_interval: default_memory_limiter_check_interval(),
-            soft_limit: None,
-            hard_limit: None,
-            hysteresis: None,
-            retry_after_secs: default_memory_limiter_retry_after_secs(),
-            fail_readiness_on_hard: default_true(),
-            purge_on_hard: default_false(),
-            purge_min_interval: default_memory_limiter_purge_min_interval(),
-        }
-    }
-}
-
 /// Enforcement behavior for the process-wide limiter.
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryLimiterMode {
     /// Update metrics/logs and reject ingress at `Hard`.
-    #[default]
     Enforce,
     /// Update metrics/logs only; `Hard` remains advisory.
     ObserveOnly,

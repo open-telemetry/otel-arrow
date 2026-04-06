@@ -318,6 +318,42 @@ groups:
     }
 
     #[test]
+    fn from_yaml_requires_explicit_memory_limiter_mode() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      source: auto
+      soft_limit: 1 GiB
+      hard_limit: 2 GiB
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("should reject missing mode");
+        match err {
+            Error::DeserializationError { details, .. } => {
+                assert!(details.contains("missing field `mode`"));
+            }
+            other => panic!("expected deserialization error, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn from_yaml_rejects_reserved_system_group() {
         let yaml = r#"
 version: otel_dataflow/v1
