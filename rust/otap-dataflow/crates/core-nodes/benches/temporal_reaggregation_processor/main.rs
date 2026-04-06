@@ -22,7 +22,7 @@ use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::Interests;
 use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::runtime_ctrl_msg_channel;
+use otap_df_engine::control::{RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::{Message, Receiver, Sender};
 use otap_df_engine::node::NodeWithPDataReceiver;
@@ -78,6 +78,10 @@ const NUM_NONAGG_TYPES: usize = 3;
 /// the final flush.
 const OUTPUT_CHANNEL_CAPACITY: usize = NUM_BATCHES + 16;
 
+/// Each iteration processes 1000 * 100 = 100_000 metrics, which is expensive.
+/// Lower the sample count so criterion finishes in a reasonable time.
+const SAMPLE_SIZE: usize = 10;
+
 // ---------------------------------------------------------------------------
 // Criterion entry point
 // ---------------------------------------------------------------------------
@@ -104,6 +108,7 @@ fn bench_temporal_reaggregation(c: &mut Criterion) {
     let _ = group.throughput(Throughput::Elements(
         (NUM_BATCHES * METRICS_PER_BATCH) as u64,
     ));
+    let _ = group.sample_size(SAMPLE_SIZE);
 
     bench_scenario(&mut group, &rt, "otlp", &otlp_messages);
     bench_scenario(&mut group, &rt, "otap", &otap_messages);
@@ -125,21 +130,11 @@ fn bench_scenario(
     let _ = group.bench_function(BenchmarkId::new(label, METRICS_PER_BATCH), |b| {
         b.iter_batched(
             || {
-                let (processor, effect_handler, output_receiver) = create_processor();
-                (
-                    messages.to_vec(),
-                    processor,
-                    effect_handler,
-                    output_receiver,
-                )
+                let state = create_processor();
+                (messages.to_vec(), state)
             },
-            |(msgs, mut processor, mut effect_handler, mut output_receiver)| {
-                rt.block_on(run_scenario(
-                    msgs,
-                    &mut processor,
-                    &mut effect_handler,
-                    &mut output_receiver,
-                ));
+            |(msgs, mut state)| {
+                rt.block_on(run_scenario(msgs, &mut state));
             },
             BatchSize::LargeInput,
         );
@@ -147,18 +142,28 @@ fn bench_scenario(
 }
 
 // ---------------------------------------------------------------------------
+// Processor state
+// ---------------------------------------------------------------------------
+
+/// All state needed to drive the processor for a single benchmark iteration.
+///
+/// The `_ctrl_rx` field is never read from, but must be kept alive so the
+/// runtime control channel remains open — the processor sends a
+/// `StartTimer` message on the first `process()` call.
+struct ProcessorState {
+    processor: Box<dyn local::Processor<OtapPdata>>,
+    effect_handler: local::EffectHandler<OtapPdata>,
+    output_receiver: Receiver<OtapPdata>,
+    _ctrl_rx: RuntimeCtrlMsgReceiver<OtapPdata>,
+}
+
+// ---------------------------------------------------------------------------
 // Processor creation
 // ---------------------------------------------------------------------------
 
-/// Create a fresh processor instance and return the components needed for
-/// direct `process()` calls.
-///
-/// Returns `(processor, effect_handler, output_receiver)`.
-fn create_processor() -> (
-    Box<dyn local::Processor<OtapPdata>>,
-    local::EffectHandler<OtapPdata>,
-    Receiver<OtapPdata>,
-) {
+/// Create a fresh processor instance with all wiring needed for direct
+/// `process()` calls.
+fn create_processor() -> ProcessorState {
     // Pipeline context with telemetry.
     let telemetry = InternalTelemetrySystem::default();
     let registry = telemetry.registry();
@@ -215,12 +220,19 @@ fn create_processor() -> (
             ..
         } => {
             // The processor calls start_periodic_timer on the first process()
-            // call, which needs a runtime control channel.
-            let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(10);
+            // call, which needs a runtime control channel. The receiver must
+            // stay alive for the duration of the iteration so the channel
+            // remains open.
+            let (ctrl_tx, ctrl_rx) = runtime_ctrl_msg_channel(10);
             effect_handler.set_runtime_ctrl_msg_sender(ctrl_tx);
 
             let output_receiver = Receiver::new_local_mpsc_receiver(out_rx);
-            (processor, effect_handler, output_receiver)
+            ProcessorState {
+                processor,
+                effect_handler,
+                output_receiver,
+                _ctrl_rx: ctrl_rx,
+            }
         }
         ProcessorWrapperRuntime::Shared { .. } => {
             unreachable!("temporal reaggregation processor is always local")
@@ -229,29 +241,26 @@ fn create_processor() -> (
 }
 
 /// Run one complete benchmark iteration: process all messages then flush.
-async fn run_scenario(
-    messages: Vec<OtapPdata>,
-    processor: &mut Box<dyn local::Processor<OtapPdata>>,
-    effect_handler: &mut local::EffectHandler<OtapPdata>,
-    output_receiver: &mut Receiver<OtapPdata>,
-) {
+async fn run_scenario(messages: Vec<OtapPdata>, state: &mut ProcessorState) {
     // Process all data messages.
     for msg in messages {
-        processor
-            .process(Message::PData(msg), effect_handler)
+        state
+            .processor
+            .process(Message::PData(msg), &mut state.effect_handler)
             .await
             .expect("process failed");
     }
 
     // Flush via timer tick.
-    processor
-        .process(Message::timer_tick_ctrl_msg(), effect_handler)
+    state
+        .processor
+        .process(Message::timer_tick_ctrl_msg(), &mut state.effect_handler)
         .await
         .expect("timer tick failed");
 
     // Drain the output channel to prevent backpressure.
     let mut output = Vec::new();
-    while let Ok(pdata) = output_receiver.try_recv() {
+    while let Ok(pdata) = state.output_receiver.try_recv() {
         output.push(pdata);
     }
     let _ = black_box(output);
