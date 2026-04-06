@@ -4013,18 +4013,20 @@ mod test {
         test_update_attr_to_substring_function_call_result_with_no_end_index::<KqlParser>().await
     }
 
-    async fn test_update_attr_to_concat_with_scalars<P: Parser>() {
+    async fn test_update_attr_to_concat_with_scalars<P: Parser>(concat_fn_name: &str) {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![KeyValue::new("attr", AnyValue::new_string("hello"))])
                 .finish(),
         ]);
 
-        let query = r#"logs | extend 
-            attributes["s1"] = concat(attributes["attr"], " albert"),
-            attributes["s2"] = concat(attributes["attr"], " ", "terry")
-        "#;
-        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+        let query = format!(
+            r#"logs | extend 
+            attributes["s1"] = {concat_fn_name}(attributes["attr"], " albert"),
+            attributes["s2"] = {concat_fn_name}(attributes["attr"], " ", "terry")
+        "#
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
@@ -4051,11 +4053,59 @@ mod test {
 
     #[tokio::test]
     async fn test_update_attr_to_concat_with_scalars_opl_parser() {
-        test_update_attr_to_concat_with_scalars::<OplParser>().await
+        test_update_attr_to_concat_with_scalars::<OplParser>("concat").await
     }
 
     #[tokio::test]
     async fn test_update_attr_to_concat_with_scalars_parser() {
-        test_update_attr_to_concat_with_scalars::<KqlParser>().await
+        test_update_attr_to_concat_with_scalars::<KqlParser>("strcat").await
+    }
+
+    async fn test_update_attr_to_concat_with_delim_with_scalars<P: Parser>(concat_fn_name: &str) {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr", AnyValue::new_string("hello"))])
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend 
+            attributes["s1"] = {concat_fn_name}(" ", attributes["attr"], "albert"),
+            attributes["s2"] = {concat_fn_name}(" ", attributes["attr"], "terry", "fox")
+        "#
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello")),
+                KeyValue::new("s1", AnyValue::new_string("hello albert")),
+                KeyValue::new("s2", AnyValue::new_string("hello terry fox")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_concat_with_delim_with_scalars_opl_parser() {
+        test_update_attr_to_concat_with_delim_with_scalars::<OplParser>("concat_ws").await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_concat_with_delim_with_scalars_kql_parser() {
+        test_update_attr_to_concat_with_delim_with_scalars::<KqlParser>("strcat_delim").await
     }
 }

@@ -8,11 +8,11 @@ use data_engine_expressions::{
     CollectionScalarExpression, CombineScalarExpression, ContainsLogicalExpression,
     DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
     GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
-    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, ListScalarExpression,
-    LogicalExpression, MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression,
-    NullScalarExpression, OrLogicalExpression, QueryLocation, ScalarExpression,
-    SliceScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-    TextScalarExpression, ValueAccessor,
+    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+    NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
+    ScalarExpression, SliceScalarExpression, SourceScalarExpression, StaticScalarExpression,
+    StringScalarExpression, TextScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -755,6 +755,20 @@ fn parse_function_call(
             Ok(
                 ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
                     query_location.clone(),
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(query_location, args),
+                    )),
+                )))
+                .into(),
+            )
+        }
+        "concat_ws" => {
+            // TODO validate args len > 1?
+            let delimeter = args.remove(0);
+            Ok(
+                ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                    query_location.clone(),
+                    delimeter,
                     ScalarExpression::Collection(CollectionScalarExpression::List(
                         ListScalarExpression::new(query_location, args),
                     )),
