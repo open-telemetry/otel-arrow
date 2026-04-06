@@ -10,7 +10,9 @@
 // Re-export all public items from the config crate's transport_headers module.
 pub use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
 // Re-export policy types that include capture and propagation logic.
-pub use otap_df_config::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
+pub use otap_df_config::transport_headers_policy::{
+    CaptureStats, HeaderCapturePolicy, HeaderPropagationPolicy, PropagationStats,
+};
 
 #[cfg(test)]
 mod tests {
@@ -67,7 +69,9 @@ mod tests {
             ("X-Unrelated-Header", b"should-be-ignored"),
         ];
 
-        let captured = capture_policy.capture_from_pairs(inbound_metadata.into_iter());
+        let mut captured = TransportHeaders::new();
+        let stats = capture_policy.capture_from_pairs(inbound_metadata.into_iter(), &mut captured);
+        assert!(stats.is_none());
 
         assert_eq!(
             captured.len(),
@@ -115,7 +119,8 @@ mod tests {
             }],
         );
 
-        let propagated = propagation_policy.propagate(headers_after);
+        let mut propagated = headers_after.clone();
+        let stats = propagation_policy.propagate(&mut propagated);
 
         assert_eq!(
             propagated.len(),
@@ -133,6 +138,8 @@ mod tests {
             propagated.find_by_name("authorization").next().is_none(),
             "authorization header must not be propagated"
         );
+        let stats = stats.expect("should report dropped headers");
+        assert_eq!(stats.dropped, 1);
     }
 
     /// Test that demonstrates duplicate header names are preserved throughout
@@ -147,7 +154,9 @@ mod tests {
             ("X-Forwarded-For", b"172.16.0.1"),
         ];
 
-        let captured = capture_policy.capture_from_pairs(inbound.into_iter());
+        let mut captured = TransportHeaders::new();
+        let stats = capture_policy.capture_from_pairs(inbound.into_iter(), &mut captured);
+        assert!(stats.is_none());
         assert_eq!(
             captured.len(),
             3,
@@ -165,7 +174,9 @@ mod tests {
         );
 
         let propagation_policy = HeaderPropagationPolicy::default();
-        let propagated = propagation_policy.propagate(headers);
+        let mut propagated = headers.clone();
+        let stats = propagation_policy.propagate(&mut propagated);
+        assert!(stats.is_none(), "default policy should propagate all");
         assert_eq!(propagated.len(), 3, "duplicates must survive propagation");
 
         let values: Vec<&[u8]> = propagated
@@ -185,7 +196,9 @@ mod tests {
         let binary_value: Vec<u8> = vec![0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F];
         let inbound: Vec<(&str, &[u8])> = vec![("trace-context-bin", &binary_value)];
 
-        let captured = capture_policy.capture_from_pairs(inbound.into_iter());
+        let mut captured = TransportHeaders::new();
+        let stats = capture_policy.capture_from_pairs(inbound.into_iter(), &mut captured);
+        assert!(stats.is_none());
         assert_eq!(captured.len(), 1);
         assert_eq!(captured.as_slice()[0].value_kind, ValueKind::Binary);
         assert_eq!(captured.as_slice()[0].value, binary_value);
@@ -195,7 +208,9 @@ mod tests {
 
         let headers = pdata_after.transport_headers().unwrap();
         let propagation_policy = HeaderPropagationPolicy::default();
-        let propagated = propagation_policy.propagate(headers);
+        let mut propagated = headers.clone();
+        let stats = propagation_policy.propagate(&mut propagated);
+        assert!(stats.is_none());
 
         assert_eq!(propagated.as_slice()[0].value_kind, ValueKind::Binary);
         assert_eq!(propagated.as_slice()[0].value, binary_value);

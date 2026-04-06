@@ -2100,10 +2100,16 @@ mod test {
         // Verify the node-level policy was used by checking that a
         // "x-node-header" is captured while "x-pipeline-header" is not.
         let policy = policy.unwrap();
-        let captured = policy.capture_from_pairs([("x-node-header", b"val" as &[u8])].into_iter());
+        let mut captured = otap_df_config::transport_headers::TransportHeaders::new();
+        let _ = policy.capture_from_pairs(
+            [("x-node-header", b"val" as &[u8])].into_iter(),
+            &mut captured,
+        );
         assert_eq!(captured.len(), 1);
-        let captured =
-            policy.capture_from_pairs([("x-pipeline-header", b"val" as &[u8])].into_iter());
+        let _ = policy.capture_from_pairs(
+            [("x-pipeline-header", b"val" as &[u8])].into_iter(),
+            &mut captured,
+        );
         assert_eq!(captured.len(), 0);
     }
 
@@ -2123,8 +2129,11 @@ mod test {
         assert!(policy.is_some(), "should fall back to pipeline policy");
 
         let policy = policy.unwrap();
-        let captured =
-            policy.capture_from_pairs([("x-pipeline-header", b"val" as &[u8])].into_iter());
+        let mut captured = otap_df_config::transport_headers::TransportHeaders::new();
+        let _ = policy.capture_from_pairs(
+            [("x-pipeline-header", b"val" as &[u8])].into_iter(),
+            &mut captured,
+        );
         assert_eq!(captured.len(), 1);
     }
 
@@ -2172,8 +2181,8 @@ mod test {
         headers.push(otap_df_config::transport_headers::TransportHeader::text(
             "x-test", "x-test", b"val",
         ));
-        let propagated = policy.propagate(&headers);
-        assert_eq!(propagated.len(), 1, "node policy should propagate");
+        let _ = policy.propagate(&mut headers);
+        assert_eq!(headers.len(), 1, "node policy should propagate");
     }
 
     #[test]
@@ -2196,8 +2205,8 @@ mod test {
         headers.push(otap_df_config::transport_headers::TransportHeader::text(
             "x-test", "x-test", b"val",
         ));
-        let propagated = policy.propagate(&headers);
-        assert_eq!(propagated.len(), 1, "pipeline policy should propagate");
+        let _ = policy.propagate(&mut headers);
+        assert_eq!(headers.len(), 1, "pipeline policy should propagate");
     }
 
     #[test]

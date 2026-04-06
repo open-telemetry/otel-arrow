@@ -121,6 +121,22 @@ impl TransportHeaders {
         self.headers.push(header);
     }
 
+    /// Remove all headers from the collection.
+    pub fn clear(&mut self) {
+        self.headers.clear();
+    }
+
+    /// Retain only headers for which the closure returns `true`.
+    ///
+    /// The closure receives a mutable reference, allowing in-place
+    /// modification of retained headers (e.g. renaming wire names during
+    /// propagation). Returns the number of headers removed.
+    pub(crate) fn retain_mut(&mut self, f: impl FnMut(&mut TransportHeader) -> bool) -> usize {
+        let before = self.headers.len();
+        self.headers.retain_mut(f);
+        before - self.headers.len()
+    }
+
     /// Returns `true` if there are no headers.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -219,8 +235,10 @@ mod tests {
     fn capture_empty_policy_captures_nothing() {
         let policy = HeaderCapturePolicy::default();
         let pairs = vec![("X-Tenant-Id", b"abc" as &[u8])];
-        let result = policy.capture_from_pairs(pairs.into_iter());
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
         assert!(result.is_empty());
+        assert!(stats.is_none());
     }
 
     #[test]
@@ -235,7 +253,9 @@ mod tests {
             ("X-Request-Id", b"r-456"),
             ("X-Unmatched", b"ignored"),
         ];
-        let result = policy.capture_from_pairs(pairs.into_iter());
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
+        assert!(stats.is_none());
         assert_eq!(result.len(), 2);
         assert_eq!(result.as_slice()[0].name, "tenant_id");
         assert_eq!(result.as_slice()[0].wire_name, "X-Tenant-Id");
@@ -248,7 +268,9 @@ mod tests {
         let policy = make_capture_policy(vec![rule(&["x-tenant-id"], None)]);
 
         let pairs: Vec<(&str, &[u8])> = vec![("X-TENANT-ID", b"val")];
-        let result = policy.capture_from_pairs(pairs.into_iter());
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
+        assert!(stats.is_none());
         assert_eq!(result.len(), 1);
         assert_eq!(result.as_slice()[0].name, "x-tenant-id");
         assert_eq!(result.as_slice()[0].wire_name, "X-TENANT-ID");
@@ -260,8 +282,13 @@ mod tests {
         policy.defaults.max_entries = 2;
 
         let pairs: Vec<(&str, &[u8])> = vec![("x-key", b"1"), ("x-key", b"2"), ("x-key", b"3")];
-        let result = policy.capture_from_pairs(pairs.into_iter());
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
         assert_eq!(result.len(), 2);
+        let stats = stats.expect("should report skipped headers");
+        assert_eq!(stats.skipped_max_entries, 1);
+        assert_eq!(stats.skipped_name_too_long, 0);
+        assert_eq!(stats.skipped_value_too_long, 0);
     }
 
     #[test]
@@ -270,9 +297,14 @@ mod tests {
         policy.defaults.max_value_bytes = 3;
 
         let pairs: Vec<(&str, &[u8])> = vec![("x-key", b"toolong"), ("x-key", b"ok")];
-        let result = policy.capture_from_pairs(pairs.into_iter());
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
         assert_eq!(result.len(), 1);
         assert_eq!(result.as_slice()[0].value, b"ok");
+        let stats = stats.expect("should report skipped headers");
+        assert_eq!(stats.skipped_value_too_long, 1);
+        assert_eq!(stats.skipped_max_entries, 0);
+        assert_eq!(stats.skipped_name_too_long, 0);
     }
 
     #[test]
@@ -280,7 +312,9 @@ mod tests {
         let policy = make_capture_policy(vec![rule(&["auth-token-bin"], None)]);
 
         let pairs: Vec<(&str, &[u8])> = vec![("auth-token-bin", &[0xFF, 0x00])];
-        let result = policy.capture_from_pairs(pairs.into_iter());
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
+        assert!(stats.is_none());
         assert_eq!(result.len(), 1);
         assert_eq!(result.as_slice()[0].value_kind, ValueKind::Binary);
     }
@@ -290,22 +324,23 @@ mod tests {
     #[test]
     fn propagate_all_captured_default() {
         let policy = HeaderPropagationPolicy::default();
-        let mut captured = TransportHeaders::new();
-        captured.push(TransportHeader::text(
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
             "tenant_id",
             "X-Tenant-Id",
             b"t-1".to_vec(),
         ));
-        captured.push(TransportHeader::text(
+        headers.push(TransportHeader::text(
             "request_id",
             "X-Request-Id",
             b"r-1".to_vec(),
         ));
 
-        let result = policy.propagate(&captured);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result.as_slice()[0].wire_name, "X-Tenant-Id");
-        assert_eq!(result.as_slice()[1].wire_name, "X-Request-Id");
+        let stats = policy.propagate(&mut headers);
+        assert!(stats.is_none());
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers.as_slice()[0].wire_name, "X-Tenant-Id");
+        assert_eq!(headers.as_slice()[1].wire_name, "X-Request-Id");
     }
 
     #[test]
@@ -322,21 +357,23 @@ mod tests {
             }],
         };
 
-        let mut captured = TransportHeaders::new();
-        captured.push(TransportHeader::text(
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
             "tenant_id",
             "X-Tenant-Id",
             b"t-1".to_vec(),
         ));
-        captured.push(TransportHeader::text(
+        headers.push(TransportHeader::text(
             "authorization",
             "Authorization",
             b"Bearer secret".to_vec(),
         ));
 
-        let result = policy.propagate(&captured);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result.as_slice()[0].name, "tenant_id");
+        let stats = policy.propagate(&mut headers);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers.as_slice()[0].name, "tenant_id");
+        let stats = stats.expect("should report dropped headers");
+        assert_eq!(stats.dropped, 1);
     }
 
     #[test]
@@ -356,21 +393,23 @@ mod tests {
             }],
         };
 
-        let mut captured = TransportHeaders::new();
-        captured.push(TransportHeader::text(
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
             "tenant_id",
             "X-Tenant-Id",
             b"t-1".to_vec(),
         ));
-        captured.push(TransportHeader::text(
+        headers.push(TransportHeader::text(
             "request_id",
             "X-Request-Id",
             b"r-1".to_vec(),
         ));
 
-        let result = policy.propagate(&captured);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result.as_slice()[0].name, "tenant_id");
+        let stats = policy.propagate(&mut headers);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers.as_slice()[0].name, "tenant_id");
+        let stats = stats.expect("should report dropped headers");
+        assert_eq!(stats.dropped, 1);
     }
 
     #[test]
@@ -383,16 +422,17 @@ mod tests {
             overrides: vec![],
         };
 
-        let mut captured = TransportHeaders::new();
-        captured.push(TransportHeader::text(
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
             "tenant_id",
             "X-Tenant-Id",
             b"t-1".to_vec(),
         ));
 
-        let result = policy.propagate(&captured);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result.as_slice()[0].wire_name, "tenant_id");
+        let stats = policy.propagate(&mut headers);
+        assert!(stats.is_none());
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers.as_slice()[0].wire_name, "tenant_id");
     }
 
     #[test]
@@ -405,20 +445,22 @@ mod tests {
             overrides: vec![],
         };
 
-        let mut captured = TransportHeaders::new();
-        captured.push(TransportHeader::text(
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
             "tenant_id",
             "X-Tenant-Id",
             b"t-1".to_vec(),
         ));
-        captured.push(TransportHeader::text(
+        headers.push(TransportHeader::text(
             "request_id",
             "X-Request-Id",
             b"r-1".to_vec(),
         ));
 
-        let result = policy.propagate(&captured);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result.as_slice()[0].name, "tenant_id");
+        let stats = policy.propagate(&mut headers);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers.as_slice()[0].name, "tenant_id");
+        let stats = stats.expect("should report dropped headers");
+        assert_eq!(stats.dropped, 1);
     }
 }

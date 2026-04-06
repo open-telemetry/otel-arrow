@@ -9,10 +9,54 @@
 //! Extraction and propagation are explicit and opt-in. The default behavior
 //! is not to forward any inbound headers.
 
+use std::fmt;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+
+// -- Stats types --------------------------------------------------------------
+
+/// Statistics returned by [`HeaderCapturePolicy::capture_from_pairs`] when
+/// one or more matching headers could not be captured due to policy limits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureStats {
+    /// Matching headers skipped because `max_entries` was already reached.
+    pub skipped_max_entries: usize,
+    /// Matching headers skipped because the wire name exceeded `max_name_bytes`.
+    pub skipped_name_too_long: usize,
+    /// Matching headers skipped because the value exceeded `max_value_bytes`.
+    pub skipped_value_too_long: usize,
+}
+
+impl fmt::Display for CaptureStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "capture limits exceeded: {} skipped (max_entries), {} skipped (name too long), {} skipped (value too long)",
+            self.skipped_max_entries, self.skipped_name_too_long, self.skipped_value_too_long
+        )
+    }
+}
+
+impl std::error::Error for CaptureStats {}
+
+/// Statistics returned by [`HeaderPropagationPolicy::propagate`] when
+/// one or more headers were dropped from the collection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropagationStats {
+    /// Number of headers removed from the collection.
+    pub dropped: usize,
+}
+
+impl fmt::Display for PropagationStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "propagation dropped {} header(s)", self.dropped)
+    }
+}
+
+impl std::error::Error for PropagationStats {}
 
 /// Transport headers policy controlling capture at receivers and
 /// propagation at exporters.
@@ -61,31 +105,44 @@ impl HeaderCapturePolicy {
     ///
     /// Each pair is matched against the capture rules. Only headers
     /// matching at least one rule are captured, subject to the configured
-    /// limits.
+    /// limits. The `result` collection is cleared before populating.
+    ///
+    /// Returns `None` when all matching headers were captured successfully,
+    /// or `Some(CaptureStats)` when one or more matching headers had to be
+    /// skipped due to policy limits.
     pub fn capture_from_pairs<'a>(
         &self,
         pairs: impl Iterator<Item = (&'a str, &'a [u8])>,
-    ) -> TransportHeaders {
+        result: &mut TransportHeaders,
+    ) -> Option<CaptureStats> {
+        result.clear();
+
         if self.is_empty() {
-            return TransportHeaders::new();
+            return None;
         }
 
         let defaults = &self.defaults;
-        let mut result = TransportHeaders::with_capacity(defaults.max_entries.min(16));
+        let mut skipped_max_entries: usize = 0;
+        let mut skipped_name_too_long: usize = 0;
+        let mut skipped_value_too_long: usize = 0;
 
         for (wire_name, value) in pairs {
-            if result.len() >= defaults.max_entries {
-                break;
-            }
-
             if let Some(matched_rule) = self.find_matching_rule(wire_name) {
+                // Enforce entry count limit.
+                if result.len() >= defaults.max_entries {
+                    skipped_max_entries += 1;
+                    continue;
+                }
+
                 // Enforce name length limit — drop oversized names.
                 if wire_name.len() > defaults.max_name_bytes {
+                    skipped_name_too_long += 1;
                     continue;
                 }
 
                 // Enforce value length limit — drop oversized values.
                 if value.len() > defaults.max_value_bytes {
+                    skipped_value_too_long += 1;
                     continue;
                 }
 
@@ -115,7 +172,15 @@ impl HeaderCapturePolicy {
             }
         }
 
-        result
+        if skipped_max_entries > 0 || skipped_name_too_long > 0 || skipped_value_too_long > 0 {
+            Some(CaptureStats {
+                skipped_max_entries,
+                skipped_name_too_long,
+                skipped_value_too_long,
+            })
+        } else {
+            None
+        }
     }
 
     /// Find the first capture rule whose `match_names` contains the given
@@ -228,32 +293,29 @@ impl HeaderPropagationPolicy {
         Self { default, overrides }
     }
 
-    /// Apply the propagation policy to a set of captured headers,
-    /// returning only those headers that should be sent on egress.
-    #[must_use]
-    pub fn propagate(&self, captured: &TransportHeaders) -> TransportHeaders {
-        let mut result = TransportHeaders::with_capacity(captured.len());
-
-        for header in captured.iter() {
+    /// Apply the propagation policy to a set of captured headers in-place,
+    /// removing headers that should not be sent on egress and renaming
+    /// wire names according to the configured name strategy.
+    ///
+    /// Returns `None` when all headers were propagated (none dropped),
+    /// or `Some(PropagationStats)` when one or more headers were removed.
+    pub fn propagate(&self, headers: &mut TransportHeaders) -> Option<PropagationStats> {
+        let dropped = headers.retain_mut(|header| {
             let (action, name_strategy) = self.resolve_action(header);
             if action == PropagationAction::Drop {
-                continue;
+                return false;
             }
+            if name_strategy == NameStrategy::StoredName {
+                header.wire_name.clone_from(&header.name);
+            }
+            true
+        });
 
-            let wire_name = match name_strategy {
-                NameStrategy::Preserve => header.wire_name.clone(),
-                NameStrategy::StoredName => header.name.clone(),
-            };
-
-            result.push(TransportHeader {
-                name: header.name.clone(),
-                wire_name,
-                value_kind: header.value_kind.clone(),
-                value: header.value.clone(),
-            });
+        if dropped > 0 {
+            Some(PropagationStats { dropped })
+        } else {
+            None
         }
-
-        result
     }
 
     /// Determine the action and name strategy for a single header by
