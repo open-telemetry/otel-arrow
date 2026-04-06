@@ -78,7 +78,7 @@ async fn wait_for_ready(
     max_retry: usize,
     retry_cooldown: Duration,
 ) -> Result<(), ValidationError> {
-    let readyz_url = format!("{base}/readyz");
+    let readyz_url = format!("{base}/api/v1/readyz");
     let mut last_error: Option<String> = None;
     for _attempt in 0..max_retry {
         match client.get(&readyz_url).send().await {
@@ -102,7 +102,7 @@ async fn wait_for_ready(
 
 async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, ValidationError> {
     client
-        .get(format!("{base}/telemetry/metrics"))
+        .get(format!("{base}/api/v1/telemetry/metrics"))
         .query(&[
             ("reset", "false"),
             ("keep_all_zeroes", "true"),
@@ -110,7 +110,9 @@ async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, V
         ])
         .send()
         .await
-        .map_err(|_| ValidationError::Http(format!("No Response from {base}/telemetry/metrics")))?
+        .map_err(|_| {
+            ValidationError::Http(format!("No Response from {base}/api/v1/telemetry/metrics"))
+        })?
         .error_for_status()
         .map_err(|e| ValidationError::Http(e.to_string()))?
         .json()
@@ -161,7 +163,7 @@ async fn wait_for_validation_finished(
 /// shutdown pipeline after running
 async fn shutdown_pipeline(client: &Client, base: &str) -> Result<(), ValidationError> {
     let _ = client
-        .post(format!("{base}/pipeline-groups/shutdown"))
+        .post(format!("{base}/api/v1/pipeline-groups/shutdown"))
         .send()
         .await
         .map_err(|e| ValidationError::Http(e.to_string()))?

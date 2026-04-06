@@ -31,18 +31,20 @@ use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, Schema, TimeUnit};
 use otap_df_pdata::encode::append_attribute_value;
 use otap_df_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
-use otap_df_pdata::encode::record::metrics::MetricsRecordBatchBuilder;
+use otap_df_pdata::encode::record::metrics::{
+    ExemplarsRecordBatchBuilder, MetricsRecordBatchBuilder,
+};
 use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{FieldExt, consts};
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
 use otap_df_pdata_views::views::metrics::{
-    AggregationTemporality, BucketsView, ExponentialHistogramDataPointView, HistogramDataPointView,
-    MetricView, NumberDataPointView, SummaryDataPointView, Value, ValueAtQuantileView,
+    AggregationTemporality, BucketsView, ExemplarView, ExponentialHistogramDataPointView,
+    HistogramDataPointView, MetricView, NumberDataPointView, SummaryDataPointView, Value,
+    ValueAtQuantileView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-
-use super::identity::MetricId;
+use otap_df_telemetry::otel_warn;
 
 /// Snapshot of builder positions, used to slice back to the last valid position
 /// of each payload on error.
@@ -53,18 +55,23 @@ pub struct Checkpoint {
     scope_attrs: usize,
     ndp: usize,
     ndp_attrs: usize,
+    ndp_exemplars: usize,
+    ndp_exemplar_attrs: usize,
     hdp: usize,
     hdp_attrs: usize,
+    hdp_exemplars: usize,
+    hdp_exemplar_attrs: usize,
     ehdp: usize,
     ehdp_attrs: usize,
+    ehdp_exemplars: usize,
+    ehdp_exemplar_attrs: usize,
     sdp: usize,
     sdp_attrs: usize,
 }
 
+const ATTRIBUTE_ENCODE_FAILED_EVENT: &str = "temporal_reaggregation.attribute.encode_failed";
+
 /// Record batch builders for all metric signal payload types.
-///
-/// TODO: Exemplars are not currently supported and just dropped by this
-/// processor.
 pub struct MetricSignalBuilder {
     metrics: MetricsRecordBatchBuilder,
     resource_attrs: AttributesRecordBatchBuilder<u16>,
@@ -77,6 +84,12 @@ pub struct MetricSignalBuilder {
     histogram_dps: HistogramDataPointBuilder,
     exp_histogram_dps: ExpHistogramDataPointBuilder,
     summary_dps: SummaryDataPointBuilder,
+    ndp_exemplars: ExemplarsRecordBatchBuilder,
+    ndp_exemplar_attrs: AttributesRecordBatchBuilder<u32>,
+    hdp_exemplars: ExemplarsRecordBatchBuilder,
+    hdp_exemplar_attrs: AttributesRecordBatchBuilder<u32>,
+    ehdp_exemplars: ExemplarsRecordBatchBuilder,
+    ehdp_exemplar_attrs: AttributesRecordBatchBuilder<u32>,
 }
 
 impl MetricSignalBuilder {
@@ -93,6 +106,12 @@ impl MetricSignalBuilder {
             histogram_dps: HistogramDataPointBuilder::new(),
             exp_histogram_dps: ExpHistogramDataPointBuilder::new(),
             summary_dps: SummaryDataPointBuilder::new(),
+            ndp_exemplars: ExemplarsRecordBatchBuilder::new(),
+            ndp_exemplar_attrs: AttributesRecordBatchBuilder::new(),
+            hdp_exemplars: ExemplarsRecordBatchBuilder::new(),
+            hdp_exemplar_attrs: AttributesRecordBatchBuilder::new(),
+            ehdp_exemplars: ExemplarsRecordBatchBuilder::new(),
+            ehdp_exemplar_attrs: AttributesRecordBatchBuilder::new(),
         }
     }
 
@@ -104,9 +123,10 @@ impl MetricSignalBuilder {
     /// discard some changes if we couldn't fully append an incoming pdata.
     pub fn finish(
         &mut self,
-        checkpoint: Option<&Checkpoint>,
+        checkpoint: Option<Checkpoint>,
     ) -> otap_df_pdata::error::Result<OtapArrowRecords> {
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
+        let checkpoint = checkpoint.as_ref();
 
         finish_payload(
             self.metrics.finish(),
@@ -138,6 +158,18 @@ impl MetricSignalBuilder {
             &mut records,
             checkpoint.map(|c| c.ndp_attrs),
         )?;
+        finish_exemplar_payload(
+            self.ndp_exemplars.finish(),
+            ArrowPayloadType::NumberDpExemplars,
+            &mut records,
+            checkpoint.map(|c| c.ndp_exemplars),
+        )?;
+        finish_payload(
+            self.ndp_exemplar_attrs.finish(),
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            &mut records,
+            checkpoint.map(|c| c.ndp_exemplar_attrs),
+        )?;
         finish_payload(
             self.histogram_dps.finish(),
             ArrowPayloadType::HistogramDataPoints,
@@ -150,6 +182,18 @@ impl MetricSignalBuilder {
             &mut records,
             checkpoint.map(|c| c.hdp_attrs),
         )?;
+        finish_exemplar_payload(
+            self.hdp_exemplars.finish(),
+            ArrowPayloadType::HistogramDpExemplars,
+            &mut records,
+            checkpoint.map(|c| c.hdp_exemplars),
+        )?;
+        finish_payload(
+            self.hdp_exemplar_attrs.finish(),
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            &mut records,
+            checkpoint.map(|c| c.hdp_exemplar_attrs),
+        )?;
         finish_payload(
             self.exp_histogram_dps.finish(),
             ArrowPayloadType::ExpHistogramDataPoints,
@@ -161,6 +205,18 @@ impl MetricSignalBuilder {
             ArrowPayloadType::ExpHistogramDpAttrs,
             &mut records,
             checkpoint.map(|c| c.ehdp_attrs),
+        )?;
+        finish_exemplar_payload(
+            self.ehdp_exemplars.finish(),
+            ArrowPayloadType::ExpHistogramDpExemplars,
+            &mut records,
+            checkpoint.map(|c| c.ehdp_exemplars),
+        )?;
+        finish_payload(
+            self.ehdp_exemplar_attrs.finish(),
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            &mut records,
+            checkpoint.map(|c| c.ehdp_exemplar_attrs),
         )?;
         finish_payload(
             self.summary_dps.finish(),
@@ -186,10 +242,16 @@ impl MetricSignalBuilder {
             scope_attrs: self.scope_attrs.len(),
             ndp: self.number_dps.id.len(),
             ndp_attrs: self.ndp_attrs.len(),
+            ndp_exemplars: self.ndp_exemplars.len(),
+            ndp_exemplar_attrs: self.ndp_exemplar_attrs.len(),
             hdp: self.histogram_dps.id.len(),
             hdp_attrs: self.hdp_attrs.len(),
+            hdp_exemplars: self.hdp_exemplars.len(),
+            hdp_exemplar_attrs: self.hdp_exemplar_attrs.len(),
             ehdp: self.exp_histogram_dps.id.len(),
             ehdp_attrs: self.ehdp_attrs.len(),
+            ehdp_exemplars: self.ehdp_exemplars.len(),
+            ehdp_exemplar_attrs: self.ehdp_exemplar_attrs.len(),
             sdp: self.summary_dps.id.len(),
             sdp_attrs: self.summary_attrs.len(),
         }
@@ -207,13 +269,22 @@ impl MetricSignalBuilder {
         self.histogram_dps.clear();
         self.exp_histogram_dps.clear();
         self.summary_dps.clear();
+        self.ndp_exemplars = ExemplarsRecordBatchBuilder::new();
+        self.ndp_exemplar_attrs = AttributesRecordBatchBuilder::new();
+        self.hdp_exemplars = ExemplarsRecordBatchBuilder::new();
+        self.hdp_exemplar_attrs = AttributesRecordBatchBuilder::new();
+        self.ehdp_exemplars = ExemplarsRecordBatchBuilder::new();
+        self.ehdp_exemplar_attrs = AttributesRecordBatchBuilder::new();
     }
 
     /// Append resource attributes for a newly seen resource.
     pub fn append_resource<R: ResourceView>(&mut self, id: u16, view: &R) {
         for attr in view.attributes() {
             self.resource_attrs.append_parent_id(&id);
-            let _ = append_attribute_value(&mut self.resource_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.resource_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.resource_attrs.any_values_builder.append_empty();
+            }
         }
     }
 
@@ -221,49 +292,59 @@ impl MetricSignalBuilder {
     pub fn append_scope<S: InstrumentationScopeView>(&mut self, id: u16, view: &S) {
         for attr in view.attributes() {
             self.scope_attrs.append_parent_id(&id);
-            let _ = append_attribute_value(&mut self.scope_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.scope_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.scope_attrs.any_values_builder.append_empty();
+            }
         }
     }
 
     /// Append a complete metric row for a newly seen metric.
-    pub fn append_metric<M: MetricView>(
+    pub fn append_metric<M: MetricView, R: ResourceView, S: InstrumentationScopeView>(
         &mut self,
         id: u16,
-        metric_id: &MetricId<'_>,
         view: &M,
-        resource_meta: &ResourceMeta,
-        scope_meta: &ScopeMeta,
+        data_type: u8,
+        aggregation_temporality: u8,
+        is_monotonic: bool,
+        resource_otap_id: u16,
+        resource_schema_url: &[u8],
+        resource_view: Option<&R>,
+        scope_otap_id: u16,
+        scope_view: Option<&S>,
         scope_schema_url: &[u8],
     ) {
         self.metrics.append_id(id);
-        self.metrics.resource.append_id(Some(resource_meta.id));
+        self.metrics.resource.append_id(Some(resource_otap_id));
         self.metrics
             .resource
-            .append_schema_url(Some(&resource_meta.schema_url));
-        self.metrics
-            .resource
-            .append_dropped_attributes_count(resource_meta.dropped_attributes_count);
-        self.metrics.scope.append_id(Some(scope_meta.id));
-        self.metrics.scope.append_name(Some(&scope_meta.name));
-        self.metrics.scope.append_version(Some(&scope_meta.version));
+            .append_schema_url(Some(resource_schema_url));
+        self.metrics.resource.append_dropped_attributes_count(
+            resource_view.map_or(0, |r| r.dropped_attributes_count()),
+        );
+        self.metrics.scope.append_id(Some(scope_otap_id));
         self.metrics
             .scope
-            .append_dropped_attributes_count(scope_meta.dropped_attributes_count);
+            .append_name(scope_view.and_then(|s| s.name()));
+        self.metrics
+            .scope
+            .append_version(scope_view.and_then(|s| s.version()));
+        self.metrics.scope.append_dropped_attributes_count(
+            scope_view.map_or(0, |s| s.dropped_attributes_count()),
+        );
         self.metrics.append_scope_schema_url(scope_schema_url);
-        self.metrics.append_metric_type(metric_id.data_type);
+        self.metrics.append_metric_type(data_type);
         self.metrics.append_name(view.name());
         self.metrics.append_description(view.description());
         self.metrics.append_unit(view.unit());
 
-        let agg_temp =
-            if metric_id.aggregation_temporality == AggregationTemporality::Unspecified as u8 {
-                None
-            } else {
-                Some(metric_id.aggregation_temporality as i32)
-            };
+        let agg_temp = if aggregation_temporality == AggregationTemporality::Unspecified as u8 {
+            None
+        } else {
+            Some(aggregation_temporality as i32)
+        };
         self.metrics.append_aggregation_temporality(agg_temp);
-        self.metrics
-            .append_is_monotonic(Some(metric_id.is_monotonic));
+        self.metrics.append_is_monotonic(Some(is_monotonic));
     }
 
     /// Append a new number data point row including its attributes.
@@ -276,7 +357,10 @@ impl MetricSignalBuilder {
         let row = self.number_dps.append(dp_id, metric_id, dp);
         for attr in dp.attributes() {
             self.ndp_attrs.append_parent_id(&dp_id);
-            let _ = append_attribute_value(&mut self.ndp_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.ndp_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.ndp_attrs.any_values_builder.append_empty();
+            }
         }
         row
     }
@@ -299,7 +383,10 @@ impl MetricSignalBuilder {
         let row = self.histogram_dps.append(dp_id, metric_id, dp);
         for attr in dp.attributes() {
             self.hdp_attrs.append_parent_id(&dp_id);
-            let _ = append_attribute_value(&mut self.hdp_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.hdp_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.hdp_attrs.any_values_builder.append_empty();
+            }
         }
         row
     }
@@ -319,7 +406,10 @@ impl MetricSignalBuilder {
         let row = self.exp_histogram_dps.append(dp_id, metric_id, dp);
         for attr in dp.attributes() {
             self.ehdp_attrs.append_parent_id(&dp_id);
-            let _ = append_attribute_value(&mut self.ehdp_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.ehdp_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.ehdp_attrs.any_values_builder.append_empty();
+            }
         }
         row
     }
@@ -343,7 +433,10 @@ impl MetricSignalBuilder {
         let row = self.summary_dps.append(dp_id, metric_id, dp);
         for attr in dp.attributes() {
             self.summary_attrs.append_parent_id(&dp_id);
-            let _ = append_attribute_value(&mut self.summary_attrs, &attr);
+            if let Err(e) = append_attribute_value(&mut self.summary_attrs, &attr) {
+                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+                self.summary_attrs.any_values_builder.append_empty();
+            }
         }
         row
     }
@@ -351,6 +444,68 @@ impl MetricSignalBuilder {
     /// Replace an existing summary data point row with newer data.
     pub fn replace_summary_dp<V: SummaryDataPointView>(&mut self, row: usize, dp: &V) {
         self.summary_dps.replace(row, dp);
+    }
+
+    /// Append exemplars for a number data point. The `dp_id` is the OTAP ID
+    /// of the parent data point row. The caller provides the exemplar ID
+    /// counter which is incremented for each exemplar appended.
+    pub fn append_number_dp_exemplars<V: NumberDataPointView>(
+        &mut self,
+        dp_id: u32,
+        dp: &V,
+        next_exemplar_id: &mut u32,
+    ) -> Result<(), super::ProcessPdataError> {
+        for exemplar in dp.exemplars() {
+            let id = super::next_id_32(next_exemplar_id)?;
+            append_exemplar(
+                &mut self.ndp_exemplars,
+                &mut self.ndp_exemplar_attrs,
+                id,
+                dp_id,
+                &exemplar,
+            );
+        }
+        Ok(())
+    }
+
+    /// Append exemplars for a histogram data point.
+    pub fn append_histogram_dp_exemplars<V: HistogramDataPointView>(
+        &mut self,
+        dp_id: u32,
+        dp: &V,
+        next_exemplar_id: &mut u32,
+    ) -> Result<(), super::ProcessPdataError> {
+        for exemplar in dp.exemplars() {
+            let id = super::next_id_32(next_exemplar_id)?;
+            append_exemplar(
+                &mut self.hdp_exemplars,
+                &mut self.hdp_exemplar_attrs,
+                id,
+                dp_id,
+                &exemplar,
+            );
+        }
+        Ok(())
+    }
+
+    /// Append exemplars for an exponential histogram data point.
+    pub fn append_exp_histogram_dp_exemplars<V: ExponentialHistogramDataPointView>(
+        &mut self,
+        dp_id: u32,
+        dp: &V,
+        next_exemplar_id: &mut u32,
+    ) -> Result<(), super::ProcessPdataError> {
+        for exemplar in dp.exemplars() {
+            let id = super::next_id_32(next_exemplar_id)?;
+            append_exemplar(
+                &mut self.ehdp_exemplars,
+                &mut self.ehdp_exemplar_attrs,
+                id,
+                dp_id,
+                &exemplar,
+            );
+        }
+        Ok(())
     }
 }
 
@@ -375,6 +530,67 @@ fn finish_payload(
         records.set(payload_type, rb)?;
     }
     Ok(())
+}
+
+/// Finish building an exemplar payload type and set it on the output records.
+///
+/// Like [`finish_payload`] but the exemplar builder uses adaptive schemas so
+/// the `finish` result may produce an empty batch that we can skip.
+fn finish_exemplar_payload(
+    result: Result<RecordBatch, arrow::error::ArrowError>,
+    payload_type: ArrowPayloadType,
+    records: &mut OtapArrowRecords,
+    truncate_len: Option<usize>,
+) -> otap_df_pdata::error::Result<()> {
+    // safety: So long as the aggregation logic is keeping arrays
+    // the same length, this operation should be infallible.
+    let rb = result.expect("Valid record batch");
+    let rb = match truncate_len {
+        Some(len) if len < rb.num_rows() => rb.slice(0, len),
+        _ => rb,
+    };
+    if rb.num_rows() > 0 {
+        records.set(payload_type, rb)?;
+    }
+    Ok(())
+}
+
+/// Append a single exemplar row to the given exemplar builder and its attribute
+/// builder. The caller is responsible for allocating the `id`.
+fn append_exemplar<E: ExemplarView>(
+    exemplar_builder: &mut ExemplarsRecordBatchBuilder,
+    attr_builder: &mut AttributesRecordBatchBuilder<u32>,
+    id: u32,
+    parent_dp_id: u32,
+    exemplar: &E,
+) {
+    exemplar_builder.append_id(id);
+    exemplar_builder.append_parent_id(parent_dp_id);
+    exemplar_builder.append_time_unix_nano(exemplar.time_unix_nano() as i64);
+
+    let (double, integer) = match exemplar.value() {
+        Some(Value::Double(val)) => (Some(val), None),
+        Some(Value::Integer(val)) => (None, Some(val)),
+        None => (None, None),
+    };
+    exemplar_builder.append_double_value(double);
+    exemplar_builder.append_int_value(integer);
+
+    // safety: This should only fail if span id or trace_id are the wrong width
+    exemplar_builder
+        .append_span_id(exemplar.span_id().unwrap_or(&[0; 8]))
+        .expect("SpanId type guarantees 8-byte width");
+    exemplar_builder
+        .append_trace_id(exemplar.trace_id().unwrap_or(&[0; 16]))
+        .expect("TraceId type guarantees 16-byte width");
+
+    for kv in exemplar.filtered_attributes() {
+        attr_builder.append_parent_id(&id);
+        if let Err(e) = append_attribute_value(attr_builder, &kv) {
+            otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+            attr_builder.any_values_builder.append_empty();
+        }
+    }
 }
 
 /// A column of nullable primitive values that supports random-access writes.
@@ -1107,11 +1323,7 @@ static SUMMARY_DP_SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| {
 });
 
 fn empty_record_batch() -> Result<RecordBatch, arrow::error::ArrowError> {
-    RecordBatch::try_new_with_options(
-        Arc::new(Schema::empty()),
-        vec![],
-        &arrow::array::RecordBatchOptions::new().with_row_count(Some(0)),
-    )
+    Ok(RecordBatch::new_empty(Schema::empty().into()))
 }
 
 /// Write `value` into `vec` at `index`. Appends if `index == vec.len()`,
@@ -1171,23 +1383,309 @@ fn build_list_f64(data: &[Vec<f64>], field_name: &str) -> ListArray {
     )
 }
 
-/// Metadata for a unique resource, stored alongside its OTAP batch ID.
-pub(super) struct ResourceMeta {
-    pub(super) id: u16,
-    pub(super) schema_url: Vec<u8>,
-    pub(super) dropped_attributes_count: u32,
-}
-
-/// Metadata for a unique instrumentation scope, stored alongside its OTAP batch ID.
-pub(super) struct ScopeMeta {
-    pub(super) id: u16,
-    pub(super) name: Vec<u8>,
-    pub(super) version: Vec<u8>,
-    pub(super) dropped_attributes_count: u32,
-}
-
 /// Tracks the builder row index and latest timestamp for a data point stream.
 pub(super) struct StreamMeta {
     pub(super) dp_row_index: usize,
     pub(super) time_unix_nano: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_pdata::otap::OtapBatchStore;
+    use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
+    use otap_df_pdata_views::views::metrics::{DataPointFlags, ExemplarView, NumberDataPointView};
+    use otap_df_pdata_views::views::resource::ResourceView;
+
+    /// A flexible mock AnyValueView that can represent different value types.
+    /// Used to test CBOR encoding failures with invalid UTF-8 in nested structures.
+    #[derive(Clone)]
+    enum MockAnyValue {
+        /// A string value with invalid UTF-8 bytes
+        InvalidUtf8,
+        /// An array containing an element with invalid UTF-8
+        ArrayWithInvalidUtf8,
+        /// A valid string value
+        Valid(&'static [u8]),
+    }
+
+    #[rustfmt::skip]
+    impl<'a> AnyValueView<'a> for MockAnyValue {
+        type KeyValue = MockKeyValue;
+        type ArrayIter<'arr>
+            = std::vec::IntoIter<MockAnyValue>
+        where
+            Self: 'arr;
+        type KeyValueIter<'kv>
+            = std::iter::Empty<Self::KeyValue>
+        where
+            Self: 'kv;
+
+        fn value_type(&self) -> ValueType {
+            match self {
+                MockAnyValue::InvalidUtf8 | MockAnyValue::Valid(_) => ValueType::String,
+                MockAnyValue::ArrayWithInvalidUtf8 => ValueType::Array,
+            }
+        }
+
+        fn as_string(&self) -> Option<Str<'_>> {
+            match self {
+                MockAnyValue::InvalidUtf8 => Some(&[0xFF, 0xFE, 0x82]),
+                MockAnyValue::Valid(s) => Some(s),
+                MockAnyValue::ArrayWithInvalidUtf8 => None,
+            }
+        }
+
+        fn as_bool(&self) -> Option<bool> { None }
+        fn as_int64(&self) -> Option<i64> { None }
+        fn as_double(&self) -> Option<f64> { None }
+        fn as_bytes(&self) -> Option<&[u8]> { None }
+
+        fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
+            match self {
+                MockAnyValue::ArrayWithInvalidUtf8 => {
+                    // Return an array containing a string with invalid UTF-8
+                    Some(vec![MockAnyValue::InvalidUtf8].into_iter())
+                }
+                _ => None,
+            }
+        }
+
+        fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> { None }
+    }
+
+    /// Mock KeyValue (attribute) that can hold different value types
+    #[derive(Clone)]
+    struct MockKeyValue {
+        key: &'static [u8],
+        value: MockAnyValue,
+    }
+
+    impl MockKeyValue {
+        fn with_invalid_array() -> Self {
+            Self {
+                key: b"test_key",
+                value: MockAnyValue::ArrayWithInvalidUtf8,
+            }
+        }
+
+        fn with_valid_string(key: &'static [u8], value: &'static [u8]) -> Self {
+            Self {
+                key,
+                value: MockAnyValue::Valid(value),
+            }
+        }
+    }
+
+    impl AttributeView for MockKeyValue {
+        type Val<'val>
+            = MockAnyValue
+        where
+            Self: 'val;
+
+        fn key(&self) -> Str<'_> {
+            self.key
+        }
+
+        fn value(&self) -> Option<Self::Val<'_>> {
+            Some(self.value.clone())
+        }
+    }
+
+    /// Mock resource with configurable attributes
+    struct MockResource {
+        attrs: Vec<MockKeyValue>,
+    }
+
+    impl ResourceView for MockResource {
+        type Attribute<'att>
+            = MockKeyValue
+        where
+            Self: 'att;
+        type AttributesIter<'att>
+            = std::vec::IntoIter<MockKeyValue>
+        where
+            Self: 'att;
+
+        fn attributes(&self) -> Self::AttributesIter<'_> {
+            self.attrs.clone().into_iter()
+        }
+        fn dropped_attributes_count(&self) -> u32 {
+            0
+        }
+    }
+
+    /// Mock NumberDataPointView with configurable attributes
+    struct MockNumberDataPoint {
+        attrs: Vec<MockKeyValue>,
+    }
+
+    /// Mock exemplar (unused in these tests but needed for trait bounds)
+    struct MockExemplar;
+
+    #[rustfmt::skip]
+    impl ExemplarView for MockExemplar {
+        type Attribute<'att>
+            = MockKeyValue
+        where
+            Self: 'att;
+        type AttributeIter<'att>
+            = std::iter::Empty<MockKeyValue>
+        where
+            Self: 'att;
+
+        fn time_unix_nano(&self) -> u64 { 0 }
+        fn value(&self) -> Option<Value> { None }
+        fn span_id(&self) -> Option<&[u8; 8]> { None }
+        fn trace_id(&self) -> Option<&[u8; 16]> { None }
+        fn filtered_attributes(&self) -> Self::AttributeIter<'_> { std::iter::empty() }
+    }
+
+    impl NumberDataPointView for MockNumberDataPoint {
+        type Attribute<'att>
+            = MockKeyValue
+        where
+            Self: 'att;
+        type AttributeIter<'att>
+            = std::vec::IntoIter<MockKeyValue>
+        where
+            Self: 'att;
+        type Exemplar<'ex>
+            = MockExemplar
+        where
+            Self: 'ex;
+        type ExemplarIter<'ex>
+            = std::iter::Empty<MockExemplar>
+        where
+            Self: 'ex;
+
+        fn start_time_unix_nano(&self) -> u64 {
+            1000
+        }
+
+        fn time_unix_nano(&self) -> u64 {
+            2000
+        }
+
+        fn value(&self) -> Option<Value> {
+            Some(Value::Double(42.0))
+        }
+
+        fn flags(&self) -> DataPointFlags {
+            DataPointFlags::new(0)
+        }
+
+        fn attributes(&self) -> Self::AttributeIter<'_> {
+            self.attrs.clone().into_iter()
+        }
+
+        fn exemplars(&self) -> Self::ExemplarIter<'_> {
+            std::iter::empty()
+        }
+    }
+
+    #[test]
+    fn test_append_resource_with_invalid_utf8_attribute_keeps_columns_aligned() {
+        let mut builder = MetricSignalBuilder::new();
+
+        // Create a resource with an attribute that will fail CBOR encoding
+        let resource = MockResource {
+            attrs: vec![MockKeyValue::with_invalid_array()],
+        };
+
+        // Append the resource - should not panic
+        builder.append_resource(0, &resource);
+
+        // The builder should have compensated for the error by appending an empty value
+        // Finish should succeed without panicking due to column length mismatch
+        let result = builder.finish(None);
+        assert!(
+            result.is_ok(),
+            "finish should succeed even with invalid attributes"
+        );
+
+        // Verify the resource_attrs payload was created (has 1 row with empty value)
+        let records = result.unwrap();
+        if let OtapArrowRecords::Metrics(metrics) = &records {
+            let attrs_rb = metrics.get(ArrowPayloadType::ResourceAttrs);
+            assert!(attrs_rb.is_some(), "resource attributes should be present");
+            let attrs_rb = attrs_rb.unwrap();
+            assert_eq!(
+                attrs_rb.num_rows(),
+                1,
+                "should have one attribute row (with empty value substituted)"
+            );
+        } else {
+            panic!("expected Metrics records");
+        }
+    }
+
+    #[test]
+    fn test_append_number_dp_with_invalid_utf8_attribute_keeps_columns_aligned() {
+        let mut builder = MetricSignalBuilder::new();
+
+        // Create a data point with an attribute that will fail CBOR encoding
+        let dp = MockNumberDataPoint {
+            attrs: vec![MockKeyValue::with_invalid_array()],
+        };
+
+        // Append a number data point with the invalid attribute
+        let row = builder.append_number_dp(0, 0, &dp);
+        assert_eq!(row, 0, "should return row index 0");
+
+        // Finish should succeed without panicking due to column length mismatch
+        let result = builder.finish(None);
+        assert!(
+            result.is_ok(),
+            "finish should succeed even with invalid attributes"
+        );
+
+        // Verify the ndp_attrs payload was created
+        let records = result.unwrap();
+        if let OtapArrowRecords::Metrics(metrics) = &records {
+            let attrs_rb = metrics.get(ArrowPayloadType::NumberDpAttrs);
+            assert!(
+                attrs_rb.is_some(),
+                "number data point attributes should be present"
+            );
+            let attrs_rb = attrs_rb.unwrap();
+            assert_eq!(
+                attrs_rb.num_rows(),
+                1,
+                "should have one attribute row (with empty value substituted)"
+            );
+        } else {
+            panic!("expected Metrics records");
+        }
+    }
+
+    #[test]
+    fn test_multiple_attributes_with_some_invalid_keeps_columns_aligned() {
+        // This tests that when we have multiple attributes and only some fail,
+        // the columns still stay aligned.
+        let mut builder = MetricSignalBuilder::new();
+
+        // Create a resource with two attributes: one valid, one invalid
+        let resource = MockResource {
+            attrs: vec![
+                MockKeyValue::with_valid_string(b"valid_key", b"valid_value"),
+                MockKeyValue::with_invalid_array(),
+            ],
+        };
+
+        builder.append_resource(0, &resource);
+
+        let result = builder.finish(None);
+        assert!(result.is_ok(), "finish should succeed");
+
+        let records = result.unwrap();
+        if let OtapArrowRecords::Metrics(metrics) = &records {
+            let attrs_rb = metrics.get(ArrowPayloadType::ResourceAttrs);
+            assert!(attrs_rb.is_some(), "resource attributes should be present");
+            let attrs_rb = attrs_rb.unwrap();
+            assert_eq!(attrs_rb.num_rows(), 2, "should have two attribute rows");
+        } else {
+            panic!("expected Metrics records");
+        }
+    }
 }

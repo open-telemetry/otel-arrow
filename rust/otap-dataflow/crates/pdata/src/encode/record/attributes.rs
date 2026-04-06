@@ -101,6 +101,9 @@ where
         }
 
         self.any_values_builder.finish(&mut columns, &mut fields)?;
+        if fields.is_empty() {
+            return Ok(RecordBatch::new_empty(Arc::new(Schema::empty())));
+        }
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
     }
 }
@@ -180,6 +183,9 @@ where
         }
 
         self.any_values_builder.finish(&mut columns, &mut fields)?;
+        if fields.is_empty() {
+            return Ok(RecordBatch::new_empty(Arc::new(Schema::empty())));
+        }
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
     }
 }

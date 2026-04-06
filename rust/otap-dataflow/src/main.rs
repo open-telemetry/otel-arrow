@@ -4,8 +4,14 @@
 //! Create and run a multi-core pipeline
 
 use clap::Parser;
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_config::policy::{CoreAllocation, CoreRange};
+use otap_df_config::config_provider::{ConfigFormat, resolve_config};
+use otap_df_config::engine::{
+    HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
+};
+use otap_df_config::node::NodeKind;
+use otap_df_config::pipeline::PipelineConfig;
+use otap_df_config::policy::{CoreAllocation, CoreRange, ResourcesPolicy};
+use otap_df_config::{PipelineGroupId, PipelineId};
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (contrib nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
@@ -28,6 +34,7 @@ fn memory_allocator_name() -> &'static str {
         "system"
     }
 }
+use sysinfo::System;
 
 #[cfg(all(
     not(windows),
@@ -100,13 +107,15 @@ static GLOBAL: Jemalloc = Jemalloc;
     after_help = startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name()),
     after_long_help = concat!(
         "EXAMPLES:\n",
-        "  ", env!("CARGO_BIN_NAME"), " --config  config.yaml\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config file:/etc/config.yaml\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config env:MY_CONFIG_VAR\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config /path/to/config.yaml\n",
     )
 )]
 struct Args {
-    /// Path to the engine configuration file (.json, .yaml, or .yml)
-    #[arg(short = 'c', long, value_name = "FILE")]
-    config: PathBuf,
+    /// Configuration URI (file:/path, env:VAR, or bare path). If omitted, config.yaml in the current directory is tried.
+    #[arg(short = 'c', long, value_name = "URI")]
+    config: Option<String>,
 
     /// Number of cores to use (0 for all available cores)
     #[arg(long, conflicts_with = "core_id_range")]
@@ -191,13 +200,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
     );
 
-    let mut engine_cfg = OtelDataflowSpec::from_file(&config)?;
-    startup::apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
+    let resolved = resolve_config(config.as_deref())?;
+    let mut engine_cfg = match resolved.format {
+        ConfigFormat::Json => OtelDataflowSpec::from_json(&resolved.content)?,
+        ConfigFormat::Yaml => OtelDataflowSpec::from_yaml(&resolved.content)?,
+    };
+    apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
 
     startup::validate_engine_components(&engine_cfg, &OTAP_PIPELINE_FACTORY)?;
 
     if validate_and_exit {
-        println!("Configuration '{}' is valid.", config.display());
+        println!("Configuration '{}' is valid.", resolved.source);
         std::process::exit(0);
     }
 
@@ -219,6 +232,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use clap::error::ErrorKind;
+    use otap_df_config::policy::Policies;
+
+    fn minimal_engine_yaml() -> &'static str {
+        r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:18080"
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+    }
 
     #[test]
     fn parse_core_range_ok() {
@@ -293,16 +330,14 @@ mod tests {
             "--validate-and-exit",
         ]);
         assert!(args.validate_and_exit);
-        assert_eq!(args.config, PathBuf::from("config.yaml"));
+        assert_eq!(args.config.as_deref(), Some("config.yaml"));
     }
 
     #[test]
-    fn missing_config_even_with_validate_flag() {
-        let result = Args::try_parse_from(["df_engine", "--validate-and-exit"]);
-        match result {
-            Ok(_) => panic!("Expected missing required argument error"),
-            Err(err) => assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument),
-        }
+    fn config_is_optional() {
+        let args = Args::parse_from(["df_engine", "--validate-and-exit"]);
+        assert!(args.config.is_none());
+        assert!(args.validate_and_exit);
     }
 
     #[test]
