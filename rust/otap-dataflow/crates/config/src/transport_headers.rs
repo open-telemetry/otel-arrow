@@ -126,17 +126,6 @@ impl TransportHeaders {
         self.headers.clear();
     }
 
-    /// Retain only headers for which the closure returns `true`.
-    ///
-    /// The closure receives a mutable reference, allowing in-place
-    /// modification of retained headers (e.g. renaming wire names during
-    /// propagation). Returns the number of headers removed.
-    pub(crate) fn retain_mut(&mut self, f: impl FnMut(&mut TransportHeader) -> bool) -> usize {
-        let before = self.headers.len();
-        self.headers.retain_mut(f);
-        before - self.headers.len()
-    }
-
     /// Returns `true` if there are no headers.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -336,11 +325,10 @@ mod tests {
             b"r-1".to_vec(),
         ));
 
-        let stats = policy.propagate(&mut headers);
-        assert!(stats.is_none());
-        assert_eq!(headers.len(), 2);
-        assert_eq!(headers.as_slice()[0].wire_name, "X-Tenant-Id");
-        assert_eq!(headers.as_slice()[1].wire_name, "X-Request-Id");
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 2);
+        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
+        assert_eq!(propagated[1].egress_name, "X-Request-Id");
     }
 
     #[test]
@@ -369,11 +357,9 @@ mod tests {
             b"Bearer secret".to_vec(),
         ));
 
-        let stats = policy.propagate(&mut headers);
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers.as_slice()[0].name, "tenant_id");
-        let stats = stats.expect("should report dropped headers");
-        assert_eq!(stats.dropped, 1);
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
     }
 
     #[test]
@@ -405,11 +391,9 @@ mod tests {
             b"r-1".to_vec(),
         ));
 
-        let stats = policy.propagate(&mut headers);
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers.as_slice()[0].name, "tenant_id");
-        let stats = stats.expect("should report dropped headers");
-        assert_eq!(stats.dropped, 1);
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
     }
 
     #[test]
@@ -429,10 +413,9 @@ mod tests {
             b"t-1".to_vec(),
         ));
 
-        let stats = policy.propagate(&mut headers);
-        assert!(stats.is_none());
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers.as_slice()[0].wire_name, "tenant_id");
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].egress_name, "tenant_id");
     }
 
     #[test]
@@ -457,10 +440,8 @@ mod tests {
             b"r-1".to_vec(),
         ));
 
-        let stats = policy.propagate(&mut headers);
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers.as_slice()[0].name, "tenant_id");
-        let stats = stats.expect("should report dropped headers");
-        assert_eq!(stats.dropped, 1);
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
     }
 }

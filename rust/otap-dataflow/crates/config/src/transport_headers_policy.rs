@@ -8,6 +8,8 @@
 //!
 //! Extraction and propagation are explicit and opt-in. The default behavior
 //! is not to forward any inbound headers.
+//!
+//! TODO: Implement the sensitive capability for headers
 
 use std::fmt;
 
@@ -42,21 +44,20 @@ impl fmt::Display for CaptureStats {
 
 impl std::error::Error for CaptureStats {}
 
-/// Statistics returned by [`HeaderPropagationPolicy::propagate`] when
-/// one or more headers were dropped from the collection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PropagationStats {
-    /// Number of headers removed from the collection.
-    pub dropped: usize,
+/// A single header selected for propagation
+#[derive(Debug)]
+pub struct PropagatedHeader<'a> {
+    /// The wire name to use on the outbound request.
+    ///
+    /// Points to `TransportHeader::wire_name` when the name strategy
+    /// is [`NameStrategy::Preserve`], or `TransportHeader::name` when
+    /// [`NameStrategy::StoredName`].
+    pub header_name: &'a str,
+    /// Whether the value is text or binary.
+    pub value_kind: &'a ValueKind,
+    /// Raw value bytes.
+    pub value: &'a [u8],
 }
-
-impl fmt::Display for PropagationStats {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "propagation dropped {} header(s)", self.dropped)
-    }
-}
-
-impl std::error::Error for PropagationStats {}
 
 /// Transport headers policy controlling capture at receivers and
 /// propagation at exporters.
@@ -186,11 +187,10 @@ impl HeaderCapturePolicy {
     /// Find the first capture rule whose `match_names` contains the given
     /// wire name (case-insensitive comparison).
     fn find_matching_rule(&self, wire_name: &str) -> Option<&CaptureRule> {
-        let wire_lower = wire_name.to_ascii_lowercase();
         self.headers.iter().find(|rule| {
             rule.match_names
                 .iter()
-                .any(|m| m.to_ascii_lowercase() == wire_lower)
+                .any(|m| wire_name.eq_ignore_ascii_case(m))
         })
     }
 }
@@ -252,6 +252,7 @@ pub struct CaptureRule {
     /// Whether this header contains sensitive data (e.g. auth tokens).
     /// Sensitive headers may receive special treatment in logging and
     /// debug output.
+    /// TODO: Implement the sensitive capability for headers
     #[serde(default)]
     pub sensitive: bool,
     /// Override the auto-detected value kind. When omitted, binary is
@@ -293,29 +294,33 @@ impl HeaderPropagationPolicy {
         Self { default, overrides }
     }
 
-    /// Apply the propagation policy to a set of captured headers in-place,
-    /// removing headers that should not be sent on egress and renaming
-    /// wire names according to the configured name strategy.
+    /// Returns an iterator over headers that should be propagated on
+    /// egress. Each [`PropagatedHeader`] borrows from the captured
+    /// headers
     ///
-    /// Returns `None` when all headers were propagated (none dropped),
-    /// or `Some(PropagationStats)` when one or more headers were removed.
-    pub fn propagate(&self, headers: &mut TransportHeaders) -> Option<PropagationStats> {
-        let dropped = headers.retain_mut(|header| {
+    /// Headers whose policy action is [`PropagationAction::Drop`] are
+    /// silently skipped. The [`PropagatedHeader::egress_name`] field
+    /// points to either the original wire name or the stored name,
+    /// depending on the resolved [`NameStrategy`].
+    pub fn propagate<'a>(
+        &'a self,
+        headers: &'a TransportHeaders,
+    ) -> impl Iterator<Item = PropagatedHeader<'a>> {
+        headers.iter().filter_map(move |header| {
             let (action, name_strategy) = self.resolve_action(header);
             if action == PropagationAction::Drop {
-                return false;
+                return None;
             }
-            if name_strategy == NameStrategy::StoredName {
-                header.wire_name.clone_from(&header.name);
-            }
-            true
-        });
-
-        if dropped > 0 {
-            Some(PropagationStats { dropped })
-        } else {
-            None
-        }
+            let header_name = match name_strategy {
+                NameStrategy::Preserve => &header.wire_name,
+                NameStrategy::StoredName => &header.name,
+            };
+            Some(PropagatedHeader {
+                header_name,
+                value_kind: &header.value_kind,
+                value: &header.value,
+            })
+        })
     }
 
     /// Determine the action and name strategy for a single header by
@@ -323,12 +328,11 @@ impl HeaderPropagationPolicy {
     fn resolve_action(&self, header: &TransportHeader) -> (PropagationAction, NameStrategy) {
         // Check overrides first.
         for ov in &self.overrides {
-            let name_lower = header.name.to_ascii_lowercase();
             if ov
                 .match_rule
                 .stored_names
                 .iter()
-                .any(|s| s.to_ascii_lowercase() == name_lower)
+                .any(|s| header.name.eq_ignore_ascii_case(s))
             {
                 let name_strategy = ov.name.unwrap_or(self.default.name);
                 return (ov.action, name_strategy);
@@ -340,8 +344,7 @@ impl HeaderPropagationPolicy {
             PropagationSelector::AllCaptured => true,
             PropagationSelector::None => false,
             PropagationSelector::Named(names) => {
-                let name_lower = header.name.to_ascii_lowercase();
-                names.iter().any(|n| n.to_ascii_lowercase() == name_lower)
+                names.iter().any(|n| header.name.eq_ignore_ascii_case(n))
             }
         };
 
@@ -376,10 +379,10 @@ pub struct PropagationDefault {
 #[serde(rename_all = "snake_case")]
 pub enum PropagationSelector {
     /// Propagate all captured headers (subject to overrides).
-    #[default]
     AllCaptured,
     /// Do not propagate any captured headers by default (overrides may
     /// still select specific headers).
+    #[default]
     None,
     /// Propagate only headers whose stored names appear in this list.
     Named(Vec<String>),

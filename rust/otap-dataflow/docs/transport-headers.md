@@ -165,7 +165,7 @@ includes on outbound requests. It operates in two stages:
 ```yaml
 header_propagation:
   default:
-    selector: all_captured  # default: all_captured
+    selector: all_captured  # default: none
     action: propagate       # default: propagate
     name: preserve          # default: preserve
     on_error: drop          # default: drop
@@ -181,7 +181,7 @@ header_propagation:
 
 ### Default Behavior
 
-- `selector` (default `all_captured`): which captured headers are
+- `selector` (default `none`): which captured headers are
   candidates for propagation. See selector values below.
 - `action` (default `propagate`): action applied to selected
   headers (`propagate` or `drop`).
@@ -194,8 +194,8 @@ header_propagation:
 
 | Value | Behavior |
 | --- | --- |
-| `all_captured` | Propagate all captured headers (default). |
-| `none` | Propagate nothing by default. |
+| `all_captured` | Propagate all captured headers. |
+| `none` | Propagate nothing by default (default). |
 | `!named [list]` | Propagate only listed stored names. |
 
 When `none` is used, only headers explicitly matched by an override

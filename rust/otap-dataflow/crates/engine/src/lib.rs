@@ -2208,8 +2208,8 @@ mod test {
         headers.push(otap_df_config::transport_headers::TransportHeader::text(
             "x-test", "x-test", b"val",
         ));
-        let _ = policy.propagate(&mut headers);
-        assert_eq!(headers.len(), 1, "node policy should propagate");
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1, "node policy should propagate");
     }
 
     #[test]
@@ -2232,8 +2232,8 @@ mod test {
         headers.push(otap_df_config::transport_headers::TransportHeader::text(
             "x-test", "x-test", b"val",
         ));
-        let _ = policy.propagate(&mut headers);
-        assert_eq!(headers.len(), 1, "pipeline policy should propagate");
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1, "pipeline policy should propagate");
     }
 
     #[test]
