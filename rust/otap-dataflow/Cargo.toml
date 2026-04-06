@@ -228,7 +228,7 @@ otap-df-telemetry-macros = { path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
 testcontainers = "0.27"
-toml = "0.8.22"
+toml = "0.9.0"
 tonic-prost-build = "0.14"
 urlencoding = "2"
 geneva-uploader = "0.4.0"
