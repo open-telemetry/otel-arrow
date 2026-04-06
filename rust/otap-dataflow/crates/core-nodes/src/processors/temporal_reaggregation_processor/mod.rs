@@ -17,16 +17,19 @@ use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
+use otap_df_engine::ProducerEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, CallData, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::{ConsumerEffectHandlerExtension, Interests};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
@@ -40,6 +43,7 @@ use otap_df_pdata_views::views::metrics::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_warn;
 
 mod builder;
 mod config;
@@ -54,24 +58,39 @@ use self::identity::{
 };
 use self::metrics::TemporalReaggregationMetrics;
 
+const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";
+
 /// Errors that can occur during view processing.
 #[derive(thiserror::Error, Debug)]
-enum ProcessPdataError {
-    /// An ID counter would exceed its maximum value.
-    #[error("Id overflow")]
-    IdOverflow,
-
-    /// Failed to create the view for the incoming pdata
-    #[error("Failed to create view: {inner:?}")]
-    ViewCreationFailed {
+enum ProcessingError {
+    #[error("Engine: {source:?}")]
+    Engine {
         #[source]
-        inner: Option<otap_df_pdata::error::Error>,
+        source: Error,
     },
+
+    #[error("Data failed to aggregate on retry: {source:?}")]
+    AggregationRetryFailed {
+        #[source]
+        source: AggregationError,
+    },
+}
+
+impl From<Error> for ProcessingError {
+    fn from(value: Error) -> Self {
+        ProcessingError::Engine { source: value }
+    }
+}
+
+impl From<AggregationError> for ProcessingError {
+    fn from(value: AggregationError) -> Self {
+        ProcessingError::AggregationRetryFailed { source: value }
+    }
 }
 
 /// Result of processing a single metrics pdata payload.
 #[allow(clippy::large_enum_variant)]
-enum ProcessResult {
+enum AggregationResult {
     /// Nothing in the batch was aggregatable. The original pdata should be
     /// forwarded downstream unchanged.
     NoAggregations,
@@ -81,6 +100,14 @@ enum ProcessResult {
     /// All metrics were aggregatable (buffered for later flush). Nothing to
     /// send downstream right now.
     AllAggregated,
+}
+
+/// Errors that can occur during view processing.
+#[derive(thiserror::Error, Debug)]
+enum AggregationError {
+    /// An ID counter would exceed its maximum value.
+    #[error("Id overflow")]
+    IdOverflow,
 }
 
 /// The URN for the temporal reaggregation processor.
@@ -119,7 +146,7 @@ pub fn create_temporal_reaggregation_processor(
 
 /// State for the current in-progress batch. This is all the stuff that has to
 /// be cleared between batches
-struct BatchState {
+struct IdentityState {
     resources: HashMap<ResourceId, u16>,
     scopes: HashMap<ScopeId<'static>, u16>,
     metrics: HashMap<MetricId<'static>, u16>,
@@ -137,7 +164,7 @@ struct BatchState {
     next_id_ehdp_exemplar: u32,
 }
 
-impl BatchState {
+impl IdentityState {
     fn new() -> Self {
         Self {
             resources: HashMap::new(),
@@ -189,12 +216,47 @@ pub struct TemporalReaggregationProcessor {
     timer_started: bool,
     // Reusable byte buffer for computing attribute hashes.
     hash_buf: HashBuffer,
-    state: BatchState,
+
+    /// Identity related state for dedplucating metrics and assigning them
+    /// integer Ids. It is outside the scope of [Self::builder] to figure out
+    /// what ids to assign, so we do that here. Like the builder, this is reset
+    /// on every flush trigger.
+    id_state: IdentityState,
+
+    /// The in progress aggregated metrics builder. All the data which can be
+    /// aggregated for each inbound batch is accumulated here until a flush
+    /// trigger is hit and the builder is reset.
     builder: MetricSignalBuilder,
+
     /// Reusable state for the passthrough batch. Cleared before each use in
-    /// [`process_view`] to track resources/scopes/metrics that appear in the
     /// passthrough output.
-    passthrough_state: BatchState,
+    passthrough_state: IdentityState,
+
+    /// Contexts for all of the inbound batches that have not been fully
+    /// acked or nacked
+    inbound_batches: SlotState<InboundTracker>,
+
+    /// A list of CallData which are keys for [Self::inbound_batches] and
+    /// point to the batches contibuting to aggregated data which has not been
+    /// flushed.
+    pending_flush: Vec<CallData>,
+
+    /// A map of all passthrough and aggregated batches sent by this processor.
+    /// The CallData returned to this processor in ack/nack messages can be
+    /// casted to a [SlotKey] and points into this map.
+    ///
+    /// The CallData inside the entry points to every associated otap batch in
+    /// [Self::inbound_batches] so that we can operate on the ref counts there.
+    outbound_batches: SlotState<Vec<CallData>>,
+}
+
+struct InboundTracker {
+    // Original request context
+    ctx: Context,
+    // Number of pending acks that we're waiting for
+    pending_acks: usize,
+    // Whether the batch containing the corresponding input data has been flushed
+    flushed: bool,
 }
 
 #[async_trait(?Send)]
@@ -204,53 +266,13 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        match msg {
+        self.debug_assert_invariants();
+        self.ensure_timer_started(effect_handler).await?;
+        let result = match msg {
             Message::PData(pdata) => {
-                self.ensure_timer_started(effect_handler).await?;
-
                 match pdata.signal_type() {
                     SignalType::Metrics => {
-                        let checkpoint = self.builder.checkpoint();
-
-                        match self.process_metric_pdata(&pdata) {
-                            Ok(result) => {
-                                self.send_process_result(result, pdata, effect_handler)
-                                    .await?;
-                                return Ok(());
-                            }
-                            Err(e) => match e {
-                                // Id overflows are fine. In this case we seal
-                                // the current outbound batch and then feed the
-                                // data back into the next one. We do this to
-                                // prevent complex ack/nack scenarios where an
-                                // input batch has representation in multiple
-                                // output batches.
-                                ProcessPdataError::IdOverflow => {
-                                    self.metrics.flushes_overflow.inc();
-                                    self.flush(effect_handler, Some(checkpoint)).await?;
-                                    match self.process_metric_pdata(&pdata) {
-                                        Ok(result) => {
-                                            self.send_process_result(result, pdata, effect_handler)
-                                                .await?;
-                                            return Ok(());
-                                        }
-                                        Err(_) => {
-                                            // TODO: Nack this data
-                                            self.metrics.batches_rejected.inc();
-                                            self.clear_state();
-                                        }
-                                    }
-                                }
-
-                                // If we can't even create the view then we just
-                                // have to throw the batch away, we'll never be
-                                // able to operate on it.
-                                ProcessPdataError::ViewCreationFailed { .. } => {
-                                    self.metrics.batches_rejected.inc();
-                                    // TODO: Nack this data
-                                }
-                            },
-                        }
+                        self.process_metric_pdata(effect_handler, pdata).await?;
                     }
                     // Non-metrics signals pass through unchanged.
                     SignalType::Logs | SignalType::Traces => {
@@ -265,10 +287,9 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                     self.metrics.flushes_timer.add(1);
                     Ok(())
                 }
-                NodeControlMsg::Shutdown { .. } => {
-                    self.flush(effect_handler, None).await?;
-                    Ok(())
-                }
+                NodeControlMsg::Ack(msg) => self.handle_ack(effect_handler, msg).await,
+                NodeControlMsg::Nack(msg) => self.handle_nack(effect_handler, msg).await,
+                NodeControlMsg::Shutdown { .. } => self.flush(effect_handler, None).await,
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
@@ -277,7 +298,25 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 }
                 _ => Ok(()),
             },
-        }
+        };
+        self.debug_assert_invariants();
+        result
+    }
+
+    fn accept_pdata(&self) -> bool {
+        // We may need up to one inbound slot and two outbound slots.
+        //
+        // The inbound slot is used to track the inbound request context and is
+        // needed if either there are ack/nack interests on the context OR if some of
+        // the data is aggregable meaning we won't just pass the whole batch
+        // through untouched.
+        //
+        // One outbound slot may be needed to flush the existing batch if we
+        // cannot accommodate the aggregable portion of the inbound payload.
+        //
+        // A second outbound slot may be needed for the passthrough portion
+        // of the inbound data, if any.
+        self.inbound_batches.has_capacity() && self.outbound_batches.remaining_capacity() >= 2
     }
 }
 
@@ -298,10 +337,186 @@ impl TemporalReaggregationProcessor {
             collection_period: config.period,
             timer_started: false,
             hash_buf: HashBuffer::new(),
-            state: BatchState::new(),
+            id_state: IdentityState::new(),
             builder: MetricSignalBuilder::new(),
-            passthrough_state: BatchState::new(),
+            passthrough_state: IdentityState::new(),
+            inbound_batches: SlotState::new(config.inbound_request_limit.get()),
+            pending_flush: Vec::new(),
+            outbound_batches: SlotState::new(config.outbound_request_limit.get()),
         })
+    }
+
+    fn debug_assert_invariants(&self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+
+        // pending_flush contains no duplicates
+        for (i, a) in self.pending_flush.iter().enumerate() {
+            for b in self.pending_flush[i + 1..].iter() {
+                assert!(a != b, "pending_flush contains duplicate entries");
+            }
+        }
+
+        // Every pending_flush entry that still has a valid inbound slot has
+        // flushed == false (the slot may be missing if a nack removed it)
+        for calldata in &self.pending_flush {
+            let key = calldata.clone().try_into().expect("valid key");
+            if let Some(tracker) = self.inbound_batches.get(key) {
+                assert!(
+                    !tracker.flushed,
+                    "pending_flush entry has flushed=true (should have been drained on flush)"
+                );
+            }
+        }
+
+        // Per-tracker invariants
+        for (_key, tracker) in self.inbound_batches.iter() {
+            assert!(tracker.pending_acks <= 2,);
+            assert!(!tracker.flushed || tracker.pending_acks > 0,);
+            assert!(tracker.flushed || tracker.pending_acks <= 1,);
+        }
+    }
+
+    async fn handle_ack(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        msg: AckMsg<OtapPdata>,
+    ) -> Result<(), Error> {
+        let Ok(outbound_key) = msg.unwind.route.calldata.clone().try_into() else {
+            // TODO: It's either this or we raise an engine error and crash.
+            // This is pretty bad as who knows if we're holding outbounds that
+            // can ever be cleared if this is malfunctioning. Best case
+            // scenario is the nack was erroneous and just didn't mean anything.
+            //
+            // TODO: Emit a warning event in this case.
+            return Ok(());
+        };
+
+        let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
+            // TODO: Same as above
+            return Ok(());
+        };
+
+        for inbound_call_data in inbounds {
+            // safety: Outbound calldata is entirely in our control so should always be
+            // convertable to/from a slot key
+            let inbound_key = inbound_call_data.try_into().expect("valid key");
+
+            // The inbound may have already been removed by a nack on a
+            // different outbound e.g. if the passthrough was nacked first
+            let Some(tracker) = self.inbound_batches.get_mut(inbound_key) else {
+                continue;
+            };
+
+            // Check and update pending acks. In general we can have at most two
+            // pending acks for any input. One for aggregated data and one for
+            // passthrough data.
+            match tracker.pending_acks {
+                0 => match tracker.flushed {
+                    // Flushed data with 0 outbounds should never happen by invariants
+                    // upheld entirely within this processor. If we ever hit 0 on a
+                    // tracker marked as flushed then we should be acking it and
+                    // removing it from the list.
+                    true => {
+                        panic!("Flushed tracker with 0 outbounds");
+                    }
+
+                    // "Best" case scenario is that this is an erroneous ack from
+                    // some other misbehaving component. We're going to ignore it, but
+                    // this implies a lack of correctness in another component or the
+                    // engine itself.
+                    false => {
+                        // TODO: Emit some kind of warning event here.
+                        continue;
+                    }
+                },
+
+                1 => match tracker.flushed {
+                    // Refcount is going to 0, we're safe to ack this and remove it
+                    true => {
+                        let _ = tracker;
+                        // safety: We know this is in the map, we just dropped the ref to it
+                        let mut tracker = self.inbound_batches.take(inbound_key).expect("exists");
+                        let payload = OtapPayload::empty(SignalType::Metrics);
+                        let pdata = OtapPdata::new(std::mem::take(&mut tracker.ctx), payload);
+                        effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+                    }
+
+                    // We got a quick ack back on the passthrough batch before we
+                    // flushed the stuff being aggregated. We update the outbounds
+                    // and continue on.
+                    false => {
+                        tracker.pending_acks -= 1;
+                        continue;
+                    }
+                },
+
+                2 => match tracker.flushed {
+                    // Both outbounds were pending, one came back. Decrement
+                    // the counter.
+                    true => {
+                        tracker.pending_acks -= 1;
+                    }
+
+                    // Two is the maximum number of pending outbounds which we
+                    // can only have if the data has been flushed. This invariant
+                    // is upheld entirey by this processor alone.
+                    false => {
+                        panic!("Unflushed tracker with > 1 outbound");
+                    }
+                },
+
+                _ => {
+                    unreachable!("We can never have more than two outbounds for a batch");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_nack(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        msg: NackMsg<OtapPdata>,
+    ) -> Result<(), Error> {
+        let Ok(outbound_key) = msg.unwind.route.calldata.clone().try_into() else {
+            // TODO: It's either this or we raise an engine error and crash.
+            // This is pretty bad as who knows if we're holding outbounds that
+            // can ever be cleared if this is malfunctioning. Best case
+            // scenario is the nack was erroneous and just didn't mean anything.
+            //
+            // TODO: Emit a warning event in this case.
+            return Ok(());
+        };
+
+        let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
+            // TODO: Same as above
+            return Ok(());
+        };
+
+        let NackMsg { reason, .. } = msg;
+        for inbound in inbounds {
+            // safety: The calldata is entirely in this processor's control and
+            // should always represent a valid key for the inbound.
+            let inbound_key = inbound.try_into().expect("valid slot key");
+
+            // If we get multiple nacks for a single inbound, this is possible
+            // and not really a problem. The most likely case is both the passthrough
+            // batch and the aggregated batch were independently nacked.
+            let Some(mut tracker) = self.inbound_batches.take(inbound_key) else {
+                continue;
+            };
+
+            let payload = OtapPayload::empty(SignalType::Metrics);
+            let pdata = OtapPdata::new(std::mem::take(&mut tracker.ctx), payload);
+            effect_handler
+                .notify_nack(NackMsg::new(reason.clone(), pdata))
+                .await?;
+        }
+
+        Ok(())
     }
 
     /// Starts the periodic flush timer if it has not already been started.
@@ -327,36 +542,132 @@ impl TemporalReaggregationProcessor {
     /// - `Ok(ProcessResult::Passthrough(records))` if some metrics were non-aggregatable
     ///   and need to be sent downstream immediately.
     /// - `Ok(ProcessResult::AllAggregated)` if all metrics were aggregatable.
-    fn process_metric_pdata(
+    async fn process_metric_pdata(
         &mut self,
-        pdata: &OtapPdata,
-    ) -> Result<ProcessResult, ProcessPdataError> {
-        match pdata.payload_ref() {
-            OtapPayload::OtapArrowRecords(records) => {
-                let view = OtapMetricsView::try_from(records)
-                    .map_err(|e| ProcessPdataError::ViewCreationFailed { inner: Some(e) })?;
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        pdata: OtapPdata,
+    ) -> Result<(), Error> {
+        let result = match pdata.payload_ref() {
+            OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
+                Ok(view) => self.process_view(effect_handler, &view).await,
+                Err(e) => {
+                    otel_warn!(VIEW_CREATION_FAILED_EVENT, error = %e);
+                    self.metrics.batches_rejected.inc();
+                    let msg = format!("Failed to create view: {:#}", e);
+                    effect_handler
+                        .notify_nack(NackMsg::new_permanent(msg, pdata))
+                        .await?;
 
-                if !has_aggregatable_metrics(&view) {
-                    return Ok(ProcessResult::NoAggregations);
+                    return Ok(());
                 }
-
-                match self.process_view(&view)? {
-                    Some(records) => Ok(ProcessResult::SomeAggregations(records)),
-                    None => Ok(ProcessResult::AllAggregated),
-                }
-            }
+            },
             OtapPayload::OtlpBytes(otlp) => {
-                let data = RawMetricsData::new(otlp.as_bytes());
-
-                if !has_aggregatable_metrics(&data) {
-                    return Ok(ProcessResult::NoAggregations);
-                }
-
-                match self.process_view(&data)? {
-                    Some(records) => Ok(ProcessResult::SomeAggregations(records)),
-                    None => Ok(ProcessResult::AllAggregated),
-                }
+                let view = RawMetricsData::new(otlp.as_bytes());
+                self.process_view(effect_handler, &view).await
             }
+        };
+
+        match result {
+            Ok(agg_result) => match agg_result {
+                AggregationResult::NoAggregations => {
+                    Ok(effect_handler.send_message_with_source_node(pdata).await?)
+                }
+                AggregationResult::SomeAggregations(records) => {
+                    // Pass data through if there are no subscribers
+                    let (inbound_ctx, _) = pdata.into_parts();
+                    if !inbound_ctx.has_subscribers() {
+                        let pt_pdata =
+                            OtapPdata::new(inbound_ctx, OtapPayload::OtapArrowRecords(records));
+
+                        effect_handler
+                            .send_message_with_source_node(pt_pdata)
+                            .await?;
+                        return Ok(());
+                    }
+
+                    // One ref for the passthrough, we will bump the ack count again
+                    // when we actually flush the batch.
+                    let tracker = InboundTracker {
+                        ctx: inbound_ctx,
+                        pending_acks: 1,
+                        flushed: false,
+                    };
+
+                    // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
+                    // We always expect one inbound and two outbound slots available
+                    // before accepting pdata.
+                    let inbound_slot = self.inbound_batches.reserve().expect("available");
+                    let outbound_slot = self.outbound_batches.reserve().expect("available");
+
+                    // Track this inbound as a part of the current aggregating set
+                    // and as a part of the passthrough batch
+                    let inbound_key = inbound_slot.insert(tracker);
+                    let inbound_calldata: CallData = inbound_key.into();
+                    self.pending_flush.push(inbound_calldata.clone());
+                    let outbound_key = outbound_slot.insert(vec![inbound_calldata]);
+
+                    // Subscribe to the outbound
+                    let outbound_calldata: CallData = outbound_key.into();
+                    let context = Context::with_capacity(1);
+                    let mut pt_pdata =
+                        OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+
+                    effect_handler.subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        outbound_calldata,
+                        &mut pt_pdata,
+                    );
+
+                    Ok(effect_handler
+                        .send_message_with_source_node(pt_pdata)
+                        .await?)
+                }
+                AggregationResult::AllAggregated => {
+                    // Nothing to passthrough and no subscribers so we don't
+                    // care about ack/nack.
+                    let (inbound_ctx, _) = pdata.into_parts();
+                    if !inbound_ctx.has_subscribers() {
+                        return Ok(());
+                    }
+
+                    // 0 outbounds because we haven't actually sent anything yet. Once
+                    // we flush we can bump the ref count
+                    let tracker = InboundTracker {
+                        ctx: inbound_ctx,
+                        pending_acks: 0,
+                        flushed: false,
+                    };
+
+                    // safety: See [`TemporalReaggregationProcessor::accept_pdata`]
+                    // We always expect one inbound slot and two outbound slots to
+                    // be available before accepting pdata.
+                    let inbound_slot = self.inbound_batches.reserve().expect("available");
+
+                    // Track the inbound as a part of the pending aggregation
+                    let inbound_key = inbound_slot.insert(tracker);
+                    let inbound_calldata: CallData = inbound_key.into();
+                    self.pending_flush.push(inbound_calldata.clone());
+
+                    Ok(())
+                }
+            },
+            Err(proc_err) => match proc_err {
+                // Engine errors are fatal, we propagate those up the stack
+                ProcessingError::Engine { source } => Err(source),
+
+                // This is our classic "bad data" case where even after flushing
+                // the current batch, it failed on retry due to being oversized
+                // in some way. We can't handle it, so it gets a nack.
+                ProcessingError::AggregationRetryFailed { source } => {
+                    self.metrics.batches_rejected.inc();
+                    let msg = format!("Failed to aggregate batch: {:#}", source);
+                    effect_handler
+                        .notify_nack(NackMsg::new_permanent(msg, pdata))
+                        .await?;
+
+                    Ok(())
+                }
+            },
         }
     }
 
@@ -371,44 +682,81 @@ impl TemporalReaggregationProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         checkpoint: Option<Checkpoint>,
     ) -> Result<(), Error> {
-        if let Ok(records) = self.builder.finish(checkpoint) {
-            if !records.is_empty() {
-                // TODO: Ack/nack and context propagation
-                let pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(records));
-                effect_handler.send_message_with_source_node(pdata).await?;
-            }
-        }
+        let records = self.builder.finish(checkpoint);
         self.clear_state();
+
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let pending_flush_calldata = std::mem::take(&mut self.pending_flush);
+
+        // Nobody was subscribed to anything here
+        if pending_flush_calldata.is_empty() {
+            let context = Context::default();
+            let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+            effect_handler.send_message_with_source_node(pdata).await?;
+            return Ok(());
+        }
+
+        // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
+        // We always expect one inbound and two outbound slots available
+        // before accepting pdata.
+        let outbound_slot = self.outbound_batches.reserve().expect("available");
+        for inbound_calldata in pending_flush_calldata.iter().cloned() {
+            // safety: We created all of this calldata
+            let inbound_key: SlotKey = inbound_calldata.try_into().expect("Valid slot key");
+            // It's possible that the passthrough batch was nacked prior to
+            // flush for some inbound pdata and we've already removed the inbound.
+            let Some(inbound_tracker) = self.inbound_batches.get_mut(inbound_key) else {
+                continue;
+            };
+
+            inbound_tracker.pending_acks += 1;
+            inbound_tracker.flushed = true;
+        }
+
+        let outbound_key = outbound_slot.insert(pending_flush_calldata);
+        let outbound_calldata: CallData = outbound_key.into();
+        let outbound_ctx = Context::with_capacity(1);
+        let mut pdata = OtapPdata::new(outbound_ctx, OtapPayload::OtapArrowRecords(records));
+        effect_handler.subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            outbound_calldata,
+            &mut pdata,
+        );
+
+        effect_handler.send_message_with_source_node(pdata).await?;
         Ok(())
     }
 
-    /// Send the result of [`process_metrics_pdata`] downstream.
-    ///
-    /// For [`ProcessResult::FullPassthrough`], the original pdata is forwarded.
-    /// For [`ProcessResult::Passthrough`], a newly built batch containing only
-    /// the non-aggregatable metrics is sent. For [`ProcessResult::AllAggregated`]
-    /// nothing is sent (data is buffered for the next flush).
-    async fn send_process_result(
+    async fn process_view<V: MetricsView>(
         &mut self,
-        result: ProcessResult,
-        original_pdata: OtapPdata,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
-        match result {
-            ProcessResult::NoAggregations => {
-                effect_handler
-                    .send_message_with_source_node(original_pdata)
-                    .await?;
-            }
-            ProcessResult::SomeAggregations(records) => {
-                let pt_pdata = OtapPdata::new_todo_context(OtapPayload::OtapArrowRecords(records));
-                effect_handler
-                    .send_message_with_source_node(pt_pdata)
-                    .await?;
-            }
-            ProcessResult::AllAggregated => {}
+        view: &V,
+    ) -> Result<AggregationResult, ProcessingError> {
+        if !has_aggregatable_metrics(view) {
+            return Ok(AggregationResult::NoAggregations);
         }
-        Ok(())
+
+        let checkpoint = self.builder.checkpoint();
+        match self.aggregate_view(view) {
+            Ok(res) => Ok(res),
+            Err(e) => match e {
+                // Id overflows are fine. In this case we seal the current
+                // outbound batch and then feed the data back into the next one. We do this to
+                // prevent complex ack/nack scenarios where an
+                // input batch has representation in multiple
+                // output batches.
+                AggregationError::IdOverflow => {
+                    self.metrics.flushes_overflow.inc();
+                    self.flush(effect_handler, Some(checkpoint)).await?;
+                    Ok(self
+                        .aggregate_view(view)
+                        .inspect_err(|_| self.clear_state())?)
+                }
+            },
+        }
     }
 
     /// Process a view, routing aggregatable metrics to the in-progress batch
@@ -416,10 +764,10 @@ impl TemporalReaggregationProcessor {
     /// immediate downstream delivery.
     ///
     /// May fail due to id overflow or other capacity related restrictions.
-    fn process_view<V: MetricsView>(
+    fn aggregate_view<V: MetricsView>(
         &mut self,
         view: &V,
-    ) -> Result<Option<OtapArrowRecords>, ProcessPdataError> {
+    ) -> Result<AggregationResult, AggregationError> {
         self.passthrough_state.clear();
         let mut pt_builder = MetricSignalBuilder::new();
 
@@ -427,18 +775,13 @@ impl TemporalReaggregationProcessor {
             let resource = resource_metrics.resource();
             let resource_schema_url = resource_metrics.schema_url().unwrap_or(b"");
 
-            // Lazily computed on first aggregatable metric under this resource.
-            // ResourceId is Copy so this tuple is cheap to cache.
             let mut agg_resource: Option<(u16, ResourceId)> = None;
-            // Passthrough: just the assigned u16, no identity needed.
             let mut pt_resource_id: Option<u16> = None;
 
             for scope_metrics in resource_metrics.scopes() {
                 let scope = scope_metrics.scope();
                 let scope_schema_url = scope_metrics.schema_url();
 
-                // Lazily computed. ScopeId borrows from `scope` which lives
-                // for this loop body.
                 let mut agg_scope: Option<(u16, ScopeId<'_>)> = None;
                 let mut pt_scope_id: Option<u16> = None;
 
@@ -448,7 +791,8 @@ impl TemporalReaggregationProcessor {
                     };
 
                     if is_data_aggregatable(&data) {
-                        // Lazily process resource
+                        // Lazily process resource and scopes until we know if
+                        // they have something aggregatable.
                         let (res_otap_id, resource_identity) = match agg_resource {
                             Some(x) => x,
                             None => {
@@ -539,29 +883,26 @@ impl TemporalReaggregationProcessor {
             }
         }
 
-        if self.passthrough_state.next_id_metric > 0 {
-            pt_builder
-                .finish(None)
-                .map(Some)
-                .map_err(|_| ProcessPdataError::IdOverflow)
-        } else {
-            Ok(None)
+        if self.passthrough_state.next_id_metric == 0 {
+            return Ok(AggregationResult::AllAggregated);
         }
+
+        Ok(AggregationResult::SomeAggregations(pt_builder.finish(None)))
     }
 
     fn process_resource<R: ResourceView>(
         &mut self,
         resource_id: ResourceId,
         view: Option<&R>,
-    ) -> Result<u16, ProcessPdataError> {
-        match self.state.resources.entry_ref(&resource_id) {
+    ) -> Result<u16, AggregationError> {
+        match self.id_state.resources.entry_ref(&resource_id) {
             Occupied(o) => Ok(*o.get()),
             Vacant(v) => {
-                let id = self.state.next_id_resource;
+                let id = self.id_state.next_id_resource;
                 if id == u16::MAX {
-                    return Err(ProcessPdataError::IdOverflow);
+                    return Err(AggregationError::IdOverflow);
                 }
-                self.state.next_id_resource += 1;
+                self.id_state.next_id_resource += 1;
                 if let Some(view) = view {
                     self.builder.append_resource(id, view);
                 }
@@ -575,16 +916,16 @@ impl TemporalReaggregationProcessor {
         &mut self,
         scope_id: ScopeId<'_>,
         view: Option<&S>,
-    ) -> Result<u16, ProcessPdataError> {
+    ) -> Result<u16, AggregationError> {
         let lookup = ScopeIdRef(&scope_id.clone());
-        match self.state.scopes.entry_ref(&lookup) {
+        match self.id_state.scopes.entry_ref(&lookup) {
             Occupied(o) => Ok(*o.get()),
             Vacant(v) => {
-                let id = self.state.next_id_scope;
+                let id = self.id_state.next_id_scope;
                 if id == u16::MAX {
-                    return Err(ProcessPdataError::IdOverflow);
+                    return Err(AggregationError::IdOverflow);
                 }
-                self.state.next_id_scope += 1;
+                self.id_state.next_id_scope += 1;
                 if let Some(view) = view {
                     self.builder.append_scope(id, view);
                 }
@@ -604,16 +945,16 @@ impl TemporalReaggregationProcessor {
         scope_otap_id: u16,
         scope_view: Option<&S>,
         scope_schema_url: &[u8],
-    ) -> Result<u16, ProcessPdataError> {
+    ) -> Result<u16, AggregationError> {
         let lookup = MetricIdRef(&metric_id.clone());
-        match self.state.metrics.entry_ref(&lookup) {
+        match self.id_state.metrics.entry_ref(&lookup) {
             Occupied(o) => Ok(*o.get()),
             Vacant(v) => {
-                let id = self.state.next_id_metric;
+                let id = self.id_state.next_id_metric;
                 if id == u16::MAX {
-                    return Err(ProcessPdataError::IdOverflow);
+                    return Err(AggregationError::IdOverflow);
                 }
-                self.state.next_id_metric += 1;
+                self.id_state.next_id_metric += 1;
                 self.builder.append_metric(
                     id,
                     view,
@@ -640,7 +981,7 @@ impl TemporalReaggregationProcessor {
         data: &D,
         metric_id: &MetricId<'_>,
         otap_metric_id: u16,
-    ) -> Result<(), ProcessPdataError> {
+    ) -> Result<(), AggregationError> {
         match data.value_type() {
             DataType::Gauge => {
                 if let Some(gauge) = data.as_gauge() {
@@ -696,10 +1037,10 @@ impl TemporalReaggregationProcessor {
         dp: &V,
         stream_id: StreamId<'_>,
         otap_metric_id: u16,
-    ) -> Result<(), ProcessPdataError> {
+    ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
         let lookup = StreamIdRef(&stream_id.clone());
-        match self.state.streams.entry_ref(&lookup) {
+        match self.id_state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
                 let s = o.get_mut();
                 if time > s.time_unix_nano {
@@ -709,11 +1050,11 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
-                let dp_id = self.state.next_id_ndp;
+                let dp_id = self.id_state.next_id_ndp;
                 if dp_id == u32::MAX {
-                    return Err(ProcessPdataError::IdOverflow);
+                    return Err(AggregationError::IdOverflow);
                 }
-                self.state.next_id_ndp += 1;
+                self.id_state.next_id_ndp += 1;
                 let row_index = self.builder.append_number_dp(dp_id, otap_metric_id, dp);
                 _ = v.insert_with_key(
                     stream_id.into_owned(),
@@ -732,10 +1073,10 @@ impl TemporalReaggregationProcessor {
         dp: &V,
         stream_id: StreamId<'_>,
         otap_metric_id: u16,
-    ) -> Result<(), ProcessPdataError> {
+    ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
         let lookup = StreamIdRef(&stream_id.clone());
-        match self.state.streams.entry_ref(&lookup) {
+        match self.id_state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
                 let s = o.get_mut();
                 if time > s.time_unix_nano {
@@ -745,11 +1086,11 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
-                let dp_id = self.state.next_id_hdp;
+                let dp_id = self.id_state.next_id_hdp;
                 if dp_id == u32::MAX {
-                    return Err(ProcessPdataError::IdOverflow);
+                    return Err(AggregationError::IdOverflow);
                 }
-                self.state.next_id_hdp += 1;
+                self.id_state.next_id_hdp += 1;
                 let row_index = self.builder.append_histogram_dp(dp_id, otap_metric_id, dp);
                 _ = v.insert_with_key(
                     stream_id.into_owned(),
@@ -768,10 +1109,10 @@ impl TemporalReaggregationProcessor {
         dp: &V,
         stream_id: StreamId<'_>,
         otap_metric_id: u16,
-    ) -> Result<(), ProcessPdataError> {
+    ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
         let lookup = StreamIdRef(&stream_id.clone());
-        match self.state.streams.entry_ref(&lookup) {
+        match self.id_state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
                 let s = o.get_mut();
                 if time > s.time_unix_nano {
@@ -781,11 +1122,11 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
-                let dp_id = self.state.next_id_ehdp;
+                let dp_id = self.id_state.next_id_ehdp;
                 if dp_id == u32::MAX {
-                    return Err(ProcessPdataError::IdOverflow);
+                    return Err(AggregationError::IdOverflow);
                 }
-                self.state.next_id_ehdp += 1;
+                self.id_state.next_id_ehdp += 1;
                 let row_index = self
                     .builder
                     .append_exp_histogram_dp(dp_id, otap_metric_id, dp);
@@ -806,10 +1147,10 @@ impl TemporalReaggregationProcessor {
         dp: &V,
         stream_id: StreamId<'_>,
         otap_metric_id: u16,
-    ) -> Result<(), ProcessPdataError> {
+    ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
         let lookup = StreamIdRef(&stream_id.clone());
-        match self.state.streams.entry_ref(&lookup) {
+        match self.id_state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
                 let s = o.get_mut();
                 if time > s.time_unix_nano {
@@ -819,11 +1160,11 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
-                let dp_id = self.state.next_id_sdp;
+                let dp_id = self.id_state.next_id_sdp;
                 if dp_id == u32::MAX {
-                    return Err(ProcessPdataError::IdOverflow);
+                    return Err(AggregationError::IdOverflow);
                 }
-                self.state.next_id_sdp += 1;
+                self.id_state.next_id_sdp += 1;
                 let row_index = self.builder.append_summary_dp(dp_id, otap_metric_id, dp);
                 _ = v.insert_with_key(
                     stream_id.into_owned(),
@@ -844,7 +1185,7 @@ impl TemporalReaggregationProcessor {
         pt_builder: &mut MetricSignalBuilder,
         data: &D,
         otap_metric_id: u16,
-    ) -> Result<(), ProcessPdataError> {
+    ) -> Result<(), AggregationError> {
         match data.value_type() {
             DataType::Gauge => {
                 if let Some(gauge) = data.as_gauge() {
@@ -911,26 +1252,26 @@ impl TemporalReaggregationProcessor {
     }
 
     fn clear_state(&mut self) {
-        self.state.clear();
+        self.id_state.clear();
         self.builder.clear();
     }
 }
 
 /// Allocate the next u16 ID from a counter, returning an error on overflow.
-fn next_id_16(counter: &mut u16) -> Result<u16, ProcessPdataError> {
+fn next_id_16(counter: &mut u16) -> Result<u16, AggregationError> {
     let id = *counter;
     if id == u16::MAX {
-        return Err(ProcessPdataError::IdOverflow);
+        return Err(AggregationError::IdOverflow);
     }
     *counter += 1;
     Ok(id)
 }
 
 /// Allocate the next u32 ID from a counter, returning an error on overflow.
-fn next_id_32(counter: &mut u32) -> Result<u32, ProcessPdataError> {
+fn next_id_32(counter: &mut u32) -> Result<u32, AggregationError> {
     let id = *counter;
     if id == u32::MAX {
-        return Err(ProcessPdataError::IdOverflow);
+        return Err(AggregationError::IdOverflow);
     }
     *counter += 1;
     Ok(id)
@@ -973,31 +1314,21 @@ fn has_aggregatable_metrics<V: MetricsView>(view: &V) -> bool {
 }
 
 #[cfg(test)]
+mod testing;
+
+#[cfg(test)]
 mod tests {
+    use super::testing::*;
     use super::*;
     use std::future::Future;
 
-    use otap_df_config::error::Error as ConfigError;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::testing::node::test_node;
-    use otap_df_engine::testing::processor::{TestContext, TestRuntime};
-    use otap_df_otap::testing::create_test_pdata;
-    use otap_df_pdata::otap::{OtapArrowRecords, OtapBatchStore};
+    use otap_df_engine::testing::processor::TestContext;
+    use otap_df_pdata::otap::OtapBatchStore;
     use otap_df_pdata::otlp::metrics::MetricType;
-    use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-        AggregationTemporality, Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint,
-        Gauge, Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint,
-        ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
-    };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::testing::equiv::assert_equivalent;
-    use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
     use otap_df_pdata::{metrics, record_batch};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
 
     #[test]
@@ -1047,66 +1378,44 @@ mod tests {
 
     #[test]
     fn test_passthrough_logs() {
-        let (rt, proc) = try_create_processor(json!({})).unwrap();
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                let pdata = create_test_pdata();
-
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process message");
-
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 1, "expected exactly one forwarded message");
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
+        let logs = create_logs_payload();
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::empty(),
+                payload: logs.clone(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::AssertEquivalent(logs)],
+            },
+        ];
+        run_test(config, actions);
     }
 
     #[test]
     fn test_passthrough_traces() {
-        let (rt, proc) = try_create_processor(json!({})).unwrap();
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                let pdata = create_traces_pdata();
-
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process message");
-
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 1, "expected exactly one forwarded message");
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
+        let traces = create_traces_payload();
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::empty(),
+                payload: traces.clone(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::AssertEquivalent(traces)],
+            },
+        ];
+        run_test(config, actions);
     }
 
     #[test]
     fn test_timer_tick_with_no_data() {
-        let (rt, proc) = try_create_processor(json!({})).unwrap();
-
-        rt.set_processor(proc)
-            .run_test(move |mut ctx| async move {
-                ctx.process(Message::timer_tick_ctrl_msg())
-                    .await
-                    .expect("timer tick should succeed");
-
-                let output = ctx.drain_pdata().await;
-                assert!(
-                    output.is_empty(),
-                    "timer tick with no data should emit nothing"
-                );
-            })
-            .validate(|ctx| async move {
-                let counters = ctx.counters();
-                counters.assert(0, 0, 0, 0);
-            });
+        let config = json!({});
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::AssertNoPdata,
+        ];
+        run_test(config, actions);
     }
 
     #[test]
@@ -1790,26 +2099,6 @@ mod tests {
                 .map(|sm| sm.metrics.len())
                 .sum();
             assert_eq!(second_metric_count, 2);
-        });
-    }
-
-    #[test]
-    fn test_single_batch_over_limit() {
-        // A single batch with more than u16::MAX unique metrics overflows even
-        // It should be dropped and batches_rejected should be bumped.
-        run_processor_test(json!({}), |mut ctx| async move {
-            let too_many = u16::MAX as usize + 1;
-
-            let data = make_n_gauge_metrics(too_many);
-            let poison_batch = make_otlp_bytes_pdata(data);
-            ctx.process(Message::PData(poison_batch)).await.unwrap();
-
-            // Flush via timer tick.
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
-
-            // No output should be produced — the batch was poison and dropped.
-            let output = ctx.drain_pdata().await;
-            assert_eq!(output.len(), 0, "poison batch should produce no output");
         });
     }
 
@@ -2659,24 +2948,6 @@ mod tests {
         });
     }
 
-    /// Helper to build a `ResourceMetrics` with `resource: None`.
-    fn resource_metrics_without_resource(scope_metrics: Vec<ScopeMetrics>) -> ResourceMetrics {
-        ResourceMetrics {
-            resource: None,
-            scope_metrics,
-            schema_url: String::new(),
-        }
-    }
-
-    /// Helper to build a `ScopeMetrics` with `scope: None`.
-    fn scope_metrics_without_scope(metrics: Vec<Metric>) -> ScopeMetrics {
-        ScopeMetrics {
-            scope: None,
-            metrics,
-            schema_url: String::new(),
-        }
-    }
-
     #[test]
     fn test_none_resource_aggregation() {
         // A batch with resource=None should still be processed (not skipped).
@@ -2779,190 +3050,284 @@ mod tests {
         });
     }
 
-    fn try_create_processor(
-        config: serde_json::Value,
-    ) -> Result<(TestRuntime<OtapPdata>, ProcessorWrapper<OtapPdata>), ConfigError> {
-        let pipeline_ctx = create_test_pipeline_context();
-        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let node = test_node("temporal-reaggregation-config-test");
-
-        let mut node_config =
-            NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
-        node_config.config = config;
-
-        (TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY.create)(
-            pipeline_ctx,
-            node,
-            Arc::new(node_config),
-            rt.config(),
-        )
-        .map(|proc| (rt, proc))
-    }
-
-    /// Wrap [`OtapArrowRecords`] in an [`OtapPdata`].
-    fn make_pdata(records: OtapArrowRecords) -> OtapPdata {
-        OtapPdata::new_default(OtapPayload::OtapArrowRecords(records))
-    }
-
-    /// Convert OTLP [`MetricsData`] into an [`OtapPdata`] via OTAP encoding.
-    fn make_otlp_pdata(metrics_data: MetricsData) -> OtapPdata {
-        let otap_records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
-            metrics_data,
-        ));
-        OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
-    }
-
-    fn create_traces_pdata() -> OtapPdata {
-        let mut datagen = otap_df_pdata::testing::fixtures::DataGenerator::new(3);
-        let traces_data = datagen.generate_traces();
-        let otap_records =
-            otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Traces(traces_data));
-        OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
-    }
-
-    fn create_test_pipeline_context() -> PipelineContext {
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(telemetry_registry);
-        controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
-    }
-
-    /// Assert that the processor output is semantically equivalent to the
-    /// expected set of [`OtapArrowRecords`] batches combined.
-    fn assert_output_equivalent(output: &OtapPdata, expected: &[OtapArrowRecords]) {
-        let actual = match output.payload_ref() {
-            OtapPayload::OtapArrowRecords(r) => r,
-            _ => panic!("expected OtapArrowRecords payload"),
-        };
-        let expected_msgs: Vec<_> = expected.iter().map(otap_to_otlp).collect();
-        assert_equivalent(&[otap_to_otlp(actual)], &expected_msgs);
-    }
-
-    /// Assert that the processor output is semantically equivalent to the
-    /// expected OTLP [`MetricsData`].
-    fn assert_output_otlp_equivalent(output: &OtapPdata, expected: MetricsData) {
-        let actual = match output.payload_ref() {
-            OtapPayload::OtapArrowRecords(r) => r,
-            _ => panic!("expected OtapArrowRecords payload"),
-        };
-        assert_equivalent(
-            &[otap_to_otlp(actual)],
-            &[otap_df_pdata::proto::OtlpProtoMessage::Metrics(expected)],
-        );
-    }
-
-    /// Encode OTLP [`MetricsData`] into serialized protobuf bytes and wrap
-    /// as an [`OtapPdata`] with an [`OtlpBytes`] payload.
-    fn make_otlp_bytes_pdata(metrics_data: MetricsData) -> OtapPdata {
-        let msg = otap_df_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
-        let otlp_bytes = otlp_message_to_bytes(&msg);
-        OtapPdata::new_default(OtapPayload::OtlpBytes(otlp_bytes))
-    }
-
-    /// Build an OTLP [`MetricsData`] with `n` unique gauge metrics, each with
-    /// a single data point. All metrics share one resource and one scope.
-    fn make_gauge(name: &str, value: f64) -> Metric {
-        Metric::build()
-            .name(name)
-            .data_gauge(Gauge::new(vec![
-                NumberDataPoint::build()
-                    .time_unix_nano(1000u64)
-                    .value_double(value)
-                    .finish(),
-            ]))
-            .finish()
-    }
-
-    fn make_sum(name: &str, aggregatable: bool, value: i64, exemplars: Vec<Exemplar>) -> Metric {
-        let temporality = if aggregatable {
-            AggregationTemporality::Cumulative
-        } else {
-            AggregationTemporality::Delta
-        };
-        Metric::build()
-            .name(name)
-            .data_sum(Sum::new(
-                temporality,
-                true,
-                vec![
-                    NumberDataPoint::build()
-                        .time_unix_nano(1000u64)
-                        .value_int(value)
-                        .exemplars(exemplars)
-                        .finish(),
+    #[test]
+    fn test_nack_passthrough_then_flush() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![
+                    PdataAction::AssertSubscribers(true),
+                    PdataAction::Nack("test rejection"),
                 ],
-            ))
-            .finish()
+            },
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Nack("test rejection")],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+        ];
+        run_test(config, actions);
     }
 
-    fn make_histogram(name: &str, aggregatable: bool, exemplars: Vec<Exemplar>) -> Metric {
-        let temporality = if aggregatable {
-            AggregationTemporality::Cumulative
-        } else {
-            AggregationTemporality::Delta
-        };
-        Metric::build()
-            .name(name)
-            .data_histogram(Histogram::new(
-                temporality,
-                vec![
-                    HistogramDataPoint::build()
-                        .time_unix_nano(1000u64)
-                        .count(10u64)
-                        .sum(100.0f64)
-                        .bucket_counts(vec![2, 3, 5])
-                        .explicit_bounds(vec![10.0, 50.0])
-                        .exemplars(exemplars)
-                        .finish(),
-                ],
-            ))
-            .finish()
+    // Ack passthrough, then ack the aggregated flush. Upstream should get
+    // exactly one ack (held until both outbounds are acked).
+    #[test]
+    fn test_ack_passthrough_then_ack_aggregated() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::AssertSubscribers(true), PdataAction::Ack],
+            },
+            // Passthrough acked but not flushed yet -> no upstream ack
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            // Both acked and flushed -> upstream ack
+            Action::AssertUpstream(UpstreamExpectation::AckCount(1)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
     }
 
-    fn make_exp_histogram(name: &str, aggregatable: bool, exemplars: Vec<Exemplar>) -> Metric {
-        let temporality = if aggregatable {
-            AggregationTemporality::Cumulative
-        } else {
-            AggregationTemporality::Delta
-        };
-        Metric::build()
-            .name(name)
-            .data_exponential_histogram(ExponentialHistogram::new(
-                temporality,
-                vec![
-                    ExponentialHistogramDataPoint::build()
-                        .time_unix_nano(1000u64)
-                        .count(5u64)
-                        .scale(2i32)
-                        .zero_count(1u64)
-                        .positive(Buckets::new(0, vec![1, 2]))
-                        .negative(Buckets::new(0, vec![1, 1]))
-                        .exemplars(exemplars)
-                        .finish(),
-                ],
-            ))
-            .finish()
+    // Ack passthrough, then nack the aggregated flush. Upstream should get
+    // one nack (all-or-nothing semantics).
+    #[test]
+    fn test_ack_passthrough_then_nack_aggregated() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Nack("downstream failure")],
+            },
+            // Nack wins -> upstream nack, no ack
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+        ];
+        run_test(config, actions);
     }
 
-    fn make_n_gauge_metrics(n: usize) -> MetricsData {
-        let metrics: Vec<_> = (0..n)
-            .map(|i| {
-                Metric::build()
-                    .name(format!("metric_{i}"))
-                    .data_gauge(Gauge::new(vec![
-                        NumberDataPoint::build()
-                            .time_unix_nano(1000u64)
-                            .value_double(i as f64)
-                            .finish(),
-                    ]))
-                    .finish()
-            })
-            .collect();
-        MetricsData::new(vec![ResourceMetrics::new(
+    // Nack both passthrough and aggregated independently. Upstream should
+    // receive exactly one nack (second nack for same inbound is a no-op).
+    #[test]
+    fn test_nack_both_passthrough_and_aggregated() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::Nack("first nack")],
+            },
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Nack("second nack")],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+        ];
+        run_test(config, actions);
+    }
+
+    // AllAggregated path: all metrics are aggregatable, nothing passthrough.
+    // Ack the flushed batch -> upstream ack.
+    #[test]
+    fn test_all_aggregated_ack_after_flush() {
+        let config = json!({});
+        let payload = make_otap_payload_from_metrics(MetricsData::new(vec![ResourceMetrics::new(
             Resource::build().finish(),
             vec![ScopeMetrics::new(
                 InstrumentationScope::build().finish(),
-                metrics,
+                vec![make_gauge("cpu.gauge", 42.0)],
             )],
-        )])
+        )]));
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload,
+            },
+            Action::AssertNoPdata,
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(1)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    // AllAggregated path: nack the flushed batch -> upstream nack.
+    #[test]
+    fn test_all_aggregated_nack_after_flush() {
+        let config = json!({});
+        let payload = make_otap_payload_from_metrics(MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build().finish(),
+                vec![make_gauge("cpu.gauge", 42.0)],
+            )],
+        )]));
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload,
+            },
+            Action::AssertNoPdata,
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Nack("aggregated nack")],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+        ];
+        run_test(config, actions);
+    }
+
+    // No subscriber interest on the inbound pdata. Processor should not
+    // track ack/nack state and no upstream ack/nack should appear.
+    #[test]
+    fn test_no_subscribers_no_tracking() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::empty(),
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::AssertSubscribers(false)],
+            },
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            // Flushed aggregated batch also has no subscribers
+            Action::DrainPdata {
+                actions: vec![PdataAction::AssertSubscribers(false)],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    // Nack passthrough, then ack the aggregated flush. The inbound was
+    // already removed by the nack so handle_ack hits the stale_inbound
+    // warning path. Upstream should get 1 nack (from the passthrough), 0 acks.
+    #[test]
+    fn test_nack_passthrough_then_ack_aggregated() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::Nack("test rejection")],
+            },
+            Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+        ];
+        run_test(config, actions);
+    }
+
+    // Two inbounds with mixed metrics accumulate in the same flush window.
+    // Both passthroughs acked, then the single aggregated flush acked.
+    // Both inbounds should get upstream acks.
+    #[test]
+    fn test_multiple_inbounds_flush_acked() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(2)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    // Two inbounds with mixed metrics, both passthroughs acked, then the
+    // aggregated flush nacked. Both inbounds should get upstream nacks.
+    #[test]
+    fn test_multiple_inbounds_flush_nacked() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata {
+                actions: vec![PdataAction::Ack],
+            },
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::DrainPdata {
+                actions: vec![PdataAction::Nack("downstream failure")],
+            },
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(2)),
+        ];
+        run_test(config, actions);
+    }
+
+    #[test]
+    fn test_single_batch_over_limit_nacked() {
+        let too_many = u16::MAX as usize + 1;
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_otlp_payload_from_metrics(make_n_gauge_metrics(too_many)),
+            },
+            Action::AssertNoPdata,
+            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+        ];
+        run_test(config, actions);
     }
 }
