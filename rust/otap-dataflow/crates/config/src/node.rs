@@ -9,7 +9,7 @@
 //! A node can expose multiple named output ports.
 
 use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
-use crate::{Description, NodeUrn, PortName};
+use crate::{CapabilityId, Description, NodeId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,7 +21,9 @@ use std::collections::HashMap;
 /// Standard serde deserialization into `HashMap` silently overwrites earlier
 /// entries when keys are duplicated in the source. This function detects that
 /// and returns an error so the user gets immediate feedback.
-fn deserialize_no_dup_keys<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+fn deserialize_no_dup_keys<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<CapabilityId, NodeId>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -31,7 +33,7 @@ where
     struct NoDupVisitor;
 
     impl<'de> Visitor<'de> for NoDupVisitor {
-        type Value = HashMap<String, String>;
+        type Value = HashMap<CapabilityId, NodeId>;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str("a map with no duplicate keys")
@@ -40,12 +42,12 @@ where
         fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
             let mut result = HashMap::new();
             while let Some((key, value)) = map.next_entry::<String, String>()? {
-                if result.contains_key(&key) {
+                if result.contains_key(key.as_str()) {
                     return Err(serde::de::Error::custom(format!(
                         "duplicate capability key '{key}'"
                     )));
                 }
-                let _ = result.insert(key, value);
+                let _ = result.insert(CapabilityId::from(key), NodeId::from(value));
             }
             Ok(result)
         }
@@ -111,7 +113,7 @@ pub struct NodeUserConfig {
         skip_serializing_if = "HashMap::is_empty",
         deserialize_with = "deserialize_no_dup_keys"
     )]
-    pub capabilities: HashMap<String, String>,
+    pub capabilities: HashMap<CapabilityId, NodeId>,
 
     /// Entity configuration for the node.
     ///

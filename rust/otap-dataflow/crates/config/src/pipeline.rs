@@ -675,7 +675,7 @@ impl PipelineConfig {
         // Check that capability bindings on nodes reference valid extensions
         for (node_id, node_config) in self.nodes.iter() {
             for (capability_name, extension_name) in &node_config.capabilities {
-                if !self.extensions.contains_key(extension_name.as_str()) {
+                if !self.extensions.contains_key(extension_name.as_ref()) {
                     errors.push(Error::InvalidUserConfig {
                         error: format!(
                             "Node '{}' binds capability '{}' to extension '{}', \
@@ -2559,7 +2559,7 @@ connections:
             .unwrap();
         assert_eq!(
             exp_cfg.capabilities.get("bearer_token_provider"),
-            Some(&"auth".to_string())
+            Some(&crate::NodeId::from("auth".to_string()))
         );
     }
 
