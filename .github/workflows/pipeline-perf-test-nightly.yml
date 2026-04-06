@@ -13,7 +13,7 @@ jobs:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: audit
 
@@ -115,6 +115,7 @@ jobs:
           path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
 
       - name: Upload syslog TCP results for processing
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: syslog-tcp-nightly-results
@@ -178,6 +179,7 @@ jobs:
   update-benchmarks:
     runs-on: ubuntu-24.04
     needs: [pipeline-perf-test]
+    if: ${{ !cancelled() }}
     permissions:
       # deployments permission to deploy GitHub pages website
       deployments: write
@@ -187,101 +189,111 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Download syslog artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: syslog-nightly-results*
           merge-multiple: true
           path: syslog_results
 
       - name: Download syslog TCP artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: syslog-tcp-nightly-results*
           merge-multiple: true
           path: syslog_tcp_results
 
       - name: Download standard load batch size artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: standardload-batch-size-nightly-results*
           merge-multiple: true
           path: standardload_batch_size_results
 
       - name: Download backpressure artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: backpressure-nightly-results*
           merge-multiple: true
           path: backpressure_results
 
       - name: Download filter artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: filter-nightly-results*
           merge-multiple: true
           path: filter_results
 
       - name: Download batch processor artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: batch-processor-nightly-results*
           merge-multiple: true
           path: batch_processor_results
 
       - name: Download otelcol filter artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: filter-otelcol-results*
           merge-multiple: true
           path: filter_otelcol_results
 
       - name: Download saturation artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: saturation-nightly-results*
           merge-multiple: true
           path: saturation_results
 
       - name: Download scaling efficiency metrics
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: scaling-efficiency-nightly-results
+          pattern: scaling-efficiency-nightly-results*
+          merge-multiple: true
           path: scaling_efficiency_results
 
       - name: Consolidate syslog benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_results syslog_output.json
 
       - name: Consolidate syslog TCP benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_tcp_results syslog_tcp_output.json
 
       - name: Consolidate standard load batch size benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh standardload_batch_size_results standardload_batch_size_output.json
 
       - name: Consolidate backpressure benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh backpressure_results backpressure_output.json
 
       - name: Consolidate filter benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_results filter_output.json
 
       - name: Consolidate batch processor benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh batch_processor_results batch_processor_output.json
 
       - name: Consolidate otelcol filter benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_otelcol_results filter_otelcol_output.json
 
       - name: Consolidate saturation benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh saturation_results saturation_output.json
 
       - name: Update benchmark data
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('syslog_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
           output-file-path: syslog_output.json
@@ -293,7 +305,8 @@ jobs:
           save-data-file: true
 
       - name: Update syslog TCP benchmark data
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('syslog_tcp_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
           output-file-path: syslog_tcp_output.json
@@ -305,7 +318,8 @@ jobs:
           save-data-file: true
 
       - name: Update standard load batch size benchmark data
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('standardload_batch_size_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
           output-file-path: standardload_batch_size_output.json
@@ -317,7 +331,8 @@ jobs:
           save-data-file: true
 
       - name: Update benchmark data and deploy to GitHub Pages
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('backpressure_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
           output-file-path: backpressure_output.json
@@ -329,7 +344,8 @@ jobs:
           save-data-file: true
 
       - name: Update filter benchmark data
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('filter_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
           output-file-path: filter_output.json
@@ -341,7 +357,8 @@ jobs:
           save-data-file: true
 
       - name: Update batch processor benchmark data
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('batch_processor_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
           output-file-path: batch_processor_output.json
@@ -353,7 +370,8 @@ jobs:
           save-data-file: true
 
       - name: Update filter otelcol benchmark data
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('filter_otelcol_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
           output-file-path: filter_otelcol_output.json
@@ -365,7 +383,8 @@ jobs:
           save-data-file: true
 
       - name: Update saturation benchmark data
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('saturation_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
           output-file-path: saturation_output.json
@@ -377,7 +396,8 @@ jobs:
           save-data-file: true
 
       - name: Update scaling efficiency data
-        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        if: ${{ !cancelled() && hashFiles('scaling_efficiency_results/scaling-efficiency.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customBiggerIsBetter"
           output-file-path: scaling_efficiency_results/scaling-efficiency.json
