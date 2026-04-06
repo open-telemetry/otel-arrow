@@ -90,9 +90,6 @@ pub struct AzureMonitorExporterMetrics {
     /// Number of successful heartbeat sends.
     #[metric(unit = "{heartbeat}")]
     pub heartbeats: Counter<u64>,
-    /// Number of log records that failed to serialize during transformation.
-    #[metric(unit = "{record}")]
-    pub transform_failures: Counter<u64>,
 }
 
 /// Full metrics tracker for the Azure Monitor exporter.
@@ -336,12 +333,6 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     pub fn add_heartbeat(&mut self) {
         self.metrics.heartbeats.inc();
-    }
-
-    /// Increment the transform failures counter.
-    #[inline]
-    pub fn add_transform_failures(&mut self, count: u64) {
-        self.metrics.transform_failures.add(count);
     }
 
     /// Record an HTTP response status code.
