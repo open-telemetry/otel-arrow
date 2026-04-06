@@ -406,7 +406,6 @@ impl TemporalReaggregationProcessor {
             // The inbound may have already been removed by a nack on a
             // different outbound e.g. if the passthrough was nacked first
             let Some(tracker) = self.inbound_batches.get_mut(inbound_key) else {
-                otel_warn!("temporal_reaggregation.ack.stale_inbound");
                 continue;
             };
 
