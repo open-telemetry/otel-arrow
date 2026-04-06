@@ -50,14 +50,17 @@ use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, Field, Schema};
 use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, BooleanValue, DoubleValue, Expression, IntegerValue,
-    InvokeFunctionArgument, InvokeFunctionScalarExpression, MathScalarExpression, PipelineFunction,
+    BinaryMathematicalScalarExpression, BooleanValue, CollectionScalarExpression,
+    CombineScalarExpression, DoubleValue, Expression, IntegerValue, InvokeFunctionArgument,
+    InvokeFunctionScalarExpression, MathScalarExpression, PipelineFunction,
     PipelineFunctionImplementation, ScalarExpression, StaticScalarExpression, StringValue,
+    TextScalarExpression,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
+use datafusion::functions::string::concat;
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
@@ -397,6 +400,7 @@ impl ExprLogicalPlanner {
                     requires_dict_downcast,
                 })
             }
+            ScalarExpression::Text(text) => self.plan_text_expr(text, functions),
             other_expr => Err(Error::NotYetSupportedError {
                 message: format!("expression not yet supported {other_expr:?}"),
             }),
@@ -466,6 +470,32 @@ impl ExprLogicalPlanner {
                 expr_type,
                 requires_dict_downcast: true,
             })
+        }
+    }
+
+    fn plan_concat_expr(
+        &self,
+        combine_expr: &CombineScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        match combine_expr.get_values_expression() {
+            ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
+                let (df_udf_args, source_scope, _) =
+                    self.plan_function_args(list_expr.get_value_expressions().iter(), functions)?;
+                Ok(ScopedLogicalExpr {
+                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                        concat(),
+                        df_udf_args,
+                    )),
+                    expr_type: ExprLogicalType::String,
+                    source: source_scope,
+                    requires_dict_downcast: true,
+                })
+            }
+            other => {
+                // TODO invalid pipeline
+                todo!("invalid pipeline")
+            }
         }
     }
 
@@ -600,6 +630,77 @@ impl ExprLogicalPlanner {
                 source: source_scope,
                 requires_dict_downcast,
             })
+        }
+    }
+
+    // TODO docs & need to use this in the two places where the code is duplicated
+    fn plan_function_args<'a>(
+        &self,
+        mut arg_exprs: impl Iterator<Item = &'a ScalarExpression>,
+        functions: &[PipelineFunction],
+    ) -> Result<(Vec<Expr>, LogicalExprDataSource, bool)> {
+        // TODO preallocate w/ size hint or something
+        let mut planned_arg_exprs = Vec::new();
+
+        // TODO check if empty, no unwrap.
+        let first_arg_expr = self.plan_scalar_expr(arg_exprs.next().unwrap(), functions)?;
+        planned_arg_exprs.push(first_arg_expr.logical_expr);
+        let mut source_scope = first_arg_expr.source;
+        let mut source_requires_dict_downcast = first_arg_expr.requires_dict_downcast;
+
+        for arg_expr in arg_exprs {
+            let planned_arg_expr = self.plan_scalar_expr(arg_expr, functions)?;
+            // check if the data scope of the argument can be combined without doing a join.
+            // We would need to join data from different scopes if the arguments have would
+            // require it, such as in function calls like:
+            // some_func(severity_text, attributes["x"])
+            let combined_scope = match (planned_arg_expr.source, source_scope) {
+                (
+                    LogicalExprDataSource::DataSource(left_scope),
+                    LogicalExprDataSource::DataSource(right_scope),
+                ) => left_scope
+                    .can_combine(&right_scope)
+                    .then_some(if !left_scope.is_scalar() {
+                        left_scope
+                    } else {
+                        right_scope
+                    }),
+                _ => None,
+            };
+
+            if let Some(combined_scope) = combined_scope {
+                source_scope = LogicalExprDataSource::DataSource(combined_scope);
+            } else {
+                // TODO: eventually we'll create a new join expr node and invoke the function
+                // on result of the join.
+                return Err(Error::NotYetSupportedError {
+                    message: "Functions arguments with differing data scopes not yet supported"
+                        .into(),
+                });
+            }
+            source_requires_dict_downcast |= planned_arg_expr.requires_dict_downcast;
+            planned_arg_exprs.push(planned_arg_expr.logical_expr);
+        }
+
+        Ok((
+            planned_arg_exprs,
+            source_scope,
+            source_requires_dict_downcast,
+        ))
+    }
+
+    fn plan_text_expr(
+        &self,
+        text_expr: &TextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        match text_expr {
+            TextScalarExpression::Concat(combine_expr) => {
+                self.plan_concat_expr(combine_expr, functions)
+            }
+            other_expr => Err(Error::NotYetSupportedError {
+                message: format!("text expression not yet supported {other_expr:?}"),
+            }),
         }
     }
 }

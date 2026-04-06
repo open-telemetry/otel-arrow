@@ -5,13 +5,14 @@ use std::sync::LazyLock;
 
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-    ContainsLogicalExpression, DoubleScalarExpression, DoubleValue, EqualToLogicalExpression,
-    Expression, GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-    IntegerScalarExpression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
+    CollectionScalarExpression, CombineScalarExpression, ContainsLogicalExpression,
+    DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
+    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
+    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, ListScalarExpression,
     LogicalExpression, MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression,
     NullScalarExpression, OrLogicalExpression, QueryLocation, ScalarExpression,
     SliceScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-    ValueAccessor,
+    TextScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -748,6 +749,18 @@ fn parse_function_call(
                 case_insensitive,
             ))
             .into())
+        }
+        "concat" => {
+            // TODO validate args len > 0?
+            Ok(
+                ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                    query_location.clone(),
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(query_location, args),
+                    )),
+                )))
+                .into(),
+            )
         }
         "matches" => {
             if args.len() != 2 {
