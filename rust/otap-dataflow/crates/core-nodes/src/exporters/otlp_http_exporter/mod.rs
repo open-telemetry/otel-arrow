@@ -32,7 +32,7 @@ use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error as EngineError, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterMessageChannel, Message};
+use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::wiring_contract::WiringContract;
@@ -52,12 +52,9 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
-
-#[cfg(feature = "experimental-tls")]
-use otap_df_telemetry::otel_warn;
 
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
@@ -202,7 +199,7 @@ struct CompletedExport {
 impl Exporter<OtapPdata> for OtlpHttpExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: ExporterMessageChannel<OtapPdata>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         let logs_endpoint = Rc::new(
@@ -636,6 +633,12 @@ async fn finalize_completed_export(
     let export_and_notify_success = match err {
         None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
         Some((err_msg, retryable)) => {
+            otel_warn!(
+                "otlp.exporter.http.export_error",
+                message = err_msg,
+                retryable = retryable
+            );
+            pdata_metrics.add_failed(signal_type, 1);
             let mut nack = NackMsg::new(&err_msg, pdata);
             nack.permanent = !retryable;
             _ = effect_handler.notify_nack(nack).await;

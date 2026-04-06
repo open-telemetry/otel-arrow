@@ -50,6 +50,7 @@ otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
 otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
+otap-df-control-channel = { path = "crates/control-channel" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
@@ -95,6 +96,7 @@ futures-core = "0.3.32"
 futures-channel = "0.3.32"
 futures-timer = "3.0.3"
 async-channel = { version = "2.5.0" }
+hashbrown = { version = "0.16", features = ["equivalent"] }
 http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
@@ -107,6 +109,7 @@ mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
 libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
 tikv-jemallocator = { version = "0.6.1" }
 tikv-jemalloc-ctl = { version = "0.6.1" }
+memchr = "2.8.0"
 memmap2 = "0.9"
 memory-stats = "1"
 nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
@@ -196,6 +199,7 @@ weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0
 weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=4.2.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
@@ -212,7 +216,7 @@ data_engine_recordset = { path = '../experimental/query_engine/engine-recordset'
 data_engine_recordset_otlp_bridge = { path = '../experimental/query_engine/engine-recordset-otlp-bridge' }
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
-minijinja = "1"
+minijinja = "2"
 otap-df-admin = { path = 'crates/admin' }
 otap-df-channel = { path = 'crates/channel' }
 otap-df-engine-macros = { path = 'crates/engine-macros' }
@@ -224,7 +228,7 @@ otap-df-telemetry-macros = { path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
 testcontainers = "0.27"
-toml = "0.8.22"
+toml = "1.0.0"
 tonic-prost-build = "0.14"
 urlencoding = "2"
 geneva-uploader = "0.4.0"

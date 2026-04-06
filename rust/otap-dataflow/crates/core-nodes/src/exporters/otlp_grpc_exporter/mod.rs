@@ -24,7 +24,7 @@ use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterMessageChannel, Message};
+use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
@@ -41,7 +41,7 @@ use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -119,7 +119,7 @@ impl OTLPExporter {
 impl Exporter<OtapPdata> for OTLPExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: ExporterMessageChannel<OtapPdata>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otel_info!(
@@ -545,7 +545,14 @@ async fn finalize_completed_export(
 
     match route_export_result(result, context, saved_payload, effect_handler).await {
         Ok(()) => pdata_metrics.add_exported(signal_type, 1),
-        Err(_) => pdata_metrics.add_failed(signal_type, 1),
+        Err(e) => {
+            otel_warn!(
+                "otlp.exporter.http.export_error",
+                message = "OTLP Exporter gRPC service request did not succeed",
+                error = %e
+            );
+            pdata_metrics.add_failed(signal_type, 1)
+        }
     }
 
     client

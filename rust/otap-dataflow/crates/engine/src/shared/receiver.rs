@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_handler_try_send_message_channel_full() {
+    fn effect_handler_try_send_message_inbox_full() {
         let (tx, _rx) = tokio::sync::mpsc::channel::<u64>(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));

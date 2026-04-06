@@ -17,4 +17,9 @@ pub struct TemporalReaggregationMetrics {
     /// Number of flushes triggered by exceeding the maximum stream count.
     #[metric(unit = "{flush}")]
     pub flushes_overflow: Counter<u64>,
+
+    /// Number of incoming batches rejected because they individually exceed some
+    /// specified limit or fail to be processed into a view.
+    #[metric(unit = "{batch}")]
+    pub batches_rejected: Counter<u64>,
 }
