@@ -4,11 +4,11 @@
 //! Pipeline endpoints.
 //! Status: Not implemented.
 //!
-//! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+//! - GET `/api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 //!   Get the configuration of the specified pipeline.
-//! - GET `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
+//! - GET `/api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
 //!   Get the status of the specified pipeline.
-//! - POST `/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
+//! - POST `/api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
 //!   Shutdown a specific pipeline
 //!   - 202 Accepted if the stop request was accepted and is being processed (async operation)
 //!   - 400 Bad Request if the pipeline is already stopped

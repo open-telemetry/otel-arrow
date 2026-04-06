@@ -3,9 +3,9 @@
 
 //! Process-wide health and status endpoints.
 //!
-//! - GET `/status` - list all pipelines and their status
-//! - GET `/livez` - liveness probe
-//! - GET `/readyz` - readiness probe
+//! - GET `/api/v1/status` - list all pipelines and their status
+//! - GET `/api/v1/livez` - liveness probe
+//! - GET `/api/v1/readyz` - readiness probe
 
 use crate::AppState;
 use axum::extract::State;
