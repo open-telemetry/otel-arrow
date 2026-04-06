@@ -58,8 +58,6 @@ use self::identity::{
 };
 use self::telemetry::TemporalReaggregationMetrics;
 
-const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";
-
 /// Errors that can occur during view processing.
 #[derive(thiserror::Error, Debug)]
 enum ProcessingError {
