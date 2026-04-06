@@ -76,7 +76,7 @@ use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
 };
-use otap_df_state::store::ObservedStateStore;
+use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -92,6 +92,8 @@ use std::thread;
 
 /// Error types and helpers for the controller module.
 pub mod error;
+/// Reusable startup helpers (validation, CLI overrides, system info).
+pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
 pub mod thread_task;
 
@@ -265,14 +267,52 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
     /// Starts the controller with the given engine configurations.
     pub fn run_forever(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
-        self.run_with_mode(engine_config, RunMode::ParkMainThread)
+        self.run_with_mode(
+            engine_config,
+            RunMode::ParkMainThread,
+            None::<fn(ObservedStateHandle)>,
+        )
+    }
+
+    /// Starts the controller and invokes `observer` with an
+    /// [`ObservedStateHandle`] as soon as the pipeline state store is ready.
+    ///
+    /// The callback fires once, before the engine blocks. Use it to obtain
+    /// zero-overhead, in-process access to pipeline liveness, readiness, and
+    /// health without going through the admin HTTP server.
+    pub fn run_forever_with_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_with_mode(engine_config, RunMode::ParkMainThread, Some(observer))
     }
 
     /// Starts the controller with the given engine configurations.
     ///
     /// Runs until pipelines are shut down, then closes telemetry/admin services.
     pub fn run_till_shutdown(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
-        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone)
+        self.run_with_mode(
+            engine_config,
+            RunMode::ShutdownWhenDone,
+            None::<fn(ObservedStateHandle)>,
+        )
+    }
+
+    /// Like [`run_till_shutdown`](Self::run_till_shutdown), but invokes
+    /// `observer` with an [`ObservedStateHandle`] before blocking.
+    pub fn run_till_shutdown_with_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone, Some(observer))
     }
 
     fn map_topic_spec_to_options(
@@ -958,11 +998,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(set)
     }
 
-    fn run_with_mode(
+    fn run_with_mode<F>(
         &self,
         engine_config: OtelDataflowSpec,
         run_mode: RunMode,
-    ) -> Result<(), Error> {
+        observer: Option<F>,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -994,6 +1038,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             log_tap_handle.clone(),
         );
         let obs_state_handle = obs_state_store.handle();
+
+        // Notify the caller with a clone of the observed-state handle, if requested.
+        if let Some(observer) = observer {
+            observer(obs_state_handle.clone());
+        }
+
         let engine_evt_reporter =
             obs_state_store.engine_reporter(engine.observed_state.engine_events);
         let console_async_reporter = telemetry_config
