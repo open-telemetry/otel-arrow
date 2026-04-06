@@ -407,7 +407,6 @@ pub enum NameStrategy {
     StoredName,
 }
 
-
 /// Action taken when a header violates a policy constraint.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
