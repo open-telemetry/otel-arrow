@@ -492,10 +492,12 @@ impl ExprLogicalPlanner {
                     requires_dict_downcast: true,
                 })
             }
-            other => {
-                // TODO invalid pipeline
-                todo!("invalid pipeline")
-            }
+            other => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "Unexpected scalar expression for CombineScalarExpression values {other:?}"
+                ),
+                query_location: Some(combine_expr.get_query_location().clone()),
+            }),
         }
     }
 
@@ -713,10 +715,12 @@ impl ExprLogicalPlanner {
                     requires_dict_downcast: true,
                 })
             }
-            other => {
-                // TODO invalid pipeline
-                todo!("invalid pipeline")
-            }
+            other => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "Unexpected scalar expression for JoinTextScalarExpression values {other:?}"
+                ),
+                query_location: Some(join_text_expr.get_query_location().clone()),
+            }),
         }
     }
 

@@ -812,7 +812,7 @@ fn parse_function_call(
             let substr = args.remove(0);
             let replacement = args.remove(0);
 
-            return Ok(ScalarExpression::Text(TextScalarExpression::Replace(
+            Ok(ScalarExpression::Text(TextScalarExpression::Replace(
                 ReplaceTextScalarExpression::new(
                     query_location,
                     source,
@@ -821,7 +821,7 @@ fn parse_function_call(
                     false, // case_insensitive = set to false for OPL
                 ),
             ))
-            .into());
+            .into())
         }
         "substring" => {
             if args.len() < 2 || args.len() > 3 {
