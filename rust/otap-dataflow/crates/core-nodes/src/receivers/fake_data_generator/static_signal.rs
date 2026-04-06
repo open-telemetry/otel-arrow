@@ -692,11 +692,17 @@ mod tests {
         assert!(records[0].attributes.is_empty());
     }
 
-    /// Verify that generated log batches have realistic compression ratios.
+    /// Verify that generated log batches are not trivially compressible.
     ///
-    /// A batch of 500 logs with ~1KB bodies and 6 attributes should compress
-    /// to roughly 1:5 – 1:15 with zstd, not 1:50+ (which would indicate
-    /// unrealistically repetitive data).
+    /// Generates 500 logs with ~1KB bodies, 6 attributes, and trace context
+    /// enabled, then checks the zstd compression ratio stays within a
+    /// realistic range. Before these changes all records were nearly identical
+    /// and compressed at ~57:1; with varied bodies, attribute values, severity
+    /// rotation, and random trace_id/span_id the ratio drops to ~19:1.
+    ///
+    /// The assert uses a generous 3:1–45:1 window to avoid flaky failures
+    /// across platforms while still catching regressions to the old
+    /// all-identical regime (>50:1).
     ///
     /// Run with:
     /// ```sh
@@ -719,15 +725,9 @@ mod tests {
             "Compression: raw={raw_size} bytes, compressed={compressed_size} bytes, ratio={ratio:.1}:1"
         );
 
-        // Guard against unrealistically compressible data.
-        // Before these changes, identical bodies produced ~57:1 ratios.
-        // With 50 distinct templates and varied attributes, expect ~20:1 to ~45:1
-        // depending on body size. Real systems see ~5:1 to ~10:1, but protobuf
-        // structure overhead keeps synthetic data more compressible.
-        // The key goal: never exceed 50:1 (the old all-identical regime).
         assert!(
-            (3.0..=50.0).contains(&ratio),
-            "compression ratio {ratio:.1}:1 is outside acceptable range (3:1 – 50:1); \
+            (3.0..=45.0).contains(&ratio),
+            "compression ratio {ratio:.1}:1 is outside acceptable range (3:1 – 45:1); \
              raw={raw_size} bytes, compressed={compressed_size} bytes"
         );
     }
