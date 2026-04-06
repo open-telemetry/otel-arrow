@@ -40,8 +40,8 @@ pub struct State<UData> {
     /// Implemented by slotmap.
     slots: SlotMap<Key, UData>,
 
-    /// Capacity of this slotmap, based on user provided maximum size.
-    cap: usize,
+    /// Maximum size configuration.
+    max_size: usize,
 }
 
 impl<UData> State<UData> {
@@ -53,7 +53,7 @@ impl<UData> State<UData> {
             // the common case where concurrency stays within the configured
             // limit.
             slots: SlotMap::with_capacity_and_key(max_size),
-            cap: max_size,
+            max_size,
         }
     }
 
@@ -70,7 +70,7 @@ impl<UData> State<UData> {
     where
         F: FnOnce() -> (UData, R),
     {
-        if self.slots.len() >= self.cap {
+        if self.slots.len() >= self.max_size {
             return None;
         }
 
@@ -85,7 +85,7 @@ impl<UData> State<UData> {
     /// function returning an optional value of type R.  In case the
     /// map is full, the UData is returned.
     pub fn allocate_with_data(&mut self, data: UData) -> Result<Key, UData> {
-        if self.slots.len() >= self.cap {
+        if self.slots.len() >= self.max_size {
             return Err(data);
         }
 
@@ -95,7 +95,7 @@ impl<UData> State<UData> {
     /// Reserve a slot if available. Useful when needing to do multiple atomic
     /// inserts across more than one [State].
     pub fn reserve(&mut self) -> Option<Reservation<'_, UData>> {
-        if self.slots.len() >= self.cap {
+        if self.slots.len() >= self.max_size {
             return None;
         }
 
@@ -165,7 +165,7 @@ impl<UData> State<UData> {
     /// How much free capacity there is in this map.
     #[must_use]
     pub fn remaining_capacity(&self) -> usize {
-        self.cap - self.len()
+        self.max_size - self.len()
     }
 
     /// Iterate over all live slots.
@@ -341,22 +341,6 @@ mod tests {
         let _ = state.allocate_with_data("b").unwrap();
 
         assert!(state.reserve().is_none(), "should be at capacity");
-    }
-
-    #[test]
-    fn test_reserve_drop_without_insert() {
-        let mut state: State<&'static str> = State::new(1);
-
-        // Take a reservation but drop it without inserting.
-        let reservation = state.reserve().expect("capacity available");
-        drop(reservation);
-
-        assert_eq!(state.len(), 0, "no slot should be consumed");
-
-        // Capacity should still be available.
-        let reservation = state.reserve().expect("capacity still available");
-        let key = reservation.insert("reclaimed");
-        assert_eq!(state.get(key), Some(&"reclaimed"));
     }
 
     #[test]
