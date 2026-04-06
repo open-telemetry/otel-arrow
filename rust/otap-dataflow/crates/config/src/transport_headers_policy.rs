@@ -372,10 +372,11 @@ pub struct PropagationDefault {
 }
 
 /// Selects which captured headers are candidates for propagation.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PropagationSelector {
     /// Propagate all captured headers (subject to overrides).
+    #[default]
     AllCaptured,
     /// Do not propagate any captured headers by default (overrides may
     /// still select specific headers).
@@ -384,56 +385,36 @@ pub enum PropagationSelector {
     Named(Vec<String>),
 }
 
-impl Default for PropagationSelector {
-    fn default() -> Self {
-        Self::AllCaptured
-    }
-}
-
 /// Action to take for a header during propagation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PropagationAction {
     /// Include the header on the outbound request.
+    #[default]
     Propagate,
     /// Exclude the header from the outbound request.
     Drop,
 }
 
-impl Default for PropagationAction {
-    fn default() -> Self {
-        Self::Propagate
-    }
-}
-
 /// Strategy for mapping the stored header name to the outbound wire name.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NameStrategy {
     /// Use the original wire name observed on ingress.
+    #[default]
     Preserve,
     /// Use the normalized stored name.
     StoredName,
 }
 
-impl Default for NameStrategy {
-    fn default() -> Self {
-        Self::Preserve
-    }
-}
 
 /// Action taken when a header violates a policy constraint.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorAction {
     /// Silently drop the offending header.
+    #[default]
     Drop,
-}
-
-impl Default for ErrorAction {
-    fn default() -> Self {
-        Self::Drop
-    }
 }
 
 /// A per-header propagation override.
