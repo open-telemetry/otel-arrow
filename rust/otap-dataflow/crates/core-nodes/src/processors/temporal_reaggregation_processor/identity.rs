@@ -305,29 +305,29 @@ impl HashBuffer {
 #[repr(u8)]
 enum HashTag {
     /// Prefixes each attribute key.
-    Key = 0xf0,
+    Key = 0xf4,
     /// Represents an empty / null value.
-    Empty = 0xf1,
+    Empty = 0xf5,
     /// Prefixes a byte-array value.
-    Bytes = 0xf2,
+    Bytes = 0xf6,
     /// Prefixes a string value.
-    Str = 0xf3,
+    Str = 0xf7,
     /// Represents `true`.
-    BoolTrue = 0xf4,
+    BoolTrue = 0xf8,
     /// Represents `false`.
-    BoolFalse = 0xf5,
-    /// Prefixes an i64 value (little-endian).
-    Int = 0xf6,
-    /// Prefixes an f64 value (little-endian bits).
-    Double = 0xf7,
+    BoolFalse = 0xf9,
+    /// Prefixes an i64 value
+    Int = 0xfa,
+    /// Prefixes an f64 value
+    Double = 0xfb,
     /// Marks the start of a map (key-value list) value.
-    MapPrefix = 0xf8,
+    MapPrefix = 0xfc,
     /// Marks the end of a map (key-value list) value.
-    MapSuffix = 0xf9,
+    MapSuffix = 0xfd,
     /// Marks the start of an array (slice) value.
-    ArrayPrefix = 0xfa,
+    ArrayPrefix = 0xfe,
     /// Marks the end of an array (slice) value.
-    ArraySuffix = 0xfb,
+    ArraySuffix = 0xff,
 }
 
 impl AttributeHash {
@@ -372,10 +372,8 @@ fn write_attr_value<A: AttributeView>(buf: &mut Vec<u8>, attr: &A) {
 /// Scalar types are encoded with a type-discriminator prefix followed by
 /// the value bytes. Composite types use prefix/suffix delimiters:
 ///
-/// - **Map (KeyValueList)**: `MapPrefix`, then key-value pairs sorted by key
-///   (each key with `Key` prefix + length, each value recursively encoded),
-///   then `MapSuffix`.
-/// - **Array**: `ArrayPrefix`, then each element recursively encoded in order,
+/// - Map (KeyValueList): `MapPrefix`, then key-value pairs sorted by key
+/// - Array: `ArrayPrefix`, then each element recursively encoded in order,
 ///   then `ArraySuffix`.
 fn write_value<'a>(buf: &mut Vec<u8>, val: &impl AnyValueView<'a>) {
     match val.value_type() {
@@ -897,8 +895,6 @@ mod tests {
             )),
         }
     }
-
-    // ---- Array and Map hashing tests ----
 
     #[test]
     fn test_array_value_produces_distinct_hash() {

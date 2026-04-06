@@ -16,6 +16,27 @@ This processor is partially modeled after the [Go interval processor][go-interva
 [metrics-data-model]: https://opentelemetry.io/docs/specs/otel/metrics/data-model/#events--data-stream--timeseries
 [go-interval]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/v0.147.0/processor/intervalprocessor
 
+## Supported metrics
+
+This processor only aggregates a subset of metric types. In particular:
+
+- Cumulative monotonic sums
+- Cumulative histograms
+- Cumulative exponential histograms
+- Gauges
+- Summaries
+
+Other metric types are passed through unchanged.
+
+## Limitations
+
+This processor has the following limitations:
+
+- Exemplars for aggregated metrics are dropped, however exemplars for passed through metrics are
+preserved.
+- Array and Map attribute value types are discarded for the purpose of identifying metrics for
+OtapArrowRecords only.
+
 ## Configuration
 
 ```yaml
