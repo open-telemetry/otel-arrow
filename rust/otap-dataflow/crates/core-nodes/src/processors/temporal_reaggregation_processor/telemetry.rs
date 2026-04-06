@@ -6,10 +6,17 @@
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
+/// Emitted when creating a view fails so we cannot process the data
 pub const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";
+
+/// Emitted when encoding one or more attributes fails. This is mostly a concern for CBOR
+/// encoded data.
 pub const ATTRIBUTE_ENCODE_FAILED_EVENT: &str = "temporal_reaggregation.attribute.encode_failed";
+
+/// Emitted when calldata returned to this processor is invalid in some way
 pub const INVALID_CALLDATA_EVENT: &str = "temporal_reaggregation.calldata.invalid";
-pub const OUTBOUND_NOT_FOUND_EVENT: &str = "temporal_reaggregation.outbound.not_found";
+
+/// Emitted when there is an erroneous ack/nack event
 pub const ERRONEOUS_ACK_EVENT: &str = "temporal_reaggregation.ack.erroneous";
 
 /// Metrics for the temporal reaggregation processor.

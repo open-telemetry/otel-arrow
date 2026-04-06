@@ -389,7 +389,7 @@ impl TemporalReaggregationProcessor {
         };
 
         let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
-            otel_warn!(telemetry::OUTBOUND_NOT_FOUND_EVENT);
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
@@ -486,7 +486,7 @@ impl TemporalReaggregationProcessor {
         };
 
         let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
-            otel_warn!(telemetry::OUTBOUND_NOT_FOUND_EVENT);
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
