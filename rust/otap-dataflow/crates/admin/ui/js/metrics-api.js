@@ -13,7 +13,7 @@ function dedupeUrls(urls) {
 // Build same-origin metrics endpoint candidates.
 // The embedded UI should read from its own admin origin.
 export function buildMetricsCandidates({ query }) {
-  const localPaths = ["/telemetry/metrics", "/metrics"];
+  const localPaths = ["/api/v1/telemetry/metrics", "/api/v1/metrics"];
   const localUrls = localPaths.map((path) => `${path}?${query}`);
   return dedupeUrls(localUrls);
 }
