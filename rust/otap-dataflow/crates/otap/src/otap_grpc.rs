@@ -396,7 +396,7 @@ where
 
         tx.send(Ok(BatchStatus {
             batch_id,
-            status_code: StatusCode::Unavailable as i32,
+            status_code: StatusCode::ResourceExhausted as i32,
             status_message: "Process memory pressure".to_string(),
         }))
         .await

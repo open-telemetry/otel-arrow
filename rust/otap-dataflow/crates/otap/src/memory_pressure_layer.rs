@@ -25,7 +25,7 @@ pub trait MemoryPressureRejectionMetrics: Send + Sync {
 #[must_use]
 pub fn grpc_memory_pressure_status(state: &MemoryPressureState) -> Status {
     let mut metadata = MetadataMap::new();
-    let retry_pushback_ms = state.retry_after_secs().max(1) * 1_000;
+    let retry_pushback_ms = u64::from(state.retry_after_secs().max(1)) * 1_000;
     let _ = metadata.insert(
         "grpc-retry-pushback-ms",
         retry_pushback_ms

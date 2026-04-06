@@ -288,7 +288,7 @@ receivers continue accepting requests regardless of pressure level.
 | OTLP HTTP | `503 Service Unavailable` with `Retry-After: <retry_after_secs>` header |
 | OTLP gRPC | `RESOURCE_EXHAUSTED` with `grpc-retry-pushback-ms: <retry_ms>` metadata |
 | OTAP gRPC stream open / next-read boundary | `RESOURCE_EXHAUSTED` + `grpc-retry-pushback-ms` before stream admission, and for already-open streams at the next read boundary |
-| OTAP gRPC per-batch | `Unavailable` in the OTAP Arrow batch status (ArrowStatus code 14) |
+| OTAP gRPC per-batch | `ResourceExhausted` in the OTAP Arrow batch status (ArrowStatus code 8) |
 | Syslog / CEF TCP | Reject new connections at accept; close active connections mid-stream |
 | Syslog / CEF UDP | Drop incoming datagrams |
 <!-- markdownlint-enable MD013 -->

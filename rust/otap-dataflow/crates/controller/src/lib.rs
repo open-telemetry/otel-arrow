@@ -1063,9 +1063,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 "process-memory-limiter",
                 admin_tracing_setup.clone(),
                 move |cancellation_token| async move {
-                    use tokio::time::{MissedTickBehavior, interval};
+                    use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
-                    let mut ticker = interval(limiter.check_interval());
+                    let mut ticker = interval_at(
+                        Instant::now() + limiter.check_interval(),
+                        limiter.check_interval(),
+                    );
                     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
                     loop {
