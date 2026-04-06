@@ -20,7 +20,13 @@ use std::collections::VecDeque;
 #[cfg(all(not(windows), feature = "jemalloc"))]
 use tikv_jemalloc_ctl::{epoch, stats};
 
+/// Values at or above this threshold are treated as "no limit set" by the
+/// cgroup memory controller (e.g. `memory.max = max` parses to `u64::MAX`).
 const CGROUP_UNLIMITED_THRESHOLD_BYTES: u64 = 1 << 60;
+
+/// When `source = auto` and no explicit limits are configured, soft and hard
+/// limits are derived as percentages of the detected cgroup memory cap:
+///   soft = 90 %,  hard = 95 %.
 const AUTO_DERIVED_SOFT_NUMERATOR: u64 = 90;
 const AUTO_DERIVED_HARD_NUMERATOR: u64 = 95;
 const AUTO_DERIVED_DENOMINATOR: u64 = 100;
@@ -74,8 +80,6 @@ struct MemoryPressureStateInner {
     soft_limit_bytes: AtomicU64,
     hard_limit_bytes: AtomicU64,
     retry_after_secs: AtomicU32,
-    /// Encoded as `mode_to_u8` / decoded as `mode_from_u8`. Using `AtomicU8`
-    /// (rather than a bool) so a third mode can be added without reshaping the struct.
     mode: AtomicU8,
     fail_readiness_on_hard: AtomicBool,
 }

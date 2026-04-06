@@ -289,7 +289,7 @@ receivers continue accepting requests regardless of pressure level.
 | OTLP gRPC | `RESOURCE_EXHAUSTED` with `grpc-retry-pushback-ms: <retry_ms>` metadata |
 | OTAP gRPC stream open / next-read boundary | `RESOURCE_EXHAUSTED` + `grpc-retry-pushback-ms` before stream admission, and for already-open streams at the next read boundary |
 | OTAP gRPC per-batch | `ResourceExhausted` in the OTAP Arrow batch status (ArrowStatus code 8) |
-| Syslog / CEF TCP | Reject new connections at accept; close active connections mid-stream |
+| Syslog / CEF TCP | Accept then immediately drop new connections; close active connections mid-stream |
 | Syslog / CEF UDP | Drop incoming datagrams |
 <!-- markdownlint-enable MD013 -->
 
@@ -303,9 +303,9 @@ entry to `Soft`. The behaviors in the table above apply only at `Hard` in
 
 **Syslog / CEF client behavior under Hard pressure:**
 
-- **TCP:** The receiver refuses new connections at accept and closes active
-  connections mid-stream. Clients receive a TCP RST or `ECONNREFUSED` at the
-  transport layer. There is no application-level retry hint - unlike OTLP/OTAP,
+- **TCP:** The receiver accepts new connections and then immediately drops the
+  socket, closing active connections mid-stream. The connection is closed at the
+  transport layer with no application-level retry hint - unlike OTLP/OTAP,
   no `Retry-After` or pushback value is sent. Most syslog clients (rsyslog,
   syslog-ng, Fluent Bit) have their own reconnect backoff, but they have no
   signal about why the connection was closed or how long to wait before
