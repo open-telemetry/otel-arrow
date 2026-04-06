@@ -6,9 +6,9 @@ The transport header policy controls end-to-end forwarding of
 request-scoped transport metadata (gRPC metadata, HTTP headers)
 through the pipeline. It operates in two phases:
 
-1. **Capture** — Receiver nodes extract selected headers from inbound
+1. **Capture** - Receiver nodes extract selected headers from inbound
    requests and attach them to the pipeline message context.
-2. **Propagation** — Exporter nodes filter the captured headers and
+2. **Propagation** - Exporter nodes filter the captured headers and
    attach the approved subset to outbound requests.
 
 The feature is entirely **opt-in**. When no transport header policy is
@@ -157,9 +157,9 @@ why (max entries reached, name too long, or value too long).
 The propagation policy controls which captured headers an exporter
 includes on outbound requests. It operates in two stages:
 
-1. **Default selector** — Determines the baseline set of headers
+1. **Default selector** - Determines the baseline set of headers
    eligible for propagation.
-2. **Overrides** — Per-header rules that can force-propagate or
+2. **Overrides** - Per-header rules that can force-propagate or
    force-drop specific headers, regardless of the default.
 
 ```yaml
@@ -394,9 +394,9 @@ In this example, `primary/export` sends the header as `X-Tenant-Id`
 
 ## Limitations
 
-1. **`on_error` only supports `drop`** — No `log` or `reject`
+1. **`on_error` only supports `drop`** - No `log` or `reject`
    actions are available. Headers that violate limits are silently
    dropped.
-2. **Exact match only** — `match_names` requires exact header name
+2. **Exact match only** - `match_names` requires exact header name
    matches (case-insensitive). Regex and glob patterns are not
    supported.
