@@ -48,7 +48,7 @@ mod tests {
     ///    (what happens at pipeline boundaries / processor pass-through).
     /// 4. **Exporter propagation** — Apply `HeaderPropagationPolicy` to filter headers
     ///    for egress, including dropping sensitive headers like `authorization`.
-    /// This test exercises the scenario from the design spec:
+    ///    This test exercises the scenario from the design spec:
     /// - `otlp_ingest` captures `x-tenant-id`, `x-request-id`, `authorization`
     /// - `batch` processor preserves headers unchanged
     /// - `otap_export` propagates all except `authorization` (dropped by override)
