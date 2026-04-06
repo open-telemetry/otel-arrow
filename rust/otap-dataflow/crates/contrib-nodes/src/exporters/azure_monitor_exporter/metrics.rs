@@ -70,7 +70,7 @@ pub struct AzureMonitorExporterMetrics {
     #[metric(unit = "ms")]
     pub auth_success_latency: Mmsc,
     /// Compressed batch size in bytes (min/max/sum/count).
-    /// Recorded once per batch, before the exporter's own HTTP retry loop.
+    /// Recorded once per batch; HTTP retries do not produce additional observations.
     #[metric(unit = "By")]
     pub batch_size: Mmsc,
     /// Current number of in-flight export requests.
