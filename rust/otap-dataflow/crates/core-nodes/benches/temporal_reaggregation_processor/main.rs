@@ -512,7 +512,7 @@ fn bench_temporal_reaggregation(c: &mut Criterion) {
         (NUM_BATCHES * METRICS_PER_BATCH) as u64,
     ));
 
-    let _ = group.bench_function(BenchmarkId::new("otlp_bytes", METRICS_PER_BATCH), |b| {
+    let _ = group.bench_function(BenchmarkId::new("otlp", METRICS_PER_BATCH), |b| {
         b.iter_batched(
             || {
                 let (processor, effect_handler, output_receiver) = create_processor();
@@ -535,7 +535,7 @@ fn bench_temporal_reaggregation(c: &mut Criterion) {
         );
     });
 
-    let _ = group.bench_function(BenchmarkId::new("otap_arrow", METRICS_PER_BATCH), |b| {
+    let _ = group.bench_function(BenchmarkId::new("otap", METRICS_PER_BATCH), |b| {
         b.iter_batched(
             || {
                 let (processor, effect_handler, output_receiver) = create_processor();
