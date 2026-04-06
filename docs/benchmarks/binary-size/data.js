@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775348865071,
+  "lastUpdate": 1775435363134,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3102,6 +3102,33 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/d8e64e0d5c26b3c31d2923336d8a59628f7b2bbf"
         },
         "date": 1775348858101,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 100.76,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d8e64e0d5c26b3c31d2923336d8a59628f7b2bbf",
+          "message": "feat(temporal_reaggregation_processor): Pass through metrics which cannot be aggregated (#2530)\n\n# Change Summary\n\nThis PR contains the necessary plumbing to construct a \"passthrough\"\nbatch and communicate the result of processing a view back up to the\nmain processing loop.\n\nBasically, for each batch we either:\n\n- Aggregate nothing and need to pass the data through as-is\n- Aggregate _some_ of the metrics and need to pass through what was not\naggregated instead of throwing it away\n- Aggregate all of the metrics in the batch\n\nTo support this we needed:\n\n- Exemplar support for the passthrough batch (still doesn't exist for\nthe aggregated batch)\n- A second set of state for building the passthrough batch\n\n## What issue does this PR close?\n\n* Part of #2422 \n\n## How are these changes tested?\n\nUnit.\n\n## Are there any user-facing changes?\n\nNo\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-04-04T00:48:41Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d8e64e0d5c26b3c31d2923336d8a59628f7b2bbf"
+        },
+        "date": 1775435356592,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
