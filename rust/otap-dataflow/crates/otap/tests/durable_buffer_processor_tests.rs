@@ -65,6 +65,7 @@ struct TestConfigBuilder {
     retry_config: Option<serde_json::Value>,
     size_cap_policy: &'static str,
     otlp_handling: Option<&'static str>,
+    use_trace_context: bool,
 }
 
 /// Which exporter to use in the test pipeline.
@@ -96,6 +97,7 @@ impl TestConfigBuilder {
             retry_config: None,
             size_cap_policy: "backpressure",
             otlp_handling: None,
+            use_trace_context: false,
         }
     }
 
@@ -158,6 +160,11 @@ impl TestConfigBuilder {
         self
     }
 
+    const fn use_trace_context(mut self, enabled: bool) -> Self {
+        self.use_trace_context = enabled;
+        self
+    }
+
     fn build(
         self,
         pipeline_group_id: &PipelineGroupId,
@@ -172,7 +179,8 @@ impl TestConfigBuilder {
                 "max_batch_size": self.max_batch_size,
                 "metric_weight": self.metric_weight,
                 "trace_weight": self.trace_weight,
-                "log_weight": self.log_weight
+                "log_weight": self.log_weight,
+                "use_trace_context": self.use_trace_context
             },
             "data_source": "static"
         });
@@ -1245,6 +1253,55 @@ fn test_durable_buffer_convert_to_arrow_mode() {
     assert!(
         buffer_path.join("core_0").exists(),
         "Quiver data directory should exist"
+    );
+}
+
+/// Same as `test_durable_buffer_convert_to_arrow_mode` but with
+/// `use_trace_context: true` so each log record carries a random trace_id
+/// and span_id.
+///
+/// Currently ignored: the pipeline delivers 0 items when logs contain
+/// trace context fields. Root cause is not yet identified.
+#[test]
+#[ignore]
+fn test_durable_buffer_convert_to_arrow_mode_with_trace_context() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let buffer_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "arrow-trace-ctx-test".into();
+    let pipeline_id: PipelineId = "arrow-trace-ctx-pipeline".into();
+    let test_id = "convert_to_arrow_trace_ctx";
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::register_counter(test_id, counter.clone());
+
+    let total_signals = 10u64;
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(5)
+        .otlp_handling("convert_to_arrow")
+        .use_trace_context(true)
+        .use_counting_exporter()
+        .exporter_id(test_id)
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let delivered_counter = counter.clone();
+    run_pipeline_with_condition(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10),
+        Duration::from_millis(500),
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+    );
+
+    counting_exporter::unregister_counter(test_id);
+    let delivered = counter.load(Ordering::Relaxed);
+
+    assert!(
+        delivered >= total_signals,
+        "Should have delivered at least {} items through Arrow conversion with trace context, got {}",
+        total_signals,
+        delivered
     );
 }
 
