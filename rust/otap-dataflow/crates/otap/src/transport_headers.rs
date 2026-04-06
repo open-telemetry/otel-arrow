@@ -19,7 +19,7 @@ mod tests {
     use super::*;
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, PropagationAction, PropagationDefault, PropagationMatch,
-        PropagationOverride,
+        PropagationOverride, PropagationSelector,
     };
 
     // -- Helper functions for tests ------------------------------------------
@@ -108,7 +108,10 @@ mod tests {
         // ========== Step 4: Simulate exporter propagation ==========
 
         let propagation_policy = HeaderPropagationPolicy::new(
-            PropagationDefault::default(),
+            PropagationDefault {
+                selector: PropagationSelector::AllCaptured,
+                ..PropagationDefault::default()
+            },
             vec![PropagationOverride {
                 match_rule: PropagationMatch {
                     stored_names: vec!["authorization".to_string()],
@@ -126,13 +129,13 @@ mod tests {
             2,
             "authorization should be dropped, leaving 2 headers"
         );
-        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
+        assert_eq!(propagated[0].header_name, "X-Tenant-Id");
         assert_eq!(propagated[0].value, b"tenant-abc-123");
-        assert_eq!(propagated[1].egress_name, "X-Request-Id");
+        assert_eq!(propagated[1].header_name, "X-Request-Id");
         assert_eq!(propagated[1].value, b"req-xyz-789");
 
         assert!(
-            propagated.iter().all(|h| h.egress_name != "Authorization"),
+            propagated.iter().all(|h| h.header_name != "Authorization"),
             "authorization header must not be propagated"
         );
     }
@@ -168,7 +171,13 @@ mod tests {
             "duplicates must survive clone_without_context"
         );
 
-        let propagation_policy = HeaderPropagationPolicy::default();
+        let propagation_policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector::AllCaptured,
+                ..PropagationDefault::default()
+            },
+            vec![],
+        );
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
         assert_eq!(propagated.len(), 3, "duplicates must survive propagation");
 
@@ -196,7 +205,13 @@ mod tests {
         let pdata_after = pdata.clone_without_context();
 
         let headers = pdata_after.transport_headers().unwrap();
-        let propagation_policy = HeaderPropagationPolicy::default();
+        let propagation_policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector::AllCaptured,
+                ..PropagationDefault::default()
+            },
+            vec![],
+        );
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
 
         assert_eq!(*propagated[0].value_kind, ValueKind::Binary);

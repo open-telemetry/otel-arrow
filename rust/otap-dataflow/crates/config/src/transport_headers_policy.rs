@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn default_propagation_policy() {
         let policy = HeaderPropagationPolicy::default();
-        assert_eq!(policy.default.selector, PropagationSelector::AllCaptured);
+        assert_eq!(policy.default.selector, PropagationSelector::None);
         assert_eq!(policy.default.action, PropagationAction::Propagate);
         assert_eq!(policy.default.name, NameStrategy::Preserve);
         assert_eq!(policy.default.on_error, ErrorAction::Drop);

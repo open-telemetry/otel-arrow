@@ -312,7 +312,13 @@ mod tests {
 
     #[test]
     fn propagate_all_captured_default() {
-        let policy = HeaderPropagationPolicy::default();
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector::AllCaptured,
+                ..PropagationDefault::default()
+            },
+            vec![],
+        );
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::text(
             "tenant_id",
@@ -327,15 +333,18 @@ mod tests {
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 2);
-        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
-        assert_eq!(propagated[1].egress_name, "X-Request-Id");
+        assert_eq!(propagated[0].header_name, "X-Tenant-Id");
+        assert_eq!(propagated[1].header_name, "X-Request-Id");
     }
 
     #[test]
     fn propagate_override_drops_auth() {
-        let policy = HeaderPropagationPolicy {
-            default: PropagationDefault::default(),
-            overrides: vec![PropagationOverride {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector::AllCaptured,
+                ..PropagationDefault::default()
+            },
+            vec![PropagationOverride {
                 match_rule: PropagationMatch {
                     stored_names: vec!["authorization".to_string()],
                 },
@@ -343,7 +352,7 @@ mod tests {
                 name: None,
                 on_error: None,
             }],
-        };
+        );
 
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::text(
@@ -359,7 +368,7 @@ mod tests {
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);
-        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
+        assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
     #[test]
@@ -393,18 +402,19 @@ mod tests {
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);
-        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
+        assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
     #[test]
     fn propagate_stored_name_strategy() {
-        let policy = HeaderPropagationPolicy {
-            default: PropagationDefault {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector::AllCaptured,
                 name: NameStrategy::StoredName,
                 ..PropagationDefault::default()
             },
-            overrides: vec![],
-        };
+            vec![],
+        );
 
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::text(
@@ -415,7 +425,7 @@ mod tests {
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);
-        assert_eq!(propagated[0].egress_name, "tenant_id");
+        assert_eq!(propagated[0].header_name, "tenant_id");
     }
 
     #[test]
@@ -442,6 +452,6 @@ mod tests {
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);
-        assert_eq!(propagated[0].egress_name, "X-Tenant-Id");
+        assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 }
