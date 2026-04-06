@@ -1,0 +1,29 @@
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:8082"
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4319"
+
+          exporter:
+            type: exporter:noop
+
+        connections:
+          - from: receiver
+            to: exporter
