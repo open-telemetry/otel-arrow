@@ -5,7 +5,7 @@
 This document describes the proposed Phase 1 architecture
 for the extension system in the OTAP dataflow engine,
 building on the [extension system proposal](
-extensions.md) which establishes the vision, goals, and
+extension-requirements.md) which establishes the vision, goals, and
 phased rollout plan.
 
 A working proof of concept is available on the
@@ -30,9 +30,24 @@ is addressed in the Phase 1 implementation:
 | Future hierarchical scopes | `CapabilityRegistry` and `resolve_bindings()` are scope-agnostic by design |
 
 In addition to implementing the proposal's requirements,
-this design introduces two capabilities beyond what the
+this design introduces three refinements beyond what the
 proposal envisioned:
 
+- **Pipeline-scoped shared is per-core.** The proposal
+  defines shared extensions as "one runtime instance
+  shared across cores." In Phase 1, both local and shared
+  pipeline-scoped extensions are instantiated **per
+  pipeline instance** (i.e., per core). The local/shared
+  distinction at pipeline scope is about type constraints
+  (`!Send` vs `Send + Clone`), not about cross-core
+  sharing. This follows a consistent principle: **an
+  extension's sharing boundary is determined by the scope
+  it is declared in**, not by its execution model.
+  Pipeline-scoped extensions are per pipeline instance,
+  group-scoped extensions are shared across the group,
+  and engine-scoped extensions are shared globally.
+  The execution model (local vs shared) determines only
+  the type constraints imposed on the implementation.
 - **Active/Passive lifecycle distinction.** The proposal
   describes extensions with background tasks, but does not
   distinguish extensions that only provide capabilities
@@ -768,9 +783,15 @@ evolve toward hierarchical scoping in future phases.
 ### Pipeline Scope (Phase 1)
 
 Extensions are declared at the pipeline level and consumed
-by nodes within that pipeline. Each pipeline instance (one
-per core in thread-per-core mode) gets its own extension
-instances.
+by nodes within that pipeline. Following the principle that
+**sharing boundary is determined by the scope**, both local
+and shared pipeline-scoped extensions are instantiated per
+pipeline instance (one per core in thread-per-core mode).
+The local/shared distinction at this scope controls type
+constraints only: local uses `Rc`-based `!Send` types,
+shared uses `Clone + Send` types. See the
+[refinements section](#how-this-document-relates-to-the-proposal)
+for the rationale behind this design choice.
 
 ```yaml
 groups:
@@ -814,18 +835,47 @@ extension wins.
 
 | Scope    | Execution Model | Sharing                          |
 |----------|-----------------|----------------------------------|
-| Pipeline | Local or Shared | Per pipeline instance (per core) |
-| Group    | Shared          | Across pipelines in the group    |
-| Engine   | Shared          | Across all pipelines             |
+| Pipeline | Local           | Per pipeline instance (per core) |
+| Pipeline | Shared          | Per pipeline instance (per core) |
+| Group    | Shared only     | Across pipelines in the group    |
+| Engine   | Shared only     | Across all pipelines             |
 
-- Pipeline-scoped extensions can be local (`!Send`,
-  `Rc`-based) or shared (`Send`, `Clone`-based).
-- Group and engine-scoped extensions must be shared
-  (`Send + Clone`) since they are accessed from multiple
-  pipeline instances running on different cores.
+At the pipeline level, both local and shared extensions
+are instantiated **per pipeline instance** (i.e., per
+core in thread-per-core mode). The distinction between
+local and shared at this scope is about **type
+constraints**, not about cross-core sharing:
 
-**No architectural changes required:** the Phase 1
-`CapabilityRegistry`, `resolve_bindings()`, and
+- **Local** extensions use `Rc`-based, `!Send` types.
+  They cannot leave the core they were created on.
+  This enables lock-free designs using `Rc`, `RefCell`,
+  and `Cell`.
+- **Shared** extensions use `Clone + Send` types. They
+  are still instantiated per pipeline instance, but
+  their `Send` bound means they *could* be shared across
+  cores. At the pipeline scope this is not needed --
+  it simply means the implementation uses thread-safe
+  primitives (e.g., `Arc`, `RwLock`).
+
+Cross-core sharing becomes meaningful when extensions
+are declared at **higher scopes** (group or engine) in
+Phase 2. At those scopes, a single extension instance
+serves multiple pipeline instances running on different
+cores, so only the shared (`Send + Clone`) execution
+model is permitted -- local extensions are not allowed
+at group or engine scope.
+
+This design keeps Phase 1 simple: pipeline-scoped
+extensions are always per-core, with no cross-core
+coordination. Extension authors who only need pipeline
+scope can choose local for maximum performance or shared
+for convenience, knowing both are core-local. When
+Phase 2 introduces higher scopes, shared extensions
+naturally promote to cross-core usage without API
+changes.
+
+**No architectural changes required for Phase 2:** the
+Phase 1 `CapabilityRegistry`, `resolve_bindings()`, and
 `require_local()` / `require_shared()` mechanisms are
 scope-agnostic. Adding higher scopes requires:
 
@@ -834,7 +884,7 @@ scope-agnostic. Adding higher scopes requires:
 2. A scope-aware resolution pass in `resolve_bindings()`
    that merges registries from inner to outer scope
 3. Validation that group/engine-scoped extensions only
-   use shared execution model
+   use the shared execution model
 
 The `SharedAsLocal` adapter ensures that even when a
 group or engine-scoped shared extension is consumed by a
