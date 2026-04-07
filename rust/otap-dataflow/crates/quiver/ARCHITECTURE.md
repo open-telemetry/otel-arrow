@@ -998,10 +998,15 @@ resulting in data loss.
    `resource.schema_url`, `scope.name`, `scope.version`, `body.str`, and
    `status.status_message` are dictionary-encoded inside struct columns.
 
-All Arrow dictionary key types are supported (`Int8` through `Int64`, `UInt8`
-through `UInt64`).  Widening preserves signedness: unsigned keys widen through
-`UInt8` -> `UInt16` -> `UInt32` -> `UInt64`, and signed keys through
-`Int8` -> `Int16` -> `Int32` -> `Int64`.
+If key type widening would exceed the maximum supported key width, the
+dictionary encoding is stripped and the column is stored as the native value
+type (e.g., plain `Utf8` instead of `Dict(UInt16, Utf8)`).  This ensures
+segment finalization succeeds regardless of dictionary cardinality.
+
+The maximum key width is currently hardcoded to `UInt16` to match the OTAP
+reader stack (`pdata::arrays`), which only supports `UInt8` and `UInt16`
+dictionary keys.  A future enhancement will make this configurable via
+`QuiverConfig` so non-OTAP embeddings can set a different limit.
 
 **Trade-offs:**
 
@@ -1014,6 +1019,10 @@ through `UInt64`).  Widening preserves signedness: unsigned keys widen through
   exceeds the original key type's capacity. In practice this is rare since
   segments typically finalize before accumulating enough batches to overflow
   `UInt16` (65,535 values).
+- *Con*: When cardinality exceeds `UInt16` capacity, dictionary encoding is
+  dropped entirely for that column, increasing storage size. This is an
+  extreme edge case that indicates the segment should be finalized sooner
+  (reduce `segment.target_size` or `segment.max_open_duration`).
 
 **Supported nesting patterns:**
 

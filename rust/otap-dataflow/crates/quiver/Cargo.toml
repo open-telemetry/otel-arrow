@@ -24,6 +24,7 @@ mmap = ["dep:memmap2"]
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
+arrow-cast.workspace = true
 arrow-schema.workspace = true
 arrow-ipc.workspace = true
 arrow-select.workspace = true

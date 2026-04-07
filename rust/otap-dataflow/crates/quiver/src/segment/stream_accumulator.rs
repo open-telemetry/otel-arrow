@@ -47,12 +47,14 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, ArrayRef, DictionaryArray, RecordBatch, StructArray};
 use arrow_buffer::ArrowNativeType;
+use arrow_cast::cast;
 use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow_schema::{DataType, FieldRef, Fields, Schema, SchemaRef};
 use arrow_select::concat::concat;
 
 use super::error::SegmentError;
 use super::types::{ChunkIndex, MAX_CHUNKS_PER_STREAM, StreamId, StreamKey, StreamMetadata};
+use crate::logging::{otel_debug, otel_warn};
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
 /// Accumulates `RecordBatch`es for a single `(slot, schema)` stream.
@@ -253,6 +255,10 @@ impl StreamAccumulator {
         self.write_ipc_to(&mut counting)?;
         let byte_length = counting.bytes_written() as u64;
 
+        // Note: schema_fingerprint reflects the *ingestion* schema, which may
+        // differ from the IPC file schema after dictionary unification
+        // (key widening or native-type fallback). This is intentional -- the
+        // fingerprint is used for write-path routing only.
         Ok(StreamMetadata::new(
             self.stream_id,
             self.slot_id,
@@ -330,6 +336,24 @@ impl<W: std::io::Write> std::io::Write for CountingWriter<W> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Dictionary unification helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Maximum dictionary key width that downstream readers support.
+///
+/// When dictionary unification produces a key type wider than this, the
+/// dictionary encoding is stripped and columns are stored as the native
+/// value type instead. This prevents writing segments that cannot be read
+/// back by the OTAP reader stack (which only supports `UInt8` / `UInt16`
+/// dictionary keys).
+///
+/// TODO: Make this configurable via `QuiverConfig` so non-OTAP embeddings
+/// can set a different limit (e.g., `UInt32` or `UInt64`).
+const MAX_DICT_KEY_TYPE: DataType = DataType::UInt16;
+
+/// Returns `true` if `key_type` exceeds the maximum supported dictionary
+/// key width.
+fn exceeds_max_dict_key(key_type: &DataType) -> bool {
+    key_type_capacity(key_type) > key_type_capacity(&MAX_DICT_KEY_TYPE)
+}
 
 /// Returns `true` if any field in the schema uses dictionary encoding,
 /// including dictionary fields nested inside `Struct` columns.
@@ -427,6 +451,10 @@ fn unify_batch_dicts(
 /// Unifies a single dictionary column across all batches.
 ///
 /// Returns the new per-batch columns and the (possibly updated) field.
+///
+/// If the unified dictionary cardinality exceeds the maximum supported key
+/// width ([`MAX_DICT_KEY_TYPE`]), the dictionary encoding is stripped and
+/// columns are cast to the native value type.
 fn unify_dict_column(
     col_idx: usize,
     field: &FieldRef,
@@ -457,6 +485,31 @@ fn unify_dict_column(
     // Determine the key type that can address all unified values.
     let effective_key_type = widen_key_type(key_type, total_values)?;
 
+    // If the effective key type exceeds the maximum supported width, fall
+    // back to the native value type by casting each batch's dictionary
+    // column. This avoids writing segments that cannot be read back.
+    if exceeds_max_dict_key(&effective_key_type) {
+        otel_warn!(
+            "quiver.dict.native_fallback",
+            field = field.name().as_str(),
+            original_key_type = ?key_type,
+            total_values = total_values,
+            message = "dictionary cardinality exceeds max key width; \
+                       falling back to native type. Consider reducing \
+                       segment.target_size or segment.max_open_duration",
+        );
+        let native_type = value_type.clone();
+        let columns: Vec<ArrayRef> = batches
+            .iter()
+            .map(|batch| {
+                cast(batch.column(col_idx), &native_type)
+                    .map_err(|e| SegmentError::Arrow { source: e })
+            })
+            .collect::<Result<_, _>>()?;
+        let new_field = Arc::new(field.as_ref().clone().with_data_type(native_type));
+        return Ok((columns, new_field));
+    }
+
     // Build remapped columns for each batch.
     let columns: Vec<ArrayRef> = batches
         .iter()
@@ -474,6 +527,13 @@ fn unify_dict_column(
 
     // Update the field if the key type was widened.
     let new_field = if effective_key_type != *key_type {
+        otel_debug!(
+            "quiver.dict.key_widened",
+            field = field.name().as_str(),
+            original_key_type = ?key_type,
+            widened_key_type = ?effective_key_type,
+            total_values = total_values,
+        );
         Arc::new(field.as_ref().clone().with_data_type(DataType::Dictionary(
             Box::new(effective_key_type),
             Box::new(value_type.clone()),
@@ -549,22 +609,54 @@ fn unify_struct_column(
 
             let effective_key_type = widen_key_type(key_type, total_values)?;
 
-            let unified_children: Vec<ArrayRef> = child_arrays
-                .iter()
-                .zip(batch_offsets.iter())
-                .map(|(arr, &offset)| {
-                    remap_dict_keys(arr, key_type, &effective_key_type, &unified_values, offset)
-                })
-                .collect::<Result<_, _>>()?;
-
-            child_data.push(unified_children);
-
-            if effective_key_type != **key_type {
-                new_child_fields.push(Arc::new(child_field.as_ref().clone().with_data_type(
-                    DataType::Dictionary(Box::new(effective_key_type), value_type.clone()),
-                )));
+            // If the effective key type exceeds the max supported width,
+            // fall back to native value type for this struct child.
+            if exceeds_max_dict_key(&effective_key_type) {
+                otel_warn!(
+                    "quiver.dict.native_fallback",
+                    field = %format!("{}.{}", field.name(), child_field.name()),
+                    original_key_type = ?key_type,
+                    total_values = total_values,
+                    message = "dictionary cardinality exceeds max key width; \
+                               falling back to native type",
+                );
+                let native_type: DataType = *value_type.clone();
+                let native_children: Vec<ArrayRef> = child_arrays
+                    .iter()
+                    .map(|arr| {
+                        cast(arr.as_ref(), &native_type)
+                            .map_err(|e| SegmentError::Arrow { source: e })
+                    })
+                    .collect::<Result<_, _>>()?;
+                child_data.push(native_children);
+                new_child_fields.push(Arc::new(
+                    child_field.as_ref().clone().with_data_type(native_type),
+                ));
             } else {
-                new_child_fields.push(Arc::clone(child_field));
+                let unified_children: Vec<ArrayRef> = child_arrays
+                    .iter()
+                    .zip(batch_offsets.iter())
+                    .map(|(arr, &offset)| {
+                        remap_dict_keys(arr, key_type, &effective_key_type, &unified_values, offset)
+                    })
+                    .collect::<Result<_, _>>()?;
+
+                child_data.push(unified_children);
+
+                if effective_key_type != **key_type {
+                    otel_debug!(
+                        "quiver.dict.key_widened",
+                        field = %format!("{}.{}", field.name(), child_field.name()),
+                        original_key_type = ?key_type,
+                        widened_key_type = ?effective_key_type,
+                        total_values = total_values,
+                    );
+                    new_child_fields.push(Arc::new(child_field.as_ref().clone().with_data_type(
+                        DataType::Dictionary(Box::new(effective_key_type), value_type.clone()),
+                    )));
+                } else {
+                    new_child_fields.push(Arc::clone(child_field));
+                }
             }
         } else {
             // Non-dict child: pass through from each struct.
@@ -1305,6 +1397,105 @@ mod tests {
     }
 
     #[test]
+    fn write_to_with_dict_overflow_falls_back_to_native_type() {
+        // Total dictionary values across batches exceeds UInt16 capacity
+        // (65536), triggering the native type fallback. The dictionary
+        // column should be stored as plain Utf8 instead of Dict.
+        //
+        // Two batches with 40000 unique values each = 80000 total > 65536.
+        // UInt8 builder can only hold 256, so we need to build these manually
+        // with UInt8 keys that wrap around (all mapping to unique values).
+        // Actually, we need to use a schema with UInt16 keys to hold 40K values.
+        let schema_u16 = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "label",
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+        ]));
+
+        let mut acc = StreamAccumulator::new(
+            StreamId::new(0),
+            SlotId::new(0),
+            test_fingerprint(),
+            Arc::clone(&schema_u16),
+        );
+
+        let count = 40_000;
+        let labels1: Vec<String> = (0..count).map(|i| format!("a_{i}")).collect();
+        let labels2: Vec<String> = (0..count).map(|i| format!("b_{i}")).collect();
+
+        let values1 = StringArray::from(labels1.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let keys1 =
+            arrow_array::PrimitiveArray::<UInt16Type>::from((0..count as u16).collect::<Vec<_>>());
+        let dict1 = DictionaryArray::new(keys1, Arc::new(values1));
+        let batch1 = RecordBatch::try_new(
+            Arc::clone(&schema_u16),
+            vec![
+                Arc::new(Int32Array::from((0..count as i32).collect::<Vec<_>>())),
+                Arc::new(dict1),
+            ],
+        )
+        .unwrap();
+
+        let values2 = StringArray::from(labels2.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let keys2 =
+            arrow_array::PrimitiveArray::<UInt16Type>::from((0..count as u16).collect::<Vec<_>>());
+        let dict2 = DictionaryArray::new(keys2, Arc::new(values2));
+        let batch2 = RecordBatch::try_new(
+            Arc::clone(&schema_u16),
+            vec![
+                Arc::new(Int32Array::from(
+                    (count as i32..2 * count as i32).collect::<Vec<_>>(),
+                )),
+                Arc::new(dict2),
+            ],
+        )
+        .unwrap();
+
+        let _ = acc.append(batch1).unwrap();
+        let _ = acc.append(batch2).unwrap();
+
+        let mut buffer = Vec::new();
+        let metadata = acc.write_to(&mut buffer, 0).unwrap();
+        assert_eq!(metadata.row_count, 2 * count as u64);
+        assert_eq!(metadata.chunk_count, 2);
+
+        let cursor = Cursor::new(buffer);
+        let reader = FileReader::try_new(cursor, None).expect("valid IPC file");
+
+        // The label column should have fallen back to plain Utf8 (not Dict).
+        assert_eq!(
+            reader.schema().field(1).data_type(),
+            &DataType::Utf8,
+            "dictionary should fall back to native Utf8 when cardinality exceeds UInt16"
+        );
+
+        let batches: Vec<_> = reader.map(|r| r.expect("valid batch")).collect();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].num_rows(), count);
+        assert_eq!(batches[1].num_rows(), count);
+
+        // Spot-check values are correct after fallback.
+        let col0 = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("should be plain StringArray after fallback");
+        assert_eq!(col0.value(0), "a_0");
+        assert_eq!(col0.value(count - 1), &format!("a_{}", count - 1));
+
+        let col1 = batches[1]
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("should be plain StringArray after fallback");
+        assert_eq!(col1.value(0), "b_0");
+        assert_eq!(col1.value(count - 1), &format!("b_{}", count - 1));
+    }
+
+    #[test]
     fn write_to_with_signed_dict_key_type() {
         // Exercises signed (Int8) dictionary key type.
         let schema = Arc::new(Schema::new(vec![
@@ -1695,6 +1886,114 @@ mod tests {
         let vals1 = read_struct_dict_strings(&batches[1], 1, 0);
         assert_eq!(vals1[0].as_deref(), Some("name_b_0"));
         assert_eq!(vals1[199].as_deref(), Some("name_b_199"));
+    }
+
+    #[test]
+    fn write_to_with_struct_dict_overflow_falls_back_to_native_type() {
+        // Dict values inside a struct exceed UInt16 capacity, triggering
+        // native type fallback for the struct child. The struct child
+        // should become plain Utf8 while other struct children remain
+        // unchanged.
+        let schema_u16 = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "scope",
+                DataType::Struct(Fields::from(vec![
+                    Field::new(
+                        "name",
+                        DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                        true,
+                    ),
+                    Field::new("version_num", DataType::Int32, true),
+                ])),
+                true,
+            ),
+        ]));
+
+        let mut acc = StreamAccumulator::new(
+            StreamId::new(0),
+            SlotId::new(0),
+            test_fingerprint(),
+            Arc::clone(&schema_u16),
+        );
+
+        let count = 40_000usize;
+
+        // Helper to build a struct batch with UInt16-keyed dict.
+        let make_batch = |start: usize, prefix: &str| -> RecordBatch {
+            let labels: Vec<String> = (0..count).map(|i| format!("{prefix}_{i}")).collect();
+            let values = StringArray::from(labels.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            let keys = arrow_array::PrimitiveArray::<UInt16Type>::from(
+                (0..count as u16).collect::<Vec<_>>(),
+            );
+            let dict_arr: ArrayRef = Arc::new(DictionaryArray::new(keys, Arc::new(values)));
+            let ver_arr: ArrayRef = Arc::new(Int32Array::from(
+                (start..start + count).map(|i| i as i32).collect::<Vec<_>>(),
+            ));
+
+            let struct_fields = Fields::from(vec![
+                Field::new(
+                    "name",
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+                Field::new("version_num", DataType::Int32, true),
+            ]);
+            let struct_arr =
+                StructArray::try_new(struct_fields, vec![dict_arr, ver_arr], None).unwrap();
+
+            RecordBatch::try_new(
+                Arc::clone(&schema_u16),
+                vec![
+                    Arc::new(Int32Array::from(
+                        (start..start + count).map(|i| i as i32).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(struct_arr),
+                ],
+            )
+            .unwrap()
+        };
+
+        let _ = acc.append(make_batch(0, "a")).unwrap();
+        let _ = acc.append(make_batch(count, "b")).unwrap();
+
+        let mut buffer = Vec::new();
+        let metadata = acc.write_to(&mut buffer, 0).unwrap();
+        assert_eq!(metadata.row_count, 2 * count as u64);
+
+        let cursor = Cursor::new(buffer);
+        let reader = FileReader::try_new(cursor, None).expect("valid IPC file");
+
+        // The dict child should have fallen back to plain Utf8.
+        let struct_type = reader.schema().field(1).data_type().clone();
+        if let DataType::Struct(fields) = &struct_type {
+            assert_eq!(
+                fields[0].data_type(),
+                &DataType::Utf8,
+                "struct dict child should fall back to native Utf8"
+            );
+            // Non-dict child should be unchanged.
+            assert_eq!(fields[1].data_type(), &DataType::Int32);
+        } else {
+            panic!("expected Struct type, got {struct_type:?}");
+        }
+
+        let batches: Vec<_> = reader.map(|r| r.expect("valid batch")).collect();
+        assert_eq!(batches.len(), 2);
+
+        // Verify values via plain StringArray (not dict).
+        let struct0 = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        let names0 = struct0
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("should be plain StringArray after fallback");
+        assert_eq!(names0.value(0), "a_0");
+        assert_eq!(names0.value(count - 1), &format!("a_{}", count - 1));
     }
 
     // ─────────────────────────────────────────────────────────────────────
