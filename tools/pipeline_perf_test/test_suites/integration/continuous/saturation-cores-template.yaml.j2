@@ -22,7 +22,7 @@ components:
       docker_component:
         allocated_cores: {{loadgen_cores}}
       prometheus:
-        endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
   df-engine:
     deployment:
       docker:
@@ -43,7 +43,7 @@ components:
       docker_component:
         allocated_cores: {{num_cores}}  # The cores we're testing
       prometheus:
-        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
   backend-service:
     deployment:
       docker:
@@ -64,7 +64,7 @@ components:
       docker_component:
         allocated_cores: {{backend_cores}}
       prometheus:
-        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
   - name: OTLP-ATTR-OTLP

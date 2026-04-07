@@ -25,7 +25,7 @@ Request flow:
 
 1. `GET /` or `GET /dashboard` serves the embedded UI shell.
 2. Browser loads static assets from `/static/*`.
-3. UI polls `/telemetry/metrics` (or `/metrics` alias) with:
+3. UI polls `/api/v1/telemetry/metrics` (or `/api/v1/metrics` alias) with:
    - `format=json`
    - `reset=false`
    - optional `keep_all_zeroes=true|false`
@@ -34,8 +34,8 @@ Request flow:
 
 When calling endpoints directly outside browser-relative paths, use:
 
-- `http://<admin-host>:<admin-port>/telemetry/metrics`
-- `http://<admin-host>:<admin-port>/metrics`
+- `http://<admin-host>:<admin-port>/api/v1/telemetry/metrics`
+- `http://<admin-host>:<admin-port>/api/v1/metrics`
 
 ## Main design principles
 
@@ -60,8 +60,8 @@ When calling endpoints directly outside browser-relative paths, use:
 
 `metrics-api.js` builds same-origin candidates only:
 
-1. `/telemetry/metrics?...`
-2. `/metrics?...`
+1. `/api/v1/telemetry/metrics?...`
+2. `/api/v1/metrics?...`
 
 `fetchMetricsFromCandidates()` probes candidates in order and caches the first
 successful URL for the next cycle.

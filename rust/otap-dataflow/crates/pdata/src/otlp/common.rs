@@ -473,50 +473,20 @@ impl std::io::Write for ProtoBuffer {
     }
 }
 
-/// Helper for encoding with unknown length. Usage:
-/// ```ignore
-/// proto_encode_len_delimited_unknown_size!(
-///     1, // field tag
-///     encode_some_nested_field(&mut result_buf), // fills in the child body
-///     result_buf
-/// )
-/// ```
-///
-/// An optional fourth argument specifies how many bytes to reserve for the length
-/// placeholder varint (1–4). Fewer bytes save space but limit the maximum encodable
-/// child length:
-///
-/// | bytes | max child length |
-/// |-------|-----------------|
-/// | 1     | 127             |
-/// | 2     | 16 383          |
-/// | 3     | 2 097 151       |
-/// | 4     | 268 435 455     |
-///
-/// For convenience, named variants are provided:
-/// - [`proto_encode_len_delimited_small!`] — 2-byte placeholder (up to 16 KB)
-/// - [`proto_encode_len_delimited_large!`] — 4-byte placeholder (up to 256 MB)
+/// Helper for encoding with const length.
 ///
 /// Our proto encoding algorithm tries to encode in a single pass over the OTAP data, but it will
 /// not know the size of the nested child messages a priori. Because the length fields are encoded
 /// in a varint, we don't know how many bytes we need to set aside for the length before we start
 /// appending the encoded child.
 ///
-/// The workaround is that we set aside a fixed length number of bytes, and create a zero-padded
-/// varint. For example, the varint 5, encoded in 4 bytes would be. Observe that in all bytes, the
-/// continuation bit (msb) is set:
-/// ```text
-/// 0x85 0x80 0x80 0x00
-/// ```
-///
-/// Note: this is less efficient from a space perspective, so there's a tradeoff being made here
-/// between encoded size and CPU needed to compute the size of the length.
-///
+/// An optional fourth argument specifies how many bytes to reserve for the length placeholder.
+/// An N-byte placeholder supports sizes up to 2^(8*n-1) bytes: 1=127, 2=16KiB, 3=2MiB, 4=256MiB
 #[macro_export]
-macro_rules! proto_encode_len_delimited_unknown_size {
-    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
-        $crate::proto_encode_len_delimited_unknown_size!($field_tag, $encode_fn, $buf, 4)
-    }};
+macro_rules! proto_encode_len_delimited_of_size {
+    /// Default case: 4
+    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{ $crate::proto_encode_len_delimited_of_size!($field_tag, $encode_fn, $buf, 4) }};
+    /// Variable case
     ($field_tag: expr, $encode_fn:expr, $buf:expr, $placeholder_bytes:literal) => {{
         $buf.encode_field_tag($field_tag, $crate::proto::consts::wire_types::LEN);
         let len_start_pos = $buf.len();
@@ -527,27 +497,22 @@ macro_rules! proto_encode_len_delimited_unknown_size {
     }};
 }
 
-/// 2-byte placeholder variant — sufficient for child messages up to 16 KB.
+/// 2-byte placeholder for messages up to 16KiB.
 ///
-/// Use this for encoding into small, bounded buffers (e.g., internal logging).
-/// See [`proto_encode_len_delimited_unknown_size!`] for details.
+/// Use this for encoding into small, bounded buffers.
+/// See [`proto_encode_len_delimited_of_size!`] for details.
 #[macro_export]
 macro_rules! proto_encode_len_delimited_small {
-    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
-        $crate::proto_encode_len_delimited_unknown_size!($field_tag, $encode_fn, $buf, 2)
-    }};
+    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{ $crate::proto_encode_len_delimited_of_size!($field_tag, $encode_fn, $buf, 2) }};
 }
 
-/// 4-byte placeholder variant — sufficient for child messages up to 256 MB.
+/// 4-byte placeholder for messages up to 256MiB.
 ///
-/// This is equivalent to the default
-/// [`proto_encode_len_delimited_unknown_size!`] and is provided for
-/// symmetry with [`proto_encode_len_delimited_small!`].
+/// Use this for encoding into arbitrary-size messages.
+/// See [`proto_encode_len_delimited_of_size!`] for details.
 #[macro_export]
 macro_rules! proto_encode_len_delimited_large {
-    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{
-        $crate::proto_encode_len_delimited_unknown_size!($field_tag, $encode_fn, $buf, 4)
-    }};
+    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{ $crate::proto_encode_len_delimited_of_size!($field_tag, $encode_fn, $buf, 4) }};
 }
 
 /// Write an `N`-byte length placeholder for later patching.
@@ -556,7 +521,7 @@ macro_rules! proto_encode_len_delimited_large {
 /// value bits zeroed. `N` must be between 1 and 4 inclusive (enforced at
 /// compile time).
 ///
-/// Do not call directly — use [`proto_encode_len_delimited_unknown_size!`].
+/// Do not call directly — use [`proto_encode_len_delimited_of_size!`].
 #[inline]
 pub fn encode_len_placeholder<const N: usize>(buf: &mut ProtoBuffer) {
     const { assert!(N >= 1 && N <= 4, "placeholder must be 1-4 bytes") }
@@ -572,7 +537,7 @@ const fn make_len_placeholder<const N: usize>() -> [u8; N] {
 
 /// Patch a previously written length placeholder with the actual length.
 ///
-/// Do not call directly — use [`proto_encode_len_delimited_unknown_size!`].
+/// Do not call directly — use [`proto_encode_len_delimited_of_size!`].
 #[inline]
 pub fn patch_len_placeholder<const N: usize>(
     buf: &mut ProtoBuffer,
@@ -1278,14 +1243,18 @@ mod test {
         let mut buf_large = ProtoBuffer::new();
         proto_encode_len_delimited_large!(
             1,
-            { buf_large.encode_string(1, "hello"); },
+            {
+                buf_large.encode_string(1, "hello");
+            },
             &mut buf_large
         );
 
         let mut buf_small = ProtoBuffer::new();
         proto_encode_len_delimited_small!(
             1,
-            { buf_small.encode_string(1, "hello"); },
+            {
+                buf_small.encode_string(1, "hello");
+            },
             &mut buf_small
         );
 

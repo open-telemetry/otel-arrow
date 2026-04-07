@@ -21,7 +21,18 @@ The engine runtime accepts a single configuration file format (v1).
 - `engine`: optional engine-wide settings
 - `groups`: pipeline groups map
 
-The engine binary loads this configuration file via `--config`.
+The engine binary loads this configuration file via `--config`. The
+argument accepts a URI that selects the config source:
+
+| URI form | Behavior |
+| --- | --- |
+| `file:/path/to/config.yaml` | Read from a local file |
+| `env:MY_VAR` | Read the full config from an environment variable |
+| `/path/to/config.yaml` | Bare path, same as `file:` |
+
+If `--config` is omitted, the engine falls back to `config.yaml` in
+the current working directory.
+
 Standalone pipeline files are not a runtime root format.
 
 Contributor note: this top-level model is represented in code as
@@ -198,8 +209,8 @@ Optional observability policies are supported at:
 
 ## Policy Hierarchy
 
-Policies include channel capacity, health, runtime telemetry, and
-resources controls:
+Policies include channel capacity, health, runtime telemetry, resources
+controls, and transport headers:
 
 ```yaml
 policies:
@@ -218,7 +229,18 @@ policies:
   resources:
     core_allocation:
       type: all_cores
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: ["x-tenant-id"]
+          store_as: tenant_id
+    header_propagation:
+      default:
+        selector: all_captured
 ```
+
+For full transport header policy documentation, see
+[transport-headers.md](transport-headers.md).
 
 Resolution order:
 
@@ -238,6 +260,7 @@ Defaults at top-level:
 - `telemetry.tokio_metrics = true`
 - `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+- `transport_headers` = not set (opt-in; no headers captured or propagated)
 
 Control channel keys:
 
