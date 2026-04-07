@@ -6,13 +6,14 @@
 
 use std::sync::Arc;
 
+use otap_df_config::SignalType;
 pub(super) use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::Interests;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
-    AckMsg, NackMsg, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
-    runtime_ctrl_msg_channel,
+    AckMsg, CallData, NackMsg, NodeControlMsg, PipelineCompletionMsg, RouteData, UnwindData,
+    pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::message::Message;
 pub(super) use otap_df_engine::processor::ProcessorWrapper;
@@ -426,7 +427,13 @@ pub(super) fn make_exp_histogram(
 }
 
 pub(super) fn make_n_gauge_metrics(n: usize) -> MetricsData {
-    let metrics: Vec<_> = (0..n)
+    make_n_gauge_metrics_with_offset(n, 0)
+}
+
+/// Build an OTLP [`MetricsData`] with `n` unique gauge metrics starting from
+/// `offset`. Metric names are `metric_{offset}`, `metric_{offset+1}`, etc.
+pub(super) fn make_n_gauge_metrics_with_offset(n: usize, offset: usize) -> MetricsData {
+    let metrics: Vec<_> = (offset..offset + n)
         .map(|i| {
             Metric::build()
                 .name(format!("metric_{i}"))
@@ -485,6 +492,23 @@ pub(super) fn make_mixed_metrics_payload() -> OtapPayload {
     OtapPayload::OtapArrowRecords(records)
 }
 
+/// Assert that the total number of metrics in the processor output matches
+/// `expected`. Works with both OTAP and OTLP payload variants.
+pub(super) fn assert_output_metric_count(output: &OtapPdata, expected: usize) {
+    let otlp = payload_to_otlp(output.payload_ref());
+    let md = match otlp {
+        otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
+        other => panic!("expected Metrics, got {other:?}"),
+    };
+    let count: usize = md
+        .resource_metrics
+        .iter()
+        .flat_map(|rm| &rm.scope_metrics)
+        .map(|sm| sm.metrics.len())
+        .sum();
+    assert_eq!(count, expected, "metric count mismatch");
+}
+
 /// Helper to build a `ResourceMetrics` with `resource: None`.
 pub(super) fn resource_metrics_without_resource(
     scope_metrics: Vec<ScopeMetrics>,
@@ -502,5 +526,43 @@ pub(super) fn scope_metrics_without_scope(metrics: Vec<Metric>) -> ScopeMetrics 
         scope: None,
         metrics,
         schema_url: String::new(),
+    }
+}
+
+/// Build an [`AckMsg`] with the given calldata, bypassing the normal
+/// subscriber-unwinding path. Used to test invalid-calldata handling.
+pub(super) fn ack_with_calldata(calldata: CallData) -> AckMsg<OtapPdata> {
+    AckMsg {
+        accepted: Box::new(OtapPdata::new_default(OtapPayload::empty(
+            SignalType::Metrics,
+        ))),
+        unwind: UnwindData {
+            route: RouteData {
+                calldata,
+                entry_time_ns: 0,
+                output_port_index: 0,
+            },
+            return_time_ns: 0,
+        },
+    }
+}
+
+/// Build a [`NackMsg`] with the given calldata, bypassing the normal
+/// subscriber-unwinding path. Used to test invalid-calldata handling.
+pub(super) fn nack_with_calldata(calldata: CallData, reason: &str) -> NackMsg<OtapPdata> {
+    NackMsg {
+        reason: reason.to_string(),
+        refused: Box::new(OtapPdata::new_default(OtapPayload::empty(
+            SignalType::Metrics,
+        ))),
+        unwind: UnwindData {
+            route: RouteData {
+                calldata,
+                entry_time_ns: 0,
+                output_port_index: 0,
+            },
+            return_time_ns: 0,
+        },
+        permanent: false,
     }
 }
