@@ -16,8 +16,8 @@ use otap_df_pdata::proto::opentelemetry::{
     metrics::v1::{
         AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
         Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
-        ScopeMetrics, Sum, Summary, SummaryDataPoint,
-        exponential_histogram_data_point::Buckets, summary_data_point::ValueAtQuantile,
+        ScopeMetrics, Sum, Summary, SummaryDataPoint, exponential_histogram_data_point::Buckets,
+        summary_data_point::ValueAtQuantile,
     },
     resource::v1::Resource,
     trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData, span::SpanKind},
@@ -291,9 +291,9 @@ fn build_metric_attributes(count: usize, point_index: usize) -> Vec<KeyValue> {
                 format!("metric_attr_{i}")
             };
             let value = match METRIC_ATTR_NAMES.get(i) {
-                Some(&"http.method") => {
-                    AnyValue::new_string(METRIC_ATTR_METHODS[point_index % METRIC_ATTR_METHODS.len()])
-                }
+                Some(&"http.method") => AnyValue::new_string(
+                    METRIC_ATTR_METHODS[point_index % METRIC_ATTR_METHODS.len()],
+                ),
                 Some(&"http.route") => {
                     AnyValue::new_string(METRIC_ATTR_ROUTES[point_index % METRIC_ATTR_ROUTES.len()])
                 }
@@ -727,11 +727,7 @@ fn static_metrics_elaborate(
                         .name(def.name)
                         .description(def.description)
                         .unit(def.unit)
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Delta,
-                            false,
-                            datapoints,
-                        ))
+                        .data_sum(Sum::new(AggregationTemporality::Delta, false, datapoints))
                         .finish()
                 }
                 MetricKind::Gauge => {
@@ -749,10 +745,7 @@ fn static_metrics_elaborate(
                         .name(def.name)
                         .description(def.description)
                         .unit(def.unit)
-                        .data_histogram(Histogram::new(
-                            AggregationTemporality::Delta,
-                            datapoints,
-                        ))
+                        .data_histogram(Histogram::new(AggregationTemporality::Delta, datapoints))
                         .finish()
                 }
                 MetricKind::ExponentialHistogram => {
@@ -843,8 +836,8 @@ fn build_histogram_data_points(
             let total_count: u64 = dist.iter().sum();
             // Compute a realistic sum from the distribution and bucket midpoints
             let midpoints = [
-                0.25, 0.75, 1.75, 3.75, 7.5, 17.5, 37.5, 75.0, 175.0, 375.0, 750.0, 1750.0,
-                3750.0, 7500.0, 15000.0,
+                0.25, 0.75, 1.75, 3.75, 7.5, 17.5, 37.5, 75.0, 175.0, 375.0, 750.0, 1750.0, 3750.0,
+                7500.0, 15000.0,
             ];
             let sum: f64 = dist
                 .iter()
@@ -1138,7 +1131,10 @@ mod tests {
         assert!(has_sum, "should generate Sum metrics");
         assert!(has_gauge, "should generate Gauge metrics");
         assert!(has_histogram, "should generate Histogram metrics");
-        assert!(has_exp_histogram, "should generate ExponentialHistogram metrics");
+        assert!(
+            has_exp_histogram,
+            "should generate ExponentialHistogram metrics"
+        );
         assert!(has_summary, "should generate Summary metrics");
     }
 
