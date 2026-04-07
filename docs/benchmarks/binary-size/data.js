@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775435363134,
+  "lastUpdate": 1775521806283,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3134,6 +3134,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 100.76,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "32bc2ca50c1138e94719947542027fff77c39c1b",
+          "message": " feat(otap-dataflow): expose startup helpers as a public library module (#2505)\n\nFixes: #2462, #2463\n\n### Summary\n\n- Moves reusable startup functions (`validate_engine_components`,\n`apply_cli_overrides`, `system_info`) from `src/main.rs` into a new\n`otap_df_controller::startup` module. This lets custom distribution\nbinaries share the same validation, override, and diagnostics logic\nwithout copying code that may drift across releases.\n \n- Adds `run_forever_with_observer` and `run_till_shutdown_with_observer`\nto `Controller`, exposing the `ObservedStateHandle` via a callback so\nthat in-process integrations can read pipeline liveness and health with\nzero HTTP overhead.\n \n- `src/main.rs` becomes a thin wrapper over these library calls - no\nbehavioral change for existing users. A new \"Embedding in Custom\nDistributions\" section is added to the README, and a runnable\n`examples/custom_collector.rs` demonstrates the full library embedding\npattern end-to-end, including the observer API with an opt-in\n`--poll-status` flag for periodic health snapshots.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-04-06T22:42:02Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/32bc2ca50c1138e94719947542027fff77c39c1b"
+        },
+        "date": 1775521799519,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 100.84,
             "unit": "MB"
           }
         ]
