@@ -366,38 +366,97 @@ pub enum MemoryLimiterSource {
 }
 
 /// Defines how CPU cores should be allocated for pipeline execution.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CoreAllocation {
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct CoreAllocation {
+    /// Allocation strategy: "all_cores", "core_count", or "core_set"
+    #[serde(default = "default_strategy", alias = "type")]
+    pub strategy: CoreAllocationStrategy,
+
+    /// Number of cores to use (only valid when strategy is "core_count").
+    /// If 0, uses all available cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+
+    /// Core set defined as a set of ranges (only valid when strategy is "core_set").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<Vec<CoreRange>>,
+}
+
+/// Defines how CPU cores should be allocated for pipeline execution.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreAllocationStrategy {
     /// Use all available CPU cores.
     #[default]
     AllCores,
     /// Use a specific number of CPU cores (starting from core 0).
     /// If the requested number exceeds available cores, use all available cores.
-    CoreCount {
-        /// Number of cores to use. If 0, uses all available cores.
-        count: usize,
-    },
+    CoreCount,
     /// Defines a set of CPU cores should be allocated for pipeline execution.
-    CoreSet {
-        /// Core set defined as a set of ranges.
-        set: Vec<CoreRange>,
-    },
+    CoreSet,
+}
+
+fn default_strategy() -> CoreAllocationStrategy {
+    CoreAllocationStrategy::AllCores
+}
+
+impl Default for CoreAllocation {
+    fn default() -> Self {
+        CoreAllocation {
+            strategy: CoreAllocationStrategy::AllCores,
+            count: None,
+            set: None,
+        }
+    }
+}
+
+impl CoreAllocation {
+    /// Creates an `AllCores` allocation (use all available CPU cores).
+    #[must_use]
+    pub fn all_cores() -> Self {
+        Self::default()
+    }
+
+    /// Creates a `CoreCount` allocation with the given number of cores.
+    #[must_use]
+    pub fn core_count(count: usize) -> Self {
+        Self {
+            strategy: CoreAllocationStrategy::CoreCount,
+            count: Some(count),
+            set: None,
+        }
+    }
+
+    /// Creates a `CoreSet` allocation with the given core ranges.
+    #[must_use]
+    pub fn core_set(set: Vec<CoreRange>) -> Self {
+        Self {
+            strategy: CoreAllocationStrategy::CoreSet,
+            count: None,
+            set: Some(set),
+        }
+    }
 }
 
 impl Display for CoreAllocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CoreAllocation::AllCores => write!(f, "*"),
-            CoreAllocation::CoreCount { count } => write!(f, "[{count} cores]"),
-            CoreAllocation::CoreSet { set } => {
+        match self.strategy {
+            CoreAllocationStrategy::AllCores => write!(f, "*"),
+            CoreAllocationStrategy::CoreCount => {
+                let count = self.count.unwrap_or(0);
+                write!(f, "[{count} cores]")
+            }
+            CoreAllocationStrategy::CoreSet => {
                 let mut first = true;
-                for item in set {
-                    if !first {
-                        write!(f, ",")?
+                if let Some(set) = &self.set {
+                    for item in set {
+                        if !first {
+                            write!(f, ",")?;
+                        }
+                        write!(f, "{item}")?;
+                        first = false;
                     }
-                    write!(f, "{item}")?;
-                    first = false
                 }
                 Ok(())
             }
@@ -507,7 +566,7 @@ mod tests {
         );
         assert_eq!(
             defaults.resources.core_allocation,
-            super::CoreAllocation::AllCores
+            super::CoreAllocation::all_cores()
         );
         assert_eq!(defaults.health, crate::health::HealthPolicy::default());
     }
@@ -536,13 +595,13 @@ mod tests {
 
     #[test]
     fn core_allocation_display_all_cores() {
-        assert_eq!(super::CoreAllocation::AllCores.to_string(), "*");
+        assert_eq!(super::CoreAllocation::all_cores().to_string(), "*");
     }
 
     #[test]
     fn core_allocation_display_core_count() {
         assert_eq!(
-            super::CoreAllocation::CoreCount { count: 4 }.to_string(),
+            super::CoreAllocation::core_count(4).to_string(),
             "[4 cores]"
         );
     }
@@ -550,10 +609,8 @@ mod tests {
     #[test]
     fn core_allocation_display_core_set_single_range() {
         assert_eq!(
-            super::CoreAllocation::CoreSet {
-                set: vec![super::CoreRange { start: 0, end: 3 }]
-            }
-            .to_string(),
+            super::CoreAllocation::core_set(vec![super::CoreRange { start: 0, end: 3 }])
+                .to_string(),
             "0-3"
         );
     }
@@ -561,13 +618,11 @@ mod tests {
     #[test]
     fn core_allocation_display_core_set_multiple_ranges() {
         assert_eq!(
-            super::CoreAllocation::CoreSet {
-                set: vec![
-                    super::CoreRange { start: 0, end: 3 },
-                    super::CoreRange { start: 8, end: 11 },
-                    super::CoreRange { start: 16, end: 16 },
-                ]
-            }
+            super::CoreAllocation::core_set(vec![
+                super::CoreRange { start: 0, end: 3 },
+                super::CoreRange { start: 8, end: 11 },
+                super::CoreRange { start: 16, end: 16 },
+            ])
             .to_string(),
             "0-3,8-11,16"
         );

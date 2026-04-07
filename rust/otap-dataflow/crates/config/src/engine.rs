@@ -400,7 +400,7 @@ groups:
         );
         assert_eq!(
             defaults.resources.core_allocation,
-            crate::policy::CoreAllocation::AllCores
+            crate::policy::CoreAllocation::all_cores()
         );
     }
 
@@ -529,7 +529,7 @@ groups:
         assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
         assert_eq!(
             p1_resolved.policies.resources.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 2 }
+            crate::policy::CoreAllocation::core_count(2)
         );
         assert_eq!(
             p1_resolved.policies.health.ready_if,
@@ -565,7 +565,7 @@ groups:
         );
         assert_eq!(
             p2_resolved.policies.resources.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 5 }
+            crate::policy::CoreAllocation::core_count(5)
         );
 
         let p3_resolved = resolved
@@ -590,7 +590,7 @@ groups:
         );
         assert_eq!(
             p3_resolved.policies.resources.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 9 }
+            crate::policy::CoreAllocation::core_count(9)
         );
     }
 
@@ -1244,7 +1244,7 @@ groups:
         );
         assert_eq!(
             obs.policies.resources.core_allocation,
-            crate::policy::CoreAllocation::AllCores
+            crate::policy::CoreAllocation::all_cores()
         );
         assert_eq!(
             resolved
