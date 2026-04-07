@@ -172,3 +172,87 @@ impl ExporterConfig {
         }
     }
 }
+
+/// User-facing configuration for a processor node chain
+///
+/// Deserialized from the `config` blob of a `processor_chain:*` node
+///
+/// ```yaml
+/// my_chain:
+///   type: processor_chain:composite
+///   config:
+///     processors:
+///       - type: processor:attribute
+///         config: { ... }
+///       - type: processor:condense_attributes
+///         config: { ... }
+/// ```
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ProcessorChainConfig {
+    /// Configurations for the processors in the chain, in order.
+    pub processors: Vec<SubProcessorConfig>,
+}
+
+/// A single sub-processor entry inside a [`ProcessorChainConfig`].
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SubProcessorConfig {
+    /// Optional name for this sub-processor. Used as the `node.id` suffix
+    /// in telemetry (e.g. chain/my_filter). If omitted, the index is used
+    /// (e.g. chain/0).
+    #[serde(default)]
+    pub name: Option<String>,
+    ///The processor type URN (e.g. `processor:attribute`).
+    pub r#type: String,
+    /// Optional sub-processor specific configuration. Passed verbatim
+    /// to the sub-processor's constructor.
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn processor_chain_config_from_json() {
+        let json = serde_json::json!({
+            "processors": [
+                { "type": "processor:attribute", "config": { "actions": [] } },
+                { "type": "processor:debug", "config": { "verbosity": "basic" } }
+            ]
+        });
+
+        let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(cfg.processors.len(), 2);
+        assert_eq!(cfg.processors[0].r#type, "processor:attribute");
+        assert_eq!(cfg.processors[1].r#type, "processor:debug");
+        assert!(cfg.processors[0].config.is_object());
+    }
+
+    #[test]
+    fn processor_chain_config_default_config() {
+        let json = serde_json::json!({
+            "processors": [
+                { "type": "processor:debug" }
+            ]
+        });
+
+        let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(cfg.processors.len(), 1);
+        assert!(cfg.processors[0].config.is_null());
+    }
+
+    #[test]
+    fn processor_chain_config_empty_list() {
+        let json = serde_json::json!({ "processors": [] });
+        let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
+        assert!(cfg.processors.is_empty());
+    }
+
+    #[test]
+    fn processor_chain_config_missing_processors_field() {
+        let json = serde_json::json!({});
+        let result = serde_json::from_value::<ProcessorChainConfig>(json);
+        assert!(result.is_err());
+    }
+}

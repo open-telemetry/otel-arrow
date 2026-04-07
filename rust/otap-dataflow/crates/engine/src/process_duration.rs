@@ -94,6 +94,22 @@ impl ComputeDuration {
         }
     }
 
+    /// Returns a reference to the success accumulator cell.
+    ///
+    /// This is used by [`ProcessorChainNode`](crate::local::processor_chain::ProcessorChainNode)
+    /// which needs manual timer start/stop rather than the closure-based API
+    /// because the chain holds `&mut self` across async sub-processor calls.
+    #[must_use]
+    pub const fn acc_success(&self) -> &Cell<Mmsc> {
+        &self.acc_success
+    }
+
+    /// Returns a reference to the failed accumulator cell.
+    #[must_use]
+    pub const fn acc_failed(&self) -> &Cell<Mmsc> {
+        &self.acc_failed
+    }
+
     /// Report accumulated duration metrics to the collector.
     ///
     /// Drains both accumulators into the metric set, then reports

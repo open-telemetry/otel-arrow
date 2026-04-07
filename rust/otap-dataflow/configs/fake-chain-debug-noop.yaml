@@ -1,0 +1,76 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          telemetry:
+            runtime_metrics: normal
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 1
+                signals_per_second: 1
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          insert_A:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pre_chain
+                  value: A
+          chain:
+            type: processor_chain:composite
+            config:
+              processors:
+                - name: insert_B
+                  type: processor:attribute
+                  config:
+                    actions:
+                      - action: insert
+                        key: chain_step_1
+                        value: B
+                - name: insert_C
+                  type: processor:attribute
+                  config:
+                    actions:
+                      - action: insert
+                        key: chain_step_2
+                        value: C
+          insert_D:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: post_chain
+                  value: D
+          debug:
+            type: processor:debug
+            config:
+              verbosity: detailed
+              mode: signal
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: insert_A
+          - from: insert_A
+            to: chain
+          - from: chain
+            to: insert_D
+          - from: insert_D
+            to: debug
+          - from: debug
+            to: noop

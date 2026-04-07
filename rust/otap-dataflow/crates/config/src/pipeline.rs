@@ -694,7 +694,10 @@ impl PipelineConfig {
 
                 if let Some(node_cfg) = nodes.get(source_node.as_ref()) {
                     let source_kind = node_cfg.kind();
-                    if !matches!(source_kind, NodeKind::Receiver | NodeKind::Processor) {
+                    if !matches!(
+                        source_kind,
+                        NodeKind::Receiver | NodeKind::Processor | NodeKind::ProcessorChain
+                    ) {
                         errors.push(Error::InvalidConnectionNodeKind {
                             context: Box::new(Context::new(
                                 pipeline_group_id.clone(),
@@ -703,8 +706,12 @@ impl PipelineConfig {
                             node_id: source_node.clone(),
                             endpoint: "from".to_string(),
                             actual_kind: source_kind,
-                            expected_kinds: vec![NodeKind::Receiver, NodeKind::Processor]
-                                .into_boxed_slice(),
+                            expected_kinds: vec![
+                                NodeKind::Receiver,
+                                NodeKind::Processor,
+                                NodeKind::ProcessorChain,
+                            ]
+                            .into_boxed_slice(),
                         });
                         continue;
                     }
@@ -1952,7 +1959,11 @@ sink:
                         assert!(matches!(actual_kind, NodeKind::Exporter));
                         assert_eq!(
                             expected_kinds.as_ref(),
-                            [NodeKind::Receiver, NodeKind::Processor]
+                            [
+                                NodeKind::Receiver,
+                                NodeKind::Processor,
+                                NodeKind::ProcessorChain
+                            ]
                         );
                     }
                     other => panic!("expected InvalidConnectionNodeKind, got {other:?}"),
@@ -1960,6 +1971,36 @@ sink:
             }
             other => panic!("expected InvalidConfiguration, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_processor_chain_as_source_is_valid() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "receiver:otlp"
+                config: {}
+              chain:
+                type: "processor_chain:composite"
+                config:
+                  processors:
+                    - type: "processor:debug"
+                      config: {}
+              exporter:
+                type: "exporter:noop"
+                config: {}
+            connections:
+              - from: receiver
+                to: chain
+              - from: chain
+                to: exporter
+        "#;
+
+        let result = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml);
+        assert!(
+            result.is_ok(),
+            "processor_chain should be valid as a connection source: {result:?}"
+        );
     }
 
     #[test]

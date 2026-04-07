@@ -206,7 +206,8 @@ pub fn infer_node_kind(raw: &str) -> Result<NodeKind, Error> {
 const fn kind_suffix(expected_kind: NodeKind) -> &'static str {
     match expected_kind {
         NodeKind::Receiver => "receiver",
-        NodeKind::Processor | NodeKind::ProcessorChain => "processor",
+        NodeKind::Processor => "processor",
+        NodeKind::ProcessorChain => "processor_chain",
         NodeKind::Exporter => "exporter",
     }
 }
@@ -227,10 +228,13 @@ fn parse_kind(raw: &str, kind: &str) -> Result<NodeKind, Error> {
     match kind {
         "receiver" => Ok(NodeKind::Receiver),
         "processor" => Ok(NodeKind::Processor),
+        "processor_chain" => Ok(NodeKind::ProcessorChain),
         "exporter" => Ok(NodeKind::Exporter),
         _ => Err(invalid_plugin_urn(
             raw,
-            format!("expected kind `receiver`, `processor`, or `exporter`, found `{kind}`"),
+            format!(
+                "expected kind `receiver`, `processor`, `processor_chain`, or `exporter`, found `{kind}`"
+            ),
         )),
     }
 }
@@ -334,6 +338,20 @@ mod tests {
         assert!(validate_plugin_urn("urn:otel:exporter:otap", NodeKind::Exporter).is_ok());
         assert!(validate_plugin_urn("urn:otel:receiver:syslog_cef", NodeKind::Receiver).is_ok());
 
+        // Processor chain — full and shortcut forms
+        assert!(
+            validate_plugin_urn(
+                "urn:otel:processor_chain:composite",
+                NodeKind::ProcessorChain
+            )
+            .is_ok()
+        );
+        assert!(validate_plugin_urn("processor_chain:composite", NodeKind::ProcessorChain).is_ok());
+        let chain_urn =
+            validate_plugin_urn("processor_chain:composite", NodeKind::ProcessorChain).unwrap();
+        assert_eq!(chain_urn.as_str(), "urn:otel:processor_chain:composite");
+        assert!(matches!(chain_urn.kind(), NodeKind::ProcessorChain));
+
         // Hyphen and dot allowed in NSS segments
         assert!(validate_plugin_urn("urn:otel:receiver:otlp-http", NodeKind::Receiver).is_ok());
         assert!(validate_plugin_urn("urn:otel:processor:debug.log", NodeKind::Processor).is_ok());
@@ -358,6 +376,10 @@ mod tests {
         assert!(matches!(
             infer_node_kind("processor:debug").unwrap(),
             NodeKind::Processor
+        ));
+        assert!(matches!(
+            infer_node_kind("processor_chain:composite").unwrap(),
+            NodeKind::ProcessorChain
         ));
     }
 

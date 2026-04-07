@@ -227,10 +227,20 @@ fn validate_pipeline_components(
                 .get_receiver_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
-            NodeKind::Processor | NodeKind::ProcessorChain => OTAP_PIPELINE_FACTORY
+            NodeKind::Processor => OTAP_PIPELINE_FACTORY
                 .get_processor_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
+            NodeKind::ProcessorChain => {
+                // Validate each sub-processor inside the chain
+                validate_processor_chain_components(
+                    pipeline_group_id,
+                    pipeline_id,
+                    node_id,
+                    &node_cfg.config,
+                )?;
+                continue;
+            }
             NodeKind::Exporter => OTAP_PIPELINE_FACTORY
                 .get_exporter_factory_map()
                 .get(urn_str)
@@ -269,6 +279,76 @@ fn validate_pipeline_components(
         }
     }
 
+    Ok(())
+}
+
+/// Validate each sub-processor inside a processor_chain node.
+fn validate_processor_chain_components(
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    node_id: &otap_df_config::NodeId,
+    config: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let chain_config: otap_df_engine::config::ProcessorChainConfig =
+        serde_json::from_value(config.clone()).map_err(|e| {
+            std::io::Error::other(format!(
+                "Invalid processor_chain config for node={} in pipeline_group={} pipeline={}: {}",
+                node_id.as_ref(),
+                pipeline_group_id.as_ref(),
+                pipeline_id.as_ref(),
+                e,
+            ))
+        })?;
+
+    for (i, sub_cfg) in chain_config.processors.iter().enumerate() {
+        let sub_urn = otap_df_config::node_urn::validate_plugin_urn(
+            &sub_cfg.r#type,
+            NodeKind::Processor,
+        )
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "Invalid sub-processor URN `{}` in processor_chain node={} index={} pipeline_group={} pipeline={}: {}",
+                sub_cfg.r#type,
+                node_id.as_ref(),
+                i,
+                pipeline_group_id.as_ref(),
+                pipeline_id.as_ref(),
+                e,
+            ))
+        })?;
+
+        let validate_fn = OTAP_PIPELINE_FACTORY
+            .get_processor_factory_map()
+            .get(sub_urn.as_str())
+            .map(|f| f.validate_config);
+
+        match validate_fn {
+            None => {
+                return Err(std::io::Error::other(format!(
+                    "Unknown processor component `{}` in processor_chain node={} index={} pipeline_group={} pipeline={}",
+                    sub_urn.as_str(),
+                    node_id.as_ref(),
+                    i,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                ))
+                .into());
+            }
+            Some(validate_fn) => {
+                validate_fn(&sub_cfg.config).map_err(|e| {
+                    std::io::Error::other(format!(
+                        "Invalid config for sub-processor `{}` in processor_chain node={} index={} pipeline_group={} pipeline={}: {}",
+                        sub_urn.as_str(),
+                        node_id.as_ref(),
+                        i,
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        e,
+                    ))
+                })?;
+            }
+        }
+    }
     Ok(())
 }
 
