@@ -4,6 +4,7 @@
 //! Engine and pipeline policy declarations.
 
 use crate::health::HealthPolicy;
+use crate::transport_headers_policy::TransportHeadersPolicy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
@@ -36,6 +37,13 @@ pub struct Policies {
     /// applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) resources: Option<ResourcesPolicy>,
+    /// Transport headers policy controlling header capture at receivers
+    /// and propagation at exporters.
+    ///
+    /// When absent, transport headers are not captured or propagated
+    /// (the feature is entirely opt-in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) transport_headers: Option<TransportHeadersPolicy>,
 }
 
 impl Policies {
@@ -51,6 +59,7 @@ impl Policies {
         let mut health = None;
         let mut telemetry = None;
         let mut resources = None;
+        let mut transport_headers = None;
         for scope in scopes {
             if channel_capacity.is_none() {
                 channel_capacity = scope.channel_capacity.as_ref();
@@ -64,13 +73,16 @@ impl Policies {
             if resources.is_none() {
                 resources = scope.resources.as_ref();
             }
+            if transport_headers.is_none() {
+                transport_headers = scope.transport_headers.as_ref();
+            }
         }
         ResolvedPolicies {
             channel_capacity: channel_capacity.cloned().unwrap_or_default(),
             health: health.cloned().unwrap_or_default(),
-
             telemetry: telemetry.cloned().unwrap_or_default(),
             resources: resources.cloned().unwrap_or_default(),
+            transport_headers: transport_headers.cloned(),
         }
     }
 
@@ -116,6 +128,9 @@ pub struct ResolvedPolicies {
     pub telemetry: TelemetryPolicy,
     /// Resources policy.
     pub resources: ResourcesPolicy,
+    /// Transport headers policy. `None` when the feature is not configured
+    /// (opt-in only -- no headers are captured or propagated by default).
+    pub transport_headers: Option<TransportHeadersPolicy>,
 }
 /// instrumentation overhead.
 #[derive(
