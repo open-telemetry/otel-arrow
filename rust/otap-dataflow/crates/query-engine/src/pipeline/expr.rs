@@ -610,7 +610,6 @@ impl ExprLogicalPlanner {
             }
         };
 
-        // TODO check if empty, no unwrap.
         let first_arg_expr = self.plan_scalar_expr(first_arg, functions)?;
         planned_arg_exprs.push(first_arg_expr.logical_expr);
         let mut source_scope = first_arg_expr.source;
