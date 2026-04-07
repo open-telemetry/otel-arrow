@@ -1,14 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Micro benchmarks for the temporal reaggregation processor.
-//!
-//! Sends [`NUM_BATCHES`] batches of [`METRICS_PER_BATCH`] metrics each through
-//! the processor, then flushes via a timer tick. The aggregatable / non-
-//! aggregatable split is controlled by [`AGGREGATABLE_FRACTION`] and the per-
-//! type counts are derived automatically via [`BatchShape`]. The same logical
-//! data is benchmarked as both OTLP bytes and OTAP Arrow payloads.
-
 #![allow(missing_docs)]
 
 use std::hint::black_box;
@@ -169,7 +161,7 @@ fn create_processor() -> ProcessorState {
     )
     .expect("failed to create processor");
 
-    // Wire up the output channel.
+    // Wire up the output channel
     let (out_tx, out_rx) = mpsc::Channel::new(OUTPUT_CHANNEL_CAPACITY);
     let out_sender = Sender::new_local_mpsc_sender(out_tx);
     let _ = wrapper.set_pdata_sender(
@@ -178,7 +170,7 @@ fn create_processor() -> ProcessorState {
         out_sender,
     );
 
-    // Wire up a dummy input receiver (required by prepare_runtime but unused).
+    // Wire up a dummy input receiver
     let (_, dummy_rx) = mpsc::Channel::<OtapPdata>::new(1);
     let dummy_receiver = Receiver::new_local_mpsc_receiver(dummy_rx);
     let _ = wrapper.set_pdata_receiver(test_node("temporal_reaggregation_bench"), dummy_receiver);
