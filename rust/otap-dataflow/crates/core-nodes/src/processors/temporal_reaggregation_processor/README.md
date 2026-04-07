@@ -6,15 +6,18 @@ URN: `urn:otel:processor:temporal_reaggregation`
 
 ## Overview
 
-The temporal reaggregation processor decreases telemetry volume by
-reaggregating metrics collected at a higher frequency into a lower one.
-This is one of the three semantics-preserving transformations outlined in the
-[Metrics Data Model specification][metrics-data-model].
+The temporal reaggregation processor decreases telemetry volume by reaggregating
+metrics collected at a higher frequency into a lower one. This is one of the
+three semantics-preserving transformations outlined in the [Metrics Data Model
+specification][metrics-data-model].
 
-This processor is partially modeled after the [Go interval processor][go-interval].
+This processor is partially modeled after the [Go interval
+processor][go-interval].
 
-[metrics-data-model]: https://opentelemetry.io/docs/specs/otel/metrics/data-model/#events--data-stream--timeseries
-[go-interval]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/v0.147.0/processor/intervalprocessor
+[metrics-data-model]:
+  https://opentelemetry.io/docs/specs/otel/metrics/data-model/#events--data-stream--timeseries
+[go-interval]:
+  https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/v0.147.0/processor/intervalprocessor
 
 ## Supported metrics
 
@@ -32,10 +35,10 @@ Other metric types are passed through unchanged.
 
 This processor has the following limitations:
 
-- Exemplars for aggregated metrics are dropped, however exemplars for passed through metrics are
-  preserved.
-- Array and Map attribute values are discarded for the purpose of identifying metrics due to
-  a current limitation with OTAP views.
+- Exemplars for aggregated metrics are dropped, however exemplars for passed
+  through metrics are preserved.
+- Array and Map attribute values are discarded for the purpose of identifying
+  metrics due to a current limitation with OTAP views.
 
 ## Configuration
 
@@ -70,11 +73,13 @@ temporal-reaggregation:
 
 It is recommended to place this processor:
 
-1. Before any batch processor in the same pipeline, as this processor will resize batches and
-   generally produces a larger number of smaller output batches than were input.
-2. Before any retry processors in the same pipeline because this processor does not support
-   returning pdata for similar reasons to the batch processor in that it's memory expensive to
-   hold them.
+1. Before any batch processor in the same pipeline, as this processor will
+   resize batches and generally produces a larger number of smaller output
+   batches than were input.
+2. Before any retry processors in the same pipeline because this processor does
+   not support returning pdata for similar reasons to the batch processor in
+   that it's memory expensive to hold them.
 
-A typical pipeline ordering with batch, temporal_reaggregation, and retry processors would
-be: `receivers -> temporal_reaggregation -> batch -> retry -> exporters`
+A typical pipeline ordering with batch, temporal_reaggregation, and retry
+processors would be:
+`receivers -> temporal_reaggregation -> batch -> retry -> exporters`
