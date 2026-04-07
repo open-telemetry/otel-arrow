@@ -159,7 +159,7 @@ struct OtapIdState {
     hdp: u32,
     ehdp: u32,
     sdp: u32,
-    exemplar: u32,
+    ndp_exemplar: u32,
     hdp_exemplar: u32,
     ehdp_exemplar: u32,
 }
@@ -173,23 +173,10 @@ impl OtapIdState {
             hdp: 0,
             ehdp: 0,
             sdp: 0,
-            exemplar: 0,
+            ndp_exemplar: 0,
             hdp_exemplar: 0,
             ehdp_exemplar: 0,
         }
-    }
-
-    fn clear(&mut self) {
-        self.resource = 0;
-        self.scope = 0;
-        self.metric = 0;
-        self.ndp = 0;
-        self.hdp = 0;
-        self.ehdp = 0;
-        self.sdp = 0;
-        self.exemplar = 0;
-        self.hdp_exemplar = 0;
-        self.ehdp_exemplar = 0;
     }
 }
 
@@ -219,7 +206,7 @@ impl IdentityState {
         self.scopes.clear();
         self.metrics.clear();
         self.streams.clear();
-        self.next.clear();
+        self.next = OtapIdState::new();
     }
 }
 
@@ -1231,7 +1218,7 @@ impl TemporalReaggregationProcessor {
                     for dp in gauge.data_points() {
                         let dp_id = next_id_32(&mut ids.ndp)?;
                         let _ = pt_builder.append_number_dp(dp_id, otap_metric_id, &dp);
-                        pt_builder.append_number_dp_exemplars(dp_id, &dp, &mut ids.exemplar)?;
+                        pt_builder.append_number_dp_exemplars(dp_id, &dp, &mut ids.ndp_exemplar)?;
                     }
                 }
             }
@@ -1240,7 +1227,7 @@ impl TemporalReaggregationProcessor {
                     for dp in sum.data_points() {
                         let dp_id = next_id_32(&mut ids.ndp)?;
                         let _ = pt_builder.append_number_dp(dp_id, otap_metric_id, &dp);
-                        pt_builder.append_number_dp_exemplars(dp_id, &dp, &mut ids.exemplar)?;
+                        pt_builder.append_number_dp_exemplars(dp_id, &dp, &mut ids.ndp_exemplar)?;
                     }
                 }
             }
