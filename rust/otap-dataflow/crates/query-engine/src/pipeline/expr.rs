@@ -56,7 +56,7 @@ use data_engine_expressions::{
     PipelineFunction, PipelineFunctionImplementation, ReplaceTextScalarExpression,
     ScalarExpression, StaticScalarExpression, StringValue, TextScalarExpression,
 };
-use datafusion::common::DFSchema;
+use datafusion::common::{DFSchema, plan_datafusion_err};
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
@@ -566,51 +566,20 @@ impl ExprLogicalPlanner {
                 }
             }
 
-            // build up the list of arguments while keeping track of the source scope and whether
-            // we need to remove dict encoding from the source columns before invoking function
-            let mut arg_exprs = Vec::with_capacity(invoke_arg_exprs.len());
+            let scalar_arg_exprs = invoke_arg_exprs
+                .iter()
+                .map(|arg| match arg {
+                    InvokeFunctionArgument::Scalar(scalar_expr) => Ok(scalar_expr),
+                    InvokeFunctionArgument::MutableValue(_) => Err(Error::NotYetSupportedError {
+                        message:
+                            "Mutable value as function argument not yet supported in expression"
+                                .into(),
+                    }),
+                })
+                .collect::<Result<Vec<_>>>()?;
 
-            let first_arg_expr =
-                self.plan_scalar_expr(arg_to_scalar(&invoke_arg_exprs[0])?, functions)?;
-            arg_exprs.push(first_arg_expr.logical_expr);
-            let mut source_scope = first_arg_expr.source;
-            let mut source_requires_dict_downcast = first_arg_expr.requires_dict_downcast;
-
-            for invoke_arg_expr in invoke_arg_exprs.iter().skip(1) {
-                let arg_expr = self.plan_scalar_expr(arg_to_scalar(invoke_arg_expr)?, functions)?;
-
-                // check if the data scope of the argument can be combined without doing a join.
-                // We would need to join data from different scopes if the arguments have would
-                // require it, such as in function calls like:
-                // some_func(severity_text, attributes["x"])
-                let combined_scope =
-                    match (arg_expr.source, source_scope) {
-                        (
-                            LogicalExprDataSource::DataSource(left_scope),
-                            LogicalExprDataSource::DataSource(right_scope),
-                        ) => left_scope.can_combine(&right_scope).then_some(
-                            if !left_scope.is_scalar() {
-                                left_scope
-                            } else {
-                                right_scope
-                            },
-                        ),
-                        _ => None,
-                    };
-
-                if let Some(combined_scope) = combined_scope {
-                    source_scope = LogicalExprDataSource::DataSource(combined_scope);
-                } else {
-                    // TODO: eventually we'll create a new join expr node and invoke the function
-                    // on result of the join.
-                    return Err(Error::NotYetSupportedError {
-                        message: "Functions arguments with differing data scopes not yet supported"
-                            .into(),
-                    });
-                }
-                source_requires_dict_downcast |= arg_expr.requires_dict_downcast;
-                arg_exprs.push(arg_expr.logical_expr);
-            }
+            let (arg_exprs, source_scope, source_requires_dict_downcast) =
+                self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?;
 
             let mut logical_expr =
                 Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
@@ -635,17 +604,26 @@ impl ExprLogicalPlanner {
         }
     }
 
-    // TODO docs & need to use this in the two places where the code is duplicated
     fn plan_function_args<'a>(
         &self,
         mut arg_exprs: impl Iterator<Item = &'a ScalarExpression>,
         functions: &[PipelineFunction],
     ) -> Result<(Vec<Expr>, LogicalExprDataSource, bool)> {
-        // TODO preallocate w/ size hint or something
         let mut planned_arg_exprs = Vec::new();
 
+        let first_arg = match arg_exprs.next() {
+            Some(arg) => arg,
+            None => {
+                return Ok((
+                    Vec::new(),
+                    LogicalExprDataSource::DataSource(DataScope::StaticScalar),
+                    false,
+                ));
+            }
+        };
+
         // TODO check if empty, no unwrap.
-        let first_arg_expr = self.plan_scalar_expr(arg_exprs.next().unwrap(), functions)?;
+        let first_arg_expr = self.plan_scalar_expr(first_arg, functions)?;
         planned_arg_exprs.push(first_arg_expr.logical_expr);
         let mut source_scope = first_arg_expr.source;
         let mut source_requires_dict_downcast = first_arg_expr.requires_dict_downcast;
