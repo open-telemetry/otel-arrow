@@ -341,8 +341,8 @@ impl AttributeHash {
         for attr in &entries {
             match attr.value().map(|v| v.value_type()) {
                 // We're currently treating Maps and list attributes as
-                // non-identifying because we don't have a great way to support
-                // them for OTAP views.
+                // non-identifying because we don't yet support these
+                // attribute types for OTAP views.
                 Some(ValueType::Array) | Some(ValueType::KeyValueList) => {
                     continue;
                 }
