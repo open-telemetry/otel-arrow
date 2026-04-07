@@ -5,7 +5,7 @@
 
 use futures::future::BoxFuture;
 use http::{Request, Response};
-use otap_df_engine::memory_limiter::MemoryPressureState;
+use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
 use otap_df_telemetry::metrics::MetricSet;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ pub trait MemoryPressureRejectionMetrics: Send + Sync {
 
 /// Builds a gRPC `resource_exhausted` status with retry pushback metadata.
 #[must_use]
-pub fn grpc_memory_pressure_status(state: &MemoryPressureState) -> Status {
+pub fn grpc_memory_pressure_status(state: &SharedReceiverAdmissionState) -> Status {
     let mut metadata = MetadataMap::new();
     let retry_pushback_ms = u64::from(state.retry_after_secs().max(1)) * 1_000;
     let _ = metadata.insert(
@@ -50,14 +50,14 @@ impl MemoryPressureRejectionMetrics for Mutex<MetricSet<OtlpReceiverMetrics>> {
 /// process-wide state machine for this Phase 1 implementation.
 #[derive(Clone)]
 pub struct MemoryPressureLayer {
-    state: MemoryPressureState,
+    state: SharedReceiverAdmissionState,
     metrics: Option<Arc<dyn MemoryPressureRejectionMetrics>>,
 }
 
 impl MemoryPressureLayer {
     /// Creates a new layer backed by the shared process-wide memory pressure state.
     #[must_use]
-    pub const fn new(state: MemoryPressureState) -> Self {
+    pub const fn new(state: SharedReceiverAdmissionState) -> Self {
         Self {
             state,
             metrics: None,
@@ -66,7 +66,7 @@ impl MemoryPressureLayer {
 
     /// Creates a new layer that also records dedicated rejection metrics.
     #[must_use]
-    pub fn with_metrics<M>(state: MemoryPressureState, metrics: Arc<M>) -> Self
+    pub fn with_metrics<M>(state: SharedReceiverAdmissionState, metrics: Arc<M>) -> Self
     where
         M: MemoryPressureRejectionMetrics + 'static,
     {
@@ -79,7 +79,7 @@ impl MemoryPressureLayer {
     /// Creates a new layer that also records dedicated OTLP rejection metrics.
     #[must_use]
     pub fn with_otlp_metrics(
-        state: MemoryPressureState,
+        state: SharedReceiverAdmissionState,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
     ) -> Self {
         Self::with_metrics(state, metrics)
@@ -103,7 +103,7 @@ impl<S> Layer<S> for MemoryPressureLayer {
 #[derive(Clone)]
 pub struct MemoryPressureService<S> {
     inner: S,
-    state: MemoryPressureState,
+    state: SharedReceiverAdmissionState,
     metrics: Option<Arc<dyn MemoryPressureRejectionMetrics>>,
     reject_next_call: bool,
 }
@@ -146,7 +146,7 @@ mod tests {
     use super::*;
     use http::{Request, Response, StatusCode};
     use otap_df_config::policy::MemoryLimiterMode;
-    use otap_df_engine::memory_limiter::MemoryPressureBehaviorConfig;
+    use otap_df_engine::memory_limiter::{MemoryPressureBehaviorConfig, MemoryPressureState};
     use std::convert::Infallible;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -197,7 +197,9 @@ mod tests {
         let poll_ready_calls = inner.poll_ready_calls.clone();
         let call_count = inner.call_count.clone();
 
-        let mut service = MemoryPressureLayer::new(state).layer(inner);
+        let mut service =
+            MemoryPressureLayer::new(SharedReceiverAdmissionState::from_process_state(&state))
+                .layer(inner);
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
@@ -234,7 +236,9 @@ mod tests {
         let poll_ready_calls = inner.poll_ready_calls.clone();
         let call_count = inner.call_count.clone();
 
-        let mut service = MemoryPressureLayer::new(state.clone()).layer(inner);
+        let mut service =
+            MemoryPressureLayer::new(SharedReceiverAdmissionState::from_process_state(&state))
+                .layer(inner);
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
@@ -258,7 +262,9 @@ mod tests {
         let poll_ready_calls = inner.poll_ready_calls.clone();
         let call_count = inner.call_count.clone();
 
-        let mut service = MemoryPressureLayer::new(state).layer(inner);
+        let mut service =
+            MemoryPressureLayer::new(SharedReceiverAdmissionState::from_process_state(&state))
+                .layer(inner);
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 

@@ -73,7 +73,8 @@ use otap_df_engine::entity_context::{
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_engine::memory_limiter::{
-    EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureLevel,
+    EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
+    MemoryPressureLevel,
 };
 use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
@@ -1023,6 +1024,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
         let memory_pressure_state = controller_ctx.memory_pressure_state();
+        let (memory_pressure_tx, _memory_pressure_rx) =
+            tokio::sync::watch::channel(MemoryPressureChanged::initial());
         let mut memory_limiter_handle = None;
         if let Some(memory_limiter_policy) = engine_config
             .policies
@@ -1056,9 +1059,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             let initial_tick = limiter
                 .tick(&memory_pressure_state)
                 .map_err(|message| Error::MemoryLimiterError { message })?;
+            let initial_transitioned = initial_tick.transitioned();
             Self::log_memory_limiter_tick(initial_tick);
+            let mut transition_generation = 0_u64;
+            if initial_transitioned {
+                transition_generation += 1;
+                let _ = memory_pressure_tx
+                    .send(memory_pressure_state.current_update(transition_generation));
+            }
 
             let limiter_state = memory_pressure_state.clone();
+            let limiter_updates = memory_pressure_tx.clone();
             memory_limiter_handle = Some(spawn_thread_local_task(
                 "process-memory-limiter",
                 admin_tracing_setup.clone(),
@@ -1078,7 +1089,18 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             }
                             _ = ticker.tick() => {
                                 match limiter.tick(&limiter_state) {
-                                    Ok(tick) => Self::log_memory_limiter_tick(tick),
+                                    Ok(tick) => {
+                                        if tick.transitioned() {
+                                            transition_generation += 1;
+                                            let _ = limiter_updates.send(MemoryPressureChanged {
+                                                generation: transition_generation,
+                                                level: tick.current_level,
+                                                retry_after_secs: limiter_state.retry_after_secs(),
+                                                usage_bytes: tick.sample.usage_bytes,
+                                            });
+                                        }
+                                        Self::log_memory_limiter_tick(tick)
+                                    }
                                     Err(err) => {
                                         otel_warn!(
                                             "process_memory_limiter.sample_failed",
@@ -1140,6 +1162,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             &engine_evt_reporter,
             &metrics_reporter,
             telemetry_reporting_interval,
+            &memory_pressure_tx,
             internal_tracing_setup,
         )?;
 
@@ -1319,6 +1342,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 let engine_evt_reporter = engine_evt_reporter.clone();
                 let effective_channel_capacity_policy = channel_capacity_policy.clone();
                 let effective_telemetry_policy = telemetry_policy.clone();
+                let pipeline_memory_pressure_rx = memory_pressure_tx.subscribe();
                 let handle = thread::Builder::new()
                     .name(thread_name.clone())
                     .spawn(move || {
@@ -1337,6 +1361,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             runtime_ctrl_msg_rx,
                             pipeline_completion_msg_tx,
                             pipeline_completion_msg_rx,
+                            pipeline_memory_pressure_rx,
                             engine_tracing_setup,
                             None,
                         )
@@ -1665,6 +1690,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         engine_evt_reporter: &ObservedEventReporter,
         metrics_reporter: &MetricsReporter,
         telemetry_reporting_interval: std::time::Duration,
+        memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
     ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
         let (internal_config, channel_capacity_policy, telemetry_policy): (
@@ -1728,6 +1754,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let internal_metrics_reporter = metrics_reporter.clone();
         let internal_channel_capacity_policy = channel_capacity_policy;
         let internal_telemetry_policy = telemetry_policy;
+        let internal_memory_pressure_rx = memory_pressure_tx.subscribe();
 
         let handle = thread::Builder::new()
             .name(thread_name.clone())
@@ -1747,6 +1774,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     internal_ctrl_rx,
                     internal_return_tx,
                     internal_return_rx,
+                    internal_memory_pressure_rx,
                     tracing_setup,
                     Some((its_settings, startup_tx)),
                 )
@@ -1797,6 +1825,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         runtime_ctrl_msg_rx: RuntimeCtrlMsgReceiver<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
+        memory_pressure_rx: tokio::sync::watch::Receiver<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
@@ -1879,6 +1908,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     obs_evt_reporter,
                     metrics_reporter,
                     telemetry_reporting_interval,
+                    memory_pressure_rx,
                     runtime_ctrl_msg_tx,
                     runtime_ctrl_msg_rx,
                     pipeline_completion_msg_tx,

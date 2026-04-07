@@ -24,6 +24,14 @@ Phase 1 is a **process-wide observed-memory limiter** implemented as an engine
 service. It samples actual process memory on a fixed interval and gates
 receiver ingress based on the result.
 
+Implementation note:
+
+- Sampling and pressure classification remain process-wide in the controller.
+- On pressure transitions, the controller propagates updates to receivers
+  through the pipeline control plane.
+- Each receiver maintains receiver-local admission state and consults that
+  local state on ingress hot paths.
+
 **What it does:**
 
 - Sample process memory on a configurable interval
@@ -388,6 +396,8 @@ Phase 1 is deliberately simpler than the long-term design.
 
 - Low implementation risk
 - Additional process-wide protection against memory pressure
+- Enforcement hot paths are receiver-local and NUMA-friendly; the process-wide
+  sampler is not consulted on ingress
 - Clean fit with existing receiver admission controls
 - No invasive queue or pdata instrumentation required
 

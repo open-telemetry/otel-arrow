@@ -8,7 +8,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::memory_limiter::MemoryPressureState;
+use otap_df_engine::memory_limiter::LocalReceiverAdmissionState;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
@@ -240,7 +240,7 @@ struct SyslogCefReceiver {
     config: Config,
     /// RFC-aligned internal telemetry for this receiver
     metrics: Rc<RefCell<MetricSet<SyslogCefReceiverMetrics>>>,
-    memory_pressure_state: MemoryPressureState,
+    admission_state: LocalReceiverAdmissionState,
 }
 
 impl SyslogCefReceiver {
@@ -250,7 +250,9 @@ impl SyslogCefReceiver {
         SyslogCefReceiver {
             config,
             metrics: Rc::new(RefCell::new(metrics)),
-            memory_pressure_state: pipeline.memory_pressure_state(),
+            admission_state: LocalReceiverAdmissionState::from_process_state(
+                &pipeline.memory_pressure_state(),
+            ),
         }
     }
 
@@ -415,6 +417,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let mut m = self.metrics.borrow_mut();
                                     let _ = metrics_reporter.report(&mut m);
                                 }
+                                Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
+                                    self.admission_state.apply(update);
+                                }
                                 Err(e) => {
                                     return Err(Error::ChannelRecvError(e));
                                 }
@@ -428,7 +433,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         accept_result = listener.accept() => {
                             match accept_result {
                                 Ok((socket, peer_addr)) => {
-                                    if self.memory_pressure_state.should_shed_ingress() {
+                                    if self.admission_state.should_shed_ingress() {
                                         self.metrics
                                             .borrow_mut()
                                             .tcp_connections_rejected_memory_pressure
@@ -439,7 +444,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // Clone the effect handler so the spawned task can send messages.
                                     let effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
-                                    let memory_pressure_state = self.memory_pressure_state.clone();
+                                    let admission_state = self.admission_state.clone();
 
                                     // Clone TLS acceptor for the spawned task
                                     #[cfg(feature = "experimental-tls")]
@@ -536,7 +541,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 break;
                                             }
 
-                                            if memory_pressure_state.should_shed_ingress() {
+                                            if admission_state.should_shed_ingress() {
                                                 otel_warn!(
                                                     "syslog_cef_receiver.memory_pressure.disconnect",
                                                     peer = %peer_addr,
@@ -569,7 +574,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Count total received at socket level before parsing
                                                                 metrics.borrow_mut().received_logs_total.inc();
 
-                                                                if memory_pressure_state.should_shed_ingress() {
+                                                                if admission_state.should_shed_ingress() {
                                                                     otel_warn!(
                                                                         "syslog_cef_receiver.memory_pressure.disconnect",
                                                                         peer = %peer_addr,
@@ -647,7 +652,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Count total received at socket level before parsing
                                                             metrics.borrow_mut().received_logs_total.inc();
 
-                                                            if memory_pressure_state.should_shed_ingress() {
+                                                            if admission_state.should_shed_ingress() {
                                                                 otel_warn!(
                                                                     "syslog_cef_receiver.memory_pressure.disconnect",
                                                                     peer = %peer_addr,
@@ -851,6 +856,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let mut m = self.metrics.borrow_mut();
                                     let _ = metrics_reporter.report(&mut m);
                                 }
+                                Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
+                                    self.admission_state.apply(update);
+                                }
                                 Err(e) => {
                                     return Err(Error::ChannelRecvError(e));
                                 }
@@ -875,7 +883,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // Count total received at socket level before parsing
                                     self.metrics.borrow_mut().received_logs_total.inc();
 
-                                    if self.memory_pressure_state.should_shed_ingress() {
+                                    if self.admission_state.should_shed_ingress() {
                                         self.metrics
                                             .borrow_mut()
                                             .received_logs_rejected_memory_pressure
@@ -1045,11 +1053,14 @@ mod tests {
             SyslogCefReceiver {
                 config,
                 metrics: Rc::new(RefCell::new(metric_set)),
-                memory_pressure_state: MemoryPressureState::default(),
+                admission_state: LocalReceiverAdmissionState::from_process_state(
+                    &MemoryPressureState::default(),
+                ),
             }
         }
     }
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},

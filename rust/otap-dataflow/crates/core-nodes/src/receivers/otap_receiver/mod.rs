@@ -33,6 +33,7 @@ use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
+use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
@@ -113,7 +114,7 @@ pub struct OTAPReceiver {
     config: Config,
     metrics: MetricSet<OtapReceiverMetrics>,
     memory_pressure_metrics: Arc<SharedOtapMemoryPressureMetrics>,
-    memory_pressure_state: otap_df_engine::memory_limiter::MemoryPressureState,
+    admission_state: SharedReceiverAdmissionState,
 }
 
 /// Declares the OTAP receiver as a shared receiver factory
@@ -158,7 +159,9 @@ impl OTAPReceiver {
             config,
             metrics,
             memory_pressure_metrics: Arc::new(SharedOtapMemoryPressureMetrics::default()),
-            memory_pressure_state: pipeline_ctx.memory_pressure_state(),
+            admission_state: SharedReceiverAdmissionState::from_process_state(
+                &pipeline_ctx.memory_pressure_state(),
+            ),
         })
     }
 
@@ -320,7 +323,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
             wait_for_result: self.config.wait_for_result,
-            memory_pressure_state: self.memory_pressure_state.clone(),
+            admission_state: self.admission_state.clone(),
             memory_pressure_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
         };
 
@@ -377,7 +380,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
         let server = server_builder
             .layer(MemoryPressureLayer::with_metrics(
-                self.memory_pressure_state.clone(),
+                self.admission_state.clone(),
                 self.memory_pressure_metrics.clone(),
             ))
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
@@ -502,6 +505,9 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             self.flush_memory_pressure_metrics();
                             _ = metrics_reporter.report(&mut self.metrics);
+                        }
+                        Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
+                            self.admission_state.apply(update);
                         }
                         Ok(NodeControlMsg::Ack(ack)) => {
                             self.handle_ack_response(self.route_ack_response(&states, ack));

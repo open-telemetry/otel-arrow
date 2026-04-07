@@ -13,7 +13,7 @@
 use crate::pdata::{Context, OtapPdata};
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
-    memory_limiter::MemoryPressureState, shared::receiver as shared,
+    memory_limiter::SharedReceiverAdmissionState, shared::receiver as shared,
 };
 use otap_df_pdata::{
     Consumer,
@@ -62,8 +62,8 @@ pub struct Settings {
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
     pub wait_for_result: bool,
-    /// Shared process-wide memory pressure state.
-    pub memory_pressure_state: MemoryPressureState,
+    /// Receiver-local memory pressure admission state.
+    pub admission_state: SharedReceiverAdmissionState,
     /// Shared rejection counters used by both stream-open and per-batch shedding.
     pub memory_pressure_rejection_metrics: Option<Arc<dyn MemoryPressureRejectionMetrics>>,
 }
@@ -174,7 +174,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
             // Process messages until stream ends or error occurs
             loop {
                 if reject_open_stream_for_memory_pressure(
-                    &settings.memory_pressure_state,
+                    &settings.admission_state,
                     settings.memory_pressure_rejection_metrics.as_deref(),
                     &tx,
                 )
@@ -195,7 +195,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
                     batch,
                     &effect_handler_clone,
                     state_clone.clone(),
-                    &settings.memory_pressure_state,
+                    &settings.admission_state,
                     settings.memory_pressure_rejection_metrics.as_deref(),
                     &tx,
                 )
@@ -236,7 +236,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
             // Process messages until stream ends or error occurs
             loop {
                 if reject_open_stream_for_memory_pressure(
-                    &settings.memory_pressure_state,
+                    &settings.admission_state,
                     settings.memory_pressure_rejection_metrics.as_deref(),
                     &tx,
                 )
@@ -257,7 +257,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
                     batch,
                     &effect_handler_clone,
                     state_clone.clone(),
-                    &settings.memory_pressure_state,
+                    &settings.admission_state,
                     settings.memory_pressure_rejection_metrics.as_deref(),
                     &tx,
                 )
@@ -298,7 +298,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
             // Process messages until stream ends or error occurs
             loop {
                 if reject_open_stream_for_memory_pressure(
-                    &settings.memory_pressure_state,
+                    &settings.admission_state,
                     settings.memory_pressure_rejection_metrics.as_deref(),
                     &tx,
                 )
@@ -319,7 +319,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
                     batch,
                     &effect_handler_clone,
                     state_clone.clone(),
-                    &settings.memory_pressure_state,
+                    &settings.admission_state,
                     settings.memory_pressure_rejection_metrics.as_deref(),
                     &tx,
                 )
@@ -337,11 +337,11 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 }
 
 async fn reject_open_stream_for_memory_pressure(
-    memory_pressure_state: &MemoryPressureState,
+    admission_state: &SharedReceiverAdmissionState,
     memory_pressure_metrics: Option<&dyn MemoryPressureRejectionMetrics>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> bool {
-    if !memory_pressure_state.should_shed_ingress() {
+    if !admission_state.should_shed_ingress() {
         return false;
     }
 
@@ -355,7 +355,7 @@ async fn reject_open_stream_for_memory_pressure(
     );
 
     let _ = tx
-        .send(Err(grpc_memory_pressure_status(memory_pressure_state)))
+        .send(Err(grpc_memory_pressure_status(admission_state)))
         .await
         .map_err(|e| {
             otel_error!(
@@ -376,7 +376,7 @@ async fn accept_data<T: OtapBatchStore, F>(
     mut batch: BatchArrowRecords,
     effect_handler: &shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
-    memory_pressure_state: &MemoryPressureState,
+    admission_state: &SharedReceiverAdmissionState,
     memory_pressure_metrics: Option<&dyn MemoryPressureRejectionMetrics>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> Result<(), ()>
@@ -384,7 +384,7 @@ where
     F: Fn(T) -> OtapArrowRecords,
 {
     let batch_id = batch.batch_id;
-    if memory_pressure_state.should_shed_ingress() {
+    if admission_state.should_shed_ingress() {
         if let Some(metrics) = memory_pressure_metrics {
             metrics.record_memory_pressure_rejection();
         }
@@ -531,7 +531,9 @@ where
 mod tests {
     use super::*;
     use otap_df_config::policy::MemoryLimiterMode;
-    use otap_df_engine::memory_limiter::{MemoryPressureBehaviorConfig, MemoryPressureLevel};
+    use otap_df_engine::memory_limiter::{
+        MemoryPressureBehaviorConfig, MemoryPressureLevel, MemoryPressureState,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tonic::Code;
 
@@ -557,10 +559,11 @@ mod tests {
         state.set_level_for_tests(MemoryPressureLevel::Hard);
 
         let metrics = CountingMemoryPressureMetrics::default();
+        let local_state = SharedReceiverAdmissionState::from_process_state(&state);
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 
         assert!(
-            reject_open_stream_for_memory_pressure(&state, Some(&metrics), &tx).await,
+            reject_open_stream_for_memory_pressure(&local_state, Some(&metrics), &tx).await,
             "hard pressure should reject an already-open stream before reading the next batch"
         );
 

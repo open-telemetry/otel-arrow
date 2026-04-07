@@ -4,12 +4,14 @@
 //! Process-wide memory limiter state and sampling.
 
 use otap_df_config::policy::{MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource};
+use std::cell::Cell;
 #[cfg(all(not(windows), feature = "jemalloc"))]
 use std::ffi::c_char;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(all(not(windows), feature = "jemalloc"))]
 use std::ptr;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -49,6 +51,32 @@ impl MemoryPressureLevel {
             1 => Self::Soft,
             2 => Self::Hard,
             _ => Self::Normal,
+        }
+    }
+}
+
+/// Transition payload emitted when the process-wide limiter changes pressure level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryPressureChanged {
+    /// Monotonic update number assigned by the global sampler.
+    pub generation: u64,
+    /// Newly classified pressure level.
+    pub level: MemoryPressureLevel,
+    /// Receiver-facing retry hint to use while shedding ingress.
+    pub retry_after_secs: u32,
+    /// Most recent sampled process memory usage in bytes.
+    pub usage_bytes: u64,
+}
+
+impl MemoryPressureChanged {
+    /// Initial watch-channel value before the first real transition.
+    #[must_use]
+    pub const fn initial() -> Self {
+        Self {
+            generation: 0,
+            level: MemoryPressureLevel::Normal,
+            retry_after_secs: 1,
+            usage_bytes: 0,
         }
     }
 }
@@ -185,6 +213,17 @@ impl MemoryPressureState {
         self.inner.hard_limit_bytes.load(Ordering::Relaxed)
     }
 
+    /// Returns the current process-wide state as a receiver-facing transition payload.
+    #[must_use]
+    pub fn current_update(&self, generation: u64) -> MemoryPressureChanged {
+        MemoryPressureChanged {
+            generation,
+            level: self.level(),
+            retry_after_secs: self.retry_after_secs(),
+            usage_bytes: self.usage_bytes(),
+        }
+    }
+
     fn update_limits(&self, soft_limit_bytes: u64, hard_limit_bytes: u64) {
         self.inner
             .soft_limit_bytes
@@ -218,6 +257,148 @@ impl MemoryPressureState {
     ) {
         self.update_limits(soft_limit_bytes, hard_limit_bytes);
         _ = self.update_level(level, usage_bytes);
+    }
+}
+
+#[derive(Debug)]
+struct SharedReceiverAdmissionStateInner {
+    generation: AtomicU64,
+    level: AtomicU8,
+    retry_after_secs: AtomicU32,
+    usage_bytes: AtomicU64,
+    mode: MemoryLimiterMode,
+}
+
+/// Receiver-local admission state shared across task/service clones inside a receiver.
+#[derive(Clone, Debug)]
+pub struct SharedReceiverAdmissionState {
+    inner: Arc<SharedReceiverAdmissionStateInner>,
+}
+
+impl Default for SharedReceiverAdmissionState {
+    fn default() -> Self {
+        Self::from_process_state(&MemoryPressureState::default())
+    }
+}
+
+impl SharedReceiverAdmissionState {
+    /// Bootstraps receiver-local admission state from the current process-wide snapshot.
+    #[must_use]
+    pub fn from_process_state(state: &MemoryPressureState) -> Self {
+        Self {
+            inner: Arc::new(SharedReceiverAdmissionStateInner {
+                generation: AtomicU64::new(0),
+                level: AtomicU8::new(state.level() as u8),
+                retry_after_secs: AtomicU32::new(state.retry_after_secs()),
+                usage_bytes: AtomicU64::new(state.usage_bytes()),
+                mode: state.mode(),
+            }),
+        }
+    }
+
+    /// Applies a transition update, ignoring stale generations.
+    pub fn apply(&self, update: MemoryPressureChanged) {
+        let current = self.inner.generation.load(Ordering::Relaxed);
+        if update.generation <= current {
+            return;
+        }
+
+        self.inner
+            .level
+            .store(update.level as u8, Ordering::Relaxed);
+        self.inner
+            .retry_after_secs
+            .store(update.retry_after_secs.max(1), Ordering::Relaxed);
+        self.inner
+            .usage_bytes
+            .store(update.usage_bytes, Ordering::Relaxed);
+        self.inner
+            .generation
+            .store(update.generation, Ordering::Relaxed);
+    }
+
+    /// Returns whether ingress should be shed for this receiver.
+    #[must_use]
+    pub fn should_shed_ingress(&self) -> bool {
+        self.inner.mode == MemoryLimiterMode::Enforce
+            && MemoryPressureLevel::from_u8(self.inner.level.load(Ordering::Relaxed))
+                == MemoryPressureLevel::Hard
+    }
+
+    /// Returns the Retry-After value advertised while shedding ingress.
+    #[must_use]
+    pub fn retry_after_secs(&self) -> u32 {
+        self.inner.retry_after_secs.load(Ordering::Relaxed)
+    }
+
+    /// Returns the current local pressure level.
+    #[must_use]
+    pub fn level(&self) -> MemoryPressureLevel {
+        MemoryPressureLevel::from_u8(self.inner.level.load(Ordering::Relaxed))
+    }
+}
+
+#[derive(Debug)]
+struct LocalReceiverAdmissionStateInner {
+    generation: Cell<u64>,
+    level: Cell<MemoryPressureLevel>,
+    retry_after_secs: Cell<u32>,
+    usage_bytes: Cell<u64>,
+    mode: MemoryLimiterMode,
+}
+
+/// Receiver-local admission state for LocalSet-only receivers that do not cross task boundaries.
+#[derive(Clone, Debug)]
+pub struct LocalReceiverAdmissionState {
+    inner: Rc<LocalReceiverAdmissionStateInner>,
+}
+
+impl LocalReceiverAdmissionState {
+    /// Bootstraps receiver-local admission state from the current process-wide snapshot.
+    #[must_use]
+    pub fn from_process_state(state: &MemoryPressureState) -> Self {
+        Self {
+            inner: Rc::new(LocalReceiverAdmissionStateInner {
+                generation: Cell::new(0),
+                level: Cell::new(state.level()),
+                retry_after_secs: Cell::new(state.retry_after_secs()),
+                usage_bytes: Cell::new(state.usage_bytes()),
+                mode: state.mode(),
+            }),
+        }
+    }
+
+    /// Applies a transition update, ignoring stale generations.
+    pub fn apply(&self, update: MemoryPressureChanged) {
+        if update.generation <= self.inner.generation.get() {
+            return;
+        }
+
+        self.inner.level.set(update.level);
+        self.inner
+            .retry_after_secs
+            .set(update.retry_after_secs.max(1));
+        self.inner.usage_bytes.set(update.usage_bytes);
+        self.inner.generation.set(update.generation);
+    }
+
+    /// Returns whether ingress should be shed for this receiver.
+    #[must_use]
+    pub fn should_shed_ingress(&self) -> bool {
+        self.inner.mode == MemoryLimiterMode::Enforce
+            && self.inner.level.get() == MemoryPressureLevel::Hard
+    }
+
+    /// Returns the Retry-After value advertised while shedding ingress.
+    #[must_use]
+    pub fn retry_after_secs(&self) -> u32 {
+        self.inner.retry_after_secs.get()
+    }
+
+    /// Returns the current local pressure level.
+    #[must_use]
+    pub fn level(&self) -> MemoryPressureLevel {
+        self.inner.level.get()
     }
 }
 
@@ -985,6 +1166,104 @@ mod tests {
         assert_eq!(state.usage_bytes(), 96);
         assert_eq!(state.soft_limit_bytes(), 90);
         assert_eq!(state.hard_limit_bytes(), 95);
+    }
+
+    #[test]
+    fn shared_receiver_admission_state_bootstraps_from_process_state() {
+        let state = MemoryPressureState::default();
+        state.configure(MemoryPressureBehaviorConfig {
+            retry_after_secs: 7,
+            fail_readiness_on_hard: true,
+            mode: MemoryLimiterMode::Enforce,
+        });
+        _ = state.update_level(MemoryPressureLevel::Hard, 96);
+
+        let local = SharedReceiverAdmissionState::from_process_state(&state);
+        assert!(local.should_shed_ingress());
+        assert_eq!(local.retry_after_secs(), 7);
+        assert_eq!(local.level(), MemoryPressureLevel::Hard);
+    }
+
+    #[test]
+    fn shared_receiver_admission_state_ignores_stale_generations() {
+        let state = MemoryPressureState::default();
+        let local = SharedReceiverAdmissionState::from_process_state(&state);
+
+        local.apply(MemoryPressureChanged {
+            generation: 2,
+            level: MemoryPressureLevel::Hard,
+            retry_after_secs: 9,
+            usage_bytes: 123,
+        });
+        local.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Normal,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        });
+
+        assert!(local.should_shed_ingress());
+        assert_eq!(local.retry_after_secs(), 9);
+        assert_eq!(local.level(), MemoryPressureLevel::Hard);
+    }
+
+    #[test]
+    fn shared_receiver_admission_state_clones_observe_updates() {
+        let state = MemoryPressureState::default();
+        let local = SharedReceiverAdmissionState::from_process_state(&state);
+        let clone = local.clone();
+
+        local.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Hard,
+            retry_after_secs: 5,
+            usage_bytes: 88,
+        });
+
+        assert!(clone.should_shed_ingress());
+        assert_eq!(clone.retry_after_secs(), 5);
+        assert_eq!(clone.level(), MemoryPressureLevel::Hard);
+    }
+
+    #[test]
+    fn local_receiver_admission_state_ignores_stale_generations() {
+        let state = MemoryPressureState::default();
+        let local = LocalReceiverAdmissionState::from_process_state(&state);
+
+        local.apply(MemoryPressureChanged {
+            generation: 3,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 4,
+            usage_bytes: 22,
+        });
+        local.apply(MemoryPressureChanged {
+            generation: 2,
+            level: MemoryPressureLevel::Normal,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        });
+
+        assert!(!local.should_shed_ingress());
+        assert_eq!(local.retry_after_secs(), 4);
+        assert_eq!(local.level(), MemoryPressureLevel::Soft);
+    }
+
+    #[test]
+    fn local_receiver_admission_state_clones_observe_updates() {
+        let state = MemoryPressureState::default();
+        let local = LocalReceiverAdmissionState::from_process_state(&state);
+        let clone = local.clone();
+
+        local.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Hard,
+            retry_after_secs: 6,
+            usage_bytes: 77,
+        });
+
+        assert!(clone.should_shed_ingress());
+        assert_eq!(clone.retry_after_secs(), 6);
+        assert_eq!(clone.level(), MemoryPressureLevel::Hard);
     }
 
     #[test]

@@ -25,7 +25,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use otap_df_config::SignalType;
 use otap_df_config::byte_units;
-use otap_df_engine::memory_limiter::MemoryPressureState;
+use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
@@ -514,7 +514,7 @@ struct HttpHandler {
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
     settings: HttpServerSettings,
-    memory_pressure_state: MemoryPressureState,
+    admission_state: SharedReceiverAdmissionState,
     /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
     /// receiver-wide backpressure tied to downstream capacity.
     global_semaphore: Option<Arc<Semaphore>>,
@@ -549,12 +549,12 @@ impl HttpHandler {
         let permit_timeout = self.settings.timeout.unwrap_or(Duration::from_secs(5));
 
         let fut = async move {
-            if self.memory_pressure_state.should_shed_ingress() {
+            if self.admission_state.should_shed_ingress() {
                 let mut metrics = self.metrics.lock();
                 metrics.rejected_requests.inc();
                 metrics.refused_memory_pressure.inc();
                 return Err(memory_pressure_unavailable(
-                    self.memory_pressure_state.retry_after_secs(),
+                    self.admission_state.retry_after_secs(),
                 ));
             }
 
@@ -592,12 +592,12 @@ impl HttpHandler {
 
             // Re-check after potentially waiting for the global permit: pressure may have
             // escalated while this request was queued.
-            if self.memory_pressure_state.should_shed_ingress() {
+            if self.admission_state.should_shed_ingress() {
                 let mut metrics = self.metrics.lock();
                 metrics.rejected_requests.inc();
                 metrics.refused_memory_pressure.inc();
                 return Err(memory_pressure_unavailable(
-                    self.memory_pressure_state.retry_after_secs(),
+                    self.admission_state.retry_after_secs(),
                 ));
             }
 
@@ -632,12 +632,12 @@ impl HttpHandler {
             };
 
             // Re-check after waiting for the local permit.
-            if self.memory_pressure_state.should_shed_ingress() {
+            if self.admission_state.should_shed_ingress() {
                 let mut metrics = self.metrics.lock();
                 metrics.rejected_requests.inc();
                 metrics.refused_memory_pressure.inc();
                 return Err(memory_pressure_unavailable(
-                    self.memory_pressure_state.retry_after_secs(),
+                    self.admission_state.retry_after_secs(),
                 ));
             }
 
@@ -823,7 +823,7 @@ pub async fn serve(
     settings: HttpServerSettings,
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
-    memory_pressure_state: MemoryPressureState,
+    admission_state: SharedReceiverAdmissionState,
     global_semaphore: Option<Arc<Semaphore>>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
@@ -879,7 +879,7 @@ pub async fn serve(
                     ack_registry: ack_registry.clone(),
                     metrics: metrics.clone(),
                     settings: settings.clone(),
-                    memory_pressure_state: memory_pressure_state.clone(),
+                    admission_state: admission_state.clone(),
                     global_semaphore: global_semaphore.clone(),
                     local_semaphore: local_semaphore.clone(),
                 };
@@ -967,7 +967,7 @@ pub async fn serve(
 mod tests {
     use super::*;
 
-    use otap_df_engine::memory_limiter::MemoryPressureLevel;
+    use otap_df_engine::memory_limiter::{MemoryPressureLevel, MemoryPressureState};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1032,7 +1032,7 @@ mod tests {
             settings.clone(),
             ack_registry.clone(),
             metrics,
-            MemoryPressureState::default(),
+            SharedReceiverAdmissionState::default(),
             None,
             shutdown.clone(),
         ));
@@ -1165,13 +1165,15 @@ mod tests {
             pipeline_ctx.register_metrics::<crate::otlp_metrics::OtlpReceiverMetrics>(),
         ));
         let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
 
         let server = tokio::spawn(serve(
             effect_handler,
             settings,
             AckRegistry::new(None, None, None),
             metrics.clone(),
-            memory_pressure_state.clone(),
+            admission_state.clone(),
             Some(gate.clone()),
             shutdown.clone(),
         ));
@@ -1218,7 +1220,12 @@ mod tests {
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        memory_pressure_state.set_level_for_tests(MemoryPressureLevel::Hard);
+        admission_state.apply(otap_df_engine::memory_limiter::MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Hard,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        });
         drop(held_permit);
 
         let (status, retry_after) = tokio::time::timeout(Duration::from_secs(2), response)
@@ -1296,12 +1303,14 @@ mod tests {
             .expect("permit");
 
         let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
         let server = tokio::spawn(serve(
             effect_handler.clone(),
             settings.clone(),
             AckRegistry::new(None, None, None),
             metrics.clone(),
-            memory_pressure_state.clone(),
+            admission_state.clone(),
             Some(local_semaphore),
             shutdown.clone(),
         ));
@@ -1340,7 +1349,12 @@ mod tests {
             tokio::spawn(async move { sender.send_request(req).await.unwrap().status() });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        memory_pressure_state.set_level_for_tests(MemoryPressureLevel::Soft);
+        admission_state.apply(otap_df_engine::memory_limiter::MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        });
         drop(held_permit);
 
         let status = tokio::time::timeout(Duration::from_secs(2), response)
