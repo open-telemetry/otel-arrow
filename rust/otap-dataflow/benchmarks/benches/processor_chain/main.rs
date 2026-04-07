@@ -176,7 +176,7 @@ fn bench_processor_chain(c: &mut Criterion) {
                             chain
                                 .process(Message::PData(black_box("hello".to_string())), &mut eh)
                                 .await
-                                .unwrap();
+                                .expect("chain process failed");
                         }
                     })
                     .await;
@@ -202,8 +202,10 @@ fn bench_processor_chain(c: &mut Criterion) {
                             let mut data = black_box("hello".to_string());
 
                             for (proc, (eh, rx)) in processors.iter_mut().zip(channels.iter_mut()) {
-                                proc.process(Message::PData(data), eh).await.unwrap();
-                                data = rx.try_recv().unwrap();
+                                proc.process(Message::PData(data), eh)
+                                    .await
+                                    .expect("process failed");
+                                data = rx.try_recv().expect("missing output");
                             }
                             let _ = black_box(data);
                         }
