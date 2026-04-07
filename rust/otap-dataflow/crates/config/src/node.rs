@@ -8,7 +8,9 @@
 //!
 //! A node can expose multiple named output ports.
 
+use crate::error::Error;
 use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
+use crate::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
 use crate::{Description, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -75,6 +77,28 @@ pub struct NodeUserConfig {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity: Option<NodeEntity>,
+
+    /// Node-level header capture policy override (receivers only).
+    ///
+    /// When set on a receiver node, this policy **fully replaces** the
+    /// pipeline-level `transport_headers.header_capture` policy for this
+    /// node. When absent, the pipeline-level policy applies.
+    ///
+    /// Setting this field on a processor or exporter node is a
+    /// configuration error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_capture: Option<HeaderCapturePolicy>,
+
+    /// Node-level header propagation policy override (exporters only).
+    ///
+    /// When set on an exporter node, this policy **fully replaces** the
+    /// pipeline-level `transport_headers.header_propagation` policy for this
+    /// node. When absent, the pipeline-level policy applies.
+    ///
+    /// Setting this field on a processor or receiver node is a
+    /// configuration error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_propagation: Option<HeaderPropagationPolicy>,
 }
 
 /// Node kinds
@@ -121,6 +145,8 @@ impl NodeUserConfig {
             default_output: None,
             entity: None,
             config: Value::Null,
+            header_capture: None,
+            header_propagation: None,
         }
     }
 
@@ -137,6 +163,8 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
+            header_capture: None,
+            header_propagation: None,
         }
     }
 
@@ -153,6 +181,8 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
+            header_capture: None,
+            header_propagation: None,
         }
     }
 
@@ -166,6 +196,8 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: user_config,
+            header_capture: None,
+            header_propagation: None,
         }
     }
 
@@ -178,6 +210,44 @@ impl NodeUserConfig {
             .map(|ext| &ext.identity_attributes)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Validates transport header policy fields on this node and pushes any
+    /// errors into the provided vector. Receivers may only declare
+    /// `header_capture`; exporters may only declare `header_propagation`;
+    /// processors may declare neither.
+    pub fn validate_transport_header_fields(&self, node_name: &str, errors: &mut Vec<Error>) {
+        let kind = self.kind();
+
+        if self.header_capture.is_some() && kind != NodeKind::Receiver {
+            errors.push(Error::InvalidUserConfig {
+                error: format!(
+                    "node `{node_name}`: `header_capture` is only allowed on receiver nodes \
+                     (this node is a {kind})",
+                    kind = match kind {
+                        NodeKind::Processor => "processor",
+                        NodeKind::Exporter => "exporter",
+                        NodeKind::ProcessorChain => "processor_chain",
+                        NodeKind::Receiver => unreachable!(),
+                    }
+                ),
+            });
+        }
+
+        if self.header_propagation.is_some() && kind != NodeKind::Exporter {
+            errors.push(Error::InvalidUserConfig {
+                error: format!(
+                    "node `{node_name}`: `header_propagation` is only allowed on exporter nodes \
+                     (this node is a {kind})",
+                    kind = match kind {
+                        NodeKind::Receiver => "receiver",
+                        NodeKind::Processor => "processor",
+                        NodeKind::ProcessorChain => "processor_chain",
+                        NodeKind::Exporter => unreachable!(),
+                    }
+                ),
+            });
+        }
     }
 
     /// Adds an output port to this node declaration.
@@ -385,5 +455,109 @@ config: {}
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.entity.is_some());
         assert!(cfg.identity_attributes().is_empty());
+    }
+
+    // -- Transport header node-level override tests --
+
+    #[test]
+    fn receiver_with_header_capture_override() {
+        let yaml = r#"
+type: "receiver:otap"
+header_capture:
+  headers:
+    - match_names: ["x-request-id"]
+      store_as: request_id
+config:
+  listening_addr: "0.0.0.0:50051"
+"#;
+        let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(cfg.kind(), NodeKind::Receiver));
+        assert!(cfg.header_capture.is_some());
+        assert!(cfg.header_propagation.is_none());
+
+        // No validation errors for receiver + header_capture
+        let mut errors = Vec::new();
+        cfg.validate_transport_header_fields("test_node", &mut errors);
+        assert!(errors.is_empty());
+
+        let capture = cfg.header_capture.as_ref().unwrap();
+        assert_eq!(capture.headers.len(), 1);
+        assert_eq!(capture.headers[0].match_names, vec!["x-request-id"]);
+        assert_eq!(capture.headers[0].store_as.as_deref(), Some("request_id"));
+    }
+
+    #[test]
+    fn exporter_with_header_propagation_override() {
+        let yaml = r#"
+type: "exporter:otap"
+header_propagation:
+  default:
+    selector: all_captured
+  overrides:
+    - match:
+        stored_names: ["authorization"]
+      action: drop
+config:
+  grpc_endpoint: "http://127.0.0.1:50051"
+"#;
+        let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(cfg.kind(), NodeKind::Exporter));
+        assert!(cfg.header_capture.is_none());
+        assert!(cfg.header_propagation.is_some());
+
+        // No validation errors for exporter + header_propagation
+        let mut errors = Vec::new();
+        cfg.validate_transport_header_fields("test_node", &mut errors);
+        assert!(errors.is_empty());
+
+        let propagation = cfg.header_propagation.as_ref().unwrap();
+        assert_eq!(propagation.overrides.len(), 1);
+        assert_eq!(
+            propagation.overrides[0].match_rule.stored_names,
+            vec!["authorization"]
+        );
+    }
+
+    #[test]
+    fn header_capture_on_processor_is_rejected() {
+        let mut cfg = NodeUserConfig::new_processor_config("processor:batch");
+        cfg.header_capture = Some(HeaderCapturePolicy::default());
+        let mut errors = Vec::new();
+        cfg.validate_transport_header_fields("batch", &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("header_capture"));
+        assert!(errors[0].to_string().contains("processor"));
+    }
+
+    #[test]
+    fn header_capture_on_exporter_is_rejected() {
+        let mut cfg = NodeUserConfig::new_exporter_config("exporter:otap");
+        cfg.header_capture = Some(HeaderCapturePolicy::default());
+        let mut errors = Vec::new();
+        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("header_capture"));
+        assert!(errors[0].to_string().contains("exporter"));
+    }
+
+    #[test]
+    fn header_propagation_on_receiver_is_rejected() {
+        let mut cfg = NodeUserConfig::new_receiver_config("receiver:otap");
+        cfg.header_propagation = Some(HeaderPropagationPolicy::default());
+        let mut errors = Vec::new();
+        cfg.validate_transport_header_fields("otap_ingest", &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("header_propagation"));
+        assert!(errors[0].to_string().contains("receiver"));
+    }
+
+    #[test]
+    fn receiver_without_override_has_no_validation_errors() {
+        let cfg = NodeUserConfig::new_receiver_config("receiver:otap");
+        assert!(cfg.header_capture.is_none());
+        assert!(cfg.header_propagation.is_none());
+        let mut errors = Vec::new();
+        cfg.validate_transport_header_fields("test", &mut errors);
+        assert!(errors.is_empty());
     }
 }

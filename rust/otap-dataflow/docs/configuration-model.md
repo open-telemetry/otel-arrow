@@ -209,8 +209,8 @@ Optional observability policies are supported at:
 
 ## Policy Hierarchy
 
-Policies include channel capacity, health, runtime telemetry, and
-resources controls:
+Policies include channel capacity, health, runtime telemetry, resources
+controls, and transport headers:
 
 ```yaml
 policies:
@@ -229,7 +229,18 @@ policies:
   resources:
     core_allocation:
       type: all_cores
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: ["x-tenant-id"]
+          store_as: tenant_id
+    header_propagation:
+      default:
+        selector: all_captured
 ```
+
+For full transport header policy documentation, see
+[transport-headers.md](transport-headers.md).
 
 Resolution order:
 
@@ -249,6 +260,7 @@ Defaults at top-level:
 - `telemetry.tokio_metrics = true`
 - `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+- `transport_headers` = not set (opt-in; no headers captured or propagated)
 
 Control channel keys:
 
