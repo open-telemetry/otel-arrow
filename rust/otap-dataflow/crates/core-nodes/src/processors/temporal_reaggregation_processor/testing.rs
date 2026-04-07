@@ -6,13 +6,14 @@
 
 use std::sync::Arc;
 
+use otap_df_config::SignalType;
 pub(super) use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::Interests;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
-    AckMsg, NackMsg, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
-    runtime_ctrl_msg_channel,
+    AckMsg, CallData, NackMsg, NodeControlMsg, PipelineCompletionMsg, RouteData, UnwindData,
+    pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::message::Message;
 pub(super) use otap_df_engine::processor::ProcessorWrapper;
@@ -502,5 +503,43 @@ pub(super) fn scope_metrics_without_scope(metrics: Vec<Metric>) -> ScopeMetrics 
         scope: None,
         metrics,
         schema_url: String::new(),
+    }
+}
+
+/// Build an [`AckMsg`] with the given calldata, bypassing the normal
+/// subscriber-unwinding path. Used to test invalid-calldata handling.
+pub(super) fn ack_with_calldata(calldata: CallData) -> AckMsg<OtapPdata> {
+    AckMsg {
+        accepted: Box::new(OtapPdata::new_default(OtapPayload::empty(
+            SignalType::Metrics,
+        ))),
+        unwind: UnwindData {
+            route: RouteData {
+                calldata,
+                entry_time_ns: 0,
+                output_port_index: 0,
+            },
+            return_time_ns: 0,
+        },
+    }
+}
+
+/// Build a [`NackMsg`] with the given calldata, bypassing the normal
+/// subscriber-unwinding path. Used to test invalid-calldata handling.
+pub(super) fn nack_with_calldata(calldata: CallData, reason: &str) -> NackMsg<OtapPdata> {
+    NackMsg {
+        reason: reason.to_string(),
+        refused: Box::new(OtapPdata::new_default(OtapPayload::empty(
+            SignalType::Metrics,
+        ))),
+        unwind: UnwindData {
+            route: RouteData {
+                calldata,
+                entry_time_ns: 0,
+                output_port_index: 0,
+            },
+            return_time_ns: 0,
+        },
+        permanent: false,
     }
 }
