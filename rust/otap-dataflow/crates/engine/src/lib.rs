@@ -1586,7 +1586,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             let factory = self
                 .get_processor_factory_map()
                 .get(sub_urn.as_str())
-                .ok_or_else(|| Error::UnknownProcessor {
+                .ok_or(Error::UnknownProcessor {
                     plugin_urn: sub_urn,
                 })?;
 
