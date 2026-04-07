@@ -1018,13 +1018,13 @@ through `UInt64`).  Widening preserves signedness: unsigned keys widen through
 **Supported nesting patterns:**
 
 | Column type | Dictionary unification | Status |
-|---|---|---|
+| --- | --- | --- |
 | Top-level `Dictionary(K, V)` | Yes | Fully supported |
-| `Struct` → `Dictionary(K, V)` | Yes (one level) | Fully supported; covers all OTAP schemas |
-| `List` / `LargeList` → `Dictionary` | No | Not needed by OTAP; will error on IPC write |
-| `Map` → `Dictionary` | No | Not needed by OTAP; will error on IPC write |
-| `Struct` → `Struct` → `Dictionary` | No | OTAP forbids nested structs |
-| `Union` → `Dictionary` | No | Not used by OTAP |
+| `Struct` -> `Dictionary(K, V)` | Yes (one level) | Fully supported; covers all OTAP schemas |
+| `List` / `LargeList` -> `Dictionary` | No | Not needed by OTAP; will error on IPC write |
+| `Map` -> `Dictionary` | No | Not needed by OTAP; will error on IPC write |
+| `Struct` -> `Struct` -> `Dictionary` | No | OTAP forbids nested structs |
+| `Union` -> `Dictionary` | No | Not used by OTAP |
 
 OTAP schemas use only the first two patterns. If future schemas introduce
 dictionary-encoded fields inside `List`, `Map`, or deeply nested `Struct`
