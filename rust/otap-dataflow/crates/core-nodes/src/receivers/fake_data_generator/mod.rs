@@ -120,6 +120,10 @@ enum SignalGenerator {
         num_log_attributes: Option<usize>,
         /// Whether to populate trace_id/span_id on log records
         use_trace_context: bool,
+        /// Number of metric attributes per data point (None = default attributes)
+        num_metric_attributes: Option<usize>,
+        /// Number of data points per metric (None = default)
+        num_data_points_per_metric: Option<usize>,
     },
 }
 
@@ -159,9 +163,16 @@ impl SignalGenerator {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Metrics(semconv_signal::semconv_otlp_metrics(count, registry))
             }
-            SignalGenerator::Static { .. } => OtlpProtoMessage::Metrics(
-                static_signal::static_otlp_metrics(count, self.attrs_for_batch(batch_index)),
-            ),
+            SignalGenerator::Static {
+                num_metric_attributes,
+                num_data_points_per_metric,
+                ..
+            } => OtlpProtoMessage::Metrics(static_signal::static_otlp_metrics_with_config(
+                count,
+                *num_metric_attributes,
+                *num_data_points_per_metric,
+                self.attrs_for_batch(batch_index),
+            )),
         }
     }
 
@@ -305,6 +316,8 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     log_body_size_bytes: traffic_config.log_body_size_bytes(),
                     num_log_attributes: traffic_config.num_log_attributes(),
                     use_trace_context: traffic_config.use_trace_context(),
+                    num_metric_attributes: traffic_config.num_metric_attributes(),
+                    num_data_points_per_metric: traffic_config.num_data_points_per_metric(),
                 }
             }
         };
@@ -1370,6 +1383,8 @@ mod tests {
             log_body_size_bytes: None,
             num_log_attributes: None,
             use_trace_context: false,
+            num_metric_attributes: None,
+            num_data_points_per_metric: None,
         };
 
         // attrs_for_batch should rotate through the two sets
@@ -1424,6 +1439,8 @@ mod tests {
             log_body_size_bytes: None,
             num_log_attributes: None,
             use_trace_context: false,
+            num_metric_attributes: None,
+            num_data_points_per_metric: None,
         };
         assert!(generator.attrs_for_batch(0).is_none());
         assert!(generator.attrs_for_batch(1).is_none());
