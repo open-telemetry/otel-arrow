@@ -106,6 +106,11 @@ enum AggregationError {
     /// An ID counter would exceed its maximum value.
     #[error("Id overflow")]
     IdOverflow,
+
+    /// The number of unique metric streams in the current batch would exceed
+    /// the configured [`Config::max_stream_cardinality`] limit.
+    #[error("Stream cardinality exceeded")]
+    StreamCardinalityExceeded,
 }
 
 /// The URN for the temporal reaggregation processor.
@@ -210,6 +215,8 @@ impl IdentityState {
 pub struct TemporalReaggregationProcessor {
     metrics: MetricSet<TemporalReaggregationMetrics>,
     collection_period: Duration,
+    /// Maximum number of unique streams allowed in a single aggregating batch.
+    max_stream_cardinality: u16,
     /// Whether the periodic flush timer has been started.
     timer_started: bool,
     // Reusable byte buffer for computing attribute hashes.
@@ -333,6 +340,7 @@ impl TemporalReaggregationProcessor {
         Ok(Self {
             metrics,
             collection_period: config.period,
+            max_stream_cardinality: config.max_stream_cardinality.get(),
             timer_started: false,
             hash_buf: HashBuffer::new(),
             id_state: IdentityState::new(),
@@ -735,12 +743,12 @@ impl TemporalReaggregationProcessor {
         match self.aggregate_view(view) {
             Ok(res) => Ok(res),
             Err(e) => match e {
-                // Id overflows are fine. In this case we seal the current
-                // outbound batch and then feed the data back into the next one. We do this to
-                // prevent complex ack/nack scenarios where an
-                // input batch has representation in multiple
-                // output batches.
-                AggregationError::IdOverflow => {
+                // Both ID overflow and stream cardinality overflow are handled
+                // the same way: seal the current outbound batch and feed the
+                // data back into a fresh one. This prevents complex ack/nack
+                // scenarios where a single input batch has representation in
+                // multiple output batches.
+                AggregationError::IdOverflow | AggregationError::StreamCardinalityExceeded => {
                     self.metrics.flushes_overflow.inc();
                     self.flush(effect_handler, Some(checkpoint)).await?;
                     Ok(self
@@ -1031,6 +1039,7 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
+        let streams_len = self.id_state.streams.len();
         let lookup = StreamIdRef(&stream_id.clone());
         match self.id_state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
@@ -1042,6 +1051,9 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
+                if streams_len >= self.max_stream_cardinality as usize {
+                    return Err(AggregationError::StreamCardinalityExceeded);
+                }
                 let dp_id = self.id_state.next_id_ndp;
                 if dp_id == u32::MAX {
                     return Err(AggregationError::IdOverflow);
@@ -1067,6 +1079,7 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
+        let streams_len = self.id_state.streams.len();
         let lookup = StreamIdRef(&stream_id.clone());
         match self.id_state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
@@ -1078,6 +1091,9 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
+                if streams_len >= self.max_stream_cardinality as usize {
+                    return Err(AggregationError::StreamCardinalityExceeded);
+                }
                 let dp_id = self.id_state.next_id_hdp;
                 if dp_id == u32::MAX {
                     return Err(AggregationError::IdOverflow);
@@ -1103,6 +1119,7 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
+        let streams_len = self.id_state.streams.len();
         let lookup = StreamIdRef(&stream_id.clone());
         match self.id_state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
@@ -1114,6 +1131,9 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
+                if streams_len >= self.max_stream_cardinality as usize {
+                    return Err(AggregationError::StreamCardinalityExceeded);
+                }
                 let dp_id = self.id_state.next_id_ehdp;
                 if dp_id == u32::MAX {
                     return Err(AggregationError::IdOverflow);
@@ -1141,6 +1161,7 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
+        let streams_len = self.id_state.streams.len();
         let lookup = StreamIdRef(&stream_id.clone());
         match self.id_state.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
@@ -1152,6 +1173,9 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
+                if streams_len >= self.max_stream_cardinality as usize {
+                    return Err(AggregationError::StreamCardinalityExceeded);
+                }
                 let dp_id = self.id_state.next_id_sdp;
                 if dp_id == u32::MAX {
                     return Err(AggregationError::IdOverflow);
@@ -2012,87 +2036,54 @@ mod tests {
         // that fits), then send a batch with 2 more unique metrics. The first
         // batch should be flushed early and the overflowing batch retried into
         // clean state.
-        run_processor_test(json!({}), |mut ctx| async move {
-            let max_metrics = (u16::MAX - 1) as usize;
+        //
+        // Set max_stream_cardinality to u16::MAX so that the stream cardinality
+        // limit is never hit here and only the metric ID overflow path is exercised.
+        let max_metrics = (u16::MAX - 1) as usize;
+        run_processor_test(
+            json!({ "max_stream_cardinality": u16::MAX }),
+            move |mut ctx| async move {
+                let full_batch = make_otlp_bytes_pdata(make_n_gauge_metrics(max_metrics));
+                // Use offset to ensure distinct metric names from the first batch.
+                let overflow_batch =
+                    make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(2, max_metrics));
 
-            // First batch: fill to the limit.
-            let full_batch = make_otlp_bytes_pdata(make_n_gauge_metrics(max_metrics));
-            ctx.process(Message::PData(full_batch)).await.unwrap();
+                ctx.process(Message::PData(full_batch)).await.unwrap();
+                ctx.process(Message::PData(overflow_batch)).await.unwrap();
+                ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
 
-            // Second batch: 2 new unique metrics — triggers overflow.
-            let overflow_batch =
-                make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
-                    Resource::build().finish(),
-                    vec![ScopeMetrics::new(
-                        InstrumentationScope::build().finish(),
-                        vec![
-                            Metric::build()
-                                .name("overflow_a")
-                                .data_gauge(Gauge::new(vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(2000u64)
-                                        .value_double(1.0f64)
-                                        .finish(),
-                                ]))
-                                .finish(),
-                            Metric::build()
-                                .name("overflow_b")
-                                .data_gauge(Gauge::new(vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(2000u64)
-                                        .value_double(2.0f64)
-                                        .finish(),
-                                ]))
-                                .finish(),
-                        ],
-                    )],
-                )]));
-            ctx.process(Message::PData(overflow_batch)).await.unwrap();
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected early flush + timer flush");
+                assert_output_metric_count(&output[0], max_metrics);
+                assert_output_metric_count(&output[1], 2);
+            },
+        );
+    }
 
-            // Flush via timer tick.
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+    #[test]
+    fn test_stream_cardinality_overflow_triggers_early_flush() {
+        // Configure the processor to allow at most 2 unique streams in a batch.
+        // Send a batch with 2 streams (fills to the limit), then a second batch
+        // with 1 new stream. The new stream should trigger a cardinality overflow:
+        // the first batch is flushed early, then the overflowing data is retried
+        // into a fresh batch and flushed on the next timer tick.
+        run_processor_test(
+            json!({ "max_stream_cardinality": 2 }),
+            |mut ctx| async move {
+                let batch1 = make_otlp_bytes_pdata(make_n_gauge_metrics(2));
+                // Use offset to ensure distinct metric names from the first batch.
+                let batch2 = make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(1, 2));
 
-            let output = ctx.drain_pdata().await;
-            // Should have 2 outputs: the early flush (max_metrics gauges) and
-            // the timer flush (the 2 overflow metrics retried into clean state).
-            assert_eq!(output.len(), 2, "expected early flush + timer flush");
+                ctx.process(Message::PData(batch1)).await.unwrap();
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
 
-            // First output: the early flush should contain max_metrics data points.
-            let first = match output[0].payload_ref() {
-                OtapPayload::OtapArrowRecords(r) => r,
-                _ => panic!("expected OtapArrowRecords"),
-            };
-            let first_otlp = otap_to_otlp(first);
-            let first_md = match first_otlp {
-                otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
-                _ => panic!("expected metrics"),
-            };
-            let first_metric_count: usize = first_md
-                .resource_metrics
-                .iter()
-                .flat_map(|rm| &rm.scope_metrics)
-                .map(|sm| sm.metrics.len())
-                .sum();
-            assert_eq!(first_metric_count, max_metrics);
-
-            // Second output: the retried batch should contain the 2 overflow metrics.
-            let second = match output[1].payload_ref() {
-                OtapPayload::OtapArrowRecords(r) => r,
-                _ => panic!("expected OtapArrowRecords"),
-            };
-            let second_otlp = otap_to_otlp(second);
-            let second_md = match second_otlp {
-                otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
-                _ => panic!("expected metrics"),
-            };
-            let second_metric_count: usize = second_md
-                .resource_metrics
-                .iter()
-                .flat_map(|rm| &rm.scope_metrics)
-                .map(|sm| sm.metrics.len())
-                .sum();
-            assert_eq!(second_metric_count, 2);
-        });
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected early flush + timer flush");
+                assert_output_metric_count(&output[0], 2);
+                assert_output_metric_count(&output[1], 1);
+            },
+        );
     }
 
     #[test]

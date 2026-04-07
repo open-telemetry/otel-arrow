@@ -427,7 +427,13 @@ pub(super) fn make_exp_histogram(
 }
 
 pub(super) fn make_n_gauge_metrics(n: usize) -> MetricsData {
-    let metrics: Vec<_> = (0..n)
+    make_n_gauge_metrics_with_offset(n, 0)
+}
+
+/// Build an OTLP [`MetricsData`] with `n` unique gauge metrics starting from
+/// `offset`. Metric names are `metric_{offset}`, `metric_{offset+1}`, etc.
+pub(super) fn make_n_gauge_metrics_with_offset(n: usize, offset: usize) -> MetricsData {
+    let metrics: Vec<_> = (offset..offset + n)
         .map(|i| {
             Metric::build()
                 .name(format!("metric_{i}"))
@@ -484,6 +490,23 @@ pub(super) fn make_mixed_metrics_payload() -> OtapPayload {
         make_mixed_metrics(),
     ));
     OtapPayload::OtapArrowRecords(records)
+}
+
+/// Assert that the total number of metrics in the processor output matches
+/// `expected`. Works with both OTAP and OTLP payload variants.
+pub(super) fn assert_output_metric_count(output: &OtapPdata, expected: usize) {
+    let otlp = payload_to_otlp(output.payload_ref());
+    let md = match otlp {
+        otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
+        other => panic!("expected Metrics, got {other:?}"),
+    };
+    let count: usize = md
+        .resource_metrics
+        .iter()
+        .flat_map(|rm| &rm.scope_metrics)
+        .map(|sm| sm.metrics.len())
+        .sum();
+    assert_eq!(count, expected, "metric count mismatch");
 }
 
 /// Helper to build a `ResourceMetrics` with `resource: None`.
