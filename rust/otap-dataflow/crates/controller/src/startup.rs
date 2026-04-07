@@ -112,8 +112,11 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                 .get(urn_str)
                 .map(|f| f.validate_config),
             NodeKind::Extension => {
-                // Extension config validation is handled separately.
-                None
+                // Extensions are not yet validated here because PipelineFactory
+                // does not have an extension factory registry. Once one is added,
+                // this should look up and validate extension configs similarly to
+                // receivers/processors/exporters.
+                continue;
             }
         };
 
@@ -123,7 +126,7 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                     NodeKind::Receiver => "receiver",
                     NodeKind::Processor | NodeKind::ProcessorChain => "processor",
                     NodeKind::Exporter => "exporter",
-                    NodeKind::Extension => "extension",
+                    NodeKind::Extension => unreachable!("handled above"),
                 };
                 return Err(std::io::Error::other(format!(
                     "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",

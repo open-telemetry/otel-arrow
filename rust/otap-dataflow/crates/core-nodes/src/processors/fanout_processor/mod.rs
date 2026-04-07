@@ -1593,6 +1593,7 @@ mod tests {
             outputs: vec!["primary".into(), "a".into(), "b".into()],
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         };
