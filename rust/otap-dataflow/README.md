@@ -351,6 +351,67 @@ The `views` sub-module contains zero-copy machinery for:
 - interpreting OTLP bytes using views to build OTAP records
 - interpreting OTAP records using views to encode OTLP bytes
 
+## Embedding in Custom Distributions
+
+The engine crates are designed as reusable libraries. A custom binary can
+link the same controller, factory, and node crates and register its own
+components via `linkme` distributed slices -- exactly how `src/main.rs` works.
+
+The `otap_df_controller::startup` module provides three helpers that every
+embedding binary typically needs:
+
+- **`validate_engine_components`** -- Checks that every node URN in a
+  config maps to a registered component and runs per-component config
+  validation.
+- **`apply_cli_overrides`** -- Merges core-allocation and HTTP-admin
+  bind overrides into an `OtelDataflowSpec`.
+- **`system_info`** -- Returns a formatted string with CPU/memory info
+  and all registered component URNs, useful for `--help` banners or
+  diagnostics.
+
+A minimal custom binary looks like this:
+
+```rust
+use otap_df_config::engine::OtelDataflowSpec;
+use otap_df_controller::{Controller, startup};
+
+// Side-effect imports to register components via linkme.
+use otap_df_core_nodes as _;
+// Bring your own contrib/custom nodes as needed.
+
+// Reference the pipeline factory (or define your own).
+use otap_df_otap::OTAP_PIPELINE_FACTORY;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    otap_df_otap::crypto::install_crypto_provider()?;
+
+    let mut cfg = OtelDataflowSpec::from_file("pipeline.yaml")?;
+
+    // Apply any CLI overrides (core count, admin bind address, etc.)
+    startup::apply_cli_overrides(&mut cfg, Some(4), None, None);
+
+    // Validate that every node URN in the config is registered.
+    startup::validate_engine_components(&cfg, &OTAP_PIPELINE_FACTORY)?;
+
+    // Print diagnostics.
+    // Pass "system" here for the minimal example; in practice, align this
+    // string with your binary's allocator feature (e.g. "jemalloc", "mimalloc").
+    println!("{}", startup::system_info(&OTAP_PIPELINE_FACTORY, "system"));
+
+    // Run the engine.
+    let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
+    controller.run_forever(cfg)?;
+    Ok(())
+}
+```
+
+This pattern is analogous to the builder approach used by projects like
+`bindplane-otel-collector` in the Go ecosystem. The default `src/main.rs`
+is itself a thin wrapper over these library calls.
+
+For a complete runnable example, see
+[`examples/custom_collector.rs`](examples/custom_collector.rs).
+
 ## Development Setup
 
 **Requirements**:

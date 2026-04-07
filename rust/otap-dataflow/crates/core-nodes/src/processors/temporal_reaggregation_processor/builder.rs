@@ -121,10 +121,7 @@ impl MetricSignalBuilder {
     /// lengths captured in the checkpoint, discarding rows appended afterward.
     /// This is used by [super::TemporalReaggregationProcessor::flush_at] to
     /// discard some changes if we couldn't fully append an incoming pdata.
-    pub fn finish(
-        &mut self,
-        checkpoint: Option<Checkpoint>,
-    ) -> otap_df_pdata::error::Result<OtapArrowRecords> {
+    pub fn finish(&mut self, checkpoint: Option<Checkpoint>) -> OtapArrowRecords {
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
         let checkpoint = checkpoint.as_ref();
 
@@ -133,105 +130,105 @@ impl MetricSignalBuilder {
             ArrowPayloadType::UnivariateMetrics,
             &mut records,
             checkpoint.map(|c| c.metrics),
-        )?;
+        );
         finish_payload(
             self.resource_attrs.finish(),
             ArrowPayloadType::ResourceAttrs,
             &mut records,
             checkpoint.map(|c| c.resource_attrs),
-        )?;
+        );
         finish_payload(
             self.scope_attrs.finish(),
             ArrowPayloadType::ScopeAttrs,
             &mut records,
             checkpoint.map(|c| c.scope_attrs),
-        )?;
+        );
         finish_payload(
             self.number_dps.finish(),
             ArrowPayloadType::NumberDataPoints,
             &mut records,
             checkpoint.map(|c| c.ndp),
-        )?;
+        );
         finish_payload(
             self.ndp_attrs.finish(),
             ArrowPayloadType::NumberDpAttrs,
             &mut records,
             checkpoint.map(|c| c.ndp_attrs),
-        )?;
-        finish_exemplar_payload(
+        );
+        finish_payload(
             self.ndp_exemplars.finish(),
             ArrowPayloadType::NumberDpExemplars,
             &mut records,
             checkpoint.map(|c| c.ndp_exemplars),
-        )?;
+        );
         finish_payload(
             self.ndp_exemplar_attrs.finish(),
             ArrowPayloadType::NumberDpExemplarAttrs,
             &mut records,
             checkpoint.map(|c| c.ndp_exemplar_attrs),
-        )?;
+        );
         finish_payload(
             self.histogram_dps.finish(),
             ArrowPayloadType::HistogramDataPoints,
             &mut records,
             checkpoint.map(|c| c.hdp),
-        )?;
+        );
         finish_payload(
             self.hdp_attrs.finish(),
             ArrowPayloadType::HistogramDpAttrs,
             &mut records,
             checkpoint.map(|c| c.hdp_attrs),
-        )?;
-        finish_exemplar_payload(
+        );
+        finish_payload(
             self.hdp_exemplars.finish(),
             ArrowPayloadType::HistogramDpExemplars,
             &mut records,
             checkpoint.map(|c| c.hdp_exemplars),
-        )?;
+        );
         finish_payload(
             self.hdp_exemplar_attrs.finish(),
             ArrowPayloadType::HistogramDpExemplarAttrs,
             &mut records,
             checkpoint.map(|c| c.hdp_exemplar_attrs),
-        )?;
+        );
         finish_payload(
             self.exp_histogram_dps.finish(),
             ArrowPayloadType::ExpHistogramDataPoints,
             &mut records,
             checkpoint.map(|c| c.ehdp),
-        )?;
+        );
         finish_payload(
             self.ehdp_attrs.finish(),
             ArrowPayloadType::ExpHistogramDpAttrs,
             &mut records,
             checkpoint.map(|c| c.ehdp_attrs),
-        )?;
-        finish_exemplar_payload(
+        );
+        finish_payload(
             self.ehdp_exemplars.finish(),
             ArrowPayloadType::ExpHistogramDpExemplars,
             &mut records,
             checkpoint.map(|c| c.ehdp_exemplars),
-        )?;
+        );
         finish_payload(
             self.ehdp_exemplar_attrs.finish(),
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
             &mut records,
             checkpoint.map(|c| c.ehdp_exemplar_attrs),
-        )?;
+        );
         finish_payload(
             self.summary_dps.finish(),
             ArrowPayloadType::SummaryDataPoints,
             &mut records,
             checkpoint.map(|c| c.sdp),
-        )?;
+        );
         finish_payload(
             self.summary_attrs.finish(),
             ArrowPayloadType::SummaryDpAttrs,
             &mut records,
             checkpoint.map(|c| c.sdp_attrs),
-        )?;
+        );
 
-        Ok(records)
+        records
     }
 
     /// Capture the current builder positions as a [`Checkpoint`].
@@ -454,7 +451,7 @@ impl MetricSignalBuilder {
         dp_id: u32,
         dp: &V,
         next_exemplar_id: &mut u32,
-    ) -> Result<(), super::ProcessPdataError> {
+    ) -> Result<(), super::AggregationError> {
         for exemplar in dp.exemplars() {
             let id = super::next_id_32(next_exemplar_id)?;
             append_exemplar(
@@ -474,7 +471,7 @@ impl MetricSignalBuilder {
         dp_id: u32,
         dp: &V,
         next_exemplar_id: &mut u32,
-    ) -> Result<(), super::ProcessPdataError> {
+    ) -> Result<(), super::AggregationError> {
         for exemplar in dp.exemplars() {
             let id = super::next_id_32(next_exemplar_id)?;
             append_exemplar(
@@ -494,7 +491,7 @@ impl MetricSignalBuilder {
         dp_id: u32,
         dp: &V,
         next_exemplar_id: &mut u32,
-    ) -> Result<(), super::ProcessPdataError> {
+    ) -> Result<(), super::AggregationError> {
         for exemplar in dp.exemplars() {
             let id = super::next_id_32(next_exemplar_id)?;
             append_exemplar(
@@ -518,30 +515,7 @@ fn finish_payload(
     payload_type: ArrowPayloadType,
     records: &mut OtapArrowRecords,
     truncate_len: Option<usize>,
-) -> otap_df_pdata::error::Result<()> {
-    // safety: So long as the aggregation logic is keeping arrays
-    // the same length, this operation should be infallible.
-    let rb = result.expect("Valid record batch");
-    let rb = match truncate_len {
-        Some(len) => rb.slice(0, len),
-        None => rb,
-    };
-    if rb.num_rows() > 0 {
-        records.set(payload_type, rb)?;
-    }
-    Ok(())
-}
-
-/// Finish building an exemplar payload type and set it on the output records.
-///
-/// Like [`finish_payload`] but the exemplar builder uses adaptive schemas so
-/// the `finish` result may produce an empty batch that we can skip.
-fn finish_exemplar_payload(
-    result: Result<RecordBatch, arrow::error::ArrowError>,
-    payload_type: ArrowPayloadType,
-    records: &mut OtapArrowRecords,
-    truncate_len: Option<usize>,
-) -> otap_df_pdata::error::Result<()> {
+) {
     // safety: So long as the aggregation logic is keeping arrays
     // the same length, this operation should be infallible.
     let rb = result.expect("Valid record batch");
@@ -550,9 +524,11 @@ fn finish_exemplar_payload(
         _ => rb,
     };
     if rb.num_rows() > 0 {
-        records.set(payload_type, rb)?;
+        // safety: Our schemas are spec compliant
+        records
+            .set(payload_type, rb)
+            .expect("Valid schema for payload type");
     }
-    Ok(())
 }
 
 /// Append a single exemplar row to the given exemplar builder and its attribute
@@ -1598,14 +1574,9 @@ mod tests {
 
         // The builder should have compensated for the error by appending an empty value
         // Finish should succeed without panicking due to column length mismatch
-        let result = builder.finish(None);
-        assert!(
-            result.is_ok(),
-            "finish should succeed even with invalid attributes"
-        );
+        let records = builder.finish(None);
 
         // Verify the resource_attrs payload was created (has 1 row with empty value)
-        let records = result.unwrap();
         if let OtapArrowRecords::Metrics(metrics) = &records {
             let attrs_rb = metrics.get(ArrowPayloadType::ResourceAttrs);
             assert!(attrs_rb.is_some(), "resource attributes should be present");
@@ -1633,15 +1604,7 @@ mod tests {
         let row = builder.append_number_dp(0, 0, &dp);
         assert_eq!(row, 0, "should return row index 0");
 
-        // Finish should succeed without panicking due to column length mismatch
-        let result = builder.finish(None);
-        assert!(
-            result.is_ok(),
-            "finish should succeed even with invalid attributes"
-        );
-
-        // Verify the ndp_attrs payload was created
-        let records = result.unwrap();
+        let records = builder.finish(None);
         if let OtapArrowRecords::Metrics(metrics) = &records {
             let attrs_rb = metrics.get(ArrowPayloadType::NumberDpAttrs);
             assert!(
@@ -1675,10 +1638,7 @@ mod tests {
 
         builder.append_resource(0, &resource);
 
-        let result = builder.finish(None);
-        assert!(result.is_ok(), "finish should succeed");
-
-        let records = result.unwrap();
+        let records = builder.finish(None);
         if let OtapArrowRecords::Metrics(metrics) = &records {
             let attrs_rb = metrics.get(ArrowPayloadType::ResourceAttrs);
             assert!(attrs_rb.is_some(), "resource attributes should be present");
