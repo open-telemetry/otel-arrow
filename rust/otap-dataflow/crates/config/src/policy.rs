@@ -173,6 +173,18 @@ impl Policies {
                 )),
             }
         }
+        if let Some(transport_headers) = &self.transport_headers {
+            if let Err(e) = transport_headers
+                .header_propagation
+                .default
+                .selector
+                .validate()
+            {
+                errors.push(format!(
+                    "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
+                ));
+            }
+        }
         errors
     }
 }
@@ -764,4 +776,34 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("purge_min_interval must be greater than 0"));
     }
+
+    #[test]
+    fn validates_transport_headers_selector() {
+        use crate::transport_headers_policy::{
+            HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
+            PropagationSelectorType, TransportHeadersPolicy,
+        };
+
+        let policies = Policies {
+            transport_headers: Some(TransportHeadersPolicy {
+                header_propagation: HeaderPropagationPolicy {
+                    default: PropagationDefault {
+                        selector: PropagationSelector {
+                            selector_type: PropagationSelectorType::Named,
+                            named: None, // Invalid: named type requires named list
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+       let errors = policies.validation_errors("policies");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("transport_headers.header_propagation.default.selector"));
+        assert!(errors[0].contains("'named' list is required"));
+    }
+
 }

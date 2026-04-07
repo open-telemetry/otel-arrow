@@ -2549,7 +2549,8 @@ sink:
                 type: "receiver:otap"
                 header_propagation:
                   default:
-                    selector: all_captured
+                    selector:
+                        type: all_captured
                 config: {}
               exp:
                 type: "exporter:otap"
@@ -2593,7 +2594,8 @@ sink:
                 type: "exporter:otap"
                 header_propagation:
                   default:
-                    selector: all_captured
+                    selector:
+                        type: all_captured
                 config: {}
             connections:
               - from: recv

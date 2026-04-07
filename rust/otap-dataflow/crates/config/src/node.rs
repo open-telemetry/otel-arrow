@@ -558,7 +558,8 @@ config:
 type: "exporter:otap"
 header_propagation:
   default:
-    selector: all_captured
+    selector:
+        type: all_captured
   overrides:
     - match:
         stored_names: ["authorization"]

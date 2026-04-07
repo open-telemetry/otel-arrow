@@ -1604,7 +1604,8 @@ policies:
         - match_names: ["x-engine-header"]
     header_propagation:
       default:
-        selector: all_captured
+        selector:
+          type: all_captured
 engine: {}
 groups:
   default:
@@ -1643,8 +1644,8 @@ groups:
             vec!["x-engine-header"]
         );
         assert_eq!(
-            policy.header_propagation.default.selector,
-            crate::transport_headers_policy::PropagationSelector::AllCaptured
+            policy.header_propagation.default.selector.selector_type,
+            crate::transport_headers_policy::PropagationSelectorType::AllCaptured
         );
     }
 
