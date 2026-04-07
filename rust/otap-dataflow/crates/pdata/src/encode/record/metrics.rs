@@ -509,6 +509,18 @@ impl ExemplarsRecordBatchBuilder {
         }
     }
 
+    /// Returns the number of exemplar rows appended so far.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.id.len()
+    }
+
+    /// Returns `true` if no exemplar rows have been appended.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.id.len() == 0
+    }
+
     /// Append a value to the `id` array.
     pub fn append_id(&mut self, val: u32) {
         self.id.append_value(&val);

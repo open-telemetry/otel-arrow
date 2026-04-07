@@ -1267,6 +1267,8 @@ mod tests {
                 "destinations": destinations_cfg,
             }),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
 
         let pipeline_ctx =
@@ -1324,6 +1326,8 @@ mod tests {
                 "await_ack": "primary"
             }),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         }
     }
 
@@ -1373,6 +1377,8 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1411,6 +1417,8 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1442,6 +1450,8 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1465,6 +1475,8 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1499,6 +1511,8 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1532,6 +1546,8 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1577,7 +1593,8 @@ mod tests {
             outputs: vec!["primary".into(), "a".into(), "b".into()],
             default_output: None,
             config: json!({}),
-            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1620,6 +1637,8 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1671,6 +1690,8 @@ mod tests {
                 "await_ack": "primary"
             }),
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
 
         let metrics_system = InternalTelemetrySystem::default();
@@ -2533,6 +2554,8 @@ mod tests {
             default_output: None,
             config,
             capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
 
         let pipeline_ctx =

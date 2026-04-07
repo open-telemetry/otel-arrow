@@ -7,21 +7,29 @@ use flate2::write::GzEncoder;
 use std::io::Write;
 
 use super::error::Error;
-// Conservative target to stay under 1MB after gzip overhead and compression variability.
-// Leaves sufficient headroom for gzip overhead and compression variability.
-//
-// Original headroom was 30 bytes and would in rare cases seem to be insufficient.
-// After benchmarking and analysis of gzip compression overhead with various, mixed and static
-// data profiles with different levels of entropy and compression levels, and the theoretical gzip
-// framing overhead, combined with the limited flush count set via MAX_GZIP_FLUSH_COUNT
-// (which adds to the overhead) setting the headroom to 4KB seemed to leave a very comfortable margin,
-// with observed headroom of at least 4000 bytes in worst-case scenarios in testing.
-//
-// This can be adjusted to squeeze in more data based on the `batch_size` metric peaks observed in production workloads.
 
-// const TARGET_LIMIT: usize = 1024 * 1024 - 30; // Uncomment this to run test_replay_seed_89 to reproduce gzip framing overhead issue.
-const TARGET_LIMIT: usize = 1020 * 1024;
-const MAX_GZIP_FLUSH_COUNT: usize = 100;
+/// Hard limit for gzip-compressed payload accepted by the Azure Monitor Gateway.
+const COMPRESSED_LIMIT: usize = 1024 * 1024;
+
+/// Conservative headroom subtracted from COMPRESSED_LIMIT to account for gzip
+/// framing overhead (sync flush markers, deflate end-of-stream, gzip trailer).
+const GZIP_OVERHEAD: usize = 4 * 1024;
+
+/// Working target for compressed output size. The batcher aims to keep the
+/// final gzip payload under this value so it stays safely below COMPRESSED_LIMIT.
+const TARGET_COMPRESSED_LIMIT: usize = COMPRESSED_LIMIT - GZIP_OVERHEAD;
+
+/// Hard limit for uncompressed (decompressed) payload size. The Azure Monitor
+/// Logs Ingestion API rejects payloads whose decompressed JSON exceeds 50 MiB.
+/// The batcher finalizes the batch when the cumulative uncompressed input
+/// approaches this limit.
+const UNCOMPRESSED_LIMIT: usize = 50 * 1024 * 1024;
+
+/// Maximum number of gzip sync flushes allowed per batch. Each flush adds a
+/// small amount of framing overhead. This cap prevents excessive overhead
+/// accumulation with highly compressible data. Extremely unlikely to reach
+/// this limit due to the uncompressed size limit.
+const MAX_GZIP_FLUSH_COUNT: usize = 128;
 
 /// Accumulates JSON entries into gzip-compressed batches that stay under a size limit.
 pub struct GzipBatcher {
@@ -29,6 +37,7 @@ pub struct GzipBatcher {
     compression: Compression,
     remaining_size: usize,
     uncompressed_size: usize,
+    total_uncompressed_size: usize,
     row_count: u64,
     flush_count: usize,
     batch_id: u64,
@@ -63,6 +72,8 @@ pub struct GzipResult {
     pub row_count: u64,
     /// Number of gzip sync flushes performed while building this batch.
     pub flush_count: usize,
+    /// Total uncompressed size of the JSON payload in bytes (including structural bytes).
+    pub uncompressed_size: usize,
 }
 
 impl GzipBatcher {
@@ -73,8 +84,9 @@ impl GzipBatcher {
         Self {
             buf: Self::new_encoder(compression),
             compression,
-            remaining_size: TARGET_LIMIT,
+            remaining_size: TARGET_COMPRESSED_LIMIT,
             uncompressed_size: 0,
+            total_uncompressed_size: 0,
             row_count: 0,
             flush_count: 0,
             batch_id: 0,
@@ -83,7 +95,7 @@ impl GzipBatcher {
     }
 
     fn new_encoder(compression: Compression) -> GzEncoder<Vec<u8>> {
-        GzEncoder::new(Vec::with_capacity(TARGET_LIMIT), compression)
+        GzEncoder::new(Vec::with_capacity(TARGET_COMPRESSED_LIMIT), compression)
     }
 
     /// Returns `true` if the encoder buffer contains uncommitted data.
@@ -105,7 +117,7 @@ impl GzipBatcher {
     fn push_internal(&mut self, data: Bytes) -> Result<PushResult, Error> {
         // Account for structural JSON bytes: '[' or ',' prefix + ']' for finalization.
         // Reject entries that can't possibly fit in a single batch.
-        if data.len() + 2 > TARGET_LIMIT {
+        if data.len() + 2 > TARGET_COMPRESSED_LIMIT {
             return Ok(PushResult::TooLarge);
         }
 
@@ -114,13 +126,14 @@ impl GzipBatcher {
         if is_first_entry {
             self.batch_id += 1;
             self.buf.write_all(b"[").map_err(Error::BatchPushFailed)?;
+            self.total_uncompressed_size += 1; // '['
         }
 
         // Include structural overhead: ',' for non-first entries, ']' for finalization.
         let structural_overhead = if is_first_entry { 0 } else { 1 }; // ','
         let finalize_overhead = 1; // ']'
-        let next_size =
-            self.uncompressed_size + structural_overhead + data.len() + finalize_overhead;
+        let entry_cost = structural_overhead + data.len() + finalize_overhead;
+        let next_size = self.uncompressed_size + entry_cost;
         let must_flush = next_size > self.remaining_size;
 
         if must_flush {
@@ -129,16 +142,16 @@ impl GzipBatcher {
             self.flush_count += 1;
             let compressed_size = self.buf.get_ref().len();
 
-            self.remaining_size = TARGET_LIMIT.saturating_sub(compressed_size);
+            self.remaining_size = TARGET_COMPRESSED_LIMIT.saturating_sub(compressed_size);
             self.uncompressed_size = 0;
         }
 
         // Recompute after flush: uncompressed_size was reset so
         // next_size must be recalculated with current state.
-        let next_size =
-            self.uncompressed_size + structural_overhead + data.len() + finalize_overhead;
-        let must_finalize =
-            next_size > self.remaining_size || self.flush_count >= MAX_GZIP_FLUSH_COUNT;
+        let next_size = self.uncompressed_size + entry_cost;
+        let must_finalize = next_size > self.remaining_size
+            || self.total_uncompressed_size + entry_cost >= UNCOMPRESSED_LIMIT
+            || self.flush_count >= MAX_GZIP_FLUSH_COUNT;
 
         if must_finalize {
             let finalize_result = self.finalize()?;
@@ -163,6 +176,7 @@ impl GzipBatcher {
             }
             self.buf.write_all(&data).map_err(Error::BatchPushFailed)?;
             self.uncompressed_size += data.len();
+            self.total_uncompressed_size += structural_overhead + data.len();
             self.row_count += 1;
 
             Ok(PushResult::Ok(self.batch_id))
@@ -185,10 +199,12 @@ impl GzipBatcher {
 
         let row_count = self.row_count;
         let flush_count = self.flush_count;
+        let uncompressed_size = self.total_uncompressed_size + 1; // +1 for ']'
 
         // Reset state
-        self.remaining_size = TARGET_LIMIT;
+        self.remaining_size = TARGET_COMPRESSED_LIMIT;
         self.uncompressed_size = 0;
+        self.total_uncompressed_size = 0;
         self.row_count = 0;
         self.flush_count = 0;
 
@@ -197,6 +213,7 @@ impl GzipBatcher {
             compressed_data: Bytes::from(compressed_data),
             row_count,
             flush_count,
+            uncompressed_size,
         });
 
         Ok(FinalizeResult::Ok)
@@ -325,8 +342,8 @@ mod tests {
     #[test]
     fn test_push_just_under_limit() {
         let mut batcher = GzipBatcher::new(1);
-        // Max allowed: TARGET_LIMIT - 2 (for '[' and ']')
-        let data = vec![b'x'; TARGET_LIMIT - 2];
+        // Max allowed: TARGET_COMPRESSED_LIMIT - 2 (for '[' and ']')
+        let data = vec![b'x'; TARGET_COMPRESSED_LIMIT - 2];
         match batcher.push(data.into()).unwrap() {
             PushResult::Ok(_) | PushResult::BatchReady(_) => {} // Expected
             PushResult::TooLarge => panic!("Should fit"),
@@ -542,6 +559,8 @@ mod tests {
     struct BatchStats {
         size: usize,
         flush_count: usize,
+        row_count: u64,
+        decompressed_size: usize,
     }
 
     /// Helper: fill a batcher until BatchReady, return batch stats.
@@ -556,9 +575,16 @@ mod tests {
             }
         }
         let batch = batcher.take_pending_batch().unwrap();
+        let mut decoder = GzDecoder::new(&batch.compressed_data[..]);
+        let mut decompressed = Vec::new();
+        _ = decoder
+            .read_to_end(&mut decompressed)
+            .expect("gzip decode should succeed in test helper");
         BatchStats {
             size: batch.compressed_data.len(),
             flush_count: batch.flush_count,
+            row_count: batch.row_count,
+            decompressed_size: decompressed.len(),
         }
     }
 
@@ -571,8 +597,8 @@ mod tests {
             "{label}: batch size {} exceeds hard limit (ONE_MB = {ONE_MB})",
             stats.size
         );
-        // Utilization: should be close to TARGET_LIMIT.
-        let target_limit_f64 = TARGET_LIMIT as f64;
+        // Utilization: should be close to TARGET_COMPRESSED_LIMIT.
+        let target_limit_f64 = TARGET_COMPRESSED_LIMIT as f64;
         let utilization = stats.size as f64 / target_limit_f64 * 100.0;
         let waste = 100.0 - utilization;
         let max_waste = entry_size as f64 / target_limit_f64 * 100.0;
@@ -617,6 +643,221 @@ mod tests {
             .map(|_| chars[rng.random_range(0..chars.len())] as char)
             .collect();
         format!("{base}{val}{closing}").into_bytes()
+    }
+
+    /// Generates a JSON entry that is mostly identical (very compressible) with
+    /// a small varying tail. Used to exercise the flush cap with high compression ratios.
+    fn generate_highly_compressible_json(
+        total_size: usize,
+        sequence: usize,
+        varying_tail_len: usize,
+    ) -> Vec<u8> {
+        let prefix = r#"{"svc":"load-generator","ver":"1.0.0","iid":"instance-001","sev":"INFO","sevn":9,"tid":1,"tname":"main","msg":""#;
+        let closing = r#""}"#;
+        let body_len = total_size.saturating_sub(prefix.len() + closing.len());
+        let fill_len = body_len.saturating_sub(varying_tail_len);
+        let fill = "a".repeat(fill_len);
+        let tail: String = format!("{:0>width$}", sequence, width = varying_tail_len)
+            .chars()
+            .take(varying_tail_len)
+            .collect();
+        format!("{prefix}{fill}{tail}{closing}").into_bytes()
+    }
+
+    /// Generates JSON that mimics what CEF syslog data looks like after the
+    /// Azure Monitor transformer. The CEF template is ~900 bytes with only
+    /// 4 numeric fields randomized per message, plus fresh timestamps.
+    fn generate_cef_syslog_style_json(msg_size: usize, sequence: usize) -> Vec<u8> {
+        let cn1 = 10000000 + (sequence * 7 + 13) % 90000000;
+        let cn2 = 1000000000u64 + (sequence as u64 * 31 + 17) % 9000000000u64;
+        let spt = 10000 + (sequence * 3 + 5) % 55535;
+        let dvcpid = 10000 + (sequence * 11 + 7) % 90000;
+
+        let cef_body = format!(
+            "CEF:0|PaloAltoNetworks|PAN-OS|9.1.8|SSH2 Login Attempt(31914)|\
+             SSH2 Login Attempt(31914)|1|act=alert \
+             actionflags=0x2000000000000000 app=ssh cat=any cn1={cn1} \
+             cn2={cn2} cnt=1 cs1=THREAT cs2=vulnerability cs3=Tap_Allow \
+             cs5= cs6= destinationTranslatedAddress=0.0.0.0 \
+             destinationTranslatedPort=0 deviceExternalId=0120010106097 \
+             deviceInboundInterface=ethernet1/3 \
+             deviceOutboundInterface=ethernet1/3 dntdom=Tap domeid=vsys1 \
+             dpt=22 dst=172.21.166.15 dstloc=172.16.0.0-172.31.255.255 \
+             duid= duser= dvchost=PA-820 dvcpid={dvcpid} \
+             end=Jun 23 2021 20:36:07 GMT fileHash= fileId=0 filePath= \
+             fileType= flags=0x80002000 fname= logset=InfoCIC-LogForwarding \
+             msg=informational outcome=client-to-server proto=tcp \
+             request=\\\"\\\" requestClientApplication= requestContext= \
+             requestMethod= rt=Jun 23 2021 20:36:07 GMT sntdom=Tap \
+             sourceTranslatedAddress=0.0.0.0 sourceTranslatedPort=0 \
+             spt={spt} src=172.21.76.92 \
+             srcloc=172.16.0.0-172.31.255.255 suid= suser= \
+             PanOSThreatCategory=brute-force PanOSParentSessionID=0 \
+             PanOSParentStartTime= PanOSContentVer=AppThreat-8348-6427 \
+             PanOSTunnelID=0 PanOSTunnelType=N/A"
+        );
+
+        let padding_needed = msg_size.saturating_sub(cef_body.len());
+        let padding = " ".repeat(padding_needed);
+
+        let second = sequence % 60;
+        let minute = (sequence / 60) % 60;
+        let nanos = ((sequence as u32).wrapping_mul(1_234_567)) % 1_000_000_000;
+        let observed_nanos = nanos.wrapping_add(111_111_111) % 1_000_000_000;
+
+        format!(
+            concat!(
+                r#"{{"ServiceName":"syslog-collector","ServiceVersion":"1.0.0","#,
+                r#""ServiceInstanceId":"instance-001","#,
+                r#""Message":"{}{}","#,
+                r#""SeverityText":"notice","SeverityNumber":5,"#,
+                r#""TimeGenerated":"2026-04-03T12:{:02}:{:02}.{:09}+00:00","#,
+                r#""ObservedTime":"2026-04-03T12:{:02}:{:02}.{:09}+00:00"}}"#
+            ),
+            cef_body, padding, minute, second, nanos, minute, second, observed_nanos,
+        )
+        .into_bytes()
+    }
+
+    /// Verify that decompressed batch size never exceeds UNCOMPRESSED_LIMIT
+    /// using identical (maximally compressible) JSON entries.
+    #[test]
+    fn test_uncompressed_limit_enforced_with_identical_entries() {
+        // Identical entries compress extremely well — without the uncompressed
+        // limit the batcher would pack hundreds of MiBs into a tiny gzip payload.
+        let entries: &[&[u8]] = &[br#"{"a":1}"#, br#"{"b":2}"#, br#"{"c":3}"#];
+        let mut idx = 0usize;
+
+        let mut batcher = GzipBatcher::new(6);
+        loop {
+            match batcher
+                .push(Bytes::from_static(entries[idx % entries.len()]))
+                .unwrap()
+            {
+                PushResult::Ok(_) => {
+                    idx += 1;
+                    continue;
+                }
+                PushResult::BatchReady(_) => break,
+                PushResult::TooLarge => panic!("Should not happen"),
+            }
+        }
+
+        let batch = batcher.take_pending_batch().unwrap();
+        let mut decoder = GzDecoder::new(&batch.compressed_data[..]);
+        let mut decompressed = Vec::new();
+        _ = decoder.read_to_end(&mut decompressed).unwrap();
+
+        eprintln!(
+            "identical_entries: compressed={} decompressed={} rows={} flushes={}",
+            batch.compressed_data.len(),
+            decompressed.len(),
+            batch.row_count,
+            batch.flush_count
+        );
+
+        assert!(
+            decompressed.len() <= UNCOMPRESSED_LIMIT,
+            "decompressed size {} exceeds UNCOMPRESSED_LIMIT {}",
+            decompressed.len(),
+            UNCOMPRESSED_LIMIT
+        );
+        assert!(
+            batch.compressed_data.len() <= COMPRESSED_LIMIT,
+            "compressed size {} exceeds COMPRESSED_LIMIT {}",
+            batch.compressed_data.len(),
+            COMPRESSED_LIMIT
+        );
+        // With the 50 MiB uncompressed limit, flush counts should stay well under 100
+        // even for maximally compressible data.
+        assert!(
+            batch.flush_count < 100,
+            "flush count {} should be under 100 with UNCOMPRESSED_LIMIT in effect",
+            batch.flush_count
+        );
+    }
+
+    /// Verify that decompressed batch size never exceeds UNCOMPRESSED_LIMIT
+    /// using highly compressible entries with tiny varying tails.
+    #[test]
+    fn test_uncompressed_limit_enforced_with_compressible_entries() {
+        let counter = std::cell::Cell::new(0usize);
+        let mut batcher = GzipBatcher::new(6);
+        loop {
+            let seq = counter.get();
+            counter.set(seq + 1);
+            let entry = generate_highly_compressible_json(200, seq, 4);
+            match batcher.push(entry.into()).unwrap() {
+                PushResult::Ok(_) => continue,
+                PushResult::BatchReady(_) => break,
+                PushResult::TooLarge => panic!("Should not happen"),
+            }
+        }
+
+        let batch = batcher.take_pending_batch().unwrap();
+        let mut decoder = GzDecoder::new(&batch.compressed_data[..]);
+        let mut decompressed = Vec::new();
+        _ = decoder.read_to_end(&mut decompressed).unwrap();
+
+        eprintln!(
+            "compressible_entries: compressed={} decompressed={} rows={} flushes={}",
+            batch.compressed_data.len(),
+            decompressed.len(),
+            batch.row_count,
+            batch.flush_count
+        );
+
+        assert!(
+            decompressed.len() <= UNCOMPRESSED_LIMIT,
+            "decompressed size {} exceeds UNCOMPRESSED_LIMIT {}",
+            decompressed.len(),
+            UNCOMPRESSED_LIMIT
+        );
+        assert!(
+            batch.compressed_data.len() <= COMPRESSED_LIMIT,
+            "compressed size {} exceeds COMPRESSED_LIMIT {}",
+            batch.compressed_data.len(),
+            COMPRESSED_LIMIT
+        );
+    }
+
+    /// Measure batch dimensions for CEF syslog-style payloads and verify
+    /// compressed output stays under 1 MiB.
+    #[test]
+    fn test_cef_syslog_batch_dimensions() {
+        eprintln!(
+            "{:<45} {:>10} {:>10} {:>8} {:>8} {:>8}",
+            "label", "compressed", "decompress", "rows", "ratio", "flushes"
+        );
+
+        for level in [1u32, 6] {
+            for msg_size in [800usize, 1000, 1200] {
+                let counter = std::cell::Cell::new(0usize);
+                let stats = fill_to_batch_ready(level, &|| {
+                    let seq = counter.get();
+                    counter.set(seq + 1);
+                    generate_cef_syslog_style_json(msg_size, seq)
+                });
+
+                let ratio = stats.decompressed_size as f64 / stats.size as f64;
+                let label = format!("cef_syslog/{msg_size}B/lvl{level}");
+                eprintln!(
+                    "{label:<45} {:<10} {:<10} {:<8} {:<8.1} {:<8}",
+                    stats.size, stats.decompressed_size, stats.row_count, ratio, stats.flush_count
+                );
+
+                assert!(
+                    stats.size <= ONE_MB,
+                    "{label}: compressed batch {} exceeds 1 MiB",
+                    stats.size
+                );
+                assert!(
+                    stats.decompressed_size <= UNCOMPRESSED_LIMIT,
+                    "{label}: decompressed batch {} exceeds 50 MiB limit ({UNCOMPRESSED_LIMIT})",
+                    stats.decompressed_size
+                );
+            }
+        }
     }
 
     #[test]
@@ -809,7 +1050,7 @@ mod tests {
     fn test_structural_bytes_accounting() {
         let mut batcher = GzipBatcher::new(6);
         // Push data that's just under the limit minus structural overhead
-        let data = vec![b'a'; TARGET_LIMIT - 3]; // -3 for '[', ']', and slack
+        let data = vec![b'a'; TARGET_COMPRESSED_LIMIT - 3]; // -3 for '[', ']', and slack
         match batcher.push(data.into()).unwrap() {
             PushResult::Ok(_) => {}
             other => panic!("Expected Ok, got {:?}", std::mem::discriminant(&other)),
@@ -827,10 +1068,10 @@ mod tests {
     #[test]
     fn test_too_large_includes_structural_overhead() {
         let mut batcher = GzipBatcher::new(1);
-        // Exactly TARGET_LIMIT - 1: too large because +2 for structural bytes
-        let data = vec![b'x'; TARGET_LIMIT - 1];
+        // Exactly TARGET_COMPRESSED_LIMIT - 1: too large because +2 for structural bytes
+        let data = vec![b'x'; TARGET_COMPRESSED_LIMIT - 1];
         match batcher.push(data.into()).unwrap() {
-            PushResult::TooLarge => {} // Expected: data.len() + 2 > TARGET_LIMIT
+            PushResult::TooLarge => {} // Expected: data.len() + 2 > TARGET_COMPRESSED_LIMIT
             _ => panic!("Should be TooLarge"),
         }
     }

@@ -68,7 +68,8 @@ fn test_telemetry_registries_cleanup() {
             config.clone(),
             channel_capacity_policy.clone(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -155,7 +156,8 @@ fn test_pipeline_fan_in_builds() {
             config,
             ChannelCapacityPolicy::default(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build fan-in pipeline");
 
@@ -192,7 +194,8 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
             config,
             ChannelCapacityPolicy::default(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build mixed receiver pipeline");
 

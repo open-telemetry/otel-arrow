@@ -21,3 +21,6 @@ miette = { workspace = true }
 schemars = { workspace = true }
 byte-unit = { workspace = true }
 humantime-serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

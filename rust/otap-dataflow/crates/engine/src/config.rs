@@ -29,7 +29,6 @@ pub struct PdataChannelConfig {
 }
 
 /// Runtime configuration for a receiver.
-///
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
     /// Name of the receiver.
