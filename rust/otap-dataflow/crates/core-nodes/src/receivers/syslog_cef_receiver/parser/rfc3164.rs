@@ -16,7 +16,7 @@ pub struct Rfc3164Message<'a> {
     pub(super) input: &'a [u8],
 }
 
-/// Parse an RFC 3164 syslog message from bytes, automatically detecting the format
+/// Parse an RFC 3164 syslog message given an optional pre-parsed priority and the remaining bytes after `>`.
 ///
 /// This parser identifies and extracts fields from syslog messages but does not
 /// act as a relay. Messages without valid PRI headers are accepted and parsed
@@ -33,26 +33,11 @@ pub struct Rfc3164Message<'a> {
 /// a process ID in the format `appname[pid]`. This parser extracts:
 /// - `app_name`: The part before `[` (or the entire TAG if no `[` is present)
 /// - `proc_id`: The numeric content between `[` and `]` (only if it's a valid number)
-pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, ParseError> {
-    if input.is_empty() {
-        return Err(ParseError::EmptyInput);
-    }
-
-    // RFC 3164 Section 4.3: Check if we have a valid PRI
-    let (priority, mut remaining) = if input.starts_with(b"<") {
-        // Try to parse the PRI
-        match parse_priority(input) {
-            Ok((pri, rest)) => (Some(pri), rest),
-            Err(_) => {
-                // Invalid PRI format, treat entire input as content
-                (None, input)
-            }
-        }
-    } else {
-        // No PRI at all (doesn't start with '<')
-        (None, input)
-    };
-
+pub(super) fn parse_rfc3164<'a>(
+    priority: Option<Priority>,
+    mut remaining: &'a [u8],
+    input: &'a [u8],
+) -> Result<Rfc3164Message<'a>, ParseError> {
     // Parse timestamp (optional)
     let (timestamp, rest) = if remaining.len() >= 15 {
         // Try to parse timestamp (MMM dd HH:MM:SS format)
@@ -178,12 +163,23 @@ fn parse_tag_components(tag: Option<&[u8]>) -> (Option<&[u8]>, Option<&[u8]>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::receivers::syslog_cef_receiver::parser::*;
+    use super::*;
+    use crate::receivers::syslog_cef_receiver::parser::parse;
+    use crate::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
+
+    /// Helper: parse through the production `parse()` entry point and unwrap the
+    /// RFC 3164 variant, panicking if a different variant (or error) is returned.
+    fn expect_rfc3164(input: &[u8]) -> Rfc3164Message<'_> {
+        match parse(input).expect("parse() returned an error") {
+            ParsedSyslogMessage::Rfc3164(msg) => msg,
+            other => panic!("expected Rfc3164 variant, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_rfc3164_parsing() {
         let input = b"<34>Oct 11 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -202,7 +198,7 @@ mod tests {
     #[test]
     fn test_rfc3164_without_timestamp() {
         let input = b"<34>hostname tag: message content";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -218,7 +214,7 @@ mod tests {
     #[test]
     fn test_rfc3164_content_only() {
         let input = b"<34>This is just content without colon";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -236,7 +232,7 @@ mod tests {
     fn test_rfc3164_valid_priority_zero() {
         // <0> is a valid priority (facility=0, severity=0)
         let input = b"<0>Test message with priority zero";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         // Priority should be parsed successfully
         assert!(result.priority.is_some());
@@ -256,7 +252,7 @@ mod tests {
     fn test_rfc3164_no_pri() {
         // RFC 3164 Section 4.3.3: Example 2 "Use the BFG!"
         let input = b"Use the BFG!";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         assert!(result.priority.is_none());
         assert_eq!(result.timestamp, None);
@@ -269,7 +265,7 @@ mod tests {
     fn test_rfc3164_invalid_pri() {
         // RFC 3164 Section 4.3.3: Unidentifiable PRI like "<00>"
         let input = b"<00>Test message";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         // Priority should be None and entire input treated as content
         assert!(result.priority.is_none());
@@ -279,7 +275,7 @@ mod tests {
         assert_eq!(result.content, Some(b"<00>Test message".as_slice()));
 
         let input = b"<999Test message";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         // Priority should be None and entire input treated as content
         assert!(result.priority.is_none());
@@ -289,7 +285,7 @@ mod tests {
         assert_eq!(result.content, Some(b"<999Test message".as_slice()));
 
         let input = b"<abc> Test message";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         // Priority should be None and entire input treated as content
         assert!(result.priority.is_none());
@@ -299,7 +295,7 @@ mod tests {
         assert_eq!(result.content, Some(b"<abc> Test message".as_slice()));
 
         let input = b"<> Test message";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         // Priority should be None and entire input treated as content
         assert!(result.priority.is_none());
@@ -313,7 +309,7 @@ mod tests {
     fn test_rfc3164_no_pri_with_timestamp_like_content() {
         // Message that looks like it might have a timestamp but no PRI
         let input = b"Oct 11 22:14:15 mymachine su: test message";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         // Priority should be None
         assert!(result.priority.is_none());
@@ -324,11 +320,36 @@ mod tests {
         assert_eq!(result.content, Some(b"test message".as_slice()));
     }
 
+    #[test]
+    fn test_priority_only() {
+        // <34> with no version number is not RFC 5424; falls back to RFC 3164
+        let input = b"<34>";
+        let result = expect_rfc3164(input);
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.content, Some(b"".as_slice()));
+    }
+
+    #[test]
+    fn test_priority_and_version_no_space() {
+        // <34>1 (no space after version digit) fails RFC 5424 parsing
+        // and falls back to RFC 3164 with content "1"
+        let input = b"<34>1";
+        let result = expect_rfc3164(input);
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.content, Some(b"1".as_slice()));
+    }
+
     // Edge case tests to ensure no panics occur
     #[test]
     fn test_empty_input() {
         let input = b"";
-        let result = parse_rfc3164(input);
+        let result = parse(input);
 
         // Empty input should return an error, not Ok
         assert!(result.is_err());
@@ -338,7 +359,7 @@ mod tests {
     #[test]
     fn test_timestamp_parsing_with_short_input() {
         let input = b"<34>Oct";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -352,7 +373,7 @@ mod tests {
     #[test]
     fn test_timestamp_parsing_with_exact_3_bytes() {
         let input = b"<34>Oct ";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -366,7 +387,7 @@ mod tests {
     #[test]
     fn test_after_colon_empty() {
         let input = b"<34>hostname tag:";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -380,7 +401,7 @@ mod tests {
     #[test]
     fn test_timestamp_boundary_at_15() {
         let input = b"<34>Oct 11 22:14:15";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -394,7 +415,7 @@ mod tests {
     #[test]
     fn test_tag_with_proc_id() {
         let input = b"<34>Oct 11 22:14:15 mymachine sshd[5678]: Connection accepted";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -410,7 +431,7 @@ mod tests {
     #[test]
     fn test_tag_with_non_numeric_proc_id() {
         let input = b"<34>Oct 11 22:14:15 mymachine app[worker-1]: Task started";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -426,7 +447,7 @@ mod tests {
     #[test]
     fn test_tag_with_empty_brackets() {
         let input = b"<34>hostname app[]: message";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -442,7 +463,7 @@ mod tests {
     #[test]
     fn test_tag_with_unclosed_bracket() {
         let input = b"<34>hostname app[123: message";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);
@@ -458,7 +479,7 @@ mod tests {
     #[test]
     fn test_tag_with_only_brackets() {
         let input = b"<34>hostname [123]: message";
-        let result = parse_rfc3164(input).unwrap();
+        let result = expect_rfc3164(input);
 
         let priority = result.priority.unwrap();
         assert_eq!(priority.facility, 4);

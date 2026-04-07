@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Debug, Default)]
 pub struct PersistenceMetrics {
     ingest_attempts: AtomicU64,
+    flush_failures: AtomicU64,
 }
 
 impl PersistenceMetrics {
@@ -26,6 +27,16 @@ impl PersistenceMetrics {
     /// Returns the total number of ingest attempts observed.
     pub fn ingest_attempts(&self) -> u64 {
         self.ingest_attempts.load(Ordering::Relaxed)
+    }
+
+    /// Records a segment finalization (flush) failure.
+    pub fn record_flush_failure(&self) {
+        let _ = self.flush_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Returns the total number of flush failures observed.
+    pub fn flush_failures(&self) -> u64 {
+        self.flush_failures.load(Ordering::Relaxed)
     }
 }
 

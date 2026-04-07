@@ -11,6 +11,7 @@ use bytes::BytesMut;
 use fluke_hpack::Encoder;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::otap::testing::complete_batch;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
@@ -133,7 +134,7 @@ pub fn create_single_logs_pdata_with_attrs(attributes: Vec<KeyValue>) -> OtapPda
 pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) -> BatchArrowRecords {
     let mut arrow_payloads = vec![];
 
-    let logs_batch = create_main_record_batch(&options, true);
+    let logs_batch = create_main_record_batch(&options, true, ArrowPayloadType::Logs);
     arrow_payloads.push(ArrowPayload {
         schema_id: "logs_schema_1".to_string(),
         r#type: ArrowPayloadType::Logs as i32,
@@ -181,7 +182,7 @@ pub fn create_simple_trace_arrow_record_batches(
 ) -> BatchArrowRecords {
     let mut arrow_payloads = vec![];
 
-    let spans_batch = create_main_record_batch(&options, false);
+    let spans_batch = create_main_record_batch(&options, false, ArrowPayloadType::Spans);
     arrow_payloads.push(ArrowPayload {
         schema_id: "spans_schema_1".to_string(),
         r#type: ArrowPayloadType::Spans as i32,
@@ -236,6 +237,7 @@ pub fn create_simple_trace_arrow_record_batches(
                 ],
             )
             .unwrap();
+            let span_events_batch = complete_batch(ArrowPayloadType::SpanEvents, span_events_batch);
 
             arrow_payloads.push(ArrowPayload {
                 schema_id: "span_events_schema_1".to_string(),
@@ -254,7 +256,7 @@ pub fn create_simple_trace_arrow_record_batches(
         }
 
         if trace_options.with_span_links {
-            let span_events_schema = Arc::new(Schema::new(vec![
+            let span_links_schema = Arc::new(Schema::new(vec![
                 Field::new(consts::ID, DataType::UInt32, true)
                     .with_metadata(create_ids_metadata(&options)),
                 Field::new(consts::PARENT_ID, DataType::UInt16, false)
@@ -267,8 +269,8 @@ pub fn create_simple_trace_arrow_record_batches(
             )
             .unwrap();
 
-            let span_events_batch = RecordBatch::try_new(
-                span_events_schema,
+            let span_links_batch = RecordBatch::try_new(
+                span_links_schema,
                 vec![
                     create_ids_array::<UInt32Type>(&options),
                     create_ids_array::<UInt16Type>(&options),
@@ -276,11 +278,12 @@ pub fn create_simple_trace_arrow_record_batches(
                 ],
             )
             .unwrap();
+            let span_links_batch = complete_batch(ArrowPayloadType::SpanLinks, span_links_batch);
 
             arrow_payloads.push(ArrowPayload {
                 schema_id: "span_links_schema_1".to_string(),
                 r#type: ArrowPayloadType::SpanLinks as i32,
-                record: serialize(&span_events_batch),
+                record: serialize(&span_links_batch),
             });
 
             if trace_options.with_span_links_attrs {
@@ -308,7 +311,8 @@ pub fn create_simple_metrics_arrow_record_batches(
 ) -> BatchArrowRecords {
     let mut arrow_payloads = vec![];
 
-    let metrics_batch = create_main_record_batch(&options, false);
+    let metrics_batch =
+        create_main_record_batch(&options, false, ArrowPayloadType::UnivariateMetrics);
     arrow_payloads.push(ArrowPayload {
         schema_id: "metrics_schema_1".to_string(),
         r#type: ArrowPayloadType::UnivariateMetrics as i32,
@@ -427,7 +431,10 @@ fn append_payloads_for_metrics_type(
         arrow_payloads.push(ArrowPayload {
             schema_id: format!("{:?}_schema_1", payload_type.as_str_name().to_lowercase()),
             r#type: payload_type as i32,
-            record: serialize(&create_metrics_data_point_record_batch(options)),
+            record: serialize(&create_metrics_data_point_record_batch(
+                options,
+                payload_type,
+            )),
         })
     }
 
@@ -443,7 +450,7 @@ fn append_payloads_for_metrics_type(
         arrow_payloads.push(ArrowPayload {
             schema_id: format!("{:?}_schema_1", payload_type.as_str_name().to_lowercase()),
             r#type: payload_type as i32,
-            record: serialize(&create_exemplars_record_batch(options)),
+            record: serialize(&create_exemplars_record_batch(options, payload_type)),
         });
     }
 
@@ -496,6 +503,7 @@ pub fn create_timestamp_ns_array(options: &SimpleDataGenOptions) -> Arc<Timestam
 pub fn create_main_record_batch(
     options: &SimpleDataGenOptions,
     include_time_unix_nano: bool,
+    payload_type: ArrowPayloadType,
 ) -> RecordBatch {
     let mut fields = vec![
         Field::new(consts::ID, DataType::UInt16, true).with_metadata(create_ids_metadata(options)),
@@ -513,7 +521,8 @@ pub fn create_main_record_batch(
     }
 
     let schema = Arc::new(Schema::new(fields));
-    RecordBatch::try_new(schema, columns).unwrap()
+    let batch = RecordBatch::try_new(schema, columns).unwrap();
+    complete_batch(payload_type, batch)
 }
 
 pub fn create_attributes_records_batch<ParentIdType>(options: &SimpleDataGenOptions) -> RecordBatch
@@ -549,7 +558,10 @@ where
     .unwrap()
 }
 
-pub fn create_metrics_data_point_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
+pub fn create_metrics_data_point_record_batch(
+    options: &SimpleDataGenOptions,
+    payload_type: ArrowPayloadType,
+) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new(consts::ID, DataType::UInt32, false),
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
@@ -560,7 +572,7 @@ pub fn create_metrics_data_point_record_batch(options: &SimpleDataGenOptions) ->
         ),
     ]));
 
-    RecordBatch::try_new(
+    let batch = RecordBatch::try_new(
         schema,
         vec![
             create_ids_array::<UInt32Type>(options),
@@ -568,23 +580,28 @@ pub fn create_metrics_data_point_record_batch(options: &SimpleDataGenOptions) ->
             create_timestamp_ns_array(options),
         ],
     )
-    .unwrap()
+    .unwrap();
+    complete_batch(payload_type, batch)
 }
 
-pub fn create_exemplars_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
+pub fn create_exemplars_record_batch(
+    options: &SimpleDataGenOptions,
+    payload_type: ArrowPayloadType,
+) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new(consts::ID, DataType::UInt32, false),
         Field::new(consts::PARENT_ID, DataType::UInt32, false),
     ]));
 
-    RecordBatch::try_new(
+    let batch = RecordBatch::try_new(
         schema,
         vec![
             create_ids_array::<UInt32Type>(options),
             create_ids_array::<UInt32Type>(options),
         ],
     )
-    .unwrap()
+    .unwrap();
+    complete_batch(payload_type, batch)
 }
 
 fn generate_encoded_headers(options: &SimpleDataGenOptions) -> Vec<u8> {
