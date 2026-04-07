@@ -44,13 +44,10 @@ temporal-reaggregation:
   type: urn:otel:processor:temporal_reaggregation
   config:
     # The interval at which aggregated metrics are emitted.
-    # Default: 60s
     period: 60s
 
     # The maximum number of inbound request contexts that this processor can
     # buffer for ack/nack tracking.
-    #
-    # Default: 1024
     inbound_request_limit: 1024
 
     # The maximum number of outbound request contexts that this processor can
