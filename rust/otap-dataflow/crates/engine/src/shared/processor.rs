@@ -40,7 +40,7 @@ use crate::error::{Error, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
-use crate::processor::ProcessorRuntimeCapabilities;
+use crate::processor::ProcessorRuntimeRequirements;
 use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
@@ -105,12 +105,13 @@ pub trait Processor<PData> {
         true
     }
 
-    /// Returns optional runtime features that this processor needs from the engine.
+    /// Returns optional runtime services that this processor needs from the engine.
     ///
-    /// Processors should only opt into capabilities they actually use so the
-    /// engine can avoid wiring unused runtime machinery onto the common path.
-    fn runtime_capabilities(&self) -> ProcessorRuntimeCapabilities {
-        ProcessorRuntimeCapabilities::empty()
+    /// This is the single source of truth for runtime wiring. For example,
+    /// `local_wakeups: Some(...)` both enables processor-local wakeups and
+    /// declares the live slot count the engine must provision.
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements::none()
     }
 }
 

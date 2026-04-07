@@ -36,13 +36,53 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-bitflags::bitflags! {
-/// Optional runtime features that a processor can request from the engine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ProcessorRuntimeCapabilities: u8 {
-    /// Enable processor-local wakeup scheduling and delivery through `ProcessorInbox`.
-    const LOCAL_WAKEUPS = 1 << 0;
+/// Processor-local wakeup requirements declared by a processor implementation.
+///
+/// `live_slots` is the maximum number of distinct wakeup slots that can be
+/// live at the same time for one processor instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalWakeupRequirements {
+    /// Maximum number of concurrently live wakeup slots.
+    pub live_slots: usize,
 }
+
+impl LocalWakeupRequirements {
+    /// Create local wakeup requirements for a processor.
+    #[must_use]
+    pub const fn new(live_slots: usize) -> Self {
+        Self { live_slots }
+    }
+}
+
+/// Optional runtime services requested by a processor implementation.
+///
+/// This is the single source of truth for processor runtime wiring. For
+/// example, `local_wakeups: Some(...)` both enables processor-local wakeups and
+/// declares the live slot count that the runtime must provision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessorRuntimeRequirements {
+    /// Processor-local wakeup requirements, if the processor uses the local
+    /// wakeup API.
+    pub local_wakeups: Option<LocalWakeupRequirements>,
+}
+
+impl ProcessorRuntimeRequirements {
+    /// Runtime requirements for a processor that does not need any optional
+    /// engine services.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            local_wakeups: None,
+        }
+    }
+
+    /// Runtime requirements for a processor that uses local wakeups.
+    #[must_use]
+    pub const fn with_local_wakeups(live_slots: usize) -> Self {
+        Self {
+            local_wakeups: Some(LocalWakeupRequirements::new(live_slots)),
+        }
+    }
 }
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
@@ -243,6 +283,13 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
+    pub(crate) fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        match self {
+            ProcessorWrapper::Local { processor, .. } => processor.runtime_requirements(),
+            ProcessorWrapper::Shared { processor, .. } => processor.runtime_requirements(),
+        }
+    }
+
     pub(crate) fn with_control_channel_metrics(
         self,
         pipeline_ctx: &PipelineContext,
@@ -335,7 +382,7 @@ impl<PData> ProcessorWrapper<PData> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
-                runtime_config,
+                runtime_config: _,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -344,18 +391,17 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let runtime_capabilities = processor.runtime_capabilities();
+                let runtime_requirements = processor.runtime_requirements();
                 let pdata_receiver = pdata_receiver.ok_or_else(|| Error::ProcessorError {
                     processor: node_id.clone(),
                     kind: ProcessorErrorKind::Configuration,
                     error: "The pdata receiver must be defined at this stage".to_owned(),
                     source_detail: String::new(),
                 })?;
-                let maybe_local_scheduler = runtime_capabilities
-                    .contains(ProcessorRuntimeCapabilities::LOCAL_WAKEUPS)
-                    .then(|| {
-                        NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity)
-                    });
+                validate_local_wakeup_requirements(&node_id, runtime_requirements)?;
+                let maybe_local_scheduler = runtime_requirements
+                    .local_wakeups
+                    .map(|requirements| NodeLocalSchedulerHandle::new(requirements.live_slots));
                 let inbox = if let Some(local_scheduler) = maybe_local_scheduler.clone() {
                     ProcessorInbox::new_with_local_scheduler(
                         Receiver::Local(control_receiver),
@@ -391,7 +437,7 @@ impl<PData> ProcessorWrapper<PData> {
             }
             ProcessorWrapper::Shared {
                 node_id,
-                runtime_config,
+                runtime_config: _,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -400,7 +446,7 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
                 ..
             } => {
-                let runtime_capabilities = processor.runtime_capabilities();
+                let runtime_requirements = processor.runtime_requirements();
                 let pdata_receiver =
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
@@ -408,11 +454,10 @@ impl<PData> ProcessorWrapper<PData> {
                         error: "The pdata receiver must be defined at this stage".to_owned(),
                         source_detail: String::new(),
                     })?);
-                let maybe_local_scheduler = runtime_capabilities
-                    .contains(ProcessorRuntimeCapabilities::LOCAL_WAKEUPS)
-                    .then(|| {
-                        NodeLocalSchedulerHandle::new(runtime_config.control_channel.capacity)
-                    });
+                validate_local_wakeup_requirements(&node_id, runtime_requirements)?;
+                let maybe_local_scheduler = runtime_requirements
+                    .local_wakeups
+                    .map(|requirements| NodeLocalSchedulerHandle::new(requirements.live_slots));
                 let inbox = if let Some(local_scheduler) = maybe_local_scheduler.clone() {
                     ProcessorInbox::new_with_local_scheduler(
                         Receiver::Shared(control_receiver),
@@ -612,6 +657,27 @@ impl<PData> Node<PData> for ProcessorWrapper<PData> {
     }
 }
 
+pub(crate) fn validate_local_wakeup_requirements(
+    node_id: &NodeId,
+    requirements: ProcessorRuntimeRequirements,
+) -> Result<(), Error> {
+    let Some(local_wakeups) = requirements.local_wakeups else {
+        return Ok(());
+    };
+
+    if local_wakeups.live_slots == 0 {
+        return Err(Error::ProcessorError {
+            processor: node_id.clone(),
+            kind: ProcessorErrorKind::Configuration,
+            error: "processor-local wakeup requirement must declare at least one live slot"
+                .to_owned(),
+            source_detail: String::new(),
+        });
+    }
+
+    Ok(())
+}
+
 #[async_trait::async_trait(?Send)]
 impl<PData> Controllable<PData> for ProcessorWrapper<PData> {
     /// Returns the control message sender for the processor.
@@ -688,7 +754,9 @@ mod tests {
     use crate::control::NodeControlMsg::{Config, Shutdown, TimerTick};
     use crate::local::processor as local;
     use crate::message::Message;
-    use crate::processor::{Error, ProcessorWrapper};
+    use crate::processor::{
+        Error, ProcessorRuntimeRequirements, ProcessorWrapper, validate_local_wakeup_requirements,
+    };
     use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
     use crate::testing::processor::{TestContext, ValidateContext};
@@ -859,5 +927,56 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario())
             .validate(validation_procedure());
+    }
+
+    /// Scenario: a processor does not request any processor-local wakeup
+    /// service from the runtime.
+    /// Guarantees: validation succeeds without requiring any local wakeup
+    /// capacity, so processors that do not use wakeups do not pay configuration
+    /// or startup costs for that service.
+    #[test]
+    fn validate_local_wakeup_requirements_accepts_processors_without_wakeups() {
+        assert!(
+            validate_local_wakeup_requirements(
+                &test_node("test_processor"),
+                ProcessorRuntimeRequirements::none(),
+            )
+            .is_ok()
+        );
+    }
+
+    /// Scenario: a processor declares local wakeups but reports an invalid live
+    /// slot requirement of zero.
+    /// Guarantees: validation rejects the configuration before startup, so the
+    /// runtime never provisions an unusable local wakeup service.
+    #[test]
+    fn validate_local_wakeup_requirements_rejects_zero_live_slots() {
+        let err = validate_local_wakeup_requirements(
+            &test_node("test_processor"),
+            ProcessorRuntimeRequirements::with_local_wakeups(0),
+        )
+        .expect_err("zero live slots must be rejected");
+
+        let Error::ProcessorError { error, .. } = err else {
+            panic!("expected processor configuration error");
+        };
+        assert_eq!(
+            error,
+            "processor-local wakeup requirement must declare at least one live slot"
+        );
+    }
+
+    /// Scenario: a processor declares a positive local wakeup live slot count.
+    /// Guarantees: validation succeeds so the declared slot count can act as
+    /// the single source of truth for local wakeup runtime provisioning.
+    #[test]
+    fn validate_local_wakeup_requirements_accepts_positive_live_slots() {
+        assert!(
+            validate_local_wakeup_requirements(
+                &test_node("test_processor"),
+                ProcessorRuntimeRequirements::with_local_wakeups(6),
+            )
+            .is_ok()
+        );
     }
 }

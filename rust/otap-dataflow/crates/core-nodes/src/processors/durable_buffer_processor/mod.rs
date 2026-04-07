@@ -117,8 +117,8 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProcessorRuntimeCapabilities,
-    ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements, ProcessorFactory,
+    ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
@@ -1787,8 +1787,10 @@ impl DurableBuffer {
 
 #[async_trait(?Send)]
 impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
-    fn runtime_capabilities(&self) -> ProcessorRuntimeCapabilities {
-        ProcessorRuntimeCapabilities::LOCAL_WAKEUPS
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements {
+            local_wakeups: Some(LocalWakeupRequirements::new(1)),
+        }
     }
 
     async fn process(

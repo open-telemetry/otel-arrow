@@ -36,8 +36,8 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, ProcessorRuntimeCapabilities,
-    ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
+    ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     control::{AckMsg, CallData, NackMsg, NodeControlMsg, WakeupSlot},
     error::{Error as EngineError, ProcessorErrorKind},
@@ -474,6 +474,12 @@ where
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveBatchProcessorFormatKind {
+    Otap,
+    Otlp,
+}
+
 /// There are three reasons to flush.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum FlushReason {
@@ -567,6 +573,20 @@ async fn log_batching_failed(
 }
 
 impl BatchProcessor {
+    fn no_active_format_error() -> EngineError {
+        EngineError::InternalError {
+            message: "batch processor has no active format state".to_owned(),
+        }
+    }
+
+    const fn local_wakeup_requirements(&self) -> LocalWakeupRequirements {
+        let live_slots = match self.config.format {
+            BatchingFormat::Otap | BatchingFormat::Otlp => 3,
+            BatchingFormat::Preserve => 6,
+        };
+        LocalWakeupRequirements::new(live_slots)
+    }
+
     /// Parse JSON config and build the processor instance with the provided metrics set.
     /// This function does not wrap the processor into a ProcessorWrapper so callers can
     /// preserve the original NodeUserConfig (including outputs/default_output).
@@ -660,6 +680,27 @@ impl BatchProcessor {
             })
     }
 
+    fn format_for_signal_format(
+        &self,
+        signal_format: SignalFormat,
+    ) -> Option<ActiveBatchProcessorFormatKind> {
+        match signal_format {
+            SignalFormat::OtapRecords if self.otap_signals.is_some() => {
+                Some(ActiveBatchProcessorFormatKind::Otap)
+            }
+            SignalFormat::OtapRecords if self.otlp_signals.is_some() => {
+                Some(ActiveBatchProcessorFormatKind::Otlp)
+            }
+            SignalFormat::OtlpBytes if self.otlp_signals.is_some() => {
+                Some(ActiveBatchProcessorFormatKind::Otlp)
+            }
+            SignalFormat::OtlpBytes if self.otap_signals.is_some() => {
+                Some(ActiveBatchProcessorFormatKind::Otap)
+            }
+            _ => None,
+        }
+    }
+
     /// Process one incoming batch. Immediately acks empty requests.
     /// If this input causes pending data to exceed the lower bound, it will
     /// flush at least one output.
@@ -698,33 +739,33 @@ impl BatchProcessor {
 
         match payload {
             OtapPayload::OtapArrowRecords(otap) => {
-                if self.otap_signals.is_some() {
-                    self.otap_format()
-                        .expect("some")
+                if let Some(mut otap_format) = self.otap_format() {
+                    otap_format
                         .for_signal(signal)
                         .accept_payload(effect, ctx, otap, items)
                         .await?
-                } else {
-                    self.otlp_format()
-                        .expect("some")
+                } else if let Some(mut otlp_format) = self.otlp_format() {
+                    otlp_format
                         .for_signal(signal)
                         .accept_payload(effect, ctx, otap.try_into()?, items)
                         .await?
+                } else {
+                    return Err(Self::no_active_format_error());
                 }
             }
             OtapPayload::OtlpBytes(otlp) => {
-                if self.otlp_signals.is_some() {
-                    self.otlp_format()
-                        .expect("some")
+                if let Some(mut otlp_format) = self.otlp_format() {
+                    otlp_format
                         .for_signal(signal)
                         .accept_payload(effect, ctx, otlp, items)
                         .await?
-                } else {
-                    self.otap_format()
-                        .expect("some")
+                } else if let Some(mut otap_format) = self.otap_format() {
+                    otap_format
                         .for_signal(signal)
                         .accept_payload(effect, ctx, otlp.try_into()?, items)
                         .await?
+                } else {
+                    return Err(Self::no_active_format_error());
                 }
             }
         };
@@ -1080,21 +1121,22 @@ impl BatchProcessor {
         }
 
         let signal = retdata.signal_type();
-        match retdata.signal_format() {
-            SignalFormat::OtapRecords => {
+        match self.format_for_signal_format(retdata.signal_format()) {
+            Some(ActiveBatchProcessorFormatKind::Otap) => {
                 self.otap_format()
-                    .expect("some")
+                    .expect("otap batch state must exist when otap format kind is selected")
                     .for_signal(signal)
                     .handle(signal, calldata, effect, res)
                     .await
             }
-            SignalFormat::OtlpBytes => {
+            Some(ActiveBatchProcessorFormatKind::Otlp) => {
                 self.otlp_format()
-                    .expect("some")
+                    .expect("otlp batch state must exist when otlp format kind is selected")
                     .for_signal(signal)
                     .handle(signal, calldata, effect, res)
                     .await
             }
+            None => Err(Self::no_active_format_error()),
         }
     }
 }
@@ -1118,8 +1160,10 @@ pub fn create_otap_batch_processor(
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for BatchProcessor {
-    fn runtime_capabilities(&self) -> ProcessorRuntimeCapabilities {
-        ProcessorRuntimeCapabilities::LOCAL_WAKEUPS
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements {
+            local_wakeups: Some(self.local_wakeup_requirements()),
+        }
     }
 
     async fn process(
@@ -1128,72 +1172,77 @@ impl local::Processor<OtapPdata> for BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(ctrl) => match ctrl {
-                NodeControlMsg::Config { .. } => Ok(()),
-                NodeControlMsg::Shutdown { .. } => {
-                    self.flush_shutdown(effect).await?;
-                    Ok(())
-                }
-                NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                } => metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                    EngineError::InternalError {
-                        message: e.to_string(),
+            Message::Control(ctrl) => {
+                match ctrl {
+                    NodeControlMsg::Config { .. } => Ok(()),
+                    NodeControlMsg::Shutdown { .. } => {
+                        self.flush_shutdown(effect).await?;
+                        Ok(())
                     }
-                }),
-                NodeControlMsg::Wakeup { slot, when, .. } => {
-                    let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
-                        return Ok(());
-                    };
-
-                    match format {
-                        SignalFormat::OtapRecords => {
-                            if let Some(mut otap_format) = self.otap_format() {
-                                otap_format
-                                    .for_signal(signal)
-                                    .flush_signal_impl(effect, when, FlushReason::Timer)
-                                    .await?;
-                            }
+                    NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    } => metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                        EngineError::InternalError {
+                            message: e.to_string(),
                         }
-                        SignalFormat::OtlpBytes => {
-                            if let Some(mut otlp_format) = self.otlp_format() {
-                                otlp_format
-                                    .for_signal(signal)
-                                    .flush_signal_impl(effect, when, FlushReason::Timer)
-                                    .await?;
+                    }),
+                    NodeControlMsg::Wakeup { slot, when, .. } => {
+                        let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
+                            return Ok(());
+                        };
+
+                        match format {
+                            SignalFormat::OtapRecords => {
+                                if let Some(mut otap_format) = self.otap_format() {
+                                    otap_format
+                                        .for_signal(signal)
+                                        .flush_signal_impl(effect, when, FlushReason::Timer)
+                                        .await?;
+                                }
                             }
-                        }
-                    };
+                            SignalFormat::OtlpBytes => {
+                                if let Some(mut otlp_format) = self.otlp_format() {
+                                    otlp_format
+                                        .for_signal(signal)
+                                        .flush_signal_impl(effect, when, FlushReason::Timer)
+                                        .await?;
+                                }
+                            }
+                        };
 
-                    Ok(())
-                }
-                NodeControlMsg::DelayedData { data, when } => {
-                    let signal = data.signal_type();
+                        Ok(())
+                    }
+                    NodeControlMsg::DelayedData { data, when } => {
+                        let signal = data.signal_type();
 
-                    match data.signal_format() {
-                        SignalFormat::OtapRecords => {
-                            self.otap_format()
-                                .expect("some")
+                        match self.format_for_signal_format(data.signal_format()) {
+                            Some(ActiveBatchProcessorFormatKind::Otap) => self
+                                .otap_format()
+                                .expect(
+                                    "otap batch state must exist when otap format kind is selected",
+                                )
                                 .for_signal(signal)
                                 .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?
-                        }
-                        SignalFormat::OtlpBytes => {
-                            self.otlp_format()
-                                .expect("some")
+                                .await?,
+                            Some(ActiveBatchProcessorFormatKind::Otlp) => self
+                                .otlp_format()
+                                .expect(
+                                    "otlp batch state must exist when otlp format kind is selected",
+                                )
                                 .for_signal(signal)
                                 .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?
-                        }
-                    };
+                                .await?,
+                            None => return Err(Self::no_active_format_error()),
+                        };
 
-                    Ok(())
+                        Ok(())
+                    }
+                    NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
+                    NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
+                    NodeControlMsg::DrainIngress { .. } => Ok(()),
+                    NodeControlMsg::TimerTick { .. } => unreachable!(),
                 }
-                NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
-                NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
-                NodeControlMsg::DrainIngress { .. } => Ok(()),
-                NodeControlMsg::TimerTick { .. } => unreachable!(),
-            },
+            }
             Message::PData(request) => self.process_signal_impl(effect, request).await,
         }
     }
@@ -2240,6 +2289,77 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
             });
+    }
+
+    /// Scenario: the batch processor runs in forced OTAP mode, has live
+    /// outbound completion state in its OTAP batch bookkeeping, and then
+    /// receives a downstream Ack whose returned payload format is OTLP bytes.
+    /// Guarantees: response handling falls back to the active OTAP batch state,
+    /// releases the outbound slot, and delivers the upstream Ack without
+    /// panicking on the returned payload format.
+    #[test]
+    fn test_ack_response_format_falls_back_to_active_batch_state() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "otap",
+            "otap": {
+                "min_size": 1,
+                "max_size": 10,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let mut datagen = DataGenerator::new(1);
+                let input: OtlpProtoMessage = datagen.generate_logs().into();
+                let input_bytes = otlp_message_to_bytes(&input);
+
+                let pdata = OtapPdata::new_default(input_bytes.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::default().into(),
+                    23,
+                );
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("process input");
+
+                let mut outputs = ctx.drain_pdata().await;
+                assert_eq!(outputs.len(), 1, "size flush should emit one batch");
+
+                let output = outputs.remove(0);
+                let (output_ctx, _output_payload) = output.into_parts();
+                let returned = OtapPdata::new(output_ctx, input_bytes.into());
+
+                let (_, ack) =
+                    next_ack(AckMsg::new(returned)).expect("expected outbound ack subscriber");
+                ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                    .await
+                    .expect("process ack");
+
+                match next_completion(
+                    &mut pipeline_completion_rx,
+                    Duration::from_secs(1),
+                    "batch processor upstream completion after format fallback ack",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                        assert_eq!(node_id, 23);
+                        let calldata: TestCallData =
+                            ack.unwind.route.calldata.try_into().expect("calldata");
+                        assert_eq!(TestCallData::default(), calldata);
+                    }
+                    other => panic!("expected upstream ack after format fallback, got {other:?}"),
+                }
+            })
+            .validate(|_| async move {});
     }
 
     // A partial batch that never reached the size threshold must still flush on
