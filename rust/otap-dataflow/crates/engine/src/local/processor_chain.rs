@@ -312,6 +312,7 @@ mod tests {
     use otap_df_channel::mpsc;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -364,7 +365,7 @@ mod tests {
     struct SuffixProcessor {
         suffix: String,
         call_count: Arc<AtomicUsize>,
-        elapsed_ns: Arc<std::cell::Cell<f64>>,
+        elapsed_ns: Rc<std::cell::Cell<f64>>,
     }
 
     impl SuffixProcessor {
@@ -372,7 +373,7 @@ mod tests {
             Self {
                 suffix: suffix.into(),
                 call_count: Arc::new(AtomicUsize::new(0)),
-                elapsed_ns: Arc::new(std::cell::Cell::new(0.0)),
+                elapsed_ns: Rc::new(std::cell::Cell::new(0.0)),
             }
         }
     }
