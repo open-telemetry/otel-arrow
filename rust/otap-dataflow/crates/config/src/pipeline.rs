@@ -1324,7 +1324,7 @@ mod tests {
     use crate::node::NodeKind;
     use crate::pipeline::DispatchPolicy;
     use crate::pipeline::telemetry::metrics::MetricsConfig;
-    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
+    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterType;
     use crate::pipeline::telemetry::metrics::readers::{
         MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
@@ -1734,7 +1734,7 @@ mod tests {
                 - periodic:
                     interval: "15s"
                     exporter:
-                      console: {}
+                      type: console
             "#;
         let config: TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.reporting_channel_size, 200);
@@ -1757,7 +1757,7 @@ mod tests {
         assert_eq!(readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 15);
-            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
+            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1772,13 +1772,13 @@ mod tests {
               - periodic:
                   interval: "10s"
                   exporter:
-                    console:
+                    type: console
             "#;
         let config: MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 10);
-            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
+            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1791,12 +1791,14 @@ mod tests {
         let yaml_data = r#"
             interval: "20s"
             exporter:
-              console:
+              type: console
             "#;
         let metrics_reader_periodic_config: MetricsReaderPeriodicConfig =
             serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(metrics_reader_periodic_config.interval.as_secs(), 20);
-        if MetricsPeriodicExporterConfig::Console != metrics_reader_periodic_config.exporter {
+        if MetricsPeriodicExporterType::Console
+            != metrics_reader_periodic_config.exporter.exporter_type
+        {
             panic!("Expected Console exporter config");
         }
     }
@@ -1806,7 +1808,7 @@ mod tests {
         let yaml_data = r#"
             interval: "20s"
             exporter:
-              unknown: {}
+              type: unknown
             "#;
         let metrics_reader_periodic_config_result: Result<
             MetricsReaderPeriodicConfig,
@@ -1814,7 +1816,7 @@ mod tests {
         > = serde_yaml::from_str(yaml_data);
         if let Err(e) = metrics_reader_periodic_config_result {
             let err_msg = e.to_string();
-            assert!(err_msg.contains("unknown field `unknown`"));
+            assert!(err_msg.contains("unknown variant `unknown`"));
         } else {
             panic!("Expected deserialization to fail due to unknown exporter");
         }
