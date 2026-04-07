@@ -24,7 +24,7 @@ steps:
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
-              url: http://localhost:8087/telemetry/metrics?reset=false
+              url: http://localhost:8087/api/v1/telemetry/metrics?reset=false
               method: GET
               expected_status_code: 200
   - name: Deploy Dataflow Engine
@@ -44,7 +44,7 @@ steps:
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
-              url: http://localhost:8086/telemetry/metrics?reset=false
+              url: http://localhost:8086/api/v1/telemetry/metrics?reset=false
               method: GET
               expected_status_code: 200
   - name: Deploy Load Generator
@@ -82,7 +82,7 @@ steps:
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
-              url: http://localhost:8085/telemetry/metrics?reset=false
+              url: http://localhost:8085/api/v1/telemetry/metrics?reset=false
               method: GET
               expected_status_code: 200
   - name: Monitor All
@@ -116,7 +116,7 @@ steps:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8085/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              url: http://localhost:8085/api/v1/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
               method: POST
               headers:
                 "Content-Type": "application/json"
@@ -129,7 +129,7 @@ steps:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8086/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              url: http://localhost:8086/api/v1/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
               method: POST
               headers:
                 "Content-Type": "application/json"
@@ -142,7 +142,7 @@ steps:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8087/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              url: http://localhost:8087/api/v1/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
               method: POST
               headers:
                 "Content-Type": "application/json"

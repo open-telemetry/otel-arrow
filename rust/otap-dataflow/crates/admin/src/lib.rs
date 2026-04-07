@@ -58,11 +58,14 @@ pub async fn run(
         ctrl_msg_senders: Arc::new(Mutex::new(ctrl_msg_senders)),
     };
 
-    let app = Router::new()
+    let api_routes = Router::new()
         .merge(health::routes())
         .merge(telemetry::routes())
         .merge(pipeline_group::routes())
-        .merge(pipeline::routes())
+        .merge(pipeline::routes());
+
+    let app = Router::new()
+        .nest("/api/v1", api_routes)
         .merge(dashboard::routes())
         .layer(ServiceBuilder::new())
         .with_state(app_state);

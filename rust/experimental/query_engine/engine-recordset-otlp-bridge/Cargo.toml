@@ -24,8 +24,6 @@ criterion = { workspace = true }
 opentelemetry-proto = { workspace = true }
 prost = { workspace = true }
 
-otap-df-pdata = { path = "../../../otap-dataflow/crates/pdata", features = ["testing"] }
-
 [[bench]]
 name = "extend"
 harness = false

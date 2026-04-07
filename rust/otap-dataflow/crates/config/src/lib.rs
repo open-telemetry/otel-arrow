@@ -17,6 +17,8 @@ use std::borrow::Cow;
 use std::hash::Hash;
 
 pub mod byte_units;
+/// Config URI providers for resolving configuration from file:, env:, or bare paths.
+pub mod config_provider;
 pub mod engine;
 /// Environment variable substitution for raw config text.
 pub mod env_substitution;
@@ -34,6 +36,10 @@ pub mod settings;
 /// TLS configuration.
 pub mod tls;
 pub mod topic;
+/// Transport header core types and capture/propagation engines.
+pub mod transport_headers;
+/// Transport header capture and propagation policy declarations.
+pub mod transport_headers_policy;
 pub use topic::{
     SubscriptionGroupName, TopicAckPropagationMode, TopicAckPropagationPolicies, TopicBackendKind,
     TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName,

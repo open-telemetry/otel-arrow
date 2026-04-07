@@ -118,6 +118,8 @@ enum SignalGenerator {
         log_body_size_bytes: Option<usize>,
         /// Number of log attributes (None = default attributes)
         num_log_attributes: Option<usize>,
+        /// Whether to populate trace_id/span_id on log records
+        use_trace_context: bool,
     },
 }
 
@@ -172,11 +174,13 @@ impl SignalGenerator {
             SignalGenerator::Static {
                 log_body_size_bytes,
                 num_log_attributes,
+                use_trace_context,
                 ..
             } => OtlpProtoMessage::Logs(static_signal::static_otlp_logs_with_config(
                 count,
                 *log_body_size_bytes,
                 *num_log_attributes,
+                *use_trace_context,
                 self.attrs_for_batch(batch_index),
             )),
         }
@@ -300,6 +304,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     rotation,
                     log_body_size_bytes: traffic_config.log_body_size_bytes(),
                     num_log_attributes: traffic_config.num_log_attributes(),
+                    use_trace_context: traffic_config.use_trace_context(),
                 }
             }
         };
@@ -1364,6 +1369,7 @@ mod tests {
             rotation,
             log_body_size_bytes: None,
             num_log_attributes: None,
+            use_trace_context: false,
         };
 
         // attrs_for_batch should rotate through the two sets
@@ -1417,6 +1423,7 @@ mod tests {
             rotation: vec![],
             log_body_size_bytes: None,
             num_log_attributes: None,
+            use_trace_context: false,
         };
         assert!(generator.attrs_for_batch(0).is_none());
         assert!(generator.attrs_for_batch(1).is_none());

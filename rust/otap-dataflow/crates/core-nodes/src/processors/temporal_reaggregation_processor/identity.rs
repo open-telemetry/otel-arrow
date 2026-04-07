@@ -21,22 +21,64 @@ use otap_df_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramView, HistogramView,
     MetricView, SumView,
 };
+use otap_df_pdata_views::views::resource::ResourceView;
 
-pub fn resource_id_of(attrs: AttributeHash) -> ResourceId {
+/// Compute a [`ResourceId`] from an optional resource view. When the view is
+/// `None`, the identity uses `AttributeHash::EMPTY`.
+pub fn resource_id_of<R: ResourceView>(
+    hash_buf: &mut HashBuffer,
+    resource: Option<&R>,
+) -> ResourceId {
+    let attrs = resource
+        .map(|r| AttributeHash::compute(hash_buf, r.attributes()))
+        .unwrap_or(AttributeHash::EMPTY);
     ResourceId { attrs }
 }
 
+/// Compute a [`ScopeId`] from an optional scope view. When the view is `None`,
+/// the identity uses empty name/version and `AttributeHash::EMPTY`.
 pub fn scope_id_of<'a, S: InstrumentationScopeView>(
+    hash_buf: &mut HashBuffer,
     resource_id: ResourceId,
-    scope: &'a S,
-    attrs: AttributeHash,
+    scope: Option<&'a S>,
 ) -> ScopeId<'a> {
+    let attrs = scope
+        .map(|s| AttributeHash::compute(hash_buf, s.attributes()))
+        .unwrap_or(AttributeHash::EMPTY);
+    let name = scope.and_then(|s| s.name()).unwrap_or(b"");
+    let version = scope.and_then(|s| s.version()).unwrap_or(b"");
     ScopeId {
         resource: resource_id,
-        name: Cow::Borrowed(scope.name().unwrap_or(b"")),
-        version: Cow::Borrowed(scope.version().unwrap_or(b"")),
+        name: Cow::Borrowed(name),
+        version: Cow::Borrowed(version),
         attrs,
     }
+}
+
+/// Extract (data_type, aggregation_temporality, is_monotonic) from a
+/// [`DataView`] without constructing a full [`MetricId`].
+pub fn metric_type_info_of<'a>(data: &impl DataView<'a>) -> (u8, u8, bool) {
+    let dt = data.value_type();
+    let (is_monotonic, temporality) = match dt {
+        DataType::Sum => {
+            let sum = data.as_sum().expect("DataType::Sum should have sum data");
+            (sum.is_monotonic(), sum.aggregation_temporality())
+        }
+        DataType::Histogram => {
+            let hist = data
+                .as_histogram()
+                .expect("DataType::Histogram should have histogram data");
+            (true, hist.aggregation_temporality())
+        }
+        DataType::ExponentialHistogram => {
+            let exp = data
+                .as_exponential_histogram()
+                .expect("DataType::ExponentialHistogram should have exp histogram data");
+            (true, exp.aggregation_temporality())
+        }
+        DataType::Gauge | DataType::Summary => (false, AggregationTemporality::Unspecified),
+    };
+    (dt as u8, temporality as u8, is_monotonic)
 }
 
 // Helper for computing metric id from a view.
@@ -77,11 +119,15 @@ pub fn metric_id_of<'a, M: MetricView>(
     })
 }
 
-/// Compute a [`StreamId`] from a [`MetricId`] and a pre-computed attribute hash.
-pub fn stream_id_of<'a>(metric_id: MetricId<'a>, attrs: AttributeHash) -> StreamId<'a> {
+/// Compute a [`StreamId`] from a [`MetricId`] and a data point's attributes.
+pub fn stream_id_of<'a, A: AttributeView>(
+    hash_buf: &mut HashBuffer,
+    metric_id: MetricId<'a>,
+    attrs: impl Iterator<Item = A>,
+) -> StreamId<'a> {
     StreamId {
         metric: metric_id,
-        attrs,
+        attrs: AttributeHash::compute(hash_buf, attrs),
     }
 }
 
@@ -240,37 +286,15 @@ impl<'a> std::hash::Hash for StreamIdRef<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct AttributeHash([u8; 16]);
 
-/// Reusable byte buffer for computing [`AttributeHash`] values without
-/// repeated heap allocations. The buffer is cleared and reused on each
-/// call.
-pub struct AttributeHashBuffer<A> {
+/// Reusable byte buffer for encoding prior to computing the hash
+pub struct HashBuffer {
     buf: Vec<u8>,
-    entries: Vec<A>,
 }
 
-impl<A> AttributeHashBuffer<A> {
+impl HashBuffer {
     /// Create a new empty buffer.
     pub fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            entries: Vec::new(),
-        }
-    }
-
-    /// Consume this buffer and produce one with a different element type,
-    /// reusing the heap allocations for both `buf` and `entries`.
-    ///
-    /// This relies on a compiler optimisation: after `clear()` the vec is
-    /// empty, so `into_iter().map(|_| unreachable!()).collect()` produces a
-    /// new `Vec<B>` that reuses the same allocation when `A` and `B` have
-    /// identical size and alignment (which is always true when they differ
-    /// only in a lifetime parameter).
-    pub fn recycle<B>(mut self) -> AttributeHashBuffer<B> {
-        self.entries.clear();
-        AttributeHashBuffer {
-            buf: self.buf,
-            entries: self.entries.into_iter().map(|_| unreachable!()).collect(),
-        }
+        Self { buf: Vec::new() }
     }
 }
 
@@ -303,25 +327,18 @@ impl AttributeHash {
     pub const EMPTY: Self = Self([0u8; 16]);
 
     /// Compute a hash from an iterator of [`AttributeView`] items.
-    ///
-    /// The provided [`AttributeHashBuffer`] is reused across calls to avoid
-    /// repeated heap allocations. Attributes are sorted by key before hashing
-    /// so that order does not affect the result.
-    pub fn of<A: AttributeView>(
-        buf: &mut AttributeHashBuffer<A>,
-        attrs: impl Iterator<Item = A>,
-    ) -> Self {
-        buf.entries.clear();
+    pub fn compute<A: AttributeView>(buf: &mut HashBuffer, attrs: impl Iterator<Item = A>) -> Self {
         buf.buf.clear();
-        buf.entries.extend(attrs);
 
-        if buf.entries.is_empty() {
+        let mut entries: Vec<A> = attrs.collect();
+
+        if entries.is_empty() {
             return Self::EMPTY;
         }
 
-        buf.entries.sort_by(|a, b| a.key().cmp(b.key()));
+        entries.sort_by(|a, b| a.key().cmp(b.key()));
 
-        for attr in &buf.entries {
+        for attr in &entries {
             buf.buf.push(HashTag::Key as u8);
             write_len(&mut buf.buf, attr.key().len());
             buf.buf.extend_from_slice(attr.key());
@@ -389,19 +406,19 @@ mod tests {
 
     #[test]
     fn test_empty_attributes() {
-        let mut buf = AttributeHashBuffer::new();
-        let hash = AttributeHash::of(&mut buf, std::iter::empty::<TestAttr>());
+        let mut buf = HashBuffer::new();
+        let hash = AttributeHash::compute(&mut buf, std::iter::empty::<TestAttr>());
         assert_eq!(hash, AttributeHash::EMPTY);
     }
 
     #[test]
     fn test_determinism() {
-        let mut buf = AttributeHashBuffer::new();
-        let h1 = AttributeHash::of(
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(
             &mut buf,
             vec![str_attr("host", "a"), int_attr("port", 8080)].into_iter(),
         );
-        let h2 = AttributeHash::of(
+        let h2 = AttributeHash::compute(
             &mut buf,
             vec![str_attr("host", "a"), int_attr("port", 8080)].into_iter(),
         );
@@ -410,12 +427,12 @@ mod tests {
 
     #[test]
     fn test_order_independence() {
-        let mut buf = AttributeHashBuffer::new();
-        let h1 = AttributeHash::of(
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(
             &mut buf,
             vec![str_attr("a", "1"), str_attr("b", "2")].into_iter(),
         );
-        let h2 = AttributeHash::of(
+        let h2 = AttributeHash::compute(
             &mut buf,
             vec![str_attr("b", "2"), str_attr("a", "1")].into_iter(),
         );
@@ -424,37 +441,37 @@ mod tests {
 
     #[test]
     fn test_distinctness() {
-        let mut buf = AttributeHashBuffer::new();
-        let h1 = AttributeHash::of(&mut buf, vec![str_attr("a", "1")].into_iter());
-        let h2 = AttributeHash::of(&mut buf, vec![str_attr("a", "2")].into_iter());
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(&mut buf, vec![str_attr("a", "1")].into_iter());
+        let h2 = AttributeHash::compute(&mut buf, vec![str_attr("a", "2")].into_iter());
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn test_different_types_distinct() {
-        let mut buf = AttributeHashBuffer::new();
-        let h1 = AttributeHash::of(&mut buf, vec![str_attr("k", "42")].into_iter());
-        let h2 = AttributeHash::of(&mut buf, vec![int_attr("k", 42)].into_iter());
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(&mut buf, vec![str_attr("k", "42")].into_iter());
+        let h2 = AttributeHash::compute(&mut buf, vec![int_attr("k", 42)].into_iter());
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn test_non_empty_hash() {
-        let mut buf = AttributeHashBuffer::new();
-        let hash = AttributeHash::of(&mut buf, vec![str_attr("k", "v")].into_iter());
+        let mut buf = HashBuffer::new();
+        let hash = AttributeHash::compute(&mut buf, vec![str_attr("k", "v")].into_iter());
         assert_ne!(hash, AttributeHash::EMPTY);
     }
 
     #[test]
     fn test_scalar_value_types_produce_distinct_hashes() {
-        let mut buf = AttributeHashBuffer::new();
+        let mut buf = HashBuffer::new();
         let hashes: Vec<_> = vec![
-            AttributeHash::of(&mut buf, vec![str_attr("k", "v")].into_iter()),
-            AttributeHash::of(&mut buf, vec![int_attr("k", 1)].into_iter()),
-            AttributeHash::of(&mut buf, vec![double_attr("k", 1.0)].into_iter()),
-            AttributeHash::of(&mut buf, vec![bool_attr("k", true)].into_iter()),
-            AttributeHash::of(&mut buf, vec![bytes_attr("k", b"v")].into_iter()),
-            AttributeHash::of(&mut buf, vec![empty_attr("k")].into_iter()),
+            AttributeHash::compute(&mut buf, vec![str_attr("k", "v")].into_iter()),
+            AttributeHash::compute(&mut buf, vec![int_attr("k", 1)].into_iter()),
+            AttributeHash::compute(&mut buf, vec![double_attr("k", 1.0)].into_iter()),
+            AttributeHash::compute(&mut buf, vec![bool_attr("k", true)].into_iter()),
+            AttributeHash::compute(&mut buf, vec![bytes_attr("k", b"v")].into_iter()),
+            AttributeHash::compute(&mut buf, vec![empty_attr("k")].into_iter()),
         ];
         for i in 0..hashes.len() {
             for j in (i + 1)..hashes.len() {
@@ -465,31 +482,31 @@ mod tests {
 
     #[test]
     fn test_null_and_empty_are_equivalent() {
-        let mut buf = AttributeHashBuffer::new();
-        let h1 = AttributeHash::of(&mut buf, vec![empty_attr("k")].into_iter());
-        let h2 = AttributeHash::of(&mut buf, vec![null_attr("k")].into_iter());
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(&mut buf, vec![empty_attr("k")].into_iter());
+        let h2 = AttributeHash::compute(&mut buf, vec![null_attr("k")].into_iter());
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn test_bool_true_false_distinct() {
-        let mut buf = AttributeHashBuffer::new();
-        let h1 = AttributeHash::of(&mut buf, vec![bool_attr("k", true)].into_iter());
-        let h2 = AttributeHash::of(&mut buf, vec![bool_attr("k", false)].into_iter());
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(&mut buf, vec![bool_attr("k", true)].into_iter());
+        let h2 = AttributeHash::compute(&mut buf, vec![bool_attr("k", false)].into_iter());
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn test_resource_id_equality() {
-        let mut buf = AttributeHashBuffer::new();
+        let mut buf = HashBuffer::new();
         let r1 = ResourceId {
-            attrs: AttributeHash::of(&mut buf, vec![str_attr("host", "a")].into_iter()),
+            attrs: AttributeHash::compute(&mut buf, vec![str_attr("host", "a")].into_iter()),
         };
         let r2 = ResourceId {
-            attrs: AttributeHash::of(&mut buf, vec![str_attr("host", "a")].into_iter()),
+            attrs: AttributeHash::compute(&mut buf, vec![str_attr("host", "a")].into_iter()),
         };
         let r3 = ResourceId {
-            attrs: AttributeHash::of(&mut buf, vec![str_attr("host", "b")].into_iter()),
+            attrs: AttributeHash::compute(&mut buf, vec![str_attr("host", "b")].into_iter()),
         };
         assert_eq!(r1, r2);
         assert_ne!(r1, r3);
@@ -509,12 +526,12 @@ mod tests {
 
     #[test]
     fn test_scope_id_different_resource() {
-        let mut buf = AttributeHashBuffer::new();
+        let mut buf = HashBuffer::new();
         let r1 = ResourceId {
-            attrs: AttributeHash::of(&mut buf, vec![str_attr("a", "1")].into_iter()),
+            attrs: AttributeHash::compute(&mut buf, vec![str_attr("a", "1")].into_iter()),
         };
         let r2 = ResourceId {
-            attrs: AttributeHash::of(&mut buf, vec![str_attr("a", "2")].into_iter()),
+            attrs: AttributeHash::compute(&mut buf, vec![str_attr("a", "2")].into_iter()),
         };
         let s1 = make_scope(r1, b"otel", b"1.0");
         let s2 = make_scope(r2, b"otel", b"1.0");
@@ -551,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_stream_id_different_dp_attrs() {
-        let mut buf = AttributeHashBuffer::new();
+        let mut buf = HashBuffer::new();
         let scope = make_scope(
             ResourceId {
                 attrs: AttributeHash::EMPTY,
@@ -569,21 +586,21 @@ mod tests {
         );
         let s1 = StreamId {
             metric: metric.clone(),
-            attrs: AttributeHash::of(&mut buf, vec![str_attr("host", "a")].into_iter()),
+            attrs: AttributeHash::compute(&mut buf, vec![str_attr("host", "a")].into_iter()),
         };
         let s2 = StreamId {
             metric,
-            attrs: AttributeHash::of(&mut buf, vec![str_attr("host", "b")].into_iter()),
+            attrs: AttributeHash::compute(&mut buf, vec![str_attr("host", "b")].into_iter()),
         };
         assert_ne!(s1, s2);
     }
 
     #[test]
     fn test_into_owned_preserves_equality() {
-        let mut buf = AttributeHashBuffer::new();
+        let mut buf = HashBuffer::new();
         let scope = make_scope(
             ResourceId {
-                attrs: AttributeHash::of(&mut buf, vec![str_attr("h", "v")].into_iter()),
+                attrs: AttributeHash::compute(&mut buf, vec![str_attr("h", "v")].into_iter()),
             },
             b"sc",
             b"1.0",
@@ -598,7 +615,7 @@ mod tests {
         );
         let stream = StreamId {
             metric,
-            attrs: AttributeHash::of(&mut buf, vec![str_attr("env", "prod")].into_iter()),
+            attrs: AttributeHash::compute(&mut buf, vec![str_attr("env", "prod")].into_iter()),
         };
         let owned = stream.clone().into_owned();
         assert_eq!(stream, owned);
@@ -606,12 +623,12 @@ mod tests {
 
     #[test]
     fn test_buffer_reuse_produces_consistent_results() {
-        let mut buf = AttributeHashBuffer::new();
-        let h1 = AttributeHash::of(&mut buf, vec![str_attr("k", "v")].into_iter());
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(&mut buf, vec![str_attr("k", "v")].into_iter());
         // Hash something different to exercise the buffer
-        let _ = AttributeHash::of(&mut buf, vec![int_attr("x", 99)].into_iter());
+        let _ = AttributeHash::compute(&mut buf, vec![int_attr("x", 99)].into_iter());
         // Hash the original again -- should match
-        let h2 = AttributeHash::of(&mut buf, vec![str_attr("k", "v")].into_iter());
+        let h2 = AttributeHash::compute(&mut buf, vec![str_attr("k", "v")].into_iter());
         assert_eq!(h1, h2);
     }
 
@@ -619,12 +636,12 @@ mod tests {
     fn test_byte_array_collision() {
         // If we don't have a length in the encoding for byte arrays and keys
         // then it's easy to manufacture collisions like in the below case
-        let mut buf = AttributeHashBuffer::new();
-        let h1 = AttributeHash::of(
+        let mut buf = HashBuffer::new();
+        let h1 = AttributeHash::compute(
             &mut buf,
             vec![bytes_attr("a", &[0xF5, 0x62, 0xF6])].into_iter(),
         );
-        let h2 = AttributeHash::of(
+        let h2 = AttributeHash::compute(
             &mut buf,
             vec![bytes_attr("a", &[]), empty_attr("b")].into_iter(),
         );

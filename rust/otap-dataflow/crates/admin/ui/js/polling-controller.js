@@ -236,8 +236,8 @@ export async function runHealthPoll({
   const checkedAt = Date.now();
   try {
     const [livezProbe, readyzProbe] = await Promise.all([
-      probeHealthEndpoint("/livez", healthRequestTimeoutMs),
-      probeHealthEndpoint("/readyz", healthRequestTimeoutMs),
+      probeHealthEndpoint("/api/v1/livez", healthRequestTimeoutMs),
+      probeHealthEndpoint("/api/v1/readyz", healthRequestTimeoutMs),
     ]);
     livezProbe.checkedAt = checkedAt;
     readyzProbe.checkedAt = checkedAt;
@@ -269,7 +269,7 @@ export async function runStatusPoll({
   }, statusRequestTimeoutMs);
 
   try {
-    const response = await fetch("/status", {
+    const response = await fetch("/api/v1/status", {
       method: "GET",
       cache: "no-store",
       signal: controller.signal,

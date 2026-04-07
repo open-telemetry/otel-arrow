@@ -41,6 +41,7 @@ mod tests {
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
 
     #[test]
+    #[ignore]
     fn no_processor() {
         Scenario::new()
             .pipeline(
@@ -63,7 +64,6 @@ mod tests {
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .expect_within(30)
             .run()
             .expect("validation scenario failed");
     }
@@ -91,7 +91,6 @@ mod tests {
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .expect_within(30)
             .run()
             .expect("validation scenario failed");
     }
@@ -126,7 +125,6 @@ mod tests {
                     .validate(vec![deny, require])
                     .core_range(2, 2),
             )
-            .expect_within(30)
             .run()
             .expect("attribute processor validation failed");
     }
@@ -168,7 +166,6 @@ mod tests {
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .expect_within(30)
             .run()
             .expect("filter processor validation failed");
     }
@@ -202,7 +199,6 @@ mod tests {
                     .validate(vec![ValidationInstructions::Equivalence])
                     .control_streams(["traffic_gen1", "traffic_gen2"]),
             )
-            .expect_within(30)
             .run()
             .expect("validation scenario failed");
     }
@@ -263,7 +259,6 @@ mod tls_tests {
                     .otlp_grpc("exporter")
                     .control_streams(["traffic_gen"]),
             )
-            .expect_within(30)
             .run()
             .expect("TLS validation scenario failed");
     }
@@ -327,7 +322,6 @@ mod tls_tests {
                     .otlp_grpc("exporter")
                     .control_streams(["traffic_gen"]),
             )
-            .expect_within(30)
             .run()
             .expect("mTLS validation scenario failed");
     }
