@@ -40,7 +40,6 @@ thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
-sysinfo.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -216,7 +215,7 @@ data_engine_recordset = { path = '../experimental/query_engine/engine-recordset'
 data_engine_recordset_otlp_bridge = { path = '../experimental/query_engine/engine-recordset-otlp-bridge' }
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
-minijinja = "1"
+minijinja = "2"
 otap-df-admin = { path = 'crates/admin' }
 otap-df-channel = { path = 'crates/channel' }
 otap-df-engine-macros = { path = 'crates/engine-macros' }
@@ -228,7 +227,7 @@ otap-df-telemetry-macros = { path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
 testcontainers = "0.27"
-toml = "0.8.22"
+toml = "1.0.0"
 tonic-prost-build = "0.14"
 urlencoding = "2"
 geneva-uploader = "0.4.0"

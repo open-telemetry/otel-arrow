@@ -30,7 +30,6 @@ by the crate and log events emitted via `otel_*` log macros.
 | `azure_monitor_exporter.metrics.msg_to_data_count` | Current number of message-to-data mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `azure_monitor_exporter.metrics.log_entries_too_large` | Number of log entries rejected for exceeding batch size limit. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `azure_monitor_exporter.metrics.heartbeats` | Number of heartbeat sends attempted/successful. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `azure_monitor_exporter.metrics.transform_failures` | Number of log records that failed JSON serialization during transform. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/transformer.rs` |
 
 ## Logs
 

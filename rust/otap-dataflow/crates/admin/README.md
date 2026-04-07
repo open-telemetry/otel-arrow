@@ -20,21 +20,21 @@ For the admin docs landing page, see
 
 ### Telemetry
 
-- `GET /telemetry/live-schema`
-- `GET /telemetry/metrics`
-- `GET /telemetry/metrics/aggregate`
-- `GET /metrics` (alias for `/telemetry/metrics`)
+- `GET /api/v1/telemetry/live-schema`
+- `GET /api/v1/telemetry/metrics`
+- `GET /api/v1/telemetry/metrics/aggregate`
+- `GET /api/v1/metrics` (alias for `/api/v1/telemetry/metrics`)
 
 ### Health and status
 
-- `GET /status`
-- `GET /livez`
-- `GET /readyz`
-- `GET /pipeline-groups/status`
-- `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
-- `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez`
-- `GET /pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz`
-- `POST /pipeline-groups/shutdown`
+- `GET /api/v1/status`
+- `GET /api/v1/livez`
+- `GET /api/v1/readyz`
+- `GET /api/v1/pipeline-groups/status`
+- `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
+- `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez`
+- `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz`
+- `POST /api/v1/pipeline-groups/shutdown`
 
 ## Embedded UI layout (crate-relative)
 
@@ -54,7 +54,7 @@ Assets are embedded in the binary via `include_dir` and served by
 ## Runtime notes
 
 - UI polling cadence is 2 seconds.
-- UI metrics polling uses same-origin `/telemetry/metrics` then `/metrics`.
+- UI metrics polling uses same-origin `/api/v1/telemetry/metrics` then `/api/v1/metrics`.
 - Supported optional query param: `keep_all_zeroes=true|false`.
 
 For operational semantics, metric-name contracts, graph rules, and testing
@@ -89,7 +89,8 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
 - [ ] Protect `POST /pipeline-groups/shutdown` with stricter access controls
   than read-only endpoints.
 - [ ] Apply the same hardened response headers to API endpoints
-  (`/status`, `/livez`, `/readyz`, `/telemetry/*`, `/metrics`), not only UI/static.
+  (`/api/v1/status`, `/api/v1/livez`, `/api/v1/readyz`,
+  `/api/v1/telemetry/*`, `/api/v1/metrics`), not only UI/static.
 - [ ] Harden CSP further by removing `style-src 'unsafe-inline'` (move toward
   nonce/hash-based style policies).
 - [ ] Add rate limiting / throttling to protect admin and telemetry endpoints.
@@ -104,4 +105,4 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
   - strong authentication/authorization
   - network ACLs / source allow-listing
   - route-level restrictions for mutating endpoints such as
-    `/pipeline-groups/shutdown`
+    `/api/v1/pipeline-groups/shutdown`

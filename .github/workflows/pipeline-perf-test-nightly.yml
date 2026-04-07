@@ -115,6 +115,7 @@ jobs:
           path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
 
       - name: Upload syslog TCP results for processing
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: syslog-tcp-nightly-results
@@ -178,6 +179,7 @@ jobs:
   update-benchmarks:
     runs-on: ubuntu-24.04
     needs: [pipeline-perf-test]
+    if: ${{ !cancelled() }}
     permissions:
       # deployments permission to deploy GitHub pages website
       deployments: write
@@ -245,42 +247,52 @@ jobs:
       - name: Download scaling efficiency metrics
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: scaling-efficiency-nightly-results
+          pattern: scaling-efficiency-nightly-results*
+          merge-multiple: true
           path: scaling_efficiency_results
 
       - name: Consolidate syslog benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_results syslog_output.json
 
       - name: Consolidate syslog TCP benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_tcp_results syslog_tcp_output.json
 
       - name: Consolidate standard load batch size benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh standardload_batch_size_results standardload_batch_size_output.json
 
       - name: Consolidate backpressure benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh backpressure_results backpressure_output.json
 
       - name: Consolidate filter benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_results filter_output.json
 
       - name: Consolidate batch processor benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh batch_processor_results batch_processor_output.json
 
       - name: Consolidate otelcol filter benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_otelcol_results filter_otelcol_output.json
 
       - name: Consolidate saturation benchmark data
+        if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh saturation_results saturation_output.json
 
       - name: Update benchmark data
+        if: ${{ !cancelled() && hashFiles('syslog_output.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
@@ -293,6 +305,7 @@ jobs:
           save-data-file: true
 
       - name: Update syslog TCP benchmark data
+        if: ${{ !cancelled() && hashFiles('syslog_tcp_output.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
@@ -305,6 +318,7 @@ jobs:
           save-data-file: true
 
       - name: Update standard load batch size benchmark data
+        if: ${{ !cancelled() && hashFiles('standardload_batch_size_output.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
@@ -317,6 +331,7 @@ jobs:
           save-data-file: true
 
       - name: Update benchmark data and deploy to GitHub Pages
+        if: ${{ !cancelled() && hashFiles('backpressure_output.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
@@ -329,6 +344,7 @@ jobs:
           save-data-file: true
 
       - name: Update filter benchmark data
+        if: ${{ !cancelled() && hashFiles('filter_output.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
@@ -341,6 +357,7 @@ jobs:
           save-data-file: true
 
       - name: Update batch processor benchmark data
+        if: ${{ !cancelled() && hashFiles('batch_processor_output.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
@@ -353,6 +370,7 @@ jobs:
           save-data-file: true
 
       - name: Update filter otelcol benchmark data
+        if: ${{ !cancelled() && hashFiles('filter_otelcol_output.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
@@ -365,6 +383,7 @@ jobs:
           save-data-file: true
 
       - name: Update saturation benchmark data
+        if: ${{ !cancelled() && hashFiles('saturation_output.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customSmallerIsBetter"
@@ -377,6 +396,7 @@ jobs:
           save-data-file: true
 
       - name: Update scaling efficiency data
+        if: ${{ !cancelled() && hashFiles('scaling_efficiency_results/scaling-efficiency.json') != '' }}
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: "customBiggerIsBetter"
