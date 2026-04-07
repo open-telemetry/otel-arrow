@@ -4061,6 +4061,51 @@ mod test {
         test_update_attr_to_concat_with_scalars::<KqlParser>("strcat").await
     }
 
+    async fn test_update_attr_to_concat_non_scalar_args<P: Parser>(concat_fn_name: &str) {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("error happen")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("info happen")
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend 
+            event_name = {concat_fn_name}(severity_text, " event: ", event_name)
+        "#
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(log_0.event_name, "ERROR event: error happen");
+
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(log_1.event_name, "INFO event: info happen");
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_concat_non_scalar_args_opl_parser() {
+        test_update_attr_to_concat_non_scalar_args::<OplParser>("concat").await;
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_concat_non_scalar_args_kql_parser() {
+        test_update_attr_to_concat_non_scalar_args::<KqlParser>("strcat").await
+    }
+
     #[tokio::test]
     async fn test_concat_nooargs_produces_empty_string() {
         let logs_data = to_logs_data(vec![
@@ -4069,12 +4114,8 @@ mod test {
                 .finish(),
         ]);
 
-        let query = format!(
-            r#"logs | extend
-            attributes["s1"] = concat()
-        "#
-        );
-        let pipeline_expr = OplParser::parse_with_options(&query, default_parser_options())
+        let query = r#"logs | extend attributes["s1"] = concat()"#;
+        let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
@@ -4118,9 +4159,6 @@ mod test {
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
-        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
-        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
-
         let result = pipeline.execute(input).await.unwrap();
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
@@ -4144,6 +4182,48 @@ mod test {
         test_update_attr_to_concat_with_delim_with_scalars::<OplParser>("join").await;
     }
 
+    async fn test_update_attr_to_concat_with_delim_with_non_scalar_args<P: Parser>(
+        concat_fn_name: &str,
+    ) {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().severity_text("ERROR").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend 
+            event_name = {concat_fn_name}(" ", "event with severity", severity_text, "happened")
+        "#
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(log_0.event_name, "event with severity ERROR happened");
+
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(log_1.event_name, "event with severity INFO happened");
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_concat_with_delim_with_non_scalar_args_opl_parser() {
+        test_update_attr_to_concat_with_delim_with_non_scalar_args::<OplParser>("concat_ws").await;
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_concat_with_delim_with_non_scalar_args_kql_parser() {
+        test_update_attr_to_concat_with_delim_with_non_scalar_args::<KqlParser>("strcat_delim")
+            .await
+    }
+
     #[tokio::test]
     async fn test_update_attr_to_concat_with_delim_with_scalars_kql_parser() {
         test_update_attr_to_concat_with_delim_with_scalars::<KqlParser>("strcat_delim").await
@@ -4157,12 +4237,8 @@ mod test {
                 .finish(),
         ]);
 
-        let query = format!(
-            r#"logs | extend 
-            attributes["s1"] = concat_ws(" ")
-        "#
-        );
-        let pipeline_expr = OplParser::parse_with_options(&query, default_parser_options())
+        let query = r#"logs | extend attributes["s1"] = concat_ws(" ")"#;
+        let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
@@ -4209,9 +4285,6 @@ mod test {
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
-        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
-        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
-
         let result = pipeline.execute(input).await.unwrap();
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
@@ -4235,5 +4308,48 @@ mod test {
     #[tokio::test]
     async fn test_update_attr_to_replace_with_scalars_kql_parser() {
         test_update_attr_to_replace_with_scalars::<KqlParser>("replace_string").await
+    }
+
+    async fn test_update_attr_to_replace_with_non_scalar_args<P: Parser>(replace_fn_name: &str) {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("event with severity {severity} happened")
+                .finish(),
+            LogRecord::build()
+                .event_name("event with severity {severity} happened")
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend 
+            event_name = {replace_fn_name}(event_name, "{{severity}}", severity_text)
+        "#
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(log_0.event_name, "event with severity INFO happened");
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(log_1.event_name, "");
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_replace_with_non_scalar_args_opl_parser() {
+        test_update_attr_to_replace_with_non_scalar_args::<OplParser>("replace").await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_replace_with_non_scalar_args_kql_parser() {
+        test_update_attr_to_replace_with_non_scalar_args::<KqlParser>("replace_string").await
     }
 }

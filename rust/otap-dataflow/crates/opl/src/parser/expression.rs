@@ -760,7 +760,7 @@ fn parse_function_call(
         ))
         .into()),
         "join" | "concat_ws" => {
-            if args.len() < 1 {
+            if args.is_empty() {
                 return Err(ParserError::SyntaxError(
                     query_location,
                     format!(

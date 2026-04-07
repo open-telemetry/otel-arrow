@@ -56,7 +56,7 @@ use data_engine_expressions::{
     PipelineFunction, PipelineFunctionImplementation, ReplaceTextScalarExpression,
     ScalarExpression, StaticScalarExpression, StringValue, TextScalarExpression,
 };
-use datafusion::common::{DFSchema, plan_datafusion_err};
+use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
@@ -554,18 +554,6 @@ impl ExprLogicalPlanner {
                 message: "Only functions with one or more arguments currently supported".into(),
             })
         } else {
-            // helper function for extracting scalar expression from function argument
-            fn arg_to_scalar(arg: &InvokeFunctionArgument) -> Result<&ScalarExpression> {
-                match arg {
-                    InvokeFunctionArgument::Scalar(scalar_expr) => Ok(scalar_expr),
-                    InvokeFunctionArgument::MutableValue(_) => Err(Error::NotYetSupportedError {
-                        message:
-                            "Mutable value as function argument not yet supported in expression"
-                                .into(),
-                    }),
-                }
-            }
-
             let scalar_arg_exprs = invoke_arg_exprs
                 .iter()
                 .map(|arg| match arg {
