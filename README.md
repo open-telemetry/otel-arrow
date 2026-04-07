@@ -148,7 +148,7 @@ to receive syslog messages on port 5140 and then print them to console:
 > documentation][SYSLOG-CEF] for secure configuration examples.
 
 ```bash
-./target/debug/df_engine -c ./configs/syslog-console.yaml --num-cores=1
+./target/debug/df_engine -c ./configs/syslog-console.yaml
 ```
 
 Linux/MacOS users can test this with:

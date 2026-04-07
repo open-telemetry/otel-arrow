@@ -1,5 +1,10 @@
 version: otel_dataflow/v1
 engine: { }
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
 groups:
   default:
     pipelines:
