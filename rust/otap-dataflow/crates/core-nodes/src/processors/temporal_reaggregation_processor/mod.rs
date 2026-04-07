@@ -151,6 +151,7 @@ pub fn create_temporal_reaggregation_processor(
 /// This is split out from [`IdentityState`] because the passthrough batch doesn't
 /// have a need for all of the hashmaps used to aggregate, but both batches need
 /// to track these ids.
+#[derive(Default)]
 struct OtapIdState {
     resource: u16,
     scope: u16,
@@ -163,25 +164,10 @@ struct OtapIdState {
     hdp_exemplar: u32,
     ehdp_exemplar: u32,
 }
-impl OtapIdState {
-    fn new() -> Self {
-        Self {
-            resource: 0,
-            scope: 0,
-            metric: 0,
-            ndp: 0,
-            hdp: 0,
-            ehdp: 0,
-            sdp: 0,
-            ndp_exemplar: 0,
-            hdp_exemplar: 0,
-            ehdp_exemplar: 0,
-        }
-    }
-}
 
 /// State for the current in-progress batch. This is all the stuff that has to
 /// be cleared between batches
+#[derive(Default)]
 struct IdentityState {
     resources: HashMap<ResourceId, u16>,
     scopes: HashMap<ScopeId<'static>, u16>,
@@ -192,13 +178,7 @@ struct IdentityState {
 
 impl IdentityState {
     fn new() -> Self {
-        Self {
-            resources: HashMap::new(),
-            scopes: HashMap::new(),
-            metrics: HashMap::new(),
-            streams: HashMap::new(),
-            next: OtapIdState::new(),
-        }
+        Self::default()
     }
 
     fn clear(&mut self) {
@@ -206,7 +186,7 @@ impl IdentityState {
         self.scopes.clear();
         self.metrics.clear();
         self.streams.clear();
-        self.next = OtapIdState::new();
+        self.next = OtapIdState::default();
     }
 }
 
@@ -773,7 +753,7 @@ impl TemporalReaggregationProcessor {
         &mut self,
         view: &V,
     ) -> Result<AggregationResult, AggregationError> {
-        let mut next_pt_id = OtapIdState::new();
+        let mut next_pt_id = OtapIdState::default();
         let mut pt_builder = MetricSignalBuilder::new();
 
         for resource_metrics in view.resources() {
