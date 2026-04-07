@@ -31,9 +31,7 @@ pub struct Config {
     pub outbound_request_limit: NonZeroUsize,
 
     /// Maximum number of unique metric streams to track in a single aggregating
-    /// batch. When exceeded, the current batch is flushed early and the
-    /// overflowing data is retried into a fresh batch. This provides an
-    /// imperfect bound on memory usage. Default: 32767 (half of u16::MAX).
+    /// batch. When exceeded, the current batch is flushed early.
     #[serde(default = "default_max_stream_cardinality")]
     pub max_stream_cardinality: NonZeroU16,
 }
@@ -94,7 +92,7 @@ const fn default_outbound_request_limit() -> NonZeroUsize {
 }
 
 const fn default_max_stream_cardinality() -> NonZeroU16 {
-    NonZeroU16::new(u16::MAX / 2).expect("ok")
+    NonZeroU16::new(u16::MAX / 4).expect("ok")
 }
 
 fn default_period() -> Duration {
