@@ -759,7 +759,7 @@ fn parse_function_call(
             ),
         ))
         .into()),
-        "concat_ws" => {
+        "join" | "concat_ws" => {
             if args.len() < 1 {
                 return Err(ParserError::SyntaxError(
                     query_location,
@@ -2000,55 +2000,62 @@ mod test {
 
     #[test]
     fn test_parse_concat_with_delimiter_function_call() {
-        let input = "concat_ws(\" \", severity_text, \"event happened:\", event_name)";
-        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
-        assert_eq!(rules.len(), 1);
+        // "join" is alias for "concat_ws"
+        for fn_name in ["concat_ws", "join"] {
+            let input = format!("{fn_name}(\" \", severity_text, \"event happened:\", event_name)");
+            let mut rules = OplPestParser::parse(Rule::member_expression, &input).unwrap();
+            assert_eq!(rules.len(), 1);
 
-        let result: ScalarExpression =
-            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
-                .unwrap()
-                .into();
+            let result: ScalarExpression =
+                parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                    .unwrap()
+                    .into();
 
-        let expected =
-            ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), " "),
-                )),
-                ScalarExpression::Collection(CollectionScalarExpression::List(
-                    ListScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        vec![
-                            ScalarExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                    StaticScalarExpression::String(StringScalarExpression::new(
-                                        QueryLocation::new_fake(),
-                                        "severity_text",
-                                    )),
-                                )]),
-                            )),
-                            ScalarExpression::Static(StaticScalarExpression::String(
-                                StringScalarExpression::new(
+            let expected =
+                ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), " "),
+                    )),
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                ScalarExpression::Source(SourceScalarExpression::new(
                                     QueryLocation::new_fake(),
-                                    "event happened:",
-                                ),
-                            )),
-                            ScalarExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "severity_text",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
                                         QueryLocation::new_fake(),
-                                        "event_name",
-                                    )),
-                                )]),
-                            )),
-                        ],
-                    ),
-                )),
-            )));
+                                        "event happened:",
+                                    ),
+                                )),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "event_name",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                            ],
+                        ),
+                    )),
+                )));
 
-        assert_eq!(result, expected);
+            assert_eq!(result, expected);
+        }
     }
 
     #[test]

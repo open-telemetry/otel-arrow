@@ -4022,8 +4022,8 @@ mod test {
 
         let query = format!(
             r#"logs | extend
-            attributes["s1"] = {concat_fn_name}(attributes["attr"], " albert"),
-            attributes["s2"] = {concat_fn_name}(attributes["attr"], " ", "terry")
+            attributes["s1"] = {concat_fn_name}(attributes["attr"], " arrow"),
+            attributes["s2"] = {concat_fn_name}(attributes["attr"], " ", "otel")
         "#
         );
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
@@ -4045,8 +4045,8 @@ mod test {
             log_0.attributes,
             vec![
                 KeyValue::new("attr", AnyValue::new_string("hello")),
-                KeyValue::new("s1", AnyValue::new_string("hello albert")),
-                KeyValue::new("s2", AnyValue::new_string("hello terry")),
+                KeyValue::new("s1", AnyValue::new_string("hello arrow")),
+                KeyValue::new("s2", AnyValue::new_string("hello otel")),
             ]
         );
     }
@@ -4107,8 +4107,8 @@ mod test {
 
         let query = format!(
             r#"logs | extend 
-            attributes["s1"] = {concat_fn_name}(" ", attributes["attr"], "albert"),
-            attributes["s2"] = {concat_fn_name}(" ", attributes["attr"], "terry", "fox")
+            attributes["s1"] = {concat_fn_name}(" ", attributes["attr"], "arrow"),
+            attributes["s2"] = {concat_fn_name}(" ", attributes["attr"], "otel", "and", "datafusion")
         "#
         );
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
@@ -4130,15 +4130,18 @@ mod test {
             log_0.attributes,
             vec![
                 KeyValue::new("attr", AnyValue::new_string("hello")),
-                KeyValue::new("s1", AnyValue::new_string("hello albert")),
-                KeyValue::new("s2", AnyValue::new_string("hello terry fox")),
+                KeyValue::new("s1", AnyValue::new_string("hello arrow")),
+                KeyValue::new("s2", AnyValue::new_string("hello otel and datafusion")),
             ]
         );
     }
 
     #[tokio::test]
     async fn test_update_attr_to_concat_with_delim_with_scalars_opl_parser() {
-        test_update_attr_to_concat_with_delim_with_scalars::<OplParser>("concat_ws").await
+        test_update_attr_to_concat_with_delim_with_scalars::<OplParser>("concat_ws").await;
+
+        // also double check that "join" is an alias for "concat_ws"
+        test_update_attr_to_concat_with_delim_with_scalars::<OplParser>("join").await;
     }
 
     #[tokio::test]
@@ -4195,7 +4198,7 @@ mod test {
 
         let query = format!(
             r#"logs | extend 
-            attributes["s1"] = {replace_fn_name}(attributes["attr"], "world", "terry"),
+            attributes["s1"] = {replace_fn_name}(attributes["attr"], "world", "arrow"),
             attributes["s2"] = {replace_fn_name}(attributes["attr"], "hello", "bonjour")
         "#
         );
@@ -4218,7 +4221,7 @@ mod test {
             log_0.attributes,
             vec![
                 KeyValue::new("attr", AnyValue::new_string("hello world")),
-                KeyValue::new("s1", AnyValue::new_string("hello terry")),
+                KeyValue::new("s1", AnyValue::new_string("hello arrow")),
                 KeyValue::new("s2", AnyValue::new_string("bonjour world")),
             ]
         );
