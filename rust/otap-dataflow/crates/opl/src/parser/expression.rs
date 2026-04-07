@@ -2107,7 +2107,7 @@ mod test {
 
     #[test]
     fn parse_replace_function_call_with_wrong_arity() {
-        for args in vec![
+        for args in [
             vec![],
             vec!["one"],
             vec!["one", "two"],
