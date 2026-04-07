@@ -85,23 +85,48 @@ struct MetricSet {
     metrics: HashMap<String, MetricValue>,
 }
 
-type OutputFormat = api::OutputFormat;
-type MetricsQuery = api::MetricsQuery;
 type LogsQuery = api::LogsQuery;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OutputFormat {
+    Json,
+    JsonCompact,
+    LineProtocol,
+    #[default]
+    Prometheus,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+struct MetricsQuery {
+    #[serde(default)]
+    reset: bool,
+    #[serde(default)]
+    format: Option<OutputFormat>,
+    #[serde(default)]
+    keep_all_zeroes: bool,
+}
+
+impl MetricsQuery {
+    #[must_use]
+    fn output_format(&self) -> OutputFormat {
+        self.format.unwrap_or_default()
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct AggregateQuery {
     #[serde(default)]
-    pub reset: bool,
+    reset: bool,
     #[serde(default)]
-    pub attrs: Option<String>,
+    attrs: Option<String>,
     #[serde(default)]
-    pub format: Option<OutputFormat>,
+    format: Option<OutputFormat>,
 }
 
 impl AggregateQuery {
     #[must_use]
-    pub fn output_format(&self) -> OutputFormat {
+    fn output_format(&self) -> OutputFormat {
         self.format.unwrap_or_default()
     }
 }
@@ -248,7 +273,7 @@ pub async fn get_logs(
 /// Query parameters:
 /// - `reset` (bool, default false): whether to reset metrics after reading.
 /// - `format` (string, default "prometheus"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
-pub async fn get_metrics(
+async fn get_metrics(
     State(state): State<AppState>,
     Query(q): Query<MetricsQuery>,
 ) -> Result<Response, StatusCode> {
@@ -1247,7 +1272,12 @@ fn escape_prom_help(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use otap_df_config::observed_state::ObservedStateSettings;
+    use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     static TEST_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test_metrics",
@@ -1282,6 +1312,49 @@ mod tests {
             value_type: MetricValueType::U64,
         }],
     };
+
+    fn test_app_state() -> AppState {
+        let metrics_registry = TelemetryRegistryHandle::new();
+        let observed_state_store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), metrics_registry.clone());
+
+        AppState {
+            observed_state_store: observed_state_store.handle(),
+            metrics_registry,
+            log_tap: None,
+            ctrl_msg_senders: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_handler_keeps_prometheus_text_format() {
+        let response = get_metrics(
+            State(test_app_state()),
+            Query(MetricsQuery {
+                format: Some(OutputFormat::Prometheus),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("prometheus metrics should render");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static(
+                "text/plain; version=0.0.4; charset=utf-8"
+            ))
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("metrics body should collect");
+        assert!(
+            std::str::from_utf8(&body)
+                .expect("prometheus body should be utf-8")
+                .is_empty()
+        );
+    }
 
     /// Ensures aggregate group ordering is deterministic: metric-set name first,
     /// then metric count when names are equal.

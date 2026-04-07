@@ -6,80 +6,26 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Telemetry output format.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputFormat {
-    /// Verbose JSON.
-    Json,
-    /// Compact JSON.
-    JsonCompact,
-    /// Line protocol text.
-    LineProtocol,
-    /// Prometheus text.
-    #[default]
-    Prometheus,
-}
-
-impl OutputFormat {
-    /// Returns the canonical wire-format string for this output format.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            OutputFormat::Json => "json",
-            OutputFormat::JsonCompact => "json_compact",
-            OutputFormat::LineProtocol => "line_protocol",
-            OutputFormat::Prometheus => "prometheus",
-        }
-    }
-}
-
-/// Query parameters for `/api/v1/telemetry/metrics`.
+/// Options for structured metrics requests.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetricsQuery {
+pub struct MetricsOptions {
     /// Reset metrics after reading.
     #[serde(default)]
     pub reset: bool,
-    /// Output format.
-    #[serde(default)]
-    pub format: Option<OutputFormat>,
     /// Keep all-zero metric sets.
     #[serde(default)]
     pub keep_all_zeroes: bool,
 }
 
-impl MetricsQuery {
-    /// Returns the effective output format used by the endpoint.
-    #[must_use]
-    pub fn output_format(&self) -> OutputFormat {
-        self.format.unwrap_or_default()
-    }
-
-    /// Converts this request into URL query pairs.
+impl MetricsOptions {
+    /// Converts these options into URL query pairs.
     #[must_use]
     pub fn to_query_pairs(&self) -> Vec<(&'static str, String)> {
-        let mut pairs = vec![
+        vec![
             ("reset", self.reset.to_string()),
             ("keep_all_zeroes", self.keep_all_zeroes.to_string()),
-        ];
-        if let Some(format) = self.format {
-            pairs.push(("format", format.as_str().to_string()));
-        }
-        pairs
+        ]
     }
-}
-
-/// Metrics endpoint output.
-#[derive(Debug, Clone, PartialEq)]
-pub enum MetricsOutput {
-    /// Verbose JSON output.
-    Json(MetricsResponse),
-    /// Compact JSON output.
-    JsonCompact(CompactMetricsResponse),
-    /// Line protocol text.
-    LineProtocol(String),
-    /// Prometheus text.
-    Prometheus(String),
 }
 
 /// Verbose JSON metrics response.
@@ -403,6 +349,14 @@ mod tests {
                     }
                 }
             ]
+        }));
+    }
+
+    #[test]
+    fn metrics_options_roundtrip_current_wire_shape() {
+        assert_roundtrip::<MetricsOptions>(json!({
+            "reset": true,
+            "keep_all_zeroes": true
         }));
     }
 }

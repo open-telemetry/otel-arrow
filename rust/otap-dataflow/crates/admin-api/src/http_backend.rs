@@ -42,31 +42,6 @@ impl HttpBackend {
         })
     }
 
-    async fn request_metrics(
-        &self,
-        segments: &[&str],
-        query: &[(&str, String)],
-        format: telemetry::OutputFormat,
-    ) -> Result<telemetry::MetricsOutput, Error> {
-        let (_, body) = self
-            .request_raw(Method::GET, segments, query, &[200])
-            .await?;
-        match format {
-            telemetry::OutputFormat::Json => {
-                self.decode_json(&body).map(telemetry::MetricsOutput::Json)
-            }
-            telemetry::OutputFormat::JsonCompact => self
-                .decode_json::<telemetry::CompactMetricsResponse>(&body)
-                .map(telemetry::MetricsOutput::JsonCompact),
-            telemetry::OutputFormat::LineProtocol => self
-                .decode_text(&body)
-                .map(telemetry::MetricsOutput::LineProtocol),
-            telemetry::OutputFormat::Prometheus => self
-                .decode_text(&body)
-                .map(telemetry::MetricsOutput::Prometheus),
-        }
-    }
-
     async fn request_json<T: DeserializeOwned>(
         &self,
         method: Method,
@@ -301,15 +276,34 @@ impl AdminBackend for HttpBackend {
 
     async fn telemetry_metrics(
         &self,
-        query: &telemetry::MetricsQuery,
-    ) -> Result<telemetry::MetricsOutput, Error> {
-        let query_pairs = query.to_query_pairs();
-        self.request_metrics(
+        options: &telemetry::MetricsOptions,
+    ) -> Result<telemetry::MetricsResponse, Error> {
+        let mut query_pairs = options.to_query_pairs();
+        query_pairs.push(("format", "json".to_string()));
+        self.request_json(
+            Method::GET,
             &["api", "v1", "telemetry", "metrics"],
             &query_pairs,
-            query.output_format(),
+            &[200],
         )
         .await
+        .map(|(_, body)| body)
+    }
+
+    async fn telemetry_metrics_compact(
+        &self,
+        options: &telemetry::MetricsOptions,
+    ) -> Result<telemetry::CompactMetricsResponse, Error> {
+        let mut query_pairs = options.to_query_pairs();
+        query_pairs.push(("format", "json_compact".to_string()));
+        self.request_json(
+            Method::GET,
+            &["api", "v1", "telemetry", "metrics"],
+            &query_pairs,
+            &[200],
+        )
+        .await
+        .map(|(_, body)| body)
     }
 }
 
@@ -776,19 +770,11 @@ mod tests {
 
         let response = client(&server)
             .telemetry()
-            .metrics(&telemetry::MetricsQuery {
-                format: Some(telemetry::OutputFormat::Json),
-                ..Default::default()
-            })
+            .metrics(&telemetry::MetricsOptions::default())
             .await
             .expect("metrics should decode");
 
-        match response {
-            telemetry::MetricsOutput::Json(snapshot) => {
-                assert_eq!(snapshot.timestamp, "2026-01-01T00:00:00Z");
-            }
-            other => panic!("unexpected metrics output: {other:?}"),
-        }
+        assert_eq!(response.timestamp, "2026-01-01T00:00:00Z");
     }
 
     #[tokio::test]
@@ -810,42 +796,11 @@ mod tests {
 
         let response = client(&server)
             .telemetry()
-            .metrics(&telemetry::MetricsQuery {
-                format: Some(telemetry::OutputFormat::JsonCompact),
-                ..Default::default()
-            })
+            .metrics_compact(&telemetry::MetricsOptions::default())
             .await
             .expect("metrics should decode");
 
-        match response {
-            telemetry::MetricsOutput::JsonCompact(snapshot) => {
-                assert_eq!(snapshot.timestamp, "2026-01-01T00:00:00Z");
-            }
-            other => panic!("unexpected metrics output: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn telemetry_metrics_decodes_prometheus_text() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/telemetry/metrics"))
-            .and(query_param("reset", "false"))
-            .and(query_param("keep_all_zeroes", "false"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("# HELP test\n"))
-            .mount(&server)
-            .await;
-
-        let response = client(&server)
-            .telemetry()
-            .metrics(&telemetry::MetricsQuery::default())
-            .await
-            .expect("metrics should decode");
-
-        match response {
-            telemetry::MetricsOutput::Prometheus(body) => assert_eq!(body, "# HELP test\n"),
-            other => panic!("unexpected metrics output: {other:?}"),
-        }
+        assert_eq!(response.timestamp, "2026-01-01T00:00:00Z");
     }
 
     #[tokio::test]

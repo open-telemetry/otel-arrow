@@ -247,11 +247,12 @@ method and its operational purpose.
 | `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | `pipelines().livez(...)` | Plain-text liveness probe for a single pipeline. |
 | `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | `pipelines().readyz(...)` | Plain-text readiness probe for a single pipeline. |
 | `GET /api/v1/telemetry/logs` | `telemetry().logs(...)` | Retained admin logs when log retention is enabled. |
-| `GET /api/v1/telemetry/metrics` | `telemetry().metrics(...)` | Current engine metrics in JSON, compact JSON, Prometheus, or line protocol. |
+| `GET /api/v1/telemetry/metrics` | `telemetry().metrics(...)`, `telemetry().metrics_compact(...)` | Current engine metrics as structured JSON, using either the full or compact response shape. |
 
 `GET /api/v1/metrics` remains a server-side alias for
 `GET /api/v1/telemetry/metrics`. The SDK intentionally exposes only the
-canonical `telemetry().metrics(...)` method.
+canonical `telemetry().metrics(...)` and `telemetry().metrics_compact(...)`
+methods.
 
 ## Future evolution: live reconfiguration
 
@@ -413,13 +414,12 @@ match logs {
 
 ### Metrics
 
-Use `telemetry().metrics(...)` when you need the current raw metric stream.
-The SDK supports `OutputFormat::Json`, `OutputFormat::JsonCompact`,
-`OutputFormat::Prometheus`, and `OutputFormat::LineProtocol`.
+Use `telemetry().metrics(...)` for the full structured JSON view, or
+`telemetry().metrics_compact(...)` for the compact structured JSON view.
 
 ```rust
 use otap_df_admin_api::{
-    telemetry::{MetricsOutput, MetricsQuery, OutputFormat},
+    telemetry::MetricsOptions,
     AdminClient, AdminEndpoint, HttpAdminClientSettings,
 };
 
@@ -430,15 +430,13 @@ let client = AdminClient::builder()
 
 let metrics = client
     .telemetry()
-    .metrics(&MetricsQuery {
-        format: Some(OutputFormat::JsonCompact),
-        ..Default::default()
+    .metrics_compact(&MetricsOptions {
+        reset: false,
+        keep_all_zeroes: false,
     })
     .await?;
 
-if let MetricsOutput::JsonCompact(body) = metrics {
-    println!("compact_metric_sets={}", body.metric_sets.len());
-}
+println!("compact_metric_sets={}", metrics.metric_sets.len());
 # Ok(())
 # }
 ```

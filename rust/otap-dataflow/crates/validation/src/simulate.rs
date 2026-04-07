@@ -4,11 +4,8 @@
 use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
 use otap_df_admin_api::{
-    AdminClient, AdminEndpoint, HttpAdminClientSettings,
-    engine::ProbeStatus,
-    operations::OperationOptions,
-    pipeline_groups::ShutdownStatus,
-    telemetry::{MetricsOutput, MetricsQuery, OutputFormat},
+    AdminClient, AdminEndpoint, HttpAdminClientSettings, engine::ProbeStatus,
+    operations::OperationOptions, pipeline_groups::ShutdownStatus, telemetry::MetricsOptions,
 };
 use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
@@ -96,23 +93,17 @@ async fn wait_for_ready(
 async fn fetch_metrics(client: &AdminClient) -> Result<MetricsSnapshot, ValidationError> {
     let response = client
         .telemetry()
-        .metrics(&MetricsQuery {
+        .metrics(&MetricsOptions {
             reset: false,
-            format: Some(OutputFormat::Json),
             keep_all_zeroes: true,
         })
         .await
         .map_err(admin_error)?;
 
-    match response {
-        MetricsOutput::Json(snapshot) => serde_json::from_value(
-            serde_json::to_value(snapshot).map_err(|e| ValidationError::Http(e.to_string()))?,
-        )
-        .map_err(|e| ValidationError::Http(e.to_string())),
-        other => Err(ValidationError::Http(format!(
-            "unexpected metrics response format: {other:?}",
-        ))),
-    }
+    serde_json::from_value(
+        serde_json::to_value(response).map_err(|e| ValidationError::Http(e.to_string()))?,
+    )
+    .map_err(|e| ValidationError::Http(e.to_string()))
 }
 
 /// loop until traffic generation is done

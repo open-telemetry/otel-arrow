@@ -297,12 +297,20 @@ impl TelemetryClient<'_> {
         self.backend.telemetry_logs(query).await
     }
 
-    /// Returns metrics in the requested output format.
+    /// Returns full structured metrics.
     pub async fn metrics(
         &self,
-        query: &telemetry::MetricsQuery,
-    ) -> Result<telemetry::MetricsOutput, Error> {
-        self.backend.telemetry_metrics(query).await
+        options: &telemetry::MetricsOptions,
+    ) -> Result<telemetry::MetricsResponse, Error> {
+        self.backend.telemetry_metrics(options).await
+    }
+
+    /// Returns compact structured metrics.
+    pub async fn metrics_compact(
+        &self,
+        options: &telemetry::MetricsOptions,
+    ) -> Result<telemetry::CompactMetricsResponse, Error> {
+        self.backend.telemetry_metrics_compact(options).await
     }
 }
 
@@ -340,6 +348,10 @@ pub(crate) trait AdminBackend: Send + Sync {
     ) -> Result<Option<telemetry::LogsResponse>, Error>;
     async fn telemetry_metrics(
         &self,
-        query: &telemetry::MetricsQuery,
-    ) -> Result<telemetry::MetricsOutput, Error>;
+        options: &telemetry::MetricsOptions,
+    ) -> Result<telemetry::MetricsResponse, Error>;
+    async fn telemetry_metrics_compact(
+        &self,
+        options: &telemetry::MetricsOptions,
+    ) -> Result<telemetry::CompactMetricsResponse, Error>;
 }
