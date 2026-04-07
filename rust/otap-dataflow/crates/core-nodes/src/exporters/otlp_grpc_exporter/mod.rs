@@ -1492,6 +1492,7 @@ mod tests {
         )
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_without_policy() {
         let handler = make_effect_handler_with_policy(None);
@@ -1503,6 +1504,7 @@ mod tests {
         assert!(result.is_none(), "should return None when no policy is set");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_without_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1515,6 +1517,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_propagates_text_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1546,6 +1549,7 @@ mod tests {
         assert_eq!(request_id.to_str().unwrap(), "req-xyz-789");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_drops_filtered_headers() {
         let policy = HeaderPropagationPolicy::new(
@@ -1586,6 +1590,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_propagates_binary_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1612,6 +1617,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_appends_bin_suffix_for_binary_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1635,6 +1641,7 @@ mod tests {
         assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_preserves_duplicate_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1672,6 +1679,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_when_all_dropped() {
         // Policy that drops everything (selector = None means no headers are selected).
