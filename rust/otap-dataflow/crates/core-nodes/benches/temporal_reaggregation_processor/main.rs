@@ -39,13 +39,6 @@ use otap_df_core_nodes::processors::temporal_reaggregation_processor::{
     TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY, TEMPORAL_REAGGREGATION_PROCESSOR_URN,
 };
 
-#[cfg(not(windows))]
-use tikv_jemallocator::Jemalloc;
-
-#[cfg(not(windows))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
-
 const NUM_BATCHES: usize = 50;
 const METRICS_PER_BATCH: usize = 100;
 
@@ -66,19 +59,10 @@ const NUM_NON_AGGREGATABLE_TYPES: usize = 3;
 /// the final flush.
 const OUTPUT_CHANNEL_CAPACITY: usize = NUM_BATCHES + 16;
 
-/// Each iteration processes 1000 * 100 = 100_000 metrics, which is expensive.
-/// Lower the sample count so criterion finishes in a reasonable time.
-const SAMPLE_SIZE: usize = 10;
-
 criterion_group!(benches, bench_temporal_reaggregation);
 criterion_main!(benches);
 
 fn bench_temporal_reaggregation(c: &mut Criterion) {
-    // Pin to a single core for stable measurements.
-    let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
-    let core = cores.iter().last().expect("no cores found");
-    _ = core_affinity::set_for_current(*core);
-
     // Single-threaded tokio runtime used for all benchmark iterations.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -92,7 +76,6 @@ fn bench_temporal_reaggregation(c: &mut Criterion) {
     let _ = group.throughput(Throughput::Elements(
         (NUM_BATCHES * METRICS_PER_BATCH) as u64,
     ));
-    let _ = group.sample_size(SAMPLE_SIZE);
 
     bench_scenario(&mut group, &rt, "otlp", &otlp_messages);
     bench_scenario(&mut group, &rt, "otap", &otap_messages);
@@ -124,7 +107,7 @@ fn bench_scenario(
 /// All state needed to drive the processor for a single benchmark iteration.
 ///
 /// The `_ctrl_rx` field is never read from, but must be kept alive so the
-/// runtime control channel remains open — the processor sends a
+/// runtime control channel remains open - the processor sends a
 /// `StartTimer` message on the first `process()` call.
 struct ProcessorState {
     processor: Box<dyn local::Processor<OtapPdata>>,

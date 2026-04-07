@@ -90,11 +90,7 @@ pretty_assertions.workspace = true
 tempfile.workspace = true
 portpicker.workspace = true
 otap-test-tls-certs.workspace = true
-criterion = { workspace = true, features = ["html_reports"] }
-core_affinity.workspace = true
-
-[target.'cfg(not(windows))'.dev-dependencies]
-tikv-jemallocator.workspace = true
+criterion.workspace = true
 
 [[bench]]
 name = "temporal_reaggregation_processor"
