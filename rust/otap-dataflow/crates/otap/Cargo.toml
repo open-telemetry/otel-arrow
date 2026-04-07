@@ -118,3 +118,4 @@ otap-test-tls-certs.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-state = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }

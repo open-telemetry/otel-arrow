@@ -48,7 +48,7 @@ use otap_df_telemetry::otel_warn;
 mod builder;
 mod config;
 mod identity;
-mod metrics;
+mod telemetry;
 
 use self::builder::{Checkpoint, MetricSignalBuilder, StreamMeta};
 use self::config::Config;
@@ -56,9 +56,7 @@ use self::identity::{
     HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId, StreamIdRef,
     metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
-use self::metrics::TemporalReaggregationMetrics;
-
-const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";
+use self::telemetry::TemporalReaggregationMetrics;
 
 /// Errors that can occur during view processing.
 #[derive(thiserror::Error, Debug)]
@@ -384,17 +382,12 @@ impl TemporalReaggregationProcessor {
         msg: AckMsg<OtapPdata>,
     ) -> Result<(), Error> {
         let Ok(outbound_key) = msg.unwind.route.calldata.clone().try_into() else {
-            // TODO: It's either this or we raise an engine error and crash.
-            // This is pretty bad as who knows if we're holding outbounds that
-            // can ever be cleared if this is malfunctioning. Best case
-            // scenario is the nack was erroneous and just didn't mean anything.
-            //
-            // TODO: Emit a warning event in this case.
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
         let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
-            // TODO: Same as above
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
@@ -427,7 +420,7 @@ impl TemporalReaggregationProcessor {
                     // this implies a lack of correctness in another component or the
                     // engine itself.
                     false => {
-                        // TODO: Emit some kind of warning event here.
+                        otel_warn!(telemetry::ERRONEOUS_ACK_EVENT);
                         continue;
                     }
                 },
@@ -482,17 +475,16 @@ impl TemporalReaggregationProcessor {
         msg: NackMsg<OtapPdata>,
     ) -> Result<(), Error> {
         let Ok(outbound_key) = msg.unwind.route.calldata.clone().try_into() else {
-            // TODO: It's either this or we raise an engine error and crash.
+            // It's either this or we raise an engine error and crash.
             // This is pretty bad as who knows if we're holding outbounds that
             // can ever be cleared if this is malfunctioning. Best case
             // scenario is the nack was erroneous and just didn't mean anything.
-            //
-            // TODO: Emit a warning event in this case.
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
         let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
-            // TODO: Same as above
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
@@ -551,7 +543,7 @@ impl TemporalReaggregationProcessor {
             OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
-                    otel_warn!(VIEW_CREATION_FAILED_EVENT, error = %e);
+                    otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
                     self.metrics.batches_rejected.inc();
                     let msg = format!("Failed to create view: {:#}", e);
                     effect_handler
@@ -1330,6 +1322,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
     use otap_df_pdata::{metrics, record_batch};
     use serde_json::json;
+    use smallvec::smallvec;
 
     #[test]
     fn test_default_config_parsing() {
@@ -3327,6 +3320,76 @@ mod tests {
             Action::SendControl(NodeControlMsg::TimerTick {}),
             Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
             Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+        ];
+        run_test(config, actions);
+    }
+
+    /// Sending an ack whose calldata has the wrong number of elements
+    /// (0 or 2 instead of exactly 1) should be silently ignored.
+    #[test]
+    fn test_ack_with_invalid_calldata_format() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::Ack(ack_with_calldata(CallData::default()))),
+            Action::SendControl(NodeControlMsg::Ack(ack_with_calldata(smallvec![
+                0u64.into(),
+                0u64.into()
+            ]))),
+            // No upstream acks or nacks should have been generated
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    /// Sending a nack whose calldata has the wrong number of elements
+    /// should be silently ignored.
+    #[test]
+    fn test_nack_with_invalid_calldata_format() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::Nack(nack_with_calldata(
+                CallData::default(),
+                "bad calldata",
+            ))),
+            Action::SendControl(NodeControlMsg::Nack(nack_with_calldata(
+                smallvec![0u64.into(), 0u64.into()],
+                "bad calldata",
+            ))),
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    /// Sending an ack with a structurally valid calldata (length 1) but
+    /// a key that does not correspond to any outbound slot should be
+    /// silently ignored.
+    #[test]
+    fn test_ack_with_unrecognized_calldata() {
+        let config = json!({});
+        // A single-element calldata passes TryFrom<CallData> for Key,
+        // but the fabricated value won't match any slot in outbound_batches.
+        let fabricated: CallData = smallvec![1000000000u64.into()];
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::Ack(ack_with_calldata(fabricated))),
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    #[test]
+    fn test_nack_with_unrecognized_calldata() {
+        let config = json!({});
+        let fabricated: CallData = smallvec![1000000000u64.into()];
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::Nack(nack_with_calldata(
+                fabricated,
+                "stale nack",
+            ))),
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
         ];
         run_test(config, actions);
     }
