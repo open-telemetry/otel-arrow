@@ -542,6 +542,8 @@ mod tests {
         server_key_pem: &str,
         body: String,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        ensure_crypto_provider().expect("install rustls crypto provider for test TLS server");
+
         let cert_chain: Vec<_> = CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
             .collect::<Result<_, _>>()
             .expect("parse cert chain");
