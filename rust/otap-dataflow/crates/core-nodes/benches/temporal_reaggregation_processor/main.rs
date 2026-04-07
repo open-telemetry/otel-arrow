@@ -54,11 +54,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const NUM_BATCHES: usize = 1000;
+const NUM_BATCHES: usize = 50;
 const METRICS_PER_BATCH: usize = 100;
 
 /// Fraction of metrics per batch that are aggregatable (0.0–1.0).
@@ -67,11 +63,11 @@ const AGGREGATABLE_FRACTION: f64 = 0.5;
 
 /// Number of distinct aggregatable metric types (gauge, cumulative sum,
 /// cumulative histogram, summary).
-const NUM_AGG_TYPES: usize = 4;
+const NUM_AGGREGATABLE_TYPES: usize = 4;
 
 /// Number of distinct non-aggregatable metric types (delta sum, delta
 /// histogram, non-monotonic cumulative sum).
-const NUM_NONAGG_TYPES: usize = 3;
+const NUM_NON_AGGREGATABLE_TYPES: usize = 3;
 
 /// Output channel capacity. Must hold at least NUM_BATCHES messages since every
 /// mixed batch emits its non-aggregatable portion immediately, plus one more for
@@ -81,10 +77,6 @@ const OUTPUT_CHANNEL_CAPACITY: usize = NUM_BATCHES + 16;
 /// Each iteration processes 1000 * 100 = 100_000 metrics, which is expensive.
 /// Lower the sample count so criterion finishes in a reasonable time.
 const SAMPLE_SIZE: usize = 10;
-
-// ---------------------------------------------------------------------------
-// Criterion entry point
-// ---------------------------------------------------------------------------
 
 criterion_group!(benches, bench_temporal_reaggregation);
 criterion_main!(benches);
@@ -116,10 +108,6 @@ fn bench_temporal_reaggregation(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// Benchmark scenario
-// ---------------------------------------------------------------------------
-
 /// Run a single named benchmark scenario within the group.
 fn bench_scenario(
     group: &mut BenchmarkGroup<'_, WallTime>,
@@ -141,10 +129,6 @@ fn bench_scenario(
     });
 }
 
-// ---------------------------------------------------------------------------
-// Processor state
-// ---------------------------------------------------------------------------
-
 /// All state needed to drive the processor for a single benchmark iteration.
 ///
 /// The `_ctrl_rx` field is never read from, but must be kept alive so the
@@ -156,10 +140,6 @@ struct ProcessorState {
     output_receiver: Receiver<OtapPdata>,
     _ctrl_rx: RuntimeCtrlMsgReceiver<OtapPdata>,
 }
-
-// ---------------------------------------------------------------------------
-// Processor creation
-// ---------------------------------------------------------------------------
 
 /// Create a fresh processor instance with all wiring needed for direct
 /// `process()` calls.
@@ -266,10 +246,6 @@ async fn run_scenario(messages: Vec<OtapPdata>, state: &mut ProcessorState) {
     let _ = black_box(output);
 }
 
-// ---------------------------------------------------------------------------
-// Data generation
-// ---------------------------------------------------------------------------
-
 /// Generate all benchmark data.
 ///
 /// Returns `(otlp_messages, otap_messages)` — the same logical data encoded as
@@ -307,7 +283,6 @@ fn build_batch_metrics_data(batch_idx: usize) -> MetricsData {
     let shape = BatchShape::new();
     let mut metrics = Vec::with_capacity(METRICS_PER_BATCH);
 
-    // -- Aggregatable metrics -----------------------------------------------
     // Each type gets a contiguous range of dp_attr stream IDs so every
     // aggregatable metric maps to a unique stream.
     let mut offset = 0;
@@ -331,7 +306,6 @@ fn build_batch_metrics_data(batch_idx: usize) -> MetricsData {
         metrics.push(make_agg_summary(i, batch_idx, offset));
     }
 
-    // -- Non-aggregatable metrics (passthrough) -----------------------------
     for i in 0..shape.n_delta_sums {
         metrics.push(make_delta_sum(i, batch_idx));
     }
@@ -354,10 +328,6 @@ fn build_batch_metrics_data(batch_idx: usize) -> MetricsData {
     )])
 }
 
-// ---------------------------------------------------------------------------
-// Batch shape — all counts derived from METRICS_PER_BATCH and fractions
-// ---------------------------------------------------------------------------
-
 /// Per-batch counts for each metric type, derived from [`METRICS_PER_BATCH`]
 /// and [`AGGREGATABLE_FRACTION`].
 struct BatchShape {
@@ -378,11 +348,11 @@ impl BatchShape {
         let nonagg_total = METRICS_PER_BATCH - agg_total;
 
         // Evenly distribute across types; remainder goes to the first types.
-        let agg_base = agg_total / NUM_AGG_TYPES;
-        let agg_rem = agg_total % NUM_AGG_TYPES;
+        let agg_base = agg_total / NUM_AGGREGATABLE_TYPES;
+        let agg_rem = agg_total % NUM_AGGREGATABLE_TYPES;
 
-        let nonagg_base = nonagg_total / NUM_NONAGG_TYPES;
-        let nonagg_rem = nonagg_total % NUM_NONAGG_TYPES;
+        let nonagg_base = nonagg_total / NUM_NON_AGGREGATABLE_TYPES;
+        let nonagg_rem = nonagg_total % NUM_NON_AGGREGATABLE_TYPES;
 
         let shape = Self {
             n_gauges: agg_base + usize::from(agg_rem > 0),
@@ -409,10 +379,6 @@ impl BatchShape {
         self.n_delta_sums + self.n_delta_hists + self.n_nonmono_sums
     }
 }
-
-// ---------------------------------------------------------------------------
-// Metric builders — aggregatable
-// ---------------------------------------------------------------------------
 
 fn make_agg_gauge(idx: usize, batch_idx: usize, dp_offset: usize) -> Metric {
     let ts = ((batch_idx + 1) * 1000) as u64;
@@ -485,10 +451,6 @@ fn make_agg_summary(idx: usize, batch_idx: usize, dp_offset: usize) -> Metric {
         .finish()
 }
 
-// ---------------------------------------------------------------------------
-// Metric builders — non-aggregatable
-// ---------------------------------------------------------------------------
-
 fn make_delta_sum(idx: usize, batch_idx: usize) -> Metric {
     let ts = ((batch_idx + 1) * 1000) as u64;
     Metric::build()
@@ -541,10 +503,6 @@ fn make_nonmono_cumulative_sum(idx: usize, batch_idx: usize) -> Metric {
         ))
         .finish()
 }
-
-// ---------------------------------------------------------------------------
-// Attribute helpers (leaf)
-// ---------------------------------------------------------------------------
 
 /// Build the shared resource attributes (String + Int).
 fn resource_attrs() -> Vec<KeyValue> {
