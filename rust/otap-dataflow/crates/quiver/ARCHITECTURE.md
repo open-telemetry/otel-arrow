@@ -1023,11 +1023,11 @@ through `UInt64`).  Widening preserves signedness: unsigned keys widen through
 | `Struct` -> `Dictionary(K, V)` | Yes (one level) | Fully supported; covers all OTAP schemas |
 | `List` / `LargeList` -> `Dictionary` | No | Not needed by OTAP; will error on IPC write |
 | `Map` -> `Dictionary` | No | Not needed by OTAP; will error on IPC write |
-| `Struct` -> `Struct` -> `Dictionary` | No | OTAP forbids nested structs |
+| `Struct` -> `Struct` -> `Dictionary` | No | Not present in current OTAP schemas |
 | `Union` -> `Dictionary` | No | Not used by OTAP |
 
 OTAP schemas use only the first two patterns. If future schemas introduce
-dictionary-encoded fields inside `List`, `Map`, or deeply nested `Struct`
+dictionary-encoded fields inside `List`, `Map`, or `Union`
 columns, the unification logic in `StreamAccumulator` must be extended to
 handle them.
 

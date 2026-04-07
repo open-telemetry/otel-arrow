@@ -340,11 +340,14 @@ fn has_dict_columns(schema: &SchemaRef) -> bool {
         .any(|f| field_has_dict(f.data_type()))
 }
 
-/// Recursively checks whether a data type contains dictionary encoding.
+/// Checks whether a data type contains dictionary encoding at the top level
+/// or one level deep inside a `Struct`.
 fn field_has_dict(dt: &DataType) -> bool {
     match dt {
         DataType::Dictionary(_, _) => true,
-        DataType::Struct(fields) => fields.iter().any(|f| field_has_dict(f.data_type())),
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|f| matches!(f.data_type(), DataType::Dictionary(_, _))),
         _ => false,
     }
 }
