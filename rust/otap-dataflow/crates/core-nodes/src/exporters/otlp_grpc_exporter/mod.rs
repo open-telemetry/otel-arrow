@@ -619,7 +619,7 @@ fn build_grpc_metadata(
                     );
                     continue;
                 };
-                metadata.append(key, value);
+                let _ = metadata.append(key, value);
             }
             ValueKind::Binary => {
                 // Binary metadata: gRPC binary metadata keys must end with `-bin`.
@@ -638,7 +638,7 @@ fn build_grpc_metadata(
                     continue;
                 };
                 let value = MetadataValue::from_bytes(header.value);
-                metadata.append_bin(key, value);
+                let _ = metadata.append_bin(key, value);
             }
         }
     }
