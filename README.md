@@ -58,9 +58,9 @@ Our Golang Collector components [`otelarrowreceiver`][RECEIVER] and
 OpenTelemetry Collector-Contrib distribution since [the July 2024
 release of v0.104.0][ARROW-RELEASED].
 
-Our Rust and Go codebases are both used in production. Our project has
-55+ contributors and 1500+ pull requests merged.  **[Join us in
-`#otel-arrow` on the CNCF Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
+Our project has 55+ contributors and 1500+ pull requests merged.
+**[Join us in `#otel-arrow` on the CNCF
+Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
 
 ## What is Apache Arrow?
 
@@ -99,12 +99,6 @@ OTAP maintains 100% compatibility with the OpenTelemetry data model
 for logs, traces, and metrics, with a straight-forward and non-lossy
 round trip from OTLP to OTAP and back, and support for the
 OpenTelemetry Profiles signal in OTAP is important future work.
-
-In both our Rust and Golang implementations, we support combined OTAP
-and OTLP services on a single port, making OTel-Arrow OTAP/OTLP
-receivers and exporters effective as drop-in replacements for OTLP
-receivers and exporters, and making it easy migrate between OTAP and
-OTLP.
 
 In the OTAP Dataflow Engine, batches of OTAP data are represented
 using **multiple record batches** in an arrangement referred to as a
@@ -147,7 +141,7 @@ cargo build --bin df_engine --no-default-features
 A [directory of example configurations][EXAMPLE-CONFIGS] provides a
 number of examples (e.g.,
 [syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to print
-syslog records to the console on port 5140:
+to receive syslog messages on port 5140 and then print them to console:
 
 > [!NOTE]
 > This is insecure! See the [Syslog/CEF Receiver
