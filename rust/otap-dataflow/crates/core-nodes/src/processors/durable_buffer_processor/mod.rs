@@ -289,6 +289,13 @@ pub struct DurableBufferMetrics {
     /// Current number of spans queued (ingested but not yet ACKed).
     #[metric(unit = "{span}")]
     pub queued_spans: Gauge<u64>,
+
+    // ─── Flush metrics -----------------------------------───────────────────
+    /// Number of segment finalization (flush) failures.
+    /// Non-zero values indicate data at risk -- check logs for root cause.
+    /// Data may still be recoverable via WAL replay on restart.
+    #[metric(unit = "{error}")]
+    pub flush_failures: Counter<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1190,6 +1197,7 @@ impl DurableBuffer {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.flush().await {
+                self.metrics.flush_failures.add(1);
                 // Rate-limit flush warnings since the timer tick fires every
                 // poll_interval (~100ms).
                 let now = Instant::now();
@@ -1760,6 +1768,7 @@ impl DurableBuffer {
             {
                 let (engine, _) = self.engine()?;
                 if let Err(e) = engine.flush().await {
+                    self.metrics.flush_failures.add(1);
                     otel_error!("durable_buffer.shutdown.flush_failed", error = %e);
                 }
             }
@@ -1986,6 +1995,17 @@ pub static DURABLE_BUFFER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactor
 mod tests {
     use super::*;
 
+    // Metric field indices matching `DurableBufferMetrics` declaration order.
+    // New metrics MUST be appended to the struct so these never shift.
+    const IDX_BUNDLES_ACKED: usize = 0;
+    const IDX_BUNDLES_NACKED_DEFERRED: usize = 1;
+    const IDX_BUNDLES_NACKED_PERMANENT: usize = 2;
+    const IDX_RETRIES_SCHEDULED: usize = 22;
+    const IDX_QUEUED_LOG_RECORDS: usize = 27;
+    const IDX_QUEUED_METRIC_POINTS: usize = 28;
+    const IDX_QUEUED_SPANS: usize = 29;
+    const EXPECTED_METRIC_COUNT: usize = 31;
+
     #[test]
     fn test_bundle_ref_encoding_roundtrip() {
         let bundle_ref = BundleRef {
@@ -2160,37 +2180,33 @@ mod tests {
         // Verify total metric count matches DurableBufferMetrics field count
         assert_eq!(
             values.len(),
-            30,
-            "DurableBufferMetrics should have 30 fields, got {}",
+            EXPECTED_METRIC_COUNT,
+            "DurableBufferMetrics should have {EXPECTED_METRIC_COUNT} fields, got {}",
             values.len()
         );
 
-        // Index 0: bundles_acked
         assert_eq!(
-            values[0].to_u64_lossy(),
+            values[IDX_BUNDLES_ACKED].to_u64_lossy(),
             10,
-            "bundles_acked (index 0) should be 10"
+            "bundles_acked should be 10"
         );
 
-        // Index 1: bundles_nacked_deferred
         assert_eq!(
-            values[1].to_u64_lossy(),
+            values[IDX_BUNDLES_NACKED_DEFERRED].to_u64_lossy(),
             5,
-            "bundles_nacked_deferred (index 1) should be 5"
+            "bundles_nacked_deferred should be 5"
         );
 
-        // Index 2: bundles_nacked_permanent
         assert_eq!(
-            values[2].to_u64_lossy(),
+            values[IDX_BUNDLES_NACKED_PERMANENT].to_u64_lossy(),
             3,
-            "bundles_nacked_permanent (index 2) should be 3"
+            "bundles_nacked_permanent should be 3"
         );
 
-        // Index 22: retries_scheduled
         assert_eq!(
-            values[22].to_u64_lossy(),
+            values[IDX_RETRIES_SCHEDULED].to_u64_lossy(),
             5,
-            "retries_scheduled (index 22) should be 5"
+            "retries_scheduled should be 5"
         );
 
         // Verify delta semantics: after snapshot, counters should be cleared.
@@ -2201,22 +2217,22 @@ mod tests {
         if let Ok(snap2) = metrics_rx.try_recv() {
             let vals2 = snap2.get_metrics();
             assert_eq!(
-                vals2[0].to_u64_lossy(),
+                vals2[IDX_BUNDLES_ACKED].to_u64_lossy(),
                 0,
                 "bundles_acked should be 0 after reset"
             );
             assert_eq!(
-                vals2[1].to_u64_lossy(),
+                vals2[IDX_BUNDLES_NACKED_DEFERRED].to_u64_lossy(),
                 0,
                 "bundles_nacked_deferred should be 0 after reset"
             );
             assert_eq!(
-                vals2[2].to_u64_lossy(),
+                vals2[IDX_BUNDLES_NACKED_PERMANENT].to_u64_lossy(),
                 0,
                 "bundles_nacked_permanent should be 0 after reset"
             );
             assert_eq!(
-                vals2[22].to_u64_lossy(),
+                vals2[IDX_RETRIES_SCHEDULED].to_u64_lossy(),
                 0,
                 "retries_scheduled should be 0 after reset"
             );
@@ -2266,11 +2282,11 @@ mod tests {
         queued_log_records = queued_log_records.saturating_sub(30);
         processor.metrics.queued_log_records.set(queued_log_records);
 
-        // Snapshot should show queued_log_records = 70 (index 27)
+        // Snapshot should show queued_log_records = 70
         reporter.report(&mut processor.metrics).unwrap();
         let snap = metrics_rx.try_recv().unwrap();
         assert_eq!(
-            snap.get_metrics()[27].to_u64_lossy(),
+            snap.get_metrics()[IDX_QUEUED_LOG_RECORDS].to_u64_lossy(),
             70,
             "queued_log_records should be 70 after decrementing 30 from 100"
         );
@@ -2282,7 +2298,7 @@ mod tests {
         reporter.report(&mut processor.metrics).unwrap();
         let snap2 = metrics_rx.try_recv().unwrap();
         assert_eq!(
-            snap2.get_metrics()[27].to_u64_lossy(),
+            snap2.get_metrics()[IDX_QUEUED_LOG_RECORDS].to_u64_lossy(),
             0,
             "queued_log_records should be 0 after all items resolved"
         );
@@ -2307,12 +2323,12 @@ mod tests {
         reporter.report(&mut processor.metrics).unwrap();
         let snap3 = metrics_rx.try_recv().unwrap();
         assert_eq!(
-            snap3.get_metrics()[28].to_u64_lossy(),
+            snap3.get_metrics()[IDX_QUEUED_METRIC_POINTS].to_u64_lossy(),
             0,
             "queued_metric_points should be 0"
         );
         assert_eq!(
-            snap3.get_metrics()[29].to_u64_lossy(),
+            snap3.get_metrics()[IDX_QUEUED_SPANS].to_u64_lossy(),
             0,
             "queued_spans should be 0"
         );
@@ -2442,7 +2458,7 @@ mod tests {
         let snap = metrics_rx.try_recv().unwrap();
 
         assert_eq!(
-            snap.get_metrics()[27].to_u64_lossy(),
+            snap.get_metrics()[IDX_QUEUED_LOG_RECORDS].to_u64_lossy(),
             5,
             "queued_log_records gauge should include open-segment items"
         );
