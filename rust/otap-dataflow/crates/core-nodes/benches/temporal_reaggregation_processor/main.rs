@@ -284,15 +284,15 @@ fn build_batch_metrics_data(batch_idx: usize) -> MetricsData {
     }
     offset += shape.n_gauges;
 
-    for i in 0..shape.n_cum_sums {
+    for i in 0..shape.n_cumulative_sums {
         metrics.push(make_agg_cumulative_sum(i, batch_idx, offset));
     }
-    offset += shape.n_cum_sums;
+    offset += shape.n_cumulative_sums;
 
-    for i in 0..shape.n_cum_hists {
+    for i in 0..shape.n_cumulative_histograms {
         metrics.push(make_agg_cumulative_histogram(i, batch_idx, offset));
     }
-    offset += shape.n_cum_hists;
+    offset += shape.n_cumulative_histograms;
 
     for i in 0..shape.n_summaries {
         metrics.push(make_agg_summary(i, batch_idx, offset));
@@ -301,10 +301,10 @@ fn build_batch_metrics_data(batch_idx: usize) -> MetricsData {
     for i in 0..shape.n_delta_sums {
         metrics.push(make_delta_sum(i, batch_idx));
     }
-    for i in 0..shape.n_delta_hists {
+    for i in 0..shape.n_delta_histograms {
         metrics.push(make_delta_histogram(i, batch_idx));
     }
-    for i in 0..shape.n_nonmono_sums {
+    for i in 0..shape.n_non_monotonic_sums {
         metrics.push(make_nonmono_cumulative_sum(i, batch_idx));
     }
 
@@ -325,13 +325,13 @@ fn build_batch_metrics_data(batch_idx: usize) -> MetricsData {
 struct BatchShape {
     // Aggregatable types
     n_gauges: usize,
-    n_cum_sums: usize,
-    n_cum_hists: usize,
+    n_cumulative_sums: usize,
+    n_cumulative_histograms: usize,
     n_summaries: usize,
     // Non-aggregatable types
     n_delta_sums: usize,
-    n_delta_hists: usize,
-    n_nonmono_sums: usize,
+    n_delta_histograms: usize,
+    n_non_monotonic_sums: usize,
 }
 
 impl BatchShape {
@@ -348,12 +348,12 @@ impl BatchShape {
 
         let shape = Self {
             n_gauges: agg_base + usize::from(agg_rem > 0),
-            n_cum_sums: agg_base + usize::from(agg_rem > 1),
-            n_cum_hists: agg_base + usize::from(agg_rem > 2),
+            n_cumulative_sums: agg_base + usize::from(agg_rem > 1),
+            n_cumulative_histograms: agg_base + usize::from(agg_rem > 2),
             n_summaries: agg_base,
             n_delta_sums: nonagg_base + usize::from(nonagg_rem > 0),
-            n_delta_hists: nonagg_base + usize::from(nonagg_rem > 1),
-            n_nonmono_sums: nonagg_base,
+            n_delta_histograms: nonagg_base + usize::from(nonagg_rem > 1),
+            n_non_monotonic_sums: nonagg_base,
         };
 
         debug_assert_eq!(
@@ -364,11 +364,11 @@ impl BatchShape {
     }
 
     fn aggregatable_total(&self) -> usize {
-        self.n_gauges + self.n_cum_sums + self.n_cum_hists + self.n_summaries
+        self.n_gauges + self.n_cumulative_sums + self.n_cumulative_histograms + self.n_summaries
     }
 
     fn non_aggregatable_total(&self) -> usize {
-        self.n_delta_sums + self.n_delta_hists + self.n_nonmono_sums
+        self.n_delta_sums + self.n_delta_histograms + self.n_non_monotonic_sums
     }
 }
 
