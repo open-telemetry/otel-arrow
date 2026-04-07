@@ -239,42 +239,52 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                 // mpsc channel. We drain the channel into `next`, then swap
                 // `current` and `next` so the outputs become the next stage's
                 // inputs.
-                for (sub, slot) in self.sub_processors[..num_subs - 1]
-                    .iter_mut()
-                    .zip(self.buffer_handlers.iter_mut())
-                {
-                    slot.effect_handler.core.set_node_interests(interests);
-                    next.clear();
+                let result: Result<(), Error> = async {
+                    for (sub, slot) in self.sub_processors[..num_subs - 1]
+                        .iter_mut()
+                        .zip(self.buffer_handlers.iter_mut())
+                    {
+                        slot.effect_handler.core.set_node_interests(interests);
+                        next.clear();
 
-                    for data in current.drain(..) {
-                        sub.processor
-                            .process(Message::PData(data), &mut slot.effect_handler)
-                            .await?;
-                        drain_into(&slot.receiver, &mut next);
+                        for data in current.drain(..) {
+                            sub.processor
+                                .process(Message::PData(data), &mut slot.effect_handler)
+                                .await?;
+                            drain_into(&slot.receiver, &mut next);
+                        }
+
+                        std::mem::swap(&mut current, &mut next);
+                        if current.is_empty() {
+                            break;
+                        }
                     }
 
-                    std::mem::swap(&mut current, &mut next);
-                    if current.is_empty() {
-                        break;
+                    // Run the last sub-processor using the real effect handler.
+                    if !current.is_empty() {
+                        let last = self.sub_processors.last_mut().expect("checked non-empty");
+                        for data in current.drain(..) {
+                            last.processor
+                                .process(Message::PData(data), effect_handler)
+                                .await?;
+                        }
                     }
+
+                    Ok(())
                 }
+                .await;
 
-                // Run the last sub-processor using the real effect handler.
-                if !current.is_empty() {
-                    let last = self.sub_processors.last_mut().expect("checked non-empty");
-                    for data in current.drain(..) {
-                        last.processor
-                            .process(Message::PData(data), effect_handler)
-                            .await?;
-                    }
-                }
-
-                // Record composite duration.
+                // Record composite duration split by outcome.
                 if let Some(timer) = timer {
                     let elapsed = timer.elapsed_nanos();
-                    let mut val = self.composite_duration.acc_success().get();
+                    let acc = if result.is_ok() {
+                        self.composite_duration.acc_success()
+                    } else {
+                        self.composite_duration.acc_failed()
+                    };
+                    let mut val = acc.get();
                     val.record(elapsed);
-                    self.composite_duration.acc_success().set(val);
+                    acc.set(val);
                 }
 
                 // Return staging buffers for reuse (already drained).
@@ -283,7 +293,7 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                 self.stage_a = current;
                 self.stage_b = next;
 
-                Ok(())
+                result
             }
         }
     }
@@ -467,6 +477,25 @@ mod tests {
                 }
             }
             Ok(())
+        }
+    }
+
+    /// A processor that always returns an error.
+    struct ErrorProcessor;
+
+    #[async_trait(?Send)]
+    impl Processor<String> for ErrorProcessor {
+        async fn process(
+            &mut self,
+            _msg: Message<String>,
+            _effect_handler: &mut EffectHandler<String>,
+        ) -> Result<(), Error> {
+            Err(Error::ProcessorError {
+                processor: test_node_id("error"),
+                kind: crate::error::ProcessorErrorKind::Other,
+                error: "synthetic error".into(),
+                source_detail: String::new(),
+            })
         }
     }
 
@@ -685,5 +714,38 @@ mod tests {
 
         let snap = chain.composite_duration.acc_success().get().get();
         assert_eq!(snap.count, 0, "no duration should be recorded");
+    }
+
+    /// When a sub-processor errors, the composite records into acc_failed.
+    #[tokio::test]
+    async fn composite_duration_records_failed_on_error() {
+        let (ctx, _) = test_pipeline_ctx();
+        let cd = ComputeDuration::new(&ctx);
+        let mut chain = ProcessorChainNode::new(
+            vec![
+                make_sub(Box::new(SuffixProcessor::new("_A")), "s1"),
+                make_sub(Box::new(ErrorProcessor), "err"),
+            ],
+            cd,
+            128,
+        );
+
+        let (sender, _rx) = mpsc::Channel::new(100);
+        let port: PortName = "default".into();
+        let mut senders: HashMap<PortName, Sender<String>> = HashMap::new();
+        let _ = senders.insert(port.clone(), Sender::new_local_mpsc_sender(sender));
+        let (_metrics_rx, reporter) = test_reporter();
+        let mut eh = EffectHandler::new(test_node_id("chain"), senders, Some(port), reporter);
+        eh.core.set_node_interests(Interests::PROCESS_DURATION);
+
+        let result = chain.process(Message::PData("hello".into()), &mut eh).await;
+        assert!(result.is_err());
+
+        let success_snap = chain.composite_duration.acc_success().get().get();
+        assert_eq!(success_snap.count, 0, "success should have no observations");
+
+        let failed_snap = chain.composite_duration.acc_failed().get().get();
+        assert_eq!(failed_snap.count, 1, "failed should have one observation");
+        assert!(failed_snap.sum > 0.0, "failed duration should be > 0");
     }
 }
