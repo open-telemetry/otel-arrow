@@ -387,6 +387,7 @@ pub enum PropagationSelectorType {
 /// The `type` field selects the strategy. When `type` is `named`,
 /// the `named` field must contain the list of header names to propagate.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PropagationSelector {
     /// The propagation selection strategy to use.
     #[serde(rename = "type", default)]

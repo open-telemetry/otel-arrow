@@ -173,6 +173,12 @@ impl Policies {
                 )),
             }
         }
+
+        if let Some(resources) = &self.resources {
+            if let Err(e) = resources.core_allocation.validate() {
+                errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
+            }
+        }
         if let Some(transport_headers) = &self.transport_headers {
             if let Err(e) = transport_headers
                 .header_propagation
@@ -436,6 +442,49 @@ impl CoreAllocation {
             count: None,
             set: Some(set),
         }
+    }
+
+    /// Validates that the fields are consistent with the selected strategy.
+    ///
+    /// - `all_cores`: `count` and `set` must both be `None`.
+    /// - `core_count`: `count` must be `Some`, `set` must be `None`.
+    /// - `core_set`: `set` must be `Some` and non-empty, `count` must be `None`.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.strategy {
+            CoreAllocationStrategy::AllCores => {
+                if self.count.is_some() {
+                    return Err("'count' must not be set when strategy is 'all_cores'".to_string());
+                }
+                if self.set.is_some() {
+                    return Err("'set' must not be set when strategy is 'all_cores'".to_string());
+                }
+            }
+            CoreAllocationStrategy::CoreCount => {
+                if self.count.is_none() {
+                    return Err("'count' is required when strategy is 'core_count'".to_string());
+                }
+                if self.set.is_some() {
+                    return Err("'set' must not be set when strategy is 'core_count'".to_string());
+                }
+            }
+            CoreAllocationStrategy::CoreSet => {
+                if self.count.is_some() {
+                    return Err("'count' must not be set when strategy is 'core_set'".to_string());
+                }
+                match &self.set {
+                    None => {
+                        return Err("'set' is required when strategy is 'core_set'".to_string());
+                    }
+                    Some(set) if set.is_empty() => {
+                        return Err(
+                            "'set' must not be empty when strategy is 'core_set'".to_string()
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -861,4 +910,117 @@ mod tests {
         assert!(errors[0].contains("'named' list is required"));
     }
 
+    #[test]
+    fn core_allocation_validate_all_cores_valid() {
+        assert!(super::CoreAllocation::all_cores().validate().is_ok());
+    }
+
+    #[test]
+    fn core_allocation_validate_core_count_valid() {
+        assert!(super::CoreAllocation::core_count(4).validate().is_ok());
+    }
+
+    #[test]
+    fn core_allocation_validate_core_set_valid() {
+        assert!(
+            super::CoreAllocation::core_set(vec![super::CoreRange { start: 0, end: 3 }])
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn core_allocation_validate_all_cores_with_count() {
+        let alloc = super::CoreAllocation {
+            strategy: super::CoreAllocationStrategy::AllCores,
+            count: Some(4),
+            set: None,
+        };
+        let err = alloc.validate().unwrap_err();
+        assert!(err.contains("'count' must not be set"));
+    }
+
+    #[test]
+    fn core_allocation_validate_all_cores_with_set() {
+        let alloc = super::CoreAllocation {
+            strategy: super::CoreAllocationStrategy::AllCores,
+            count: None,
+            set: Some(vec![super::CoreRange { start: 0, end: 3 }]),
+        };
+        let err = alloc.validate().unwrap_err();
+        assert!(err.contains("'set' must not be set"));
+    }
+
+    #[test]
+    fn core_allocation_validate_core_count_missing_count() {
+        let alloc = super::CoreAllocation {
+            strategy: super::CoreAllocationStrategy::CoreCount,
+            count: None,
+            set: None,
+        };
+        let err = alloc.validate().unwrap_err();
+        assert!(err.contains("'count' is required"));
+    }
+
+    #[test]
+    fn core_allocation_validate_core_count_with_set() {
+        let alloc = super::CoreAllocation {
+            strategy: super::CoreAllocationStrategy::CoreCount,
+            count: Some(4),
+            set: Some(vec![super::CoreRange { start: 0, end: 3 }]),
+        };
+        let err = alloc.validate().unwrap_err();
+        assert!(err.contains("'set' must not be set"));
+    }
+
+    #[test]
+    fn core_allocation_validate_core_set_missing_set() {
+        let alloc = super::CoreAllocation {
+            strategy: super::CoreAllocationStrategy::CoreSet,
+            count: None,
+            set: None,
+        };
+        let err = alloc.validate().unwrap_err();
+        assert!(err.contains("'set' is required"));
+    }
+
+    #[test]
+    fn core_allocation_validate_core_set_empty_set() {
+        let alloc = super::CoreAllocation {
+            strategy: super::CoreAllocationStrategy::CoreSet,
+            count: None,
+            set: Some(vec![]),
+        };
+        let err = alloc.validate().unwrap_err();
+        assert!(err.contains("'set' must not be empty"));
+    }
+
+    #[test]
+    fn core_allocation_validate_core_set_with_count() {
+        let alloc = super::CoreAllocation {
+            strategy: super::CoreAllocationStrategy::CoreSet,
+            count: Some(4),
+            set: Some(vec![super::CoreRange { start: 0, end: 3 }]),
+        };
+        let err = alloc.validate().unwrap_err();
+        assert!(err.contains("'count' must not be set"));
+    }
+
+    #[test]
+    fn validates_core_allocation_in_policies() {
+        let policies = Policies {
+            resources: Some(super::ResourcesPolicy {
+                core_allocation: super::CoreAllocation {
+                    strategy: super::CoreAllocationStrategy::CoreCount,
+                    count: None,
+                    set: None,
+                },
+            }),
+            ..Default::default()
+        };
+        let errors = policies.validation_errors("policies");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("resources.core_allocation"));
+        assert!(errors[0].contains("'count' is required"));
+    }
 }

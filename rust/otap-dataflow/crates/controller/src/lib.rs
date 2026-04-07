@@ -1716,17 +1716,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
                         Ok(selected)
                     }
-                    None => {
-                        Err(Error::InvalidCoreAllocation {
-                            alloc: core_allocation.clone(),
-                            message: "No range of cores supplied for allocation".to_owned(),
-                            available: core_affinity::get_core_ids()
-                                .unwrap_or_default()
-                                .iter()
-                                .map(|c| c.id)
-                                .collect(),
-                        })
-                    }
+                    None => Err(Error::InvalidCoreAllocation {
+                        alloc: core_allocation.clone(),
+                        message: "No range of cores supplied for allocation".to_owned(),
+                        available: core_affinity::get_core_ids()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|c| c.id)
+                            .collect(),
+                    }),
                 }
             }
         }
