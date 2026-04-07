@@ -24,6 +24,7 @@ by the crate and log events emitted via `otel_*` log macros.
 | `azure_monitor_exporter.metrics.auth_failures` | Number of failed authentication attempts. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/auth.rs` |
 | `azure_monitor_exporter.metrics.auth_success_latency` | Authentication success latency in milliseconds (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/auth.rs` |
 | `azure_monitor_exporter.metrics.batch_size` | Compressed batch size in bytes (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
+| `azure_monitor_exporter.metrics.batch_uncompressed_size` | Uncompressed batch size in bytes (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `azure_monitor_exporter.metrics.in_flight_exports` | Current number of in-flight export requests. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `azure_monitor_exporter.metrics.batch_to_msg_count` | Current number of batch-to-message mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `azure_monitor_exporter.metrics.msg_to_batch_count` | Current number of message-to-batch mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
