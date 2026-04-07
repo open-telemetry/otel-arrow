@@ -33,9 +33,9 @@ Other metric types are passed through unchanged.
 This processor has the following limitations:
 
 - Exemplars for aggregated metrics are dropped, however exemplars for passed through metrics are
-preserved.
+  preserved.
 - Array and Map attribute values are discarded for the purpose of identifying metrics due to
-a current limitation with OTAP views.
+  a current limitation with OTAP views.
 
 ## Configuration
 
@@ -51,9 +51,9 @@ temporal-reaggregation:
     inbound_request_limit: 1024
 
     # The maximum number of outbound request contexts that this processor can
-    # buffer for ack/nack tracking. 
+    # buffer for ack/nack tracking.
     #
-    # It's recommended to set this to higher than inbound_request_limit if your 
+    # It's recommended to set this to higher than inbound_request_limit if your
     # batches mostly contain a mix of aggregable and non-aggregable metrics.
     #
     # It's recommended to set this closer to inbound_request_limit if your batches contain
@@ -71,10 +71,10 @@ temporal-reaggregation:
 It is recommended to place this processor:
 
 1. Before any batch processor in the same pipeline, as this processor will resize batches and
-generally produces a larger number of smaller output batches than were input. 
-2. Before any retry processors in the same pipeline because this processor does not support 
-returning pdata for similar reasons to the batch processor in that it's memory expensive to
-hold them.
+   generally produces a larger number of smaller output batches than were input.
+2. Before any retry processors in the same pipeline because this processor does not support
+   returning pdata for similar reasons to the batch processor in that it's memory expensive to
+   hold them.
 
-A typical pipeline ordering with batch, temporal_reaggregation, and retry processors would 
+A typical pipeline ordering with batch, temporal_reaggregation, and retry processors would
 be: `receivers -> temporal_reaggregation -> batch -> retry -> exporters`
