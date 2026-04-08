@@ -894,6 +894,11 @@ mod tests {
     // Imports only used by tests that are skipped on Windows
     #[cfg(not(windows))]
     use {
+        otap_df_config::transport_headers::{TransportHeader, TransportHeaders},
+        otap_df_config::transport_headers_policy::{
+            HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
+            PropagationOverride, PropagationSelector,
+        },
         otap_df_engine::control::{
             Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
             pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -904,11 +909,6 @@ mod tests {
         otap_df_engine::testing::create_not_send_channel,
         otap_df_telemetry::metrics::MetricSetSnapshot,
         otap_df_telemetry::reporter::MetricsReporter,
-        otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
-        otap_df_config::transport_headers_policy::{
-        HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
-        PropagationOverride, PropagationSelector,
-    };
     };
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
