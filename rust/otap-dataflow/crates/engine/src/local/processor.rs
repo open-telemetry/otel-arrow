@@ -33,7 +33,7 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
-use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
+use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupSlot};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
@@ -41,6 +41,9 @@ use crate::error::{Error, TypedError};
 use crate::message::{Message, Sender};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::process_duration::ComputeDuration;
+use crate::processor::ProcessorRuntimeRequirements;
+use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -67,7 +70,13 @@ pub trait Processor<PData> {
     /// - Transform the message and return a new message
     /// - Filter the message by returning None
     /// - Split the message into multiple messages by returning a vector
-    /// - Handle control messages (e.g., Config, TimerTick, Shutdown)
+    /// - Handle control messages (e.g., Config, TimerTick, Wakeup, Shutdown)
+    ///
+    /// Processor-local wakeups are scheduled through
+    /// [`EffectHandler::set_wakeup`]. They are delivered back to the processor
+    /// as `Message::Control(NodeControlMsg::Wakeup { .. })` through the normal
+    /// inbox path and participate in the same control-vs-pdata fairness rules
+    /// as other control traffic.
     ///
     /// # Parameters
     ///
@@ -95,6 +104,15 @@ pub trait Processor<PData> {
     /// messages (acks/nacks) until the processor signals it is ready again. Defaults to `true`.
     fn accept_pdata(&self) -> bool {
         true
+    }
+
+    /// Returns optional runtime services that this processor needs from the engine.
+    ///
+    /// This is the single source of truth for runtime wiring. For example,
+    /// `local_wakeups: Some(...)` both enables processor-local wakeups and
+    /// declares the live slot count the engine must provision.
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements::none()
     }
 }
 
@@ -149,6 +167,23 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         self.core.node_interests()
+    }
+
+    /// Time a synchronous, fallible closure if process-duration timing
+    /// is enabled.
+    ///
+    /// Delegates to [`ComputeDuration::timed`] with this handler's
+    /// precomputed interests.  Duration is recorded into the `ok` or
+    /// `err` accumulator based on the closure's `Result` outcome.
+    /// The closure-based API structurally prevents timing from
+    /// spanning `.await` points.
+    #[inline]
+    pub fn timed<T, E>(
+        &self,
+        cd: &ComputeDuration,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        cd.timed(self.core.node_interests(), f)
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -239,25 +274,24 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the pipeline controller for context unwinding.
-    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_ack(ack).await
-    }
-
-    /// Send a Nack to the pipeline controller for context unwinding.
-    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_nack(nack).await
-    }
-
     /// Delay data.
     pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.delay_data(when, data).await
+    }
+
+    /// Set or replace a processor-local wakeup.
+    pub fn set_wakeup(
+        &self,
+        slot: WakeupSlot,
+        when: Instant,
+    ) -> Result<WakeupSetOutcome, WakeupError> {
+        self.core.set_wakeup(slot, when)
+    }
+
+    /// Cancel a previously scheduled processor-local wakeup.
+    #[must_use]
+    pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
+        self.core.cancel_wakeup(slot)
     }
 
     /// Reports metrics collected by the processor.
@@ -269,35 +303,126 @@ impl<PData> EffectHandler<PData> {
         self.core.report_metrics(metrics)
     }
 
-    /// Sets the pipeline control message sender for this effect handler.
+    /// Sets the runtime control message sender for this effect handler.
     ///
     /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
     /// the engine wiring sets this automatically in `prepare_runtime`.
-    pub fn set_pipeline_ctrl_msg_sender(
+    pub fn set_runtime_ctrl_msg_sender(
         &mut self,
-        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
+        runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
     ) {
         self.core
-            .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
+            .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_sender);
+    }
+
+    /// Sets the pipeline result message sender for this effect handler.
+    ///
+    /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
+    /// the engine wiring sets this automatically in `prepare_runtime`.
+    pub fn set_pipeline_completion_msg_sender(
+        &mut self,
+        pipeline_completion_msg_sender: crate::control::PipelineCompletionMsgSender<PData>,
+    ) {
+        self.core
+            .set_pipeline_completion_msg_sender(pipeline_completion_msg_sender);
     }
 
     // More methods will be added in the future as needed.
+}
+
+#[async_trait(?Send)]
+impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for EffectHandler<PData> {
+    async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+        self.core.route_ack(ack).await
+    }
+
+    async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+        self.core.route_nack(nack).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(missing_docs)]
     use super::*;
+    use crate::_private::AckNackRouting;
+    use crate::completion_emission_metrics::make_completion_emission_metrics;
+    use crate::context::ControllerContext;
+    use crate::control::{
+        AckMsg, Frame, NackMsg, PipelineCompletionMsg, RouteData, WakeupSlot,
+        pipeline_completion_msg_channel,
+    };
+    use crate::entity_context::NodeTelemetryHandle;
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
+    use crate::{Interests, Unwindable, WakeupError};
     use otap_df_channel::error::SendError;
     use otap_df_channel::mpsc;
+    use otap_df_config::{MetricLevel, node::NodeKind};
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
     use tokio::time::{Duration, timeout};
 
     fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestPData {
+        frames: Vec<Frame>,
+    }
+
+    impl TestPData {
+        fn with_ack_frame(node_id: usize) -> Self {
+            Self {
+                frames: vec![Frame {
+                    node_id,
+                    interests: Interests::ACKS,
+                    route: RouteData::default(),
+                }],
+            }
+        }
+
+        fn with_nack_frame(node_id: usize) -> Self {
+            Self {
+                frames: vec![Frame {
+                    node_id,
+                    interests: Interests::NACKS,
+                    route: RouteData::default(),
+                }],
+            }
+        }
+    }
+
+    impl Unwindable for TestPData {
+        fn has_frames(&self) -> bool {
+            !self.frames.is_empty()
+        }
+
+        fn pop_frame(&mut self) -> Option<Frame> {
+            self.frames.pop()
+        }
+
+        fn drop_payload(&mut self) {}
+    }
+
+    fn test_node_telemetry() -> (TelemetryRegistryHandle, NodeTelemetryHandle) {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline_ctx = controller
+            .pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
+            .with_node_context(
+                "test_node".into(),
+                "urn:test:processor:example".into(),
+                NodeKind::Processor,
+                HashMap::new(),
+            );
+        let entity_key = pipeline_ctx.register_node_entity();
+        (
+            registry,
+            NodeTelemetryHandle::new(pipeline_ctx.metrics_registry(), entity_key),
+        )
     }
 
     #[tokio::test]
@@ -360,6 +485,25 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// Scenario: a processor effect handler has not been wired with the
+    /// processor-local wakeup runtime capability and attempts to schedule a
+    /// wakeup anyway.
+    /// Guarantees: the call fails with `WakeupError::Unsupported` instead of
+    /// panicking, so non-opting processors do not require the wakeup runtime
+    /// machinery to exist.
+    #[test]
+    fn effect_handler_set_wakeup_without_runtime_support_returns_unsupported() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+
+        assert_eq!(
+            eh.set_wakeup(WakeupSlot(0), Instant::now()),
+            Err(WakeupError::Unsupported)
+        );
+        assert!(!eh.cancel_wakeup(WakeupSlot(0)));
     }
 
     #[tokio::test]
@@ -427,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_handler_try_send_message_channel_full() {
+    fn effect_handler_try_send_message_inbox_full() {
         // Create a channel with capacity 1
         let (tx, _rx) = channel::<u64>(1);
         let mut senders = HashMap::new();
@@ -520,5 +664,105 @@ mod tests {
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);
         assert!(matches!(result, Err(TypedError::Error(_))));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_ack_records_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_ack(AckMsg::new(TestPData::with_ack_frame(1)))
+            .await
+            .expect("route_ack should succeed");
+
+        assert!(matches!(
+            completion_rx.recv().await.expect("completion message"),
+            PipelineCompletionMsg::DeliverAck { .. }
+        ));
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (1, 0));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_nack_records_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_nack(NackMsg::new("test nack", TestPData::with_nack_frame(1)))
+            .await
+            .expect("route_nack should succeed");
+
+        assert!(matches!(
+            completion_rx.recv().await.expect("completion message"),
+            PipelineCompletionMsg::DeliverNack { .. }
+        ));
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (0, 1));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_ack_without_frames_does_not_record_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel::<TestPData>(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_ack(AckMsg::new(TestPData { frames: Vec::new() }))
+            .await
+            .expect("route_ack without frames should be a no-op");
+
+        assert!(
+            timeout(Duration::from_millis(50), completion_rx.recv())
+                .await
+                .is_err()
+        );
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (0, 0));
     }
 }

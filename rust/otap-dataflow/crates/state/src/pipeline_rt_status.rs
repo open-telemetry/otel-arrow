@@ -194,6 +194,12 @@ impl PipelineRuntimeStatus {
                     );
                 }
             }
+            EventType::Success(
+                OkEv::IngressDrainStarted
+                | OkEv::ReceiversDrained
+                | OkEv::DownstreamShutdownStarted,
+            )
+            | EventType::Error(ErrEv::DrainDeadlineReached) => {}
             EventType::Error(err) => {
                 let (reason, message) = error_reason_and_message(err, event);
                 _ = self.ready_condition.update(
@@ -456,6 +462,14 @@ impl PipelineRuntimeStatus {
             | (PipelinePhase::Running, EventType::Success(OkEv::Ready))
             | (PipelinePhase::Updating, EventType::Success(OkEv::UpdateAdmitted))
             | (PipelinePhase::RollingBack, EventType::Error(ErrEv::UpdateFailed(_)))
+            | (PipelinePhase::Starting, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Running, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Updating, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::RollingBack, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::ReceiversDrained))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::DownstreamShutdownStarted))
+            | (PipelinePhase::Draining, EventType::Error(ErrEv::DrainDeadlineReached))
             | (PipelinePhase::Draining, EventType::Request(Req::ShutdownRequested))
             | (PipelinePhase::Stopped, EventType::Success(OkEv::Drained)) => ApplyOutcome::NoChange,
 
@@ -531,6 +545,7 @@ fn error_reason_and_message(err: &ErrEv, event: &EngineEvent) -> (ConditionReaso
         ErrEv::UpdateFailed(_) => ConditionReason::UpdateFailed,
         ErrEv::RollbackFailed(_) => ConditionReason::RollbackFailed,
         ErrEv::DrainError(_) => ConditionReason::DrainError,
+        ErrEv::DrainDeadlineReached => ConditionReason::DrainError,
         ErrEv::RuntimeError(_) => ConditionReason::RuntimeError,
         ErrEv::DeleteError(_) => ConditionReason::DeleteError,
     };
@@ -543,6 +558,10 @@ fn error_reason_and_message(err: &ErrEv, event: &EngineEvent) -> (ConditionReaso
         | ErrEv::DrainError(summary)
         | ErrEv::RuntimeError(summary)
         | ErrEv::DeleteError(summary) => summary_message(summary),
+        ErrEv::DrainDeadlineReached => event
+            .message
+            .clone()
+            .or_else(|| Some("Drain deadline reached before natural completion.".to_string())),
     });
 
     (reason, message)
@@ -676,5 +695,66 @@ mod tests {
         let err = p.apply(EventType::Success(OkEv::Ready)).unwrap_err();
         assert!(matches!(err, InvalidTransition { .. }));
         assert_eq!(p.phase, PipelinePhase::Pending); // unchanged
+    }
+
+    /// Validates that the state machine rejects `Ready` if `Admitted` was never
+    /// applied. A core in `Pending` must not silently advance to `Running` on an
+    /// incomplete lifecycle sequence.
+    #[test]
+    fn skipped_admitted_causes_ready_rejection() {
+        use std::collections::HashSet;
+
+        let total_cores: usize = 64;
+        // Simulate the cores whose Admitted event was dropped by the channel.
+        let dropped_cores: HashSet<usize> = [5, 10, 15, 49, 50, 51].into_iter().collect();
+
+        let mut statuses: Vec<PipelineRuntimeStatus> = (0..total_cores)
+            .map(|_| PipelineRuntimeStatus::default())
+            .collect();
+
+        // Step 1: Only cores whose Admitted was NOT dropped advance to Starting.
+        for (core, status) in statuses.iter_mut().enumerate() {
+            if !dropped_cores.contains(&core) {
+                let outcome = status.apply(EventType::Success(OkEv::Admitted)).unwrap();
+                assert!(matches!(
+                    outcome,
+                    ApplyOutcome::Transition {
+                        from: PipelinePhase::Pending,
+                        to: PipelinePhase::Starting
+                    }
+                ));
+            }
+        }
+
+        // Step 2: Ready arrives for every core (the channel has drained by now).
+        let mut stuck_count = 0;
+        for (core, status) in statuses.iter_mut().enumerate() {
+            match status.apply(EventType::Success(OkEv::Ready)) {
+                Ok(_) => {
+                    // Core received both Admitted and Ready ⇒ Running.
+                    assert_eq!(status.phase, PipelinePhase::Running);
+                    assert!(
+                        !dropped_cores.contains(&core),
+                        "core {core} should not have reached Running"
+                    );
+                }
+                Err(InvalidTransition { phase, .. }) => {
+                    // Core whose Admitted was dropped ⇒ still Pending.
+                    assert_eq!(phase, PipelinePhase::Pending);
+                    assert!(
+                        dropped_cores.contains(&core),
+                        "core {core} unexpectedly stuck in Pending"
+                    );
+                    stuck_count += 1;
+                }
+                Err(e) => panic!("unexpected error for core {core}: {e}"),
+            }
+        }
+
+        assert_eq!(
+            stuck_count,
+            dropped_cores.len(),
+            "Every core with a dropped Admitted should be stuck in Pending"
+        );
     }
 }

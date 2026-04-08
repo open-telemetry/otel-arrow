@@ -64,6 +64,18 @@ where
         self.keys.append_slice(val);
     }
 
+    /// Returns the number of attribute rows appended to the builder.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Returns `true` if no attribute rows have been appended.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Finish this builder and produce the resulting RecordBatch
     pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
         let mut columns = vec![];
@@ -89,6 +101,9 @@ where
         }
 
         self.any_values_builder.finish(&mut columns, &mut fields)?;
+        if fields.is_empty() {
+            return Ok(RecordBatch::new_empty(Arc::new(Schema::empty())));
+        }
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
     }
 }
@@ -168,6 +183,9 @@ where
         }
 
         self.any_values_builder.finish(&mut columns, &mut fields)?;
+        if fields.is_empty() {
+            return Ok(RecordBatch::new_empty(Arc::new(Schema::empty())));
+        }
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
     }
 }

@@ -10,15 +10,17 @@
 use crate::Interests;
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
+use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::{
+    Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
+};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
-use crate::message;
-use crate::message::{Receiver, Sender};
+use crate::message::{ExporterInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -26,6 +28,7 @@ use crate::terminal_state::TerminalState;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 
@@ -52,6 +55,8 @@ pub enum ExporterWrapper<PData> {
         pdata_receiver: Option<Receiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Pre-resolved propagation policy for transport header forwarding.
+        propagation_policy: Option<HeaderPropagationPolicy>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
@@ -71,6 +76,8 @@ pub enum ExporterWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Pre-resolved propagation policy for transport header forwarding.
+        propagation_policy: Option<HeaderPropagationPolicy>,
     },
 }
 
@@ -111,6 +118,7 @@ impl<PData> ExporterWrapper<PData> {
             control_receiver: LocalReceiver::mpsc(control_receiver),
             pdata_receiver: None, // This will be set later
             telemetry: None,
+            propagation_policy: None,
         }
     }
 
@@ -137,6 +145,7 @@ impl<PData> ExporterWrapper<PData> {
             control_receiver: SharedReceiver::mpsc(control_receiver),
             pdata_receiver: None, // This will be set later
             telemetry: None,
+            propagation_policy: None,
         }
     }
 
@@ -150,6 +159,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_sender,
                 control_receiver,
                 pdata_receiver,
+                propagation_policy,
                 ..
             } => ExporterWrapper::Local {
                 node_id,
@@ -160,6 +170,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_receiver,
                 pdata_receiver,
                 telemetry: Some(guard),
+                propagation_policy,
             },
             ExporterWrapper::Shared {
                 node_id,
@@ -169,6 +180,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_sender,
                 control_receiver,
                 pdata_receiver,
+                propagation_policy,
                 ..
             } => ExporterWrapper::Shared {
                 node_id,
@@ -179,6 +191,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_receiver,
                 pdata_receiver,
                 telemetry: Some(guard),
+                propagation_policy,
             },
         }
     }
@@ -206,6 +219,7 @@ impl<PData> ExporterWrapper<PData> {
                 exporter,
                 pdata_receiver,
                 telemetry,
+                propagation_policy,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -228,6 +242,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_receiver,
                     pdata_receiver,
                     telemetry,
+                    propagation_policy,
                 }
             }
             ExporterWrapper::Shared {
@@ -239,6 +254,7 @@ impl<PData> ExporterWrapper<PData> {
                 exporter,
                 pdata_receiver,
                 telemetry,
+                propagation_policy,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -261,6 +277,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_receiver,
                     pdata_receiver,
                     telemetry,
+                    propagation_policy,
                 }
             }
         }
@@ -269,9 +286,28 @@ impl<PData> ExporterWrapper<PData> {
     /// Starts the exporter and begins exporting incoming data.
     pub async fn start(
         self,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
+    ) -> Result<TerminalState, Error> {
+        self.start_with_completion_metrics(
+            runtime_ctrl_msg_tx,
+            pipeline_completion_msg_tx,
+            metrics_reporter,
+            node_interests,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_completion_metrics(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -280,6 +316,7 @@ impl<PData> ExporterWrapper<PData> {
                     exporter,
                     control_receiver,
                     pdata_receiver,
+                    propagation_policy,
                     ..
                 },
                 metrics_reporter,
@@ -294,15 +331,22 @@ impl<PData> ExporterWrapper<PData> {
                 })?;
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
-                let message_channel = message::MessageChannel::new(
+                effect_handler
+                    .core
+                    .set_completion_emission_metrics(completion_emission_metrics.clone());
+                effect_handler.set_propagation_policy(propagation_policy);
+                let inbox = ExporterInbox::new(
                     Receiver::Local(control_receiver),
                     pdata_rx,
                     node_id.index,
                     node_interests,
                 );
-                exporter.start(message_channel, effect_handler).await
+                exporter.start(inbox, effect_handler).await
             }
             (
                 ExporterWrapper::Shared {
@@ -310,6 +354,7 @@ impl<PData> ExporterWrapper<PData> {
                     exporter,
                     control_receiver,
                     pdata_receiver,
+                    propagation_policy,
                     ..
                 },
                 metrics_reporter,
@@ -324,16 +369,72 @@ impl<PData> ExporterWrapper<PData> {
                 })?;
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
+                effect_handler
+                    .core
+                    .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
                 effect_handler.core.set_node_interests(node_interests);
-                let message_channel = shared::MessageChannel::new(
+                effect_handler
+                    .core
+                    .set_completion_emission_metrics(completion_emission_metrics);
+                effect_handler.set_propagation_policy(propagation_policy);
+                let inbox = shared::ExporterInbox::new(
                     control_receiver,
                     pdata_rx,
                     node_id.index,
                     node_interests,
                 );
-                exporter.start(message_channel, effect_handler).await
+                exporter.start(inbox, effect_handler).await
             }
+        }
+    }
+
+    /// Returns the wrapper with the given pre-resolved propagation policy for
+    /// transport header forwarding.
+    pub(crate) fn with_propagation_policy(self, policy: Option<HeaderPropagationPolicy>) -> Self {
+        match self {
+            ExporterWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry,
+                ..
+            } => ExporterWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry,
+                propagation_policy: policy,
+            },
+            ExporterWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry,
+                ..
+            } => ExporterWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry,
+                propagation_policy: policy,
+            },
         }
     }
 }
@@ -412,9 +513,9 @@ mod tests {
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::local::message::LocalReceiver;
-    use crate::message;
-    use crate::message::Message;
+    use crate::message::{ExporterInbox, Message, ProcessorInbox, Receiver};
     use crate::shared::exporter as shared;
+    use crate::shared::message::SharedReceiver;
     use crate::terminal_state::TerminalState;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
@@ -448,7 +549,7 @@ mod tests {
     impl local::Exporter<TestMsg> for TestExporter {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: message::MessageChannel<TestMsg>,
+            mut msg_chan: ExporterInbox<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
@@ -485,7 +586,7 @@ mod tests {
     impl shared::Exporter<TestMsg> for TestExporter {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: shared::MessageChannel<TestMsg>,
+            mut msg_chan: shared::ExporterInbox<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             // Loop until a Shutdown event is received.
@@ -604,23 +705,62 @@ mod tests {
             .run_validation(validation_procedure());
     }
 
-    fn make_chan() -> (
+    fn make_chan_with_capacity(
+        capacity: usize,
+    ) -> (
         mpsc::Sender<NodeControlMsg<String>>,
         mpsc::Sender<String>,
-        message::MessageChannel<String>,
+        ExporterInbox<String>,
     ) {
-        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(10);
-        let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(capacity);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(capacity);
         (
             control_tx,
             pdata_tx,
-            message::MessageChannel::new(
-                message::Receiver::Local(LocalReceiver::mpsc(control_rx)),
-                message::Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+            ExporterInbox::new(
+                Receiver::Local(LocalReceiver::mpsc(control_rx)),
+                Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
                 0,
                 Interests::empty(),
             ),
         )
+    }
+
+    fn make_chan() -> (
+        mpsc::Sender<NodeControlMsg<String>>,
+        mpsc::Sender<String>,
+        ExporterInbox<String>,
+    ) {
+        make_chan_with_capacity(10)
+    }
+
+    fn make_processor_chan_with_capacity(
+        capacity: usize,
+    ) -> (
+        mpsc::Sender<NodeControlMsg<String>>,
+        mpsc::Sender<String>,
+        ProcessorInbox<String>,
+    ) {
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(capacity);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(capacity);
+        (
+            control_tx,
+            pdata_tx,
+            ProcessorInbox::new(
+                Receiver::Local(LocalReceiver::mpsc(control_rx)),
+                Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+                0,
+                Interests::empty(),
+            ),
+        )
+    }
+
+    fn make_processor_chan() -> (
+        mpsc::Sender<NodeControlMsg<String>>,
+        mpsc::Sender<String>,
+        ProcessorInbox<String>,
+    ) {
+        make_processor_chan_with_capacity(10)
     }
 
     #[tokio::test]
@@ -845,7 +985,7 @@ mod tests {
     /// recv_when(false) blocks pdata, only returns control messages.
     #[tokio::test]
     async fn test_recv_when_false_blocks_pdata() {
-        let (control_tx, pdata_tx, mut channel) = make_chan();
+        let (control_tx, pdata_tx, mut channel) = make_processor_chan();
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
         control_tx
@@ -914,12 +1054,117 @@ mod tests {
         ));
     }
 
+    // Preload more control messages than the fairness burst limit plus one pdata.
+    // Once admission is open, the channel must force one pdata through instead of
+    // letting sustained control traffic starve it indefinitely.
+    #[tokio::test]
+    async fn test_recv_forces_pdata_after_control_burst() {
+        let (control_tx, pdata_tx, mut channel) = make_chan_with_capacity(64);
+
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+
+        for _ in 0..40 {
+            control_tx
+                .send_async(NodeControlMsg::TimerTick {})
+                .await
+                .unwrap();
+        }
+
+        for _ in 0..32 {
+            let msg = channel.recv().await.unwrap();
+            assert!(matches!(
+                msg,
+                Message::Control(NodeControlMsg::TimerTick {})
+            ));
+        }
+
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+
+        let msg = channel.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::TimerTick {})
+        ));
+    }
+
+    // The same bounded-fair rule must hold while draining after Shutdown is latched.
+    // Buffered pdata should still be surfaced once the control burst limit is hit
+    // when the caller is accepting pdata during shutdown.
+    #[tokio::test]
+    async fn test_recv_when_true_forces_pdata_after_control_burst_during_shutdown() {
+        let (control_tx, pdata_tx, mut channel) = make_chan_with_capacity(64);
+
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now().add(Duration::from_millis(200)),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        for _ in 0..40 {
+            control_tx
+                .send_async(NodeControlMsg::TimerTick {})
+                .await
+                .unwrap();
+        }
+
+        for _ in 0..32 {
+            let msg = channel.recv_when(true).await.unwrap();
+            assert!(matches!(
+                msg,
+                Message::Control(NodeControlMsg::TimerTick {})
+            ));
+        }
+
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+    }
+
+    // Fairness must not punch through closed processor admission.
+    // Even after a large control burst, recv_when(false) keeps pdata buffered
+    // until the processor explicitly reopens admission.
+    #[tokio::test]
+    async fn test_recv_when_false_does_not_bypass_admission_after_control_burst() {
+        let (control_tx, pdata_tx, mut channel) = make_processor_chan_with_capacity(64);
+
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+
+        for _ in 0..40 {
+            control_tx
+                .send_async(NodeControlMsg::TimerTick {})
+                .await
+                .unwrap();
+        }
+
+        for _ in 0..40 {
+            let msg = channel.recv_when(false).await.unwrap();
+            assert!(matches!(
+                msg,
+                Message::Control(NodeControlMsg::TimerTick {})
+            ));
+        }
+
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(
+            result.is_err(),
+            "recv_when(false) should keep pdata buffered even after the control burst limit"
+        );
+
+        let msg = channel.recv_when(true).await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+    }
+
     /// During shutdown draining with accept_pdata=false, pdata is NOT drained.
     /// Instead, control messages are delivered so processors can reduce in-flight
     /// state and reopen capacity.
     #[tokio::test]
-    async fn test_recv_when_false_delivers_control_during_shutdown() {
-        let (control_tx, pdata_tx, mut channel) = make_chan();
+    async fn test_processor_recv_when_false_delivers_control_during_shutdown() {
+        let (control_tx, pdata_tx, mut channel) = make_processor_chan();
 
         // Pre-load pdata
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
@@ -961,11 +1206,54 @@ mod tests {
         ));
     }
 
+    // Exporters own their receive loop, so shutdown draining is allowed to
+    // override temporary admission closure and flush the bounded channel backlog
+    // before the final Shutdown is returned.
+    #[tokio::test]
+    async fn test_exporter_recv_when_false_drains_buffered_pdata_during_shutdown() {
+        let (control_tx, pdata_tx, mut channel) = make_chan();
+
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now().add(Duration::from_millis(200)),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::TimerTick {})
+            .await
+            .unwrap();
+
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(
+            matches!(msg, Message::Control(NodeControlMsg::TimerTick {})),
+            "exporter should still be able to receive control while draining"
+        );
+
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(
+            matches!(msg, Message::PData(ref s) if s == "pdata1"),
+            "exporter should drain buffered pdata during shutdown even when admission is closed"
+        );
+
+        drop(pdata_tx);
+
+        let msg = channel.recv_when(false).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
     /// recv_when(false) with only pdata available should not return pdata.
     /// When a control message is then sent, it should be returned.
     #[tokio::test]
     async fn test_recv_when_false_waits_for_control() {
-        let (control_tx, pdata_tx, mut channel) = make_chan();
+        let (control_tx, pdata_tx, mut channel) = make_processor_chan();
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
 
@@ -988,7 +1276,7 @@ mod tests {
         ));
 
         // pdata still buffered
-        let msg = channel.recv().await.unwrap();
+        let msg = channel.recv_when(true).await.unwrap();
         assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
     }
 
@@ -996,7 +1284,7 @@ mod tests {
     /// synthetic Shutdown instead of blocking forever.
     #[tokio::test]
     async fn test_recv_when_false_detects_pdata_closed() {
-        let (control_tx, pdata_tx, mut channel) = make_chan();
+        let (control_tx, pdata_tx, mut channel) = make_processor_chan();
 
         // Close the pdata channel
         drop(pdata_tx);
@@ -1021,7 +1309,7 @@ mod tests {
     /// data is drained.
     #[tokio::test]
     async fn test_recv_when_false_closed_with_buffered_data() {
-        let (_control_tx, pdata_tx, mut channel) = make_chan();
+        let (_control_tx, pdata_tx, mut channel) = make_processor_chan();
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
         // Close the channel — data is still buffered
@@ -1047,5 +1335,130 @@ mod tests {
             msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
+    }
+
+    /// Helper that creates a processor-style channel over shared (tokio mpsc)
+    /// control and pdata receivers.
+    fn make_shared_chan() -> (
+        tokio::sync::mpsc::Sender<NodeControlMsg<String>>,
+        tokio::sync::mpsc::Sender<String>,
+        ProcessorInbox<String>,
+    ) {
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel::<NodeControlMsg<String>>(10);
+        let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel::<String>(10);
+        (
+            control_tx,
+            pdata_tx,
+            ProcessorInbox::new(
+                Receiver::Shared(SharedReceiver::mpsc(control_rx)),
+                Receiver::Shared(SharedReceiver::mpsc(pdata_rx)),
+                0,
+                Interests::empty(),
+            ),
+        )
+    }
+
+    /// recv_when(false) on a shared channel with an empty but alive pdata channel
+    /// should NOT trigger a synthetic shutdown. This is the regression test for the
+    /// bug where SharedReceiver::try_recv mapped Empty to Closed.
+    #[tokio::test]
+    async fn test_recv_when_false_shared_empty_alive_no_shutdown() {
+        let (_control_tx, _pdata_tx, mut channel) = make_shared_chan();
+
+        // Channel is empty but sender is alive.
+        // recv_when(false) should block waiting for control — NOT return a shutdown.
+        let result =
+            tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
+        assert!(
+            result.is_err(),
+            "recv_when(false) on empty alive shared channel should block, not trigger shutdown"
+        );
+    }
+
+    /// recv_when(false) on a shared channel with a closed pdata channel
+    /// should correctly detect closure and return a synthetic shutdown.
+    #[tokio::test]
+    async fn test_recv_when_false_shared_closed_detects_shutdown() {
+        let (_control_tx, pdata_tx, mut channel) = make_shared_chan();
+
+        // Close the pdata channel
+        drop(pdata_tx);
+
+        // recv_when(false) should detect the closed channel and return a synthetic Shutdown
+        let msg = tokio::time::timeout(Duration::from_millis(100), channel.recv_when(false))
+            .await
+            .expect("recv_when(false) should not block when shared pdata channel is closed")
+            .unwrap();
+
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    // -- with_propagation_policy tests ----------------------------------------
+
+    use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
+
+    #[test]
+    fn test_with_propagation_policy_none_by_default() {
+        let test_runtime = TestRuntime::<TestMsg>::new();
+        let wrapper = ExporterWrapper::local(
+            TestExporter::new(test_runtime.counters()),
+            test_node(test_runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_exporter_config("test")),
+            test_runtime.config(),
+        );
+
+        match wrapper {
+            ExporterWrapper::Local {
+                propagation_policy, ..
+            } => assert!(propagation_policy.is_none(), "should be None by default"),
+            _ => panic!("expected Local variant"),
+        }
+    }
+
+    #[test]
+    fn test_with_propagation_policy_local() {
+        let test_runtime = TestRuntime::<TestMsg>::new();
+        let wrapper = ExporterWrapper::local(
+            TestExporter::new(test_runtime.counters()),
+            test_node(test_runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_exporter_config("test")),
+            test_runtime.config(),
+        )
+        .with_propagation_policy(Some(HeaderPropagationPolicy::default()));
+
+        match wrapper {
+            ExporterWrapper::Local {
+                propagation_policy, ..
+            } => assert!(
+                propagation_policy.is_some(),
+                "should be set after with_propagation_policy",
+            ),
+            _ => panic!("expected Local variant"),
+        }
+    }
+
+    #[test]
+    fn test_with_propagation_policy_shared() {
+        let test_runtime = TestRuntime::<TestMsg>::new();
+        let wrapper = ExporterWrapper::shared(
+            TestExporter::new(test_runtime.counters()),
+            test_node(test_runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_exporter_config("test")),
+            test_runtime.config(),
+        )
+        .with_propagation_policy(Some(HeaderPropagationPolicy::default()));
+
+        match wrapper {
+            ExporterWrapper::Shared {
+                propagation_policy, ..
+            } => assert!(
+                propagation_policy.is_some(),
+                "should be set after with_propagation_policy",
+            ),
+            _ => panic!("expected Shared variant"),
+        }
     }
 }

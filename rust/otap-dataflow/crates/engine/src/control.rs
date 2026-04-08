@@ -5,7 +5,9 @@
 //! Enables management of node behavior, configuration, and lifecycle events, including shutdown,
 //! configuration updates, and timer management.
 
+use crate::clock;
 use crate::error::{Error, TypedError};
+use crate::memory_limiter::MemoryPressureChanged;
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -13,25 +15,19 @@ use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
 use smallvec::SmallVec;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
-thread_local! {
-    /// Temporary; see nanos_since_birth
-    static BIRTH_KEY: Cell<Instant> = Cell::new(Instant::now());
-}
-
 /// Returns a monotonic timestamp in nanoseconds since an arbitrary process epoch.
 /// Used for duration calculations in pipeline component metrics.
 ///
-/// TODO: This should not use a thread_local; it should not store any
-/// state at all. Use clock_gettime() or windows::QueryPerformanceCounter.
+/// `0` is reserved as the sentinel for "timestamp not set", so this function
+/// always returns a strictly positive value.
+///
 #[must_use]
 pub fn nanos_since_birth() -> u64 {
-    let birth = BIRTH_KEY.get();
-    Instant::now().duration_since(birth).as_nanos().max(1) as u64
+    clock::nanos_since_birth()
 }
 
 /// A 8-byte context value. Supports conversion to and from plain data
@@ -79,6 +75,26 @@ impl From<Context8u8> for f64 {
 /// callers. For example: retry count, sequence and generation
 /// numbers, deadline, num_items, etc.
 pub type CallData = SmallVec<[Context8u8; 3]>;
+
+/// Opaque key used to identify a processor-local scheduled wakeup.
+///
+/// Slots are scoped to a single processor instance. They do not need to be
+/// globally unique across the pipeline, so processors can define local
+/// constants such as `WakeupSlot(0)` for their own internal timers.
+///
+/// Re-scheduling the same slot replaces the previous wakeup for that slot.
+/// The widened `u128` payload lets processors encode compact structured local
+/// identifiers directly when that is more natural than allocating slot numbers.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WakeupSlot(pub u128);
+
+/// Monotonic wakeup revision assigned by the scheduler each time a slot is set.
+///
+/// Re-scheduling an existing slot gives it a new revision. Processors can use
+/// the revision carried back in [`NodeControlMsg::Wakeup`] to distinguish a
+/// current wakeup from a stale delivery for the same slot.
+pub type WakeupRevision = u64;
 
 /// Engine-managed call data envelope. Wraps the CallData with an envelope
 /// containing timestamp. Lives on the forward path (in context stack frames).
@@ -227,6 +243,26 @@ pub enum NodeControlMsg<PData> {
         metrics_reporter: MetricsReporter,
     },
 
+    /// A processor-local wakeup scheduled by the processor effect handler.
+    ///
+    /// This is delivered back through the processor inbox as normal control
+    /// traffic. The slot identifies which logical wakeup fired; processors are
+    /// expected to interpret the slot according to their own local namespace.
+    /// The revision changes every time the slot is (re-)scheduled and allows
+    /// processors to ignore stale wakeups for a reused slot.
+    ///
+    /// Wakeups are best-effort runtime signals rather than durable work items:
+    /// once processor shutdown is latched, pending wakeups are dropped and no
+    /// further wakeups are accepted.
+    Wakeup {
+        /// Scheduled wakeup slot.
+        slot: WakeupSlot,
+        /// Scheduled due time currently associated with this slot.
+        when: Instant,
+        /// Scheduler-assigned revision for this slot schedule.
+        revision: WakeupRevision,
+    },
+
     /// Delayed data returning to the node which delayed it.
     DelayedData {
         /// When resumed
@@ -234,6 +270,21 @@ pub enum NodeControlMsg<PData> {
 
         /// The data.
         data: Box<PData>,
+    },
+
+    /// Announces a process-wide memory pressure transition to receiver-local admission state.
+    MemoryPressureChanged {
+        /// Latest process-wide pressure transition snapshot.
+        update: MemoryPressureChanged,
+    },
+
+    /// Requests that a receiver stop admitting new external work while keeping
+    /// already-admitted work alive until it can finish receiver-local drain work.
+    DrainIngress {
+        /// Deadline for draining ingress.
+        deadline: Instant,
+        /// Human-readable reason for the shutdown.
+        reason: String,
     },
 
     /// Requests a graceful shutdown, requiring the node to finish processing messages and
@@ -248,10 +299,10 @@ pub enum NodeControlMsg<PData> {
     },
 }
 
-/// Control messages sent by nodes to the pipeline engine to manage node-specific operations
-/// and control pipeline behavior.
+/// Runtime-control messages sent by nodes to the pipeline runtime for
+/// orchestration, delayed-data handling, and shutdown.
 #[derive(Debug, Clone)]
-pub enum PipelineControlMsg<PData> {
+pub enum RuntimeControlMsg<PData> {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
     StartTimer {
         /// Identifier of the node for which the timer is being started.
@@ -292,17 +343,12 @@ pub enum PipelineControlMsg<PData> {
         /// The data
         data: Box<PData>,
     },
-    /// Deliver an Ack to the preceding subscriber in the pipeline.
-    /// The controller unwinds the context stack to find the recipient.
-    DeliverAck {
-        /// The Ack
-        ack: AckMsg<PData>,
-    },
-    /// Deliver a Nack to the preceding subscriber in the pipeline.
-    /// The controller unwinds the context stack to find the recipient.
-    DeliverNack {
-        /// The Nack
-        nack: NackMsg<PData>,
+    /// Indicates that a receiver has stopped admitting new ingress and
+    /// completed any receiver-local drain work needed before downstream
+    /// shutdown begins.
+    ReceiverDrained {
+        /// Identifier of the receiver that completed ingress drain.
+        node_id: usize,
     },
     /// Requests shutdown of the pipeline.
     Shutdown {
@@ -311,6 +357,22 @@ pub enum PipelineControlMsg<PData> {
 
         /// Human-readable reason for the shutdown.
         reason: String,
+    },
+}
+
+/// Pipeline-result messages sent by nodes to the pipeline runtime for
+/// Ack/Nack unwinding.
+#[derive(Debug, Clone)]
+pub enum PipelineCompletionMsg<PData> {
+    /// Deliver an Ack to the preceding subscriber in the pipeline.
+    DeliverAck {
+        /// The Ack.
+        ack: AckMsg<PData>,
+    },
+    /// Deliver a Nack to the preceding subscriber in the pipeline.
+    DeliverNack {
+        /// The Nack.
+        nack: NackMsg<PData>,
     },
 }
 
@@ -332,17 +394,31 @@ impl<PData> NodeControlMsg<PData> {
     pub const fn is_shutdown(&self) -> bool {
         matches!(self, NodeControlMsg::Shutdown { .. })
     }
+
+    /// Returns `true` if this control message is an ingress-drain request.
+    #[must_use]
+    pub const fn is_drain_ingress(&self) -> bool {
+        matches!(self, NodeControlMsg::DrainIngress { .. })
+    }
 }
 
-/// Type alias for the channel sender used by nodes to send requests to the pipeline engine.
+/// Type alias for the channel sender used by nodes to send requests to the pipeline runtime.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgSender<PData> = SharedSender<PipelineControlMsg<PData>>;
+pub type RuntimeCtrlMsgSender<PData> = SharedSender<RuntimeControlMsg<PData>>;
 
-/// Type alias for the channel receiver used by the pipeline engine to receive node requests.
+/// Type alias for the channel receiver used by the pipeline runtime to receive node requests.
 ///
 /// This is a multi-producer, single-consumer (MPSC) channel.
-pub type PipelineCtrlMsgReceiver<PData> = SharedReceiver<PipelineControlMsg<PData>>;
+pub type RuntimeCtrlMsgReceiver<PData> = SharedReceiver<RuntimeControlMsg<PData>>;
+
+/// Type alias for the channel sender used by nodes to send Ack/Nack unwind
+/// requests to the pipeline runtime.
+pub type PipelineCompletionMsgSender<PData> = SharedSender<PipelineCompletionMsg<PData>>;
+
+/// Type alias for the channel receiver used by the pipeline runtime to receive
+/// Ack/Nack unwind requests from nodes.
+pub type PipelineCompletionMsgReceiver<PData> = SharedReceiver<PipelineCompletionMsg<PData>>;
 
 /// Trait for sending admin commands without depending on the pipeline data type.
 pub trait PipelineAdminSender: Send + Sync {
@@ -350,10 +426,10 @@ pub trait PipelineAdminSender: Send + Sync {
     fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), Error>;
 }
 
-/// Creates a shared node request channel for communication from nodes to the pipeline engine.
+/// Creates a shared runtime-control channel for communication from nodes to the pipeline runtime.
 ///
 /// The channel is multi-producer, single-consumer (MPSC), allowing multiple nodes to send requests
-/// to a single pipeline engine instance.
+/// to a single pipeline runtime instance.
 ///
 /// # Arguments
 ///
@@ -362,14 +438,26 @@ pub trait PipelineAdminSender: Send + Sync {
 /// # Returns
 ///
 /// A tuple containing the sender and receiver ends of the channel.
-pub fn pipeline_ctrl_msg_channel<PData>(
+pub fn runtime_ctrl_msg_channel<PData>(
     capacity: usize,
-) -> (PipelineCtrlMsgSender<PData>, PipelineCtrlMsgReceiver<PData>) {
+) -> (RuntimeCtrlMsgSender<PData>, RuntimeCtrlMsgReceiver<PData>) {
+    let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+    (SharedSender::mpsc(tx), SharedReceiver::mpsc(rx))
+}
+
+/// Creates the shared pipeline-completion channel used for Ack/Nack unwinding.
+pub fn pipeline_completion_msg_channel<PData>(
+    capacity: usize,
+) -> (
+    PipelineCompletionMsgSender<PData>,
+    PipelineCompletionMsgReceiver<PData>,
+) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (SharedSender::mpsc(tx), SharedReceiver::mpsc(rx))
 }
 
 /// Typed control message sender for a specific node type.
+#[derive(Clone)]
 pub struct TypedControlSender<PData> {
     /// Unique identifier of the node.
     pub node_id: NodeId,
@@ -380,6 +468,7 @@ pub struct TypedControlSender<PData> {
 }
 
 /// Holds the control message senders for all nodes in the pipeline.
+#[derive(Clone)]
 pub struct ControlSenders<PData> {
     senders: HashMap<usize, TypedControlSender<PData>>,
 }
@@ -462,6 +551,71 @@ impl<PData> ControlSenders<PData> {
         self.senders.is_empty()
     }
 
+    /// Returns the number of registered receivers.
+    #[must_use]
+    pub fn receiver_count(&self) -> usize {
+        self.senders
+            .values()
+            .filter(|sender| sender.node_type == NodeType::Receiver)
+            .count()
+    }
+
+    /// Returns the registered receiver ids.
+    #[must_use]
+    pub fn receiver_ids(&self) -> Vec<usize> {
+        self.senders
+            .values()
+            .filter(|sender| sender.node_type == NodeType::Receiver)
+            .map(|sender| sender.node_id.index)
+            .collect()
+    }
+
+    /// Returns the registered non-receiver ids.
+    #[must_use]
+    pub fn non_receiver_ids(&self) -> Vec<usize> {
+        self.senders
+            .values()
+            .filter(|sender| sender.node_type != NodeType::Receiver)
+            .map(|sender| sender.node_id.index)
+            .collect()
+    }
+
+    /// Broadcast an ingress-drain control message to all receivers so they
+    /// stop accepting new external work before downstream shutdown begins.
+    pub async fn drain_receivers(
+        &self,
+        deadline: Instant,
+        reason: String,
+    ) -> Result<(), Vec<TypedError<NodeControlMsg<PData>>>> {
+        let mut errors: Vec<TypedError<NodeControlMsg<PData>>> = Vec::new();
+
+        for typed_sender in self.senders.values() {
+            if typed_sender.node_type != NodeType::Receiver {
+                continue;
+            }
+
+            if let Err(error) = typed_sender
+                .sender
+                .send(NodeControlMsg::DrainIngress {
+                    deadline,
+                    reason: reason.clone(),
+                })
+                .await
+            {
+                errors.push(TypedError::NodeControlMsgSendError {
+                    node_id: typed_sender.node_id.index,
+                    error,
+                });
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
     /// Broadcast a shutdown control message to all receivers in order to drain the pipelines.
     ///
     /// Returns `Ok(())` if all messages were sent successfully, or a vector of errors
@@ -537,15 +691,15 @@ impl<PData> ControlSenders<PData> {
     }
 }
 
-impl<PData> PipelineAdminSender for SharedSender<PipelineControlMsg<PData>>
+impl<PData> PipelineAdminSender for SharedSender<RuntimeControlMsg<PData>>
 where
     PData: Send + Sync + 'static,
 {
     fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), Error> {
-        let shutdown_msg = PipelineControlMsg::Shutdown { deadline, reason };
+        let shutdown_msg = RuntimeControlMsg::Shutdown { deadline, reason };
 
         self.try_send(shutdown_msg)
-            .map_err(|e| Error::PipelineControlMsgError {
+            .map_err(|e| Error::RuntimeMsgError {
                 error: format!("Failed to send shutdown message: {}", e),
             })
     }

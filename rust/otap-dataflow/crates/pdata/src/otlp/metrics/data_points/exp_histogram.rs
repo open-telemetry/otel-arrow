@@ -93,8 +93,8 @@ impl<'a> TryFrom<&'a RecordBatch> for ExpHistogramDpArrays<'a> {
 
 #[allow(missing_docs)]
 pub struct PositiveNegativeArrayAccess<'a> {
-    offset_array: &'a Int32Array,
-    bucket_count: ListValueAccessor<'a, UInt64Type>,
+    pub(crate) offset_array: &'a Int32Array,
+    pub(crate) bucket_count: ListValueAccessor<'a, UInt64Type>,
 }
 
 impl<'a> PositiveNegativeArrayAccess<'a> {

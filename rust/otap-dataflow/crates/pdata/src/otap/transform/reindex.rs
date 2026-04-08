@@ -1135,10 +1135,7 @@ mod tests {
     use arrow::array::RecordBatch;
 
     use crate::error::Error;
-    use crate::otap::transform::testing::{
-        self, assert_no_id_overlaps, extract_relation_fingerprints, find_parent_id_size, logs,
-        metrics, traces,
-    };
+    use crate::otap::transform::testing::{assert_no_id_overlaps, extract_relation_fingerprints};
     use crate::otap::transform::transport_optimize::apply_transport_optimized_encodings;
     use crate::otap::transform::util::{IdColumnType, payload_relations, payload_to_idx};
     use crate::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
@@ -1146,6 +1143,7 @@ mod tests {
     use crate::record_batch;
     use crate::testing::equiv::assert_equivalent;
     use crate::testing::round_trip::otap_to_otlp;
+    use crate::{logs, metrics, traces};
 
     const HALF_U16: u16 = (u16::MAX / 2) + 1;
 
@@ -1156,8 +1154,8 @@ mod tests {
         // Note: We may not have to support u32 here for logs. If this starts
         // failing then the right thing to do might be to remove this test.
         let mut batches = vec![
-            logs!((Logs, ("id", UInt16, vec![0, 1]))),
-            logs!((Logs, ("id", UInt32, vec![0, 1]))),
+            logs!((Logs, ("id", UInt16, vec![0, 1]))).into_batches(),
+            logs!((Logs, ("id", UInt32, vec![0, 1]))).into_batches(),
         ];
         let result = reindex_logs(&mut batches);
         assert!(matches!(result, Err(Error::ColumnDataTypeMismatch { .. })));
@@ -1170,9 +1168,9 @@ mod tests {
         let ids3 = vec![u16::MAX];
 
         let mut batches = vec![
-            logs!((Logs, ("id", UInt16, ids))),
-            logs!((Logs, ("id", UInt16, ids2))),
-            logs!((Logs, ("id", UInt16, ids3))),
+            logs!((Logs, ("id", UInt16, ids))).into_batches(),
+            logs!((Logs, ("id", UInt16, ids2))).into_batches(),
+            logs!((Logs, ("id", UInt16, ids3))).into_batches(),
         ];
         let result = reindex_logs(&mut batches);
         assert!(matches!(result, Err(Error::TooManyItems { .. })));
@@ -1183,11 +1181,11 @@ mod tests {
         let ids = (0..HALF_U16).collect::<Vec<_>>();
         let ids2 = (HALF_U16..u16::MAX).collect::<Vec<_>>();
 
-        let mut batches = vec![
+        let batches = vec![
             logs!((Logs, ("id", UInt16, ids))),
             logs!((Logs, ("id", UInt16, ids2))),
         ];
-        test_reindex_logs(&mut batches);
+        test_reindex_logs(&batches);
     }
 
     #[test]
@@ -1213,11 +1211,11 @@ mod tests {
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
-            ),
+            ).into_batches(),
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
-            ),
+            ).into_batches(),
         ];
 
         reindex_logs(&mut batches).unwrap();
@@ -1241,7 +1239,7 @@ mod tests {
         let child_ids_2  = vec![2, 8, 8, 5, 9, 9, 0, 11, 11];
 
         // Log Attrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1253,7 +1251,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1265,7 +1263,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1287,7 +1285,7 @@ mod tests {
         let child_ids_2  = vec![5, 6, 12, 13, 20, 21];
 
         // Log Attrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1299,7 +1297,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1311,7 +1309,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1331,7 +1329,7 @@ mod tests {
         let child_ids   = vec![0, 0, 1, 1];
 
         // LogAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1343,7 +1341,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1355,7 +1353,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1378,7 +1376,7 @@ mod tests {
         let child_ids_2 = vec![6, 6, 5, 5, 7, 4];
 
         // LogAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1390,7 +1388,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1402,7 +1400,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1424,7 +1422,7 @@ mod tests {
         // Per batch: span=6, len=3, sum(span)=18, need_to_save < 0.
 
         // id
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, vec![0u16, 2, 5])),
                 (LogAttrs, ("parent_id", UInt16, vec![0u16, 2, 5, 2]))
@@ -1440,7 +1438,7 @@ mod tests {
         ]);
 
         // resource.id
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
                        ("resource.id", UInt16, vec![0u16, 0, 2, 5, 5])),
@@ -1459,7 +1457,7 @@ mod tests {
         ]);
 
         // scope.id
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
                        ("scope.id", UInt16, vec![0u16, 0, 2, 5, 5])),
@@ -1490,7 +1488,7 @@ mod tests {
         // total_span=70008, need_to_save=4473. Batch 0 compacts (saves 39998).
 
         // id
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, vec![0u16, 10000, 40000])),
                 (LogAttrs, ("parent_id", UInt16, vec![0u16, 10000, 40000]))
@@ -1506,7 +1504,7 @@ mod tests {
         ]);
 
         // resource.id
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
                        ("resource.id", UInt16, vec![0u16, 0, 10000, 40000, 40000])),
@@ -1525,7 +1523,7 @@ mod tests {
         ]);
 
         // scope.id
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
                        ("scope.id", UInt16, vec![0u16, 0, 10000, 40000, 40000])),
@@ -1558,7 +1556,7 @@ mod tests {
         let even_ids_1: Vec<u16> = (0..32767).map(|i| i * 2).collect();
 
         // id
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, even_ids_0.clone())),
                 (LogAttrs, ("parent_id", UInt16, vec![0u16, 2, 4]))
@@ -1573,7 +1571,7 @@ mod tests {
         let contiguous_ids_0: Vec<u16> = (0..32768).collect();
         let contiguous_ids_1: Vec<u16> = (0..32767).collect();
 
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, contiguous_ids_0.clone()),
                        ("resource.id", UInt16, even_ids_0.clone())),
@@ -1587,7 +1585,7 @@ mod tests {
         ]);
 
         // scope.id
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs, ("id", UInt16, contiguous_ids_0.clone()),
                        ("scope.id", UInt16, even_ids_0.clone())),
@@ -1624,7 +1622,7 @@ mod tests {
         child_pids_1.push(u16::MAX);
 
         // id
-        test_reindex_logs(&mut [
+        test_reindex_logs(&[
             logs!(
                 (Logs, ("id", UInt16, ids_0.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_pids_0.clone()))
@@ -1635,7 +1633,7 @@ mod tests {
             ),
         ]);
 
-        test_reindex_logs(&mut [
+        test_reindex_logs(&[
             logs!(
                 (
                     Logs,
@@ -1655,7 +1653,7 @@ mod tests {
         ]);
 
         // scope.id
-        test_reindex_logs(&mut [
+        test_reindex_logs(&[
             logs!(
                 (
                     Logs,
@@ -1685,7 +1683,7 @@ mod tests {
         let child_ids  = vec![0u16, 0, 1, 1];
 
         // SpanAttrs
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, parent_ids.clone())),
                 (SpanAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1697,7 +1695,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1709,7 +1707,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1728,9 +1726,9 @@ mod tests {
         let ids3 = vec![u16::MAX];
 
         let mut batches = vec![
-            traces!((Spans, ("id", UInt16, ids))),
-            traces!((Spans, ("id", UInt16, ids2))),
-            traces!((Spans, ("id", UInt16, ids3))),
+            traces!((Spans, ("id", UInt16, ids))).into_batches(),
+            traces!((Spans, ("id", UInt16, ids2))).into_batches(),
+            traces!((Spans, ("id", UInt16, ids3))).into_batches(),
         ];
         let result = reindex_traces(&mut batches);
         assert!(matches!(result, Err(Error::TooManyItems { .. })));
@@ -1741,8 +1739,8 @@ mod tests {
         let mut batches: Vec<[Option<RecordBatch>; Traces::COUNT]> = vec![];
         reindex_traces(&mut batches).unwrap();
 
-        let mut batches = vec![traces!((Spans, ("id", UInt16, vec![0u16, 1])))];
-        test_reindex_traces(&mut batches);
+        let batches = vec![traces!((Spans, ("id", UInt16, vec![0u16, 1])))];
+        test_reindex_traces(&batches);
     }
 
     #[test]
@@ -1765,7 +1763,7 @@ mod tests {
         let link_pids_2     = vec![3u16, 4, 4];
         let link_ids_2      = vec![0u32, 1, 2];
 
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, span_ids)),
                 (SpanEvents, ("id", UInt32, event_ids), ("parent_id", UInt16, event_pids)),
@@ -1798,7 +1796,7 @@ mod tests {
         let event_pids_2 = vec![2u16, 3, 3];
 
         // Plain UInt32 parent_ids
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
                 (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids.clone())),
@@ -1812,7 +1810,7 @@ mod tests {
         ]);
 
         // Dict<UInt8, UInt32> parent_ids
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
                 (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids.clone())),
@@ -1826,7 +1824,7 @@ mod tests {
         ]);
 
         // Dict<UInt16, UInt32> parent_ids
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
                 (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids.clone())),
@@ -1841,7 +1839,7 @@ mod tests {
 
         // Mixed: Dict<UInt16, UInt32> event attr parent_ids in first batch,
         // Dict<UInt8, UInt32> event attr parent_ids in second batch
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
                 (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids.clone())),
@@ -1874,7 +1872,7 @@ mod tests {
         let span_attr_pids    = vec![0u16, 5, 3, 10, 10];
         let span_attr_pids_2  = vec![2u16, 7, 12];
 
-        test_reindex_traces(&mut[
+        test_reindex_traces(&[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
                 (SpanEvents, ("id", UInt32, event_ids.clone()), ("parent_id", UInt16, event_pids.clone())),
@@ -1902,7 +1900,7 @@ mod tests {
         let child_ids  = vec![0u16, 0, 1, 1];
 
         // MetricAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, parent_ids.clone())),
                 (MetricAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1914,7 +1912,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1926,7 +1924,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1951,7 +1949,7 @@ mod tests {
         let dp_ids_2      = vec![0u32, 1, 2, 3];
 
         // NumberDataPoints
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (NumberDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone()))
@@ -1963,7 +1961,7 @@ mod tests {
         ]);
 
         // SummaryDataPoints
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (SummaryDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone()))
@@ -1975,7 +1973,7 @@ mod tests {
         ]);
 
         // HistogramDataPoints
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (HistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone()))
@@ -1987,7 +1985,7 @@ mod tests {
         ]);
 
         // ExpHistogramDataPoints
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (ExpHistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone()))
@@ -2013,7 +2011,7 @@ mod tests {
         let dp_attr_pids_2 = vec![0u32, 2, 2];
 
         // NumberDataPoints -> NumberDpAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (NumberDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2027,7 +2025,7 @@ mod tests {
         ]);
 
         // SummaryDataPoints -> SummaryDpAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (SummaryDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2041,7 +2039,7 @@ mod tests {
         ]);
 
         // HistogramDataPoints -> HistogramDpAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (HistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2055,7 +2053,7 @@ mod tests {
         ]);
 
         // ExpHistogramDataPoints -> ExpHistogramDpAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (ExpHistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2086,7 +2084,7 @@ mod tests {
         let exemplar_ids_2  = vec![0u32, 1, 2];
 
         // NumberDataPoints -> NumberDpExemplars
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (NumberDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2100,7 +2098,7 @@ mod tests {
         ]);
 
         // HistogramDataPoints -> HistogramDpExemplars
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (HistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2114,7 +2112,7 @@ mod tests {
         ]);
 
         // ExpHistogramDataPoints -> ExpHistogramDpExemplars
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (ExpHistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2146,7 +2144,7 @@ mod tests {
         let exemplar_attr_pids_2 = vec![0u32, 2, 2];
 
         // NumberDataPoints -> NumberDpExemplars -> NumberDpExemplarAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (NumberDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2162,7 +2160,7 @@ mod tests {
         ]);
 
         // HistogramDataPoints -> HistogramDpExemplars -> HistogramDpExemplarAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (HistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2178,7 +2176,7 @@ mod tests {
         ]);
 
         // ExpHistogramDataPoints -> ExpHistogramDpExemplars -> ExpHistogramDpExemplarAttrs
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (ExpHistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
@@ -2211,7 +2209,7 @@ mod tests {
         let dp_pids_2            = vec![2u16, 3, 3];
 
         // Dict<UInt8, UInt32> for all UInt32 parent_id columns
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids.clone())),
@@ -2227,7 +2225,7 @@ mod tests {
         ]);
 
         // Dict<UInt16, UInt32> for all UInt32 parent_id columns
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids.clone())),
@@ -2244,7 +2242,7 @@ mod tests {
 
         // Mixed: Dict<UInt16, UInt32> exemplar parent_ids and exemplar attr parent_ids in first batch,
         // Dict<UInt8, UInt32> exemplar attr parent_ids in second batch
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids.clone())),
@@ -2295,7 +2293,7 @@ mod tests {
         let metric_attr_pids      = vec![0u16, 5, 3, 10];
         let metric_attr_pids_2    = vec![2u16, 7, 12];
 
-        test_reindex_metrics(&mut[
+        test_reindex_metrics(&[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
                 (NumberDataPoints, ("id", UInt32, num_dp_ids.clone()), ("parent_id", UInt16, num_dp_pids.clone())),
@@ -2324,7 +2322,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_logs_transport_optimized() {
-        let mut batches = vec![
+        let batches = vec![
             logs!(
                 (Logs, ("id", UInt16, vec![0u16, 1, 2, 3])),
                 (LogAttrs, ("parent_id", UInt16, vec![1u16, 2, 2, 0, 3, 3, 2, 2]))
@@ -2334,15 +2332,13 @@ mod tests {
                 (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 3, 3, 2, 2, 1, 1, 2, 2, 0, 0]))
             ),
         ];
-        test_reindex_transport_optimized::<Logs, { Logs::COUNT }>(
-            &mut batches, reindex_logs, |b| OtapArrowRecords::Logs(Logs { batches: b.clone() }),
-        );
+        test_reindex_transport_optimized_logs(& batches);
     }
 
     #[test]
     #[rustfmt::skip]
     fn test_traces_transport_optimized() {
-        let mut batches = vec![
+        let batches = vec![
             traces!(
                 (Spans, ("id", UInt16, vec![0u16, 1, 2])),
                 (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 0, 1])),
@@ -2358,15 +2354,13 @@ mod tests {
                 (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
             ),
         ];
-        test_reindex_transport_optimized::<Traces, { Traces::COUNT }>(
-            &mut batches, reindex_traces, |b| OtapArrowRecords::Traces(Traces { batches: b.clone() }),
-        );
+        test_reindex_transport_optimized_traces(& batches);
     }
 
     #[test]
     #[rustfmt::skip]
     fn test_metrics_transport_optimized() {
-        let mut batches = vec![
+        let batches = vec![
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
                 (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 0, 1])),
@@ -2384,9 +2378,7 @@ mod tests {
                 (MetricAttrs, ("parent_id", UInt16, vec![0u16, 1]))
             ),
         ];
-        test_reindex_transport_optimized::<Metrics, { Metrics::COUNT }>(
-            &mut batches, reindex_metrics, |b| OtapArrowRecords::Metrics(Metrics { batches: b.clone() }),
-        );
+        test_reindex_transport_optimized_metrics(& batches);
     }
 
     // ---- Primary ID bounds tests ----
@@ -2476,14 +2468,14 @@ mod tests {
                 record_batch!(("id", UInt16, ids), ("parent_id", UInt32, pids)).unwrap()
             }
         };
-        testing::complete_batch(payload_type, batch, &[payload_type])
+        crate::otap::testing::mark_id_columns_plain(batch)
     }
 
     #[test]
     fn test_logs_wrong_id_size() {
         let mut batches = vec![
-            logs!((Logs, ("id", UInt32, vec![0u32, 1]))),
-            logs!((Logs, ("id", UInt32, vec![0u32, 1]))),
+            logs!((Logs, ("id", UInt32, vec![0u32, 1]))).into_batches(),
+            logs!((Logs, ("id", UInt32, vec![0u32, 1]))).into_batches(),
         ];
         let result = reindex_logs(&mut batches);
         assert!(
@@ -2503,7 +2495,8 @@ mod tests {
                     ("id", UInt16, vec![0u16, 1]),
                     ("parent_id", UInt16, vec![0u16, 1])
                 )
-            ),
+            )
+            .into_batches(),
             traces!(
                 (Spans, ("id", UInt16, vec![0u16, 1])),
                 (
@@ -2511,7 +2504,8 @@ mod tests {
                     ("id", UInt16, vec![0u16, 1]),
                     ("parent_id", UInt16, vec![0u16, 1])
                 )
-            ),
+            )
+            .into_batches(),
         ];
         let result = reindex_traces(&mut batches);
         assert!(
@@ -2523,25 +2517,17 @@ mod tests {
 
     // ---- Test helpers ----
 
-    fn test_reindex_logs(batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
-        test_reindex::<Logs, { Logs::COUNT }>(batches, reindex_logs, |b| {
-            OtapArrowRecords::Logs(Logs { batches: b.clone() })
-        });
+    /// Converts a raw batch array back into an `OtapArrowRecords` via the store type `S`.
+    fn batches_to_otap<S, const N: usize>(b: &[Option<RecordBatch>; N]) -> OtapArrowRecords
+    where
+        S: OtapBatchStore + Into<OtapArrowRecords>,
+    {
+        let mut store = S::new();
+        store.batches_mut().clone_from_slice(b);
+        store.into()
     }
 
-    fn test_reindex_traces(batches: &mut [[Option<RecordBatch>; Traces::COUNT]]) {
-        test_reindex::<Traces, { Traces::COUNT }>(batches, reindex_traces, |b| {
-            OtapArrowRecords::Traces(Traces { batches: b.clone() })
-        });
-    }
-
-    fn test_reindex_metrics(batches: &mut [[Option<RecordBatch>; Metrics::COUNT]]) {
-        test_reindex::<Metrics, { Metrics::COUNT }>(batches, reindex_metrics, |b| {
-            OtapArrowRecords::Metrics(Metrics { batches: b.clone() })
-        });
-    }
-
-    /// Validates reindexing for any signal:
+    /// Validates reindexing for any signal type:
     /// 1. Converts input to OTLP (before reindex)
     /// 2. Snapshots parent -> child relation fingerprints (before reindex)
     /// 3. Reindexes the batches
@@ -2549,29 +2535,35 @@ mod tests {
     /// 5. Asserts relation fingerprints are unchanged
     /// 6. Converts output to OTLP (after reindex)
     /// 7. Asserts the OTLP data is equivalent
-    fn test_reindex<S, const N: usize>(
-        batches: &mut [[Option<RecordBatch>; N]],
-        reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> Result<()>,
-        to_otap: impl Fn(&[Option<RecordBatch>; N]) -> OtapArrowRecords,
-    ) where
-        S: OtapBatchStore,
+    fn test_reindex_stores<S, const N: usize>(stores: &[S])
+    where
+        S: OtapBatchStore<BatchArray = [Option<RecordBatch>; N]> + Into<OtapArrowRecords> + Clone,
     {
-        let before_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
-        let before_relations = extract_relation_fingerprints::<S, N>(batches);
+        let mut batches: Vec<[Option<RecordBatch>; N]> =
+            stores.iter().cloned().map(|s| s.into_batches()).collect();
 
-        reindex_fn(batches).unwrap();
-        assert_no_id_overlaps::<S, N>(batches);
+        let before_otlp: Vec<_> = batches
+            .iter()
+            .map(|b| otap_to_otlp(&batches_to_otap::<S, N>(b)))
+            .collect();
+        let before_relations = extract_relation_fingerprints::<S, N>(&batches);
 
-        let after_relations = extract_relation_fingerprints::<S, N>(batches);
+        {
+            let mut store = MultiBatchStore::<S, N>::new(&mut batches);
+            reindex_batch_store(&mut store).unwrap();
+        }
+        assert_no_id_overlaps::<S, N>(&batches);
+
+        let after_relations = extract_relation_fingerprints::<S, N>(&batches);
         assert_eq!(
             before_relations, after_relations,
             "Parent-child relations changed after reindexing"
         );
 
-        let after_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
-
-        // Pretty print batches
-        // pretty_print_otap_batches(&batches);
+        let after_otlp: Vec<_> = batches
+            .iter()
+            .map(|b| otap_to_otlp(&batches_to_otap::<S, N>(b)))
+            .collect();
 
         assert_equivalent(&before_otlp, &after_otlp);
     }
@@ -2580,23 +2572,54 @@ mod tests {
     ///
     /// Fingerprinting doesn't work on transport-optimized batches (IDs are
     /// delta-encoded), so we only verify OTLP equivalence before and after.
-    fn test_reindex_transport_optimized<S, const N: usize>(
-        batches: &mut [[Option<RecordBatch>; N]],
-        reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> Result<()>,
-        to_otap: impl Fn(&[Option<RecordBatch>; N]) -> OtapArrowRecords,
-    ) where
-        S: OtapBatchStore,
+    fn test_reindex_transport_optimized_stores<S, const N: usize>(stores: &[S])
+    where
+        S: OtapBatchStore<BatchArray = [Option<RecordBatch>; N]> + Into<OtapArrowRecords> + Clone,
     {
-        apply_transport_encodings::<S, N>(batches);
+        let mut batches: Vec<[Option<RecordBatch>; N]> =
+            stores.iter().cloned().map(|s| s.into_batches()).collect();
 
-        // Convert to OTLP *after* encoding but *before* reindex to get the
-        // reference. `otap_to_otlp` internally strips transport encodings.
-        let before_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
+        apply_transport_encodings::<S, N>(&mut batches);
 
-        reindex_fn(batches).unwrap();
+        let before_otlp: Vec<_> = batches
+            .iter()
+            .map(|b| otap_to_otlp(&batches_to_otap::<S, N>(b)))
+            .collect();
 
-        let after_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
+        {
+            let mut store = MultiBatchStore::<S, N>::new(&mut batches);
+            reindex_batch_store(&mut store).unwrap();
+        }
+
+        let after_otlp: Vec<_> = batches
+            .iter()
+            .map(|b| otap_to_otlp(&batches_to_otap::<S, N>(b)))
+            .collect();
         assert_equivalent(&before_otlp, &after_otlp);
+    }
+
+    fn test_reindex_logs(stores: &[Logs]) {
+        test_reindex_stores::<Logs, { Logs::COUNT }>(stores);
+    }
+
+    fn test_reindex_traces(stores: &[Traces]) {
+        test_reindex_stores::<Traces, { Traces::COUNT }>(stores);
+    }
+
+    fn test_reindex_metrics(stores: &[Metrics]) {
+        test_reindex_stores::<Metrics, { Metrics::COUNT }>(stores);
+    }
+
+    fn test_reindex_transport_optimized_logs(stores: &[Logs]) {
+        test_reindex_transport_optimized_stores::<Logs, { Logs::COUNT }>(stores);
+    }
+
+    fn test_reindex_transport_optimized_traces(stores: &[Traces]) {
+        test_reindex_transport_optimized_stores::<Traces, { Traces::COUNT }>(stores);
+    }
+
+    fn test_reindex_transport_optimized_metrics(stores: &[Metrics]) {
+        test_reindex_transport_optimized_stores::<Metrics, { Metrics::COUNT }>(stores);
     }
 
     #[test]
@@ -2612,7 +2635,7 @@ mod tests {
                 ("parent_id", UInt16, vec![0u16, 1])),
             (SpanEventAttrs,
                 ("parent_id", (UInt8, UInt32), (vec![0u8, 1], vec![0u32, 1, 2, 3])))
-        );
+        ).into_batches();
 
         reindex_traces(&mut [batch_a]).unwrap();
     }
@@ -2637,7 +2660,7 @@ mod tests {
         let log_ids_2      = vec![0u16, 1];
         let resource_ids_2 = vec![0u16, 1];
 
-        test_reindex_logs(&mut [
+        test_reindex_logs(& [
             logs!(
                 (Logs,
                     ("id", UInt16, log_ids_1),
@@ -2669,5 +2692,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Searches all allowed payload types in a batch store to find if
+    /// `child_type` appears as a child in any relation.  If found, returns the
+    /// parent's primary id column size (which determines the parent_id column
+    /// type).  Returns `None` for root types that have no parent.
+    fn find_parent_id_size<S: OtapBatchStore>(
+        child_type: ArrowPayloadType,
+    ) -> Option<IdColumnType> {
+        for &pt in S::allowed_payload_types() {
+            let info = payload_relations(pt);
+            let Some(primary_id) = info.primary_id else {
+                continue;
+            };
+            for relation in info.relations {
+                if relation.child_types.contains(&child_type) {
+                    return Some(primary_id.size);
+                }
+            }
+        }
+        None
     }
 }

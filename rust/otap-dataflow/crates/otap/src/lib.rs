@@ -7,30 +7,8 @@ use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
-/// Implementation of OTAP Exporter that implements the exporter trait
-pub mod otap_exporter;
 /// gRPC service implementation
 pub mod otap_grpc;
-/// Implementation of OTAP Receiver that implements the receiver trait
-pub mod otap_receiver;
-
-/// This receiver receives OTLP bytes from the grpc service request and
-/// produce for the pipeline OTAP PData
-pub mod otlp_receiver;
-
-/// Implementation of OTLP gRPC exporter that implements the exporter trait
-pub mod otlp_grpc_exporter;
-
-pub mod otlp_http_exporter;
-
-/// Batch processor
-pub mod batch_processor;
-
-// Retry processor that is aware of the OTAP PData/context.
-pub mod retry_processor;
-
-/// Receiver that reads in syslog data
-pub mod syslog_cef_receiver;
 
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;
@@ -39,47 +17,30 @@ pub mod pdata;
 
 mod pdata_conversions;
 
-pub mod parquet_exporter;
+pub mod metrics;
 
-pub mod perf_exporter;
-
-pub mod filter_processor;
-
-/// Fan-out processor to clone data to multiple downstream outputs.
-pub mod fanout_processor;
+/// Shared OTLP receiver metric definitions used by OTLP protocol support.
+pub mod otlp_metrics;
 
 /// testing utilities
-#[cfg(test)]
-mod otap_mock;
-#[cfg(test)]
-mod otlp_mock;
-
-#[cfg(test)]
-mod fixtures;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod otap_mock;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod otlp_mock;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
 
-/// Signal-type router processor (OTAP-based)
-pub mod signal_type_router;
-
-/// Content-based router processor (routes by resource attribute value)
-pub mod content_router;
-
-/// Attributes processor (OTAP-based)
-pub mod attributes_processor;
-
-pub mod transform_processor;
-
 /// compression formats
 pub mod compression;
-
-pub mod metrics;
 
 pub(crate) mod socket_options;
 
 /// Shared concurrency limiting across protocol servers
-pub(crate) mod shared_concurrency;
+pub mod shared_concurrency;
+
+/// Shared ingress shedding based on process-wide memory pressure.
+pub mod memory_pressure_layer;
 
 /// gRPC service implementation
 pub mod otlp_grpc;
@@ -90,13 +51,6 @@ pub mod otlp_http;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
-/// Internal telemetry receiver
-pub mod internal_telemetry_receiver;
-
-pub mod topic_receiver;
-
-pub mod topic_exporter;
-
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
@@ -104,12 +58,13 @@ pub mod object_store;
 /// Cryptographic provider initialization (see [`crypto::install_crypto_provider`]).
 pub mod crypto;
 
+/// Protocol-neutral transport header abstraction for end-to-end header
+/// propagation through the pipeline.
+pub mod transport_headers;
+
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
-
-/// Durable buffer processor for crash-resilient buffering via Quiver
-pub mod durable_buffer_processor;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

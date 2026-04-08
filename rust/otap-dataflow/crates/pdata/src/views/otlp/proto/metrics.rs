@@ -14,13 +14,6 @@ use crate::proto::opentelemetry::metrics::v1::{
 };
 
 use crate::views::{
-    metrics::{
-        BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
-        ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView,
-        HistogramDataPointView, HistogramView, MetricView, MetricsView, NumberDataPointView,
-        ResourceMetricsView, ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value,
-        ValueAtQuantileView,
-    },
     otlp::proto::common::{
         KeyValueIter, ObjInstrumentationScope, ObjKeyValue, parse_span_id, parse_trace_id,
     },
@@ -28,6 +21,12 @@ use crate::views::{
     otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps},
 };
 use otap_df_pdata_views::views::common::Str;
+use otap_df_pdata_views::views::metrics::{
+    BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
+    ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
+    HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
+    ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
+};
 use otap_df_pdata_views::{SpanId, TraceId};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
@@ -401,7 +400,9 @@ impl SumView for ObjSum<'_> {
         NumberDataPointIter::new(self.inner.data_points.iter())
     }
 
-    fn aggregation_temporality(&self) -> crate::views::metrics::AggregationTemporality {
+    fn aggregation_temporality(
+        &self,
+    ) -> otap_df_pdata_views::views::metrics::AggregationTemporality {
         self.inner.aggregation_temporality().into()
     }
 
@@ -425,7 +426,9 @@ impl HistogramView for ObjHistogram<'_> {
         HistogramDataPointIter::new(self.inner.data_points.iter())
     }
 
-    fn aggregation_temporality(&self) -> crate::views::metrics::AggregationTemporality {
+    fn aggregation_temporality(
+        &self,
+    ) -> otap_df_pdata_views::views::metrics::AggregationTemporality {
         self.inner.aggregation_temporality().into()
     }
 }
@@ -531,7 +534,9 @@ impl ExponentialHistogramView for ObjExponentialHistogram<'_> {
         ExponentialHistogramDataPointIter::new(self.inner.data_points.iter())
     }
 
-    fn aggregation_temporality(&self) -> crate::views::metrics::AggregationTemporality {
+    fn aggregation_temporality(
+        &self,
+    ) -> otap_df_pdata_views::views::metrics::AggregationTemporality {
         self.inner.aggregation_temporality().into()
     }
 }
@@ -697,5 +702,54 @@ impl SummaryDataPointView for ObjSummaryDataPoint<'_> {
 
     fn flags(&self) -> DataPointFlags {
         DataPointFlags::new(self.inner.flags)
+    }
+}
+
+/* ────────────── Proto → pdata-views enum conversions ────────────── */
+
+use crate::proto::opentelemetry::metrics::v1 as metrics_proto;
+
+impl From<&Data> for DataType {
+    fn from(value: &Data) -> Self {
+        match value {
+            Data::Gauge(_) => DataType::Gauge,
+            Data::Sum(_) => DataType::Sum,
+            Data::Histogram(_) => DataType::Histogram,
+            Data::ExponentialHistogram(_) => DataType::ExponentialHistogram,
+            Data::Summary(_) => DataType::Summary,
+        }
+    }
+}
+
+impl From<&metrics_proto::exemplar::Value> for Value {
+    fn from(value: &metrics_proto::exemplar::Value) -> Self {
+        use metrics_proto::exemplar::Value::*;
+        match value {
+            AsDouble(d) => Value::Double(*d),
+            AsInt(i) => Value::Integer(*i),
+        }
+    }
+}
+
+impl From<&metrics_proto::number_data_point::Value> for Value {
+    fn from(value: &metrics_proto::number_data_point::Value) -> Self {
+        use metrics_proto::number_data_point::Value::*;
+        match value {
+            AsDouble(d) => Value::Double(*d),
+            AsInt(i) => Value::Integer(*i),
+        }
+    }
+}
+
+impl From<metrics_proto::AggregationTemporality>
+    for otap_df_pdata_views::views::metrics::AggregationTemporality
+{
+    fn from(value: metrics_proto::AggregationTemporality) -> Self {
+        use otap_df_pdata_views::views::metrics::AggregationTemporality::*;
+        match value {
+            metrics_proto::AggregationTemporality::Unspecified => Unspecified,
+            metrics_proto::AggregationTemporality::Delta => Delta,
+            metrics_proto::AggregationTemporality::Cumulative => Cumulative,
+        }
     }
 }

@@ -11,14 +11,20 @@ rust-version.workspace = true
 [dependencies]
 arrow = { workspace = true, features = ["prettyprint"] }
 async-trait = { workspace = true }
-datafusion = { workspace = true }
+datafusion = { workspace = true, features = [
+    "crypto_expressions",
+    "unicode_expressions",
+] }
 futures-core = { workspace = true }
+memchr = { workspace = true }
 parking_lot = { workspace = true }
 roaring = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
+data_engine_parser_abstractions = { workspace = true }
 
-otap-df-pdata = { path = "../pdata" }
+otap-df-pdata = { workspace = true, features = ["testing"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
@@ -28,10 +34,18 @@ pretty_assertions = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
 
-otap-df-opl = { path = "../opl" }
+otap-df-opl = { workspace = true }
+otap-df-pdata = { workspace = true, features = ["testing"] }
+
+[target.'cfg(not(windows))'.dev-dependencies]
+tikv-jemallocator.workspace = true
 
 [[bench]]
 name = "filter"
+harness = false
+
+[[bench]]
+name = "assign_attributes"
 harness = false
 
 [lints]

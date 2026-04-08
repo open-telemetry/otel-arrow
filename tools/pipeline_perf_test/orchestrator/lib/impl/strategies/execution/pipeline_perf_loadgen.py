@@ -86,6 +86,7 @@ class PipelinePerfLoadgenConfig(ExecutionStrategyConfig):
     batch_size: Optional[int] = 10000
     tcp_connection_per_thread: Optional[bool] = True
     load_type: Optional[str] = "otlp"
+    syslog_transport: Optional[str] = None
 
 
 @execution_registry.register_class(STRATEGY_NAME)
@@ -164,6 +165,8 @@ components:
             "tcp_connection_per_thread": self.config.tcp_connection_per_thread,
             "load_type": self.config.load_type,
         }
+        if self.config.syslog_transport is not None:
+            parameters["syslog_transport"] = self.config.syslog_transport
         ctx.record_event("Requesting Load Start", None, **parameters)
         resp = requests.post(
             self.start_endpoint,

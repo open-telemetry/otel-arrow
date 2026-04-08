@@ -3,19 +3,19 @@
 
 //! Pipeline group endpoints.
 //!
-//! - GET `/groups/:id/pipelines` - list active pipelines and their status (ToDo)
-//! - POST `/groups/shutdown` - shutdown all pipelines in all groups
+//! - GET `/api/v1/groups/:id/pipelines` - list active pipelines and their status (ToDo)
+//! - POST `/api/v1/groups/shutdown` - shutdown all pipelines in all groups
 //!   - Query parameters:
 //!     - `wait` (bool, default: false) - if true, block until all pipelines have stopped
 //!     - `timeout_secs` (u64, default: 60) - maximum seconds to wait when `wait=true`
 //!
 //!   Example (fire-and-forget):
 //!   ```sh
-//!   curl -X POST http://localhost:8080/groups/shutdown
+//!   curl -X POST http://localhost:8080/api/v1/groups/shutdown
 //!   ```
 //!   Example (wait for graceful shutdown with 30s timeout):
 //!   ```sh
-//!   curl -X POST "http://localhost:8080/groups/shutdown?wait=true&timeout_secs=30"
+//!   curl -X POST "http://localhost:8080/api/v1/groups/shutdown?wait=true&timeout_secs=30"
 //!   ```
 //!
 //!   - 200 OK if `wait=true` and all pipelines stopped successfully

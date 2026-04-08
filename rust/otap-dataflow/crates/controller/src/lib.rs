@@ -55,11 +55,13 @@ use otap_df_config::engine::{
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otap_df_config::node::{NodeKind, NodeUserConfig};
+use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
     TopicSpec,
 };
+use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
 use otap_df_config::{
     DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, SubscriptionGroupName,
     TopicName, pipeline::PipelineConfig,
@@ -69,12 +71,18 @@ use otap_df_engine::ReceivedAtNode;
 use otap_df_engine::Unwindable;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
-    PipelineAdminSender, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
+    PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
+    RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
+    runtime_ctrl_msg_channel,
 };
 use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::memory_limiter::{
+    EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
+    MemoryPressureLevel,
+};
 use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
@@ -82,7 +90,7 @@ use otap_df_engine::topic::{
 use otap_df_state::conditions::ConditionStatus;
 use otap_df_state::phase::PipelinePhase;
 use otap_df_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
-use otap_df_state::store::ObservedStateStore;
+use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -100,6 +108,8 @@ use std::time::{Duration, Instant};
 
 /// Error types and helpers for the controller module.
 pub mod error;
+/// Reusable startup helpers (validation, CLI overrides, system info).
+pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
 pub mod thread_task;
 
@@ -423,12 +433,14 @@ struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::fmt::Debug>
     pipeline_factory: &'static PipelineFactory<PData>,
     controller_context: ControllerContext,
     observed_state_store: ObservedStateStore,
-    observed_state_handle: otap_df_state::store::ObservedStateHandle,
+    observed_state_handle: ObservedStateHandle,
     engine_event_reporter: ObservedEventReporter,
     metrics_reporter: MetricsReporter,
     declared_topics: DeclaredTopics<PData>,
     available_core_ids: Vec<CoreId>,
     engine_tracing_setup: TracingSetup,
+    telemetry_reporting_interval: Duration,
+    memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
     state: Mutex<ControllerRuntimeState>,
     state_changed: Condvar,
 }
@@ -611,12 +623,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_context: ControllerContext,
         observed_state_store: ObservedStateStore,
-        observed_state_handle: otap_df_state::store::ObservedStateHandle,
+        observed_state_handle: ObservedStateHandle,
         engine_event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         declared_topics: DeclaredTopics<PData>,
         available_core_ids: Vec<CoreId>,
         engine_tracing_setup: TracingSetup,
+        telemetry_reporting_interval: Duration,
+        memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
         live_config: OtelDataflowSpec,
     ) -> Self {
         Self {
@@ -629,6 +643,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             declared_topics,
             available_core_ids,
             engine_tracing_setup,
+            telemetry_reporting_interval,
+            memory_pressure_tx,
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
                 logical_pipelines: HashMap::new(),
@@ -688,10 +704,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     ) -> Result<Vec<usize>, ControlPlaneError> {
         Controller::<PData>::select_cores_for_allocation(
             self.available_core_ids.clone(),
-            &resolved_pipeline
-                .policies
-                .effective_resources()
-                .core_allocation,
+            &resolved_pipeline.policies.resources.core_allocation,
         )
         .map(|cores| cores.into_iter().map(|core| core.id).collect())
         .map_err(|err| ControlPlaneError::InvalidRequest {
@@ -757,23 +770,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             let _ = map.remove("policies");
         }
 
-        let mut current_policies =
-            serde_json::to_value(&current.policies).map_err(|err| ControlPlaneError::Internal {
-                message: err.to_string(),
-            })?;
-        let mut candidate_policies = serde_json::to_value(&candidate.policies).map_err(|err| {
-            ControlPlaneError::Internal {
-                message: err.to_string(),
-            }
-        })?;
-        if let serde_json::Value::Object(map) = &mut current_policies {
-            let _ = map.remove("resources");
-        }
-        if let serde_json::Value::Object(map) = &mut candidate_policies {
-            let _ = map.remove("resources");
-        }
-
-        Ok(current_pipeline == candidate_pipeline && current_policies == candidate_policies)
+        Ok(current_pipeline == candidate_pipeline
+            && current.policies.channel_capacity == candidate.policies.channel_capacity
+            && current.policies.health == candidate.policies.health
+            && current.policies.telemetry == candidate.policies.telemetry
+            && current.policies.transport_headers == candidate.policies.transport_headers)
     }
 
     fn resolved_pipeline_matches(
@@ -2213,10 +2214,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),
             resolved_pipeline.policies.telemetry.clone(),
+            resolved_pipeline.policies.transport_headers.clone(),
             self.controller_context.clone(),
             self.metrics_reporter.clone(),
             self.engine_event_reporter.clone(),
             self.engine_tracing_setup.clone(),
+            self.telemetry_reporting_interval,
+            self.memory_pressure_tx.clone(),
             &self
                 .state
                 .lock()
@@ -2730,14 +2734,52 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
     /// Starts the controller with the given engine configurations.
     pub fn run_forever(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
-        self.run_with_mode(engine_config, RunMode::ParkMainThread)
+        self.run_with_mode(
+            engine_config,
+            RunMode::ParkMainThread,
+            None::<fn(ObservedStateHandle)>,
+        )
+    }
+
+    /// Starts the controller and invokes `observer` with an
+    /// [`ObservedStateHandle`] as soon as the pipeline state store is ready.
+    ///
+    /// The callback fires once, before the engine blocks. Use it to obtain
+    /// zero-overhead, in-process access to pipeline liveness, readiness, and
+    /// health without going through the admin HTTP server.
+    pub fn run_forever_with_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_with_mode(engine_config, RunMode::ParkMainThread, Some(observer))
     }
 
     /// Starts the controller with the given engine configurations.
     ///
     /// Runs until pipelines are shut down, then closes telemetry/admin services.
     pub fn run_till_shutdown(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
-        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone)
+        self.run_with_mode(
+            engine_config,
+            RunMode::ShutdownWhenDone,
+            None::<fn(ObservedStateHandle)>,
+        )
+    }
+
+    /// Like [`run_till_shutdown`](Self::run_till_shutdown), but invokes
+    /// `observer` with an [`ObservedStateHandle`] before blocking.
+    pub fn run_till_shutdown_with_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone, Some(observer))
     }
 
     fn map_topic_spec_to_options(
@@ -3423,11 +3465,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(set)
     }
 
-    fn run_with_mode(
+    fn run_with_mode<F>(
         &self,
         engine_config: OtelDataflowSpec,
         run_mode: RunMode,
-    ) -> Result<(), Error> {
+        observer: Option<F>,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -3436,6 +3482,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine.telemetry;
+        let telemetry_reporting_interval = engine.telemetry.reporting_interval;
         otel_info!(
             "controller.start",
             num_pipeline_groups = num_pipeline_groups,
@@ -3445,12 +3492,27 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         // Create the shared telemetry registry first - it will be used by both
         // the observed state store and the internal telemetry system.
         let telemetry_registry = TelemetryRegistryHandle::new();
+        let log_tap_handle = telemetry_config
+            .logs
+            .tap
+            .enabled
+            .then(|| otap_df_telemetry::log_tap::build(&telemetry_config.logs.tap));
 
         // Create the observed state store for the telemetry system.
-        let obs_state_store =
-            ObservedStateStore::new(&engine.observed_state, telemetry_registry.clone());
+        let obs_state_store = ObservedStateStore::new_with_log_tap(
+            &engine.observed_state,
+            telemetry_registry.clone(),
+            log_tap_handle.clone(),
+        );
         let obs_state_handle = obs_state_store.handle();
-        let engine_evt_reporter = obs_state_store.reporter(engine.observed_state.engine_events);
+
+        // Notify the caller with a clone of the observed-state handle, if requested.
+        if let Some(observer) = observer {
+            observer(obs_state_handle.clone());
+        }
+
+        let engine_evt_reporter =
+            obs_state_store.engine_reporter(engine.observed_state.engine_events);
         let console_async_reporter = telemetry_config
             .logs
             .providers
@@ -3465,6 +3527,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             telemetry_registry.clone(),
             console_async_reporter,
             engine_context,
+            log_tap_handle.clone(),
         )?;
 
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
@@ -3473,6 +3536,97 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
+        let memory_pressure_state = controller_ctx.memory_pressure_state();
+        let (memory_pressure_tx, _memory_pressure_rx) =
+            tokio::sync::watch::channel(MemoryPressureChanged::initial());
+        let mut memory_limiter_handle = None;
+        if let Some(memory_limiter_policy) = engine_config
+            .policies
+            .resources()
+            .and_then(|resources| resources.memory_limiter.as_ref())
+        {
+            memory_pressure_state.configure(MemoryPressureBehaviorConfig {
+                retry_after_secs: memory_limiter_policy.retry_after_secs,
+                fail_readiness_on_hard: memory_limiter_policy.fail_readiness_on_hard,
+                mode: memory_limiter_policy.mode,
+            });
+
+            let mut limiter = EffectiveMemoryLimiter::from_policy(memory_limiter_policy)
+                .map_err(|message| Error::MemoryLimiterError { message })?;
+            if memory_limiter_policy.mode == MemoryLimiterMode::ObserveOnly {
+                if memory_limiter_policy.purge_on_hard {
+                    otel_warn!(
+                        "process_memory_limiter.observe_only_ignored_setting",
+                        setting = "purge_on_hard",
+                        message =
+                            "purge_on_hard is ignored when memory_limiter.mode is observe_only"
+                    );
+                }
+            } else if limiter.purge_on_hard() && !limiter.purge_supported() {
+                otel_warn!(
+                    "process_memory_limiter.purge_unavailable",
+                    source = format!("{:?}", memory_limiter_policy.source),
+                    message = "purge_on_hard is enabled, but no allocator purge backend is available for this build"
+                );
+            }
+            let initial_tick = limiter
+                .tick(&memory_pressure_state)
+                .map_err(|message| Error::MemoryLimiterError { message })?;
+            let initial_transitioned = initial_tick.transitioned();
+            Self::log_memory_limiter_tick(initial_tick);
+            let mut transition_generation = 0_u64;
+            if initial_transitioned {
+                transition_generation += 1;
+                let _ = memory_pressure_tx
+                    .send(memory_pressure_state.current_update(transition_generation));
+            }
+
+            let limiter_state = memory_pressure_state.clone();
+            let limiter_updates = memory_pressure_tx.clone();
+            memory_limiter_handle = Some(spawn_thread_local_task(
+                "process-memory-limiter",
+                admin_tracing_setup.clone(),
+                move |cancellation_token| async move {
+                    use tokio::time::{Instant, MissedTickBehavior, interval_at};
+
+                    let mut ticker = interval_at(
+                        Instant::now() + limiter.check_interval(),
+                        limiter.check_interval(),
+                    );
+                    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+                    loop {
+                        tokio::select! {
+                            _ = cancellation_token.cancelled() => {
+                                return Ok::<(), otap_df_telemetry::error::Error>(());
+                            }
+                            _ = ticker.tick() => {
+                                match limiter.tick(&limiter_state) {
+                                    Ok(tick) => {
+                                        if tick.transitioned() {
+                                            transition_generation += 1;
+                                            let _ = limiter_updates.send(MemoryPressureChanged {
+                                                generation: transition_generation,
+                                                level: tick.current_level,
+                                                retry_after_secs: limiter_state.retry_after_secs(),
+                                                usage_bytes: tick.sample.usage_bytes,
+                                            });
+                                        }
+                                        Self::log_memory_limiter_tick(tick)
+                                    }
+                                    Err(err) => {
+                                        otel_warn!(
+                                            "process_memory_limiter.sample_failed",
+                                            error = err.as_str()
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            )?);
+        }
         // Declare all topics up front before any pipeline thread starts.
         let declared_topics = Self::declare_topics(&engine_config)?;
 
@@ -3515,6 +3669,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             &controller_ctx,
             &engine_evt_reporter,
             &metrics_reporter,
+            telemetry_reporting_interval,
+            &memory_pressure_tx,
             internal_tracing_setup,
         )?;
 
@@ -3576,6 +3732,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let engine_entity_key = controller_ctx.register_engine_entity();
         let engine_registry = controller_ctx.telemetry_registry();
         let engine_reporter = metrics_reporter.clone();
+        let engine_metrics_memory_pressure_state = memory_pressure_state.clone();
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",
             admin_tracing_setup.clone(),
@@ -3587,8 +3744,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 // TODO: Make this interval configurable via engine config.
                 const ENGINE_METRICS_INTERVAL: Duration = Duration::from_secs(5);
 
-                let mut monitor =
-                    EngineMetricsMonitor::new(engine_registry, engine_entity_key, engine_reporter);
+                let mut monitor = EngineMetricsMonitor::new(
+                    engine_registry,
+                    engine_entity_key,
+                    engine_reporter,
+                    engine_metrics_memory_pressure_state.clone(),
+                );
 
                 let mut ticker = interval(ENGINE_METRICS_INTERVAL);
                 ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -3622,6 +3783,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             declared_topics,
             available_core_ids.clone(),
             telemetry_system.engine_tracing_setup(),
+            telemetry_reporting_interval,
+            memory_pressure_tx.clone(),
             engine_config.clone(),
         ));
 
@@ -3635,7 +3798,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
             let core_allocation = pipeline_entry
                 .policies
-                .effective_resources()
+                .resources
                 .core_allocation
                 .to_string();
             otel_info!(
@@ -3660,10 +3823,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
                     pipeline_entry.policies.telemetry.clone(),
+                    pipeline_entry.policies.transport_headers.clone(),
                     controller_ctx.clone(),
                     metrics_reporter.clone(),
                     engine_evt_reporter.clone(),
                     telemetry_system.engine_tracing_setup(),
+                    telemetry_reporting_interval,
+                    memory_pressure_tx.clone(),
                     &engine_config,
                     &runtime.declared_topics,
                     runtime.next_thread_id(),
@@ -3687,6 +3853,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     obs_state_handle,
                     control_plane,
                     telemetry_registry,
+                    memory_pressure_state,
+                    log_tap_handle,
                     cancellation_token,
                 )
             },
@@ -3703,6 +3871,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         engine_metrics_handle.shutdown_and_join()?;
+        if let Some(handle) = memory_limiter_handle {
+            handle.shutdown_and_join()?;
+        }
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
         if let Some(handle) = metrics_dispatcher_handle {
@@ -3716,6 +3887,75 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
 
         Ok(())
+    }
+
+    fn log_memory_limiter_tick(tick: MemoryLimiterTick) {
+        if let Some(purge_error) = tick.purge_error.as_deref() {
+            otel_warn!(
+                "process_memory_limiter.purge_failed",
+                source = tick.sample.source.as_str(),
+                pre_purge_usage_bytes = tick
+                    .pre_purge_usage_bytes
+                    .unwrap_or(tick.sample.usage_bytes),
+                usage_bytes = tick.sample.usage_bytes,
+                error = purge_error
+            );
+        }
+
+        if let Some(purge_duration) = tick.purge_duration {
+            otel_info!(
+                "process_memory_limiter.purge",
+                source = tick.sample.source.as_str(),
+                pre_purge_usage_bytes = tick
+                    .pre_purge_usage_bytes
+                    .unwrap_or(tick.sample.usage_bytes),
+                post_purge_usage_bytes = tick.sample.usage_bytes,
+                purge_duration_ms = purge_duration.as_millis() as u64,
+                current = format!("{:?}", tick.current_level)
+            );
+        }
+
+        if !tick.transitioned() {
+            return;
+        }
+
+        let usage_bytes = tick.sample.usage_bytes;
+        let source = tick.sample.source.as_str();
+        match tick.current_level {
+            MemoryPressureLevel::Hard => {
+                otel_warn!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = format!("{:?}", tick.current_level),
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+            MemoryPressureLevel::Soft => {
+                otel_info!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = "Soft",
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+            MemoryPressureLevel::Normal => {
+                otel_info!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = "Normal",
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+        }
     }
 
     /// Selects which CPU cores to use based on the given allocation.
@@ -3838,10 +4078,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .map(|pipeline_entry| {
                 Self::select_cores_for_allocation(
                     available_core_ids.to_vec(),
-                    &pipeline_entry
-                        .policies
-                        .effective_resources()
-                        .core_allocation,
+                    &pipeline_entry.policies.resources.core_allocation,
                 )
             })
             .collect()
@@ -3865,10 +4102,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        transport_headers_policy: Option<TransportHeadersPolicy>,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
         tracing_setup: TracingSetup,
+        telemetry_reporting_interval: Duration,
+        memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
         config: &OtelDataflowSpec,
         declared_topics: &DeclaredTopics<PData>,
         thread_id: usize,
@@ -3893,9 +4133,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             pipeline_key.core_id,
         )?;
         pipeline_ctx.set_topic_set(topic_set);
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) =
-            pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-        let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(pipeline_ctrl_msg_tx.clone());
+        let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
+            runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
+        let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(runtime_ctrl_msg_tx.clone());
+        let memory_pressure_rx = memory_pressure_tx.subscribe();
         let thread_name = format!(
             "pipeline-{}-{}-core-{}-gen-{}",
             pipeline_key.pipeline_group_id.as_ref(),
@@ -3913,12 +4156,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     pipeline_config,
                     channel_capacity_policy,
                     telemetry_policy,
+                    transport_headers_policy,
+                    telemetry_reporting_interval,
                     pipeline_factory,
                     pipeline_ctx,
                     engine_evt_reporter,
                     metrics_reporter,
-                    pipeline_ctrl_msg_tx,
-                    pipeline_ctrl_msg_rx,
+                    runtime_ctrl_msg_tx,
+                    runtime_ctrl_msg_rx,
+                    pipeline_completion_msg_tx,
+                    pipeline_completion_msg_rx,
+                    memory_pressure_rx,
                     tracing_setup,
                     internal_telemetry,
                 )
@@ -3954,6 +4202,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         controller_ctx: &ControllerContext,
         engine_evt_reporter: &ObservedEventReporter,
         metrics_reporter: &MetricsReporter,
+        telemetry_reporting_interval: Duration,
+        memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
     ) -> Result<Option<LaunchedPipelineThread<PData>>, Error> {
         let (internal_config, channel_capacity_policy, telemetry_policy): (
@@ -3997,10 +4247,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             internal_config,
             channel_capacity_policy,
             telemetry_policy,
+            None,
             controller_ctx.clone(),
             metrics_reporter.clone(),
             engine_evt_reporter.clone(),
             tracing_setup,
+            telemetry_reporting_interval,
+            memory_pressure_tx.clone(),
             config,
             declared_topics,
             0,
@@ -4039,12 +4292,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        transport_headers_policy: Option<TransportHeadersPolicy>,
+        telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
-        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        runtime_ctrl_msg_rx: RuntimeCtrlMsgReceiver<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
+        memory_pressure_rx: tokio::sync::watch::Receiver<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
@@ -4089,6 +4347,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
+                    transport_headers_policy,
                     its_settings,
                 )
                 .map_err(|e| {
@@ -4126,8 +4385,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     pipeline_context,
                     obs_evt_reporter,
                     metrics_reporter,
-                    pipeline_ctrl_msg_tx,
-                    pipeline_ctrl_msg_rx,
+                    telemetry_reporting_interval,
+                    memory_pressure_rx,
+                    runtime_ctrl_msg_tx,
+                    runtime_ctrl_msg_rx,
+                    pipeline_completion_msg_tx,
+                    pipeline_completion_msg_rx,
                 )
                 .map_err(|e| {
                     otel_error!(
@@ -4149,13 +4412,15 @@ mod tests {
     use super::*;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_config::policy::{CoreRange, Policies, ResourcesPolicy};
+    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::settings::telemetry::logs::LogLevel;
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
     use otap_df_engine::ExporterFactory;
     use otap_df_engine::ReceiverFactory;
     use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
-    use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
+    use otap_df_engine::control::{
+        RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
+    };
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::wiring_contract::WiringContract;
@@ -4204,15 +4469,17 @@ connections:
         pipeline_id: &str,
         core_allocation: CoreAllocation,
     ) -> ResolvedPipelineConfig {
-        let policies = Policies {
-            resources: Some(ResourcesPolicy { core_allocation }),
-            ..Default::default()
-        };
         ResolvedPipelineConfig {
             pipeline_group_id: pipeline_group_id.to_string().into(),
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
-            policies,
+            policies: ResolvedPolicies {
+                resources: ResourcesPolicy {
+                    core_allocation,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             role: ResolvedPipelineRole::Regular,
         }
     }
@@ -4316,6 +4583,8 @@ connections:
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(8);
         let declared_topics =
             Controller::<()>::declare_topics(config).expect("declared topics should be valid");
+        let (memory_pressure_tx, _memory_pressure_rx) =
+            tokio::sync::watch::channel(MemoryPressureChanged::initial());
 
         Arc::new(ControllerRuntime::new(
             &TEST_PIPELINE_FACTORY,
@@ -4327,6 +4596,8 @@ connections:
             declared_topics,
             available_core_ids(),
             TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
+            Duration::from_secs(1),
+            memory_pressure_tx,
             config.clone(),
         ))
     }
@@ -4375,8 +4646,8 @@ groups:
         core_id: usize,
         generation: u64,
         lifecycle: RuntimeInstanceLifecycle,
-    ) -> PipelineCtrlMsgReceiver<()> {
-        let (tx, rx) = pipeline_ctrl_msg_channel(4);
+    ) -> RuntimeCtrlMsgReceiver<()> {
+        let (tx, rx) = runtime_ctrl_msg_channel::<()>(4);
         let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(tx.clone());
         let is_active = matches!(&lifecycle, RuntimeInstanceLifecycle::Active);
         let mut state = runtime
@@ -4424,8 +4695,8 @@ groups:
     }
 
     fn wait_for_shutdown_message(
-        receiver: &mut PipelineCtrlMsgReceiver<()>,
-    ) -> PipelineControlMsg<()> {
+        receiver: &mut RuntimeCtrlMsgReceiver<()>,
+    ) -> RuntimeControlMsg<()> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if let Ok(message) = receiver.try_recv() {
@@ -5299,11 +5570,11 @@ groups:
 
         assert!(matches!(
             wait_for_shutdown_message(&mut p1_core0),
-            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+            RuntimeControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
         ));
         assert!(matches!(
             wait_for_shutdown_message(&mut p1_core1),
-            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+            RuntimeControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
         ));
         assert!(
             p1_exited.try_recv().is_err(),
@@ -5398,11 +5669,11 @@ groups:
 
         assert!(matches!(
             wait_for_shutdown_message(&mut core0),
-            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+            RuntimeControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
         ));
         assert!(matches!(
             wait_for_shutdown_message(&mut core1),
-            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+            RuntimeControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
         ));
 
         runtime.note_instance_exit(
@@ -5466,7 +5737,7 @@ groups:
             .expect("shutdown request should be accepted");
         assert!(matches!(
             wait_for_shutdown_message(&mut core0),
-            PipelineControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
+            RuntimeControlMsg::Shutdown { reason, .. } if reason == "pipeline shutdown"
         ));
 
         let status = wait_for_shutdown_state(&runtime, &shutdown.shutdown_id, "failed");

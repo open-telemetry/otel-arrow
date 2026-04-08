@@ -24,29 +24,29 @@ For the operator guide to live pipeline mutation, see
 
 ### Telemetry
 
-- `GET /telemetry/live-schema`
-- `GET /telemetry/metrics`
-- `GET /telemetry/metrics/aggregate`
-- `GET /metrics` (alias for `/telemetry/metrics`)
+- `GET /api/v1/telemetry/live-schema`
+- `GET /api/v1/telemetry/metrics`
+- `GET /api/v1/telemetry/metrics/aggregate`
+- `GET /api/v1/metrics` (alias for `/api/v1/telemetry/metrics`)
 
 ### Health and status
 
-- `GET /status`
-- `GET /livez`
-- `GET /readyz`
-- `GET /groups/status`
-- `GET /groups/{pipeline_group_id}/pipelines/{pipeline_id}`
-- `GET /groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
-- `GET /groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
-- `GET /groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
-- `GET /groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez`
-- `GET /groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz`
+ - `GET /api/v1/status`
+ - `GET /api/v1/livez`
+ - `GET /api/v1/readyz`
+ - `GET /api/v1/groups/status`
+ - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+ - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
+ - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
+ - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
+ - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez`
+ - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz`
 
 ### Pipeline lifecycle
 
-- `PUT /groups/{pipeline_group_id}/pipelines/{pipeline_id}`
-- `POST /groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
-- `POST /groups/shutdown`
+- `PUT /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+- `POST /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
+- `POST /api/v1/groups/shutdown`
 
 ## Embedded UI layout (crate-relative)
 
@@ -66,7 +66,7 @@ Assets are embedded in the binary via `include_dir` and served by
 ## Runtime notes
 
 - UI polling cadence is 2 seconds.
-- UI metrics polling uses same-origin `/telemetry/metrics` then `/metrics`.
+- UI metrics polling uses same-origin `/api/v1/telemetry/metrics` then `/api/v1/metrics`.
 - Supported optional query param: `keep_all_zeroes=true|false`.
 
 For operational semantics, metric-name contracts, graph rules, and testing
@@ -99,12 +99,13 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
 - [ ] Add TLS support in-process or enforce TLS at a mandatory front proxy
   boundary.
 - [ ] Protect mutating endpoints such as
-  `PUT /groups/{pipeline_group_id}/pipelines/{pipeline_id}`,
-  `POST /groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`,
-  and `POST /groups/shutdown` with stricter access controls than
+  `PUT /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`,
+  `POST /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`,
+  and `POST /api/v1/groups/shutdown` with stricter access controls than
   read-only endpoints.
 - [ ] Apply the same hardened response headers to API endpoints
-  (`/status`, `/livez`, `/readyz`, `/telemetry/*`, `/metrics`), not only UI/static.
+  (`/api/v1/status`, `/api/v1/livez`, `/api/v1/readyz`,
+  `/api/v1/telemetry/*`, `/api/v1/metrics`), not only UI/static.
 - [ ] Harden CSP further by removing `style-src 'unsafe-inline'` (move toward
   nonce/hash-based style policies).
 - [ ] Add rate limiting / throttling to protect admin and telemetry endpoints.
@@ -119,6 +120,6 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
   - strong authentication/authorization
   - network ACLs / source allow-listing
   - route-level restrictions for mutating endpoints such as
-    `/groups/{pipeline_group_id}/pipelines/{pipeline_id}`,
-    `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`,
-    and `/groups/shutdown`
+    `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`,
+    `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`,
+    and `/api/v1/groups/shutdown`

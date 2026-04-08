@@ -8,7 +8,25 @@ project-level [CONTRIBUTING][] document.
 
 ## OTAP-Dataflow Development Process
 
-Run `cargo xtask check` to check the structure of the project.
+Use the xtask commands below depending on the stage of development:
+
+- Run `cargo xtask quick-check` for faster local iteration while working on
+  Rust changes. This runs a narrower subset of the full checks and only
+  compiles test targets instead of running the full workspace test suite.
+- Run `cargo xtask check-benches` when bench targets or bench-only code
+  changes.
+- Run `cargo xtask check --diagnostics` when you need a timing-oriented summary
+  of slow check phases, compile hotspots, or test binaries. See
+  [docs/xtask-diagnostics.md](docs/xtask-diagnostics.md).
+- Run `cargo xtask check` before sending changes. This is the required full
+  validation suite: structure checks, formatting, clippy on `--all-targets`,
+  and `cargo test --workspace`.
+
+For this workspace, we keep `cargo test --workspace` as the default full test
+runner instead of `nextest`. In local measurements, `nextest` was slower for
+the full check path, likely because many of the longest tests are concentrated
+in a few large integration-style binaries, so the extra runner orchestration did
+not offset the limited parallelism gains.
 
 ## Telemetry and logging
 
@@ -23,7 +41,7 @@ TODO: Add metrics information
 Run
 
 ```bash
-docker build  \
+docker build \
   --build-context otel-arrow=../../ \
   -f Dockerfile \
   -t df_engine \

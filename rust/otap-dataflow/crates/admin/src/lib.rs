@@ -22,7 +22,9 @@ use tower::ServiceBuilder;
 
 use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_engine::memory_limiter::MemoryPressureState;
 use otap_df_state::store::ObservedStateHandle;
+use otap_df_telemetry::log_tap::InternalLogTapHandle;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
 
@@ -52,7 +54,7 @@ pub enum ControlPlaneError {
     },
 }
 
-/// Body for `PUT /groups/{group}/pipelines/{id}`.
+/// Body for `PUT /api/v1/groups/{group}/pipelines/{id}`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplacePipelineRequest {
@@ -154,7 +156,7 @@ pub struct PipelineShutdownStatus {
     pub cores: Vec<ShutdownCoreStatus>,
 }
 
-/// Live logical pipeline view returned by `GET /groups/{group}/pipelines/{id}`.
+/// Live logical pipeline view returned by `GET /api/v1/groups/{group}/pipelines/{id}`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineDetails {
@@ -231,6 +233,12 @@ struct AppState {
 
     /// Resident controller control plane for runtime mutations.
     controller: Arc<dyn ControlPlane>,
+
+    /// Optional internal log tap for querying retained internal logs.
+    log_tap: Option<InternalLogTapHandle>,
+
+    /// Shared process-wide memory pressure state.
+    memory_pressure_state: MemoryPressureState,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
@@ -239,19 +247,26 @@ pub async fn run(
     observed_store: ObservedStateHandle,
     controller: Arc<dyn ControlPlane>,
     metrics_registry: TelemetryRegistryHandle,
+    memory_pressure_state: MemoryPressureState,
+    log_tap: Option<InternalLogTapHandle>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let app_state = AppState {
         observed_state_store: observed_store,
         metrics_registry,
         controller,
+        log_tap,
+        memory_pressure_state,
     };
 
-    let app = Router::new()
+    let api_routes = Router::new()
         .merge(health::routes())
         .merge(telemetry::routes())
         .merge(pipeline_group::routes())
-        .merge(pipeline::routes())
+        .merge(pipeline::routes());
+
+    let app = Router::new()
+        .nest("/api/v1", api_routes)
         .merge(dashboard::routes())
         .layer(ServiceBuilder::new())
         .with_state(app_state);

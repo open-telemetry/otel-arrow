@@ -3,8 +3,8 @@
 
 use serde::Serialize;
 
-use super::AZURE_MONITOR_EXPORTER_URN;
-use super::config::ApiConfig;
+use super::client::AZURE_MONITOR_SOURCE_RESOURCEID_HEADER;
+use super::config::{ApiConfig, HeartbeatOverrides};
 use super::error::Error;
 use chrono::Utc;
 use otap_df_telemetry::otel_warn;
@@ -26,6 +26,9 @@ pub struct Heartbeat {
 
     /// Pre-formatted authorization header for zero-allocation reuse
     pub auth_header: HeaderValue,
+
+    /// Optional ARM resource ID header for Azure Monitor source tracking.
+    resource_id_header: Option<HeaderValue>,
 }
 
 #[derive(Serialize)]
@@ -33,25 +36,28 @@ struct HeartbeatRow {
     #[serde(rename = "Time")]
     time: String,
 
-    #[serde(rename = "Version")]
-    version: String,
+    #[serde(rename = "Computer")]
+    computer: String,
+
+    #[serde(rename = "OSType")]
+    os_type: String,
 
     #[serde(rename = "OSName")]
     os_name: String,
-
-    #[serde(rename = "Computer")]
-    computer: String,
 
     #[serde(rename = "OSMajorVersion")]
     os_major_version: String,
 
     #[serde(rename = "OSMinorVersion")]
     os_minor_version: String,
+
+    #[serde(rename = "Version")]
+    version: String,
 }
 
 #[inline]
 fn default_heartbeat_version() -> String {
-    std::env::var("IMAGE").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 #[inline]
@@ -61,8 +67,7 @@ fn default_heartbeat_os_name() -> String {
 
 #[inline]
 fn default_heartbeat_computer() -> String {
-    std::env::var("ARM_RESOURCE_ID")
-        .or_else(|_| std::env::var("HOSTNAME"))
+    std::env::var("HOSTNAME")
         .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "UnknownComputer".to_string()))
 }
 
@@ -96,21 +101,18 @@ fn parse_os_version() -> (String, String) {
 }
 
 #[inline]
-fn default_heartbeat_os_major_version() -> String {
-    std::env::var("POD_NAME").unwrap_or_else(|_| {
-        let (major, _) = parse_os_version();
-        major
-    })
-}
-
-#[inline]
-fn default_heartbeat_os_minor_version() -> String {
-    AZURE_MONITOR_EXPORTER_URN.to_string()
+fn default_heartbeat_os_type() -> String {
+    match std::env::consts::OS {
+        "linux" => "Linux".to_string(),
+        "windows" => "Windows".to_string(),
+        "macos" => "MacOS".to_string(),
+        other => other.to_string(),
+    }
 }
 
 impl Heartbeat {
     /// Create a new Heartbeat instance.
-    pub fn new(config: &ApiConfig) -> Result<Self, Error> {
+    pub fn new(config: &ApiConfig, overrides: &HeartbeatOverrides) -> Result<Self, Error> {
         let http_client = Client::builder()
             .http1_only()
             .timeout(Duration::from_secs(30))
@@ -120,6 +122,8 @@ impl Heartbeat {
             .build()
             .map_err(Error::CreateClient)?;
 
+        let (os_major, os_minor) = parse_os_version();
+
         Ok(Self {
             client: http_client,
             endpoint: format!(
@@ -128,13 +132,33 @@ impl Heartbeat {
             ),
             heartbeat_row: HeartbeatRow {
                 time: Utc::now().to_rfc3339(),
-                version: default_heartbeat_version(),
-                os_name: default_heartbeat_os_name(),
-                computer: default_heartbeat_computer(),
-                os_major_version: default_heartbeat_os_major_version(),
-                os_minor_version: default_heartbeat_os_minor_version(),
+                computer: overrides
+                    .computer
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_computer),
+                os_type: overrides
+                    .os_type
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_os_type),
+                os_name: overrides
+                    .os_name
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_os_name),
+                os_major_version: overrides.os_major_version.clone().unwrap_or(os_major),
+                os_minor_version: overrides.os_minor_version.clone().unwrap_or(os_minor),
+                version: overrides
+                    .version
+                    .clone()
+                    .unwrap_or_else(default_heartbeat_version),
             },
             auth_header: HeaderValue::from_static("Bearer "),
+            resource_id_header: config
+                .azure_monitor_source_resourceid
+                .as_deref()
+                .and_then(|v| {
+                    let encoded = super::client::url_encode_header_value(v);
+                    HeaderValue::from_str(&encoded).ok()
+                }),
         })
     }
 
@@ -147,13 +171,15 @@ impl Heartbeat {
             endpoint,
             heartbeat_row: HeartbeatRow {
                 time: Utc::now().to_rfc3339(),
-                version: "test-version".to_string(),
-                os_name: "test-os".to_string(),
                 computer: "test-computer".to_string(),
+                os_type: "Linux".to_string(),
+                os_name: "test-os".to_string(),
                 os_major_version: "1".to_string(),
                 os_minor_version: "0".to_string(),
+                version: "test-version".to_string(),
             },
             auth_header: HeaderValue::from_static("Bearer "),
+            resource_id_header: None,
         }
     }
 
@@ -166,11 +192,17 @@ impl Heartbeat {
     pub async fn send(&mut self) -> Result<(), Error> {
         self.heartbeat_row.time = Utc::now().to_rfc3339();
         let payload = serde_json::json!([self.heartbeat_row]);
-        let response = self
+        let mut request = self
             .client
             .post(&self.endpoint)
             .header(CONTENT_TYPE, "application/json")
-            .header(AUTHORIZATION, &self.auth_header)
+            .header(AUTHORIZATION, &self.auth_header);
+
+        if let Some(ref resource_id) = self.resource_id_header {
+            request = request.header(AZURE_MONITOR_SOURCE_RESOURCEID_HEADER, resource_id);
+        }
+
+        let response = request
             .body(payload.to_string())
             .send()
             .await
@@ -243,60 +275,66 @@ mod tests {
     #[test]
     fn test_heartbeat_row_serialization() {
         let row = HeartbeatRow {
-            time: "2026-01-22T10:00:00Z".to_string(),
-            version: "1.0.0".to_string(),
-            os_name: "Linux".to_string(),
+            time: "2026-03-11T10:00:00Z".to_string(),
             computer: "test-computer".to_string(),
+            os_type: "Linux".to_string(),
+            os_name: "Ubuntu".to_string(),
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
+            version: "1.0.0".to_string(),
         };
 
         let json = serde_json::to_value(&row).unwrap();
 
-        assert_eq!(json["Time"], "2026-01-22T10:00:00Z");
-        assert_eq!(json["Version"], "1.0.0");
-        assert_eq!(json["OSName"], "Linux");
+        assert_eq!(json["Time"], "2026-03-11T10:00:00Z");
         assert_eq!(json["Computer"], "test-computer");
+        assert_eq!(json["OSType"], "Linux");
+        assert_eq!(json["OSName"], "Ubuntu");
         assert_eq!(json["OSMajorVersion"], "22");
         assert_eq!(json["OSMinorVersion"], "04");
+        assert_eq!(json["Version"], "1.0.0");
     }
 
     #[test]
     fn test_heartbeat_row_serialization_field_names() {
         let row = HeartbeatRow {
             time: "".to_string(),
-            version: "".to_string(),
-            os_name: "".to_string(),
             computer: "".to_string(),
+            os_type: "".to_string(),
+            os_name: "".to_string(),
             os_major_version: "".to_string(),
             os_minor_version: "".to_string(),
+            version: "".to_string(),
         };
 
         let json = serde_json::to_string(&row).unwrap();
 
         // Verify PascalCase field names
         assert!(json.contains("\"Time\""));
-        assert!(json.contains("\"Version\""));
-        assert!(json.contains("\"OSName\""));
         assert!(json.contains("\"Computer\""));
+        assert!(json.contains("\"OSType\""));
+        assert!(json.contains("\"OSName\""));
         assert!(json.contains("\"OSMajorVersion\""));
         assert!(json.contains("\"OSMinorVersion\""));
+        assert!(json.contains("\"Version\""));
 
         // Verify no snake_case field names
         assert!(!json.contains("\"time\""));
         assert!(!json.contains("\"version\""));
         assert!(!json.contains("\"os_name\""));
+        assert!(!json.contains("\"os_type\""));
     }
 
     #[test]
     fn test_heartbeat_payload_is_array() {
         let row = HeartbeatRow {
-            time: "2026-01-22T10:00:00Z".to_string(),
-            version: "1.0.0".to_string(),
-            os_name: "Linux".to_string(),
+            time: "2026-03-11T10:00:00Z".to_string(),
             computer: "test".to_string(),
+            os_type: "Linux".to_string(),
+            os_name: "Ubuntu".to_string(),
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
+            version: "1.0.0".to_string(),
         };
 
         let payload = serde_json::json!([row]);
@@ -317,6 +355,8 @@ mod tests {
                 scope_mapping: HashMap::new(),
                 log_record_mapping: HashMap::new(),
             },
+            azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
         };
 
         let expected = format!(
@@ -334,7 +374,6 @@ mod tests {
 
     #[test]
     fn test_default_heartbeat_version_fallback() {
-        // When IMAGE env var is not set, should use CARGO_PKG_VERSION
         let version = default_heartbeat_version();
         assert!(!version.is_empty());
     }
@@ -353,14 +392,14 @@ mod tests {
 
     #[test]
     fn test_default_heartbeat_os_major_version_returns_value() {
-        let major = default_heartbeat_os_major_version();
-        assert!(!major.is_empty());
+        let (os_major, _) = parse_os_version();
+        assert!(!os_major.is_empty());
     }
 
     #[test]
     fn test_default_heartbeat_os_minor_version_returns_value() {
-        let minor = default_heartbeat_os_minor_version();
-        assert!(!minor.is_empty());
+        let (_, os_minor) = parse_os_version();
+        assert!(!os_minor.is_empty());
     }
 
     // ==================== Constants Tests ====================
@@ -569,6 +608,140 @@ mod tests {
         assert_eq!(
             heartbeat.auth_header,
             HeaderValue::from_static("Bearer new_token")
+        );
+    }
+
+    // ==================== Resource ID Header Tests ====================
+
+    #[test]
+    fn test_resource_id_header_set_when_configured() {
+        let input = "/subscriptions/215b5735-fa8b-4dd4-86dc-997320c68c2d/resourceGroups/rg-test/providers/Microsoft.Kubernetes/connectedClusters/test-cluster/providers/microsoft.kubernetesconfiguration/extensions/pipe";
+        let encoded = super::super::client::url_encode_header_value(input);
+        let header = HeaderValue::from_str(&encoded).expect("valid header value");
+
+        let expected = "%2Fsubscriptions%2F215b5735-fa8b-4dd4-86dc-997320c68c2d%2FresourceGroups%2Frg-test%2Fproviders%2FMicrosoft.Kubernetes%2FconnectedClusters%2Ftest-cluster%2Fproviders%2Fmicrosoft.kubernetesconfiguration%2Fextensions%2Fpipe";
+        assert_eq!(header.to_str().unwrap(), expected);
+    }
+
+    #[test]
+    fn test_resource_id_header_none_when_not_configured() {
+        let result: Option<HeaderValue> = None::<String>.as_deref().and_then(|v| {
+            let encoded = super::super::client::url_encode_header_value(v);
+            HeaderValue::from_str(&encoded).ok()
+        });
+        assert!(result.is_none());
+    }
+
+    // ==================== Heartbeat::new with Overrides Tests ====================
+
+    fn test_api_config() -> ApiConfig {
+        ApiConfig {
+            dcr_endpoint: "https://test.ingest.monitor.azure.com".to_string(),
+            dcr: "dcr-abc123".to_string(),
+            stream_name: "Custom-Logs".to_string(),
+            schema: super::super::config::SchemaConfig {
+                resource_mapping: HashMap::new(),
+                scope_mapping: HashMap::new(),
+                log_record_mapping: HashMap::new(),
+            },
+            azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
+        }
+    }
+
+    #[test]
+    fn test_new_with_no_overrides_uses_defaults() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides::default();
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+
+        // All fields should be auto-detected (non-empty)
+        assert!(!hb.heartbeat_row.computer.is_empty());
+        assert!(!hb.heartbeat_row.os_type.is_empty());
+        assert!(!hb.heartbeat_row.os_name.is_empty());
+        assert!(!hb.heartbeat_row.os_major_version.is_empty());
+        assert!(!hb.heartbeat_row.os_minor_version.is_empty());
+        assert!(!hb.heartbeat_row.version.is_empty());
+    }
+
+    #[test]
+    fn test_new_with_all_overrides() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides {
+            version: Some("99.0.0-custom".to_string()),
+            computer: Some("my-host".to_string()),
+            os_type: Some("CustomOS".to_string()),
+            os_name: Some("MyLinux".to_string()),
+            os_major_version: Some("42".to_string()),
+            os_minor_version: Some("7".to_string()),
+        };
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+
+        assert_eq!(hb.heartbeat_row.version, "99.0.0-custom");
+        assert_eq!(hb.heartbeat_row.computer, "my-host");
+        assert_eq!(hb.heartbeat_row.os_type, "CustomOS");
+        assert_eq!(hb.heartbeat_row.os_name, "MyLinux");
+        assert_eq!(hb.heartbeat_row.os_major_version, "42");
+        assert_eq!(hb.heartbeat_row.os_minor_version, "7");
+    }
+
+    #[test]
+    fn test_new_with_partial_overrides() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides {
+            version: Some("2.0.0".to_string()),
+            computer: Some("override-host".to_string()),
+            os_type: None,
+            os_name: None,
+            os_major_version: None,
+            os_minor_version: None,
+        };
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+
+        // Overridden fields
+        assert_eq!(hb.heartbeat_row.version, "2.0.0");
+        assert_eq!(hb.heartbeat_row.computer, "override-host");
+
+        // Non-overridden fields should still be auto-detected
+        assert!(!hb.heartbeat_row.os_type.is_empty());
+        assert!(!hb.heartbeat_row.os_name.is_empty());
+        assert!(!hb.heartbeat_row.os_major_version.is_empty());
+        assert!(!hb.heartbeat_row.os_minor_version.is_empty());
+    }
+
+    #[test]
+    fn test_new_overrides_appear_in_serialized_payload() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides {
+            version: Some("payload-test-1.0".to_string()),
+            computer: Some("payload-host".to_string()),
+            os_type: None,
+            os_name: None,
+            os_major_version: None,
+            os_minor_version: None,
+        };
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+        let payload = serde_json::json!([hb.heartbeat_row]);
+        let row = &payload[0];
+
+        assert_eq!(row["Version"], "payload-test-1.0");
+        assert_eq!(row["Computer"], "payload-host");
+    }
+
+    #[test]
+    fn test_new_builds_correct_endpoint() {
+        let config = test_api_config();
+        let overrides = HeartbeatOverrides::default();
+
+        let hb = Heartbeat::new(&config, &overrides).unwrap();
+
+        assert_eq!(
+            hb.endpoint,
+            "https://test.ingest.monitor.azure.com/dataCollectionRules/dcr-abc123/streams/HEALTH_ASSESSMENT_BLOB?api-version=2021-11-01-preview"
         );
     }
 }

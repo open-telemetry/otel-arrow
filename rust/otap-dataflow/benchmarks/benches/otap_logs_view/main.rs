@@ -71,7 +71,9 @@ fn create_test_logs_batch(count: usize) -> Result<OtapArrowRecords, ArrowError> 
     }
 
     let mut otap_records = OtapArrowRecords::Logs(Default::default());
-    otap_records.set(ArrowPayloadType::Logs, builder.finish()?);
+    otap_records
+        .set(ArrowPayloadType::Logs, builder.finish()?)
+        .map_err(|e| ArrowError::InvalidArgumentError(e.to_string()))?;
 
     // Create Resource Attributes (Parent ID = 1)
     let mut res_attrs = StrKeysAttributesRecordBatchBuilder::<u16>::new();
@@ -81,14 +83,18 @@ fn create_test_logs_batch(count: usize) -> Result<OtapArrowRecords, ArrowError> 
     res_attrs.append_parent_id(&1);
     res_attrs.append_key("host.name");
     res_attrs.any_values_builder.append_str(b"localhost");
-    otap_records.set(ArrowPayloadType::ResourceAttrs, res_attrs.finish()?);
+    otap_records
+        .set(ArrowPayloadType::ResourceAttrs, res_attrs.finish()?)
+        .map_err(|e| ArrowError::InvalidArgumentError(e.to_string()))?;
 
     // Create Scope Attributes (Parent ID = 10)
     let mut scope_attrs = StrKeysAttributesRecordBatchBuilder::<u16>::new();
     scope_attrs.append_parent_id(&10);
     scope_attrs.append_key("scope.attr");
     scope_attrs.any_values_builder.append_str(b"scope_value");
-    otap_records.set(ArrowPayloadType::ScopeAttrs, scope_attrs.finish()?);
+    otap_records
+        .set(ArrowPayloadType::ScopeAttrs, scope_attrs.finish()?)
+        .map_err(|e| ArrowError::InvalidArgumentError(e.to_string()))?;
 
     // Create Log Attributes (Parent ID = 1..count)
     let mut log_attrs = StrKeysAttributesRecordBatchBuilder::<u16>::new();
@@ -107,7 +113,9 @@ fn create_test_logs_batch(count: usize) -> Result<OtapArrowRecords, ArrowError> 
         log_attrs.append_key("log.attr.3");
         log_attrs.any_values_builder.append_bool(true);
     }
-    otap_records.set(ArrowPayloadType::LogAttrs, log_attrs.finish()?);
+    otap_records
+        .set(ArrowPayloadType::LogAttrs, log_attrs.finish()?)
+        .map_err(|e| ArrowError::InvalidArgumentError(e.to_string()))?;
 
     Ok(otap_records)
 }

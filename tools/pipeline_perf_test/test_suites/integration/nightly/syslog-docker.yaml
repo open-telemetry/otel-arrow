@@ -10,7 +10,6 @@ components:
           # overriden in test steps
           - SYSLOG_SERVER=df-engine
           - SYSLOG_PORT=4317
-          - SYSLOG_TRANSPORT=udp
         ports:
           - "5001:5001"
         build:
@@ -46,7 +45,7 @@ components:
       docker_component:
         allocated_cores: 1  # Matches core-id-range: 3-3
       prometheus:
-        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
   backend-service:
     deployment:
       docker:
@@ -67,7 +66,7 @@ components:
       docker_component:
         allocated_cores: 1  # Matches core-id-range: 1-1
       prometheus:
-        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
   - name: SYSLOG-3164-ATTR-OTAP
@@ -75,36 +74,48 @@ tests:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
         result_dir: "nightly_syslog"
-        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr.yaml.j2
         backend_receiver_type: otap
+        exporter: otap
         # Non CEF message of approximately the same size as CEF message
         syslog_message: 'NOT-CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+        syslog_rate: 0
+        syslog_threads: 8
         observation_interval: 60
   - name: SYSLOG-3164-ATTR-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
         result_dir: "nightly_syslog"
-        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr.yaml.j2
         backend_receiver_type: otlp
+        exporter: otlp
         # Non CEF message of approximately the same size as CEF message
         syslog_message: 'NOT-CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+        syslog_rate: 0
+        syslog_threads: 8
         observation_interval: 60
   - name: SYSLOG-3164-CEF-ATTR-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
         result_dir: "nightly_syslog"
-        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr.yaml.j2
         backend_receiver_type: otlp
+        exporter: otlp
         syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+        syslog_rate: 0
+        syslog_threads: 8
         observation_interval: 60
   - name: SYSLOG-3164-CEF-ATTR-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/python-loadgen-steps-docker.yaml
       variables:
         result_dir: "nightly_syslog"
-        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/syslog/syslog-attr.yaml.j2
         backend_receiver_type: otap
+        exporter: otap
         syslog_message: 'CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=192.168.1.10 dst=10.0.0.25 spt=443 dpt=8080 proto=TCP act=blocked cs1Label=MalwareType cs1=Worm cs2Label=DetectionMethod cs2=Heuristic cs3Label=Severity cs3=High requestMethod=POST'
+        syslog_rate: 0
+        syslog_threads: 8
         observation_interval: 60

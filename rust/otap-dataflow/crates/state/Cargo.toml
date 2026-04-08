@@ -13,8 +13,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-otap-df-config = { path = "../config" }
-otap-df-telemetry = { path = "../telemetry" }
+otap-df-config = { workspace = true }
+otap-df-telemetry = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,3 +24,7 @@ parking_lot = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

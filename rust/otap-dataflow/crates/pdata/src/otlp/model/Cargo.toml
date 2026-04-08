@@ -11,4 +11,4 @@ rust-version.workspace = true
 [lib]
 
 [dependencies]
-tonic-prost-build = "0.14"
+tonic-prost-build = { workspace = true }

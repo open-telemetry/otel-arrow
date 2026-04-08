@@ -23,7 +23,7 @@ use arrow::array::{
     StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Fields};
-use arrow::row::{Row, RowConverter, SortField};
+
 use bytes::Bytes;
 use std::cmp::Ordering;
 use std::fmt;
@@ -586,41 +586,24 @@ impl SortedBatchCursor {
 /// This is used to initialize the [`SortedBatchCursor`]. It does this by sorting the IDs and then
 /// filling in the cursors indices to visit based on the sorted ID column.
 pub(crate) struct BatchSorter {
-    row_converter: RowConverter,
-
     // when we sort the record batch, to it's indices we put the ID columns into these Vecs before
     // transferring the indices to the cursor. We keep these on instance of the [`BatchSorter`] so
     // we can reuse the allocations for multiple batches.
-    rows: Vec<(usize, Row<'static>)>,
     u16_ids: Vec<(usize, u16)>,
     u32_ids: Vec<(usize, u32)>,
+
+    // note: in OTAP we don't have u64 ID columns. This vec is used to pack multiple IDs together
+    // while doing a multi-column sort
+    u64_ids: Vec<(usize, u64)>,
 }
 
 impl BatchSorter {
     pub fn new() -> Self {
-        // safety: these datatypes are sortable
-        let row_converter = RowConverter::new(vec![
-            SortField::new(DataType::UInt16),
-            SortField::new(DataType::UInt16),
-        ])
-        .expect("can create row converter");
-
         Self {
-            row_converter,
-            rows: Vec::new(),
             u16_ids: Vec::new(),
             u32_ids: Vec::new(),
+            u64_ids: Vec::new(),
         }
-    }
-
-    /// This helper function exists so we can the heap allocation of the `rows` vec associated with
-    /// this [`BatchSorter`]. We effectively just shuffle the vec between having the lifetime of
-    /// the borrowed rows while we're sorting, and the static lifetime when we're done
-    fn reuse_rows_vec<'a, 'b>(mut v: Vec<(usize, Row<'a>)>) -> Vec<(usize, Row<'b>)> {
-        v.clear();
-        // there's a compiler optimization that happens here where it will just recognize that the
-        // vec we're creating has the same type/alignment as the source, and reuse the allocation
-        v.into_iter().map(|_| unreachable!()).collect()
     }
 
     /// Initializes the cursor to visit the root [`RecordBatch`] in the OTAP batch in order of
@@ -632,61 +615,85 @@ impl BatchSorter {
         cursor: &mut SortedBatchCursor,
     ) -> Result<()> {
         let mut sort_columns_idx = 0;
-        let mut sort_columns = [None, None];
+        let mut sort_columns: [Option<&UInt16Array>; 3] = [None, None, None];
         for col_name in [consts::RESOURCE, consts::SCOPE] {
-            if let Some(resource_col) = record_batch.column_by_name(col_name) {
-                let resource_col = resource_col
+            if let Some(struct_col) = record_batch.column_by_name(col_name) {
+                let struct_array = struct_col
                     .as_any()
                     .downcast_ref::<StructArray>()
                     .ok_or_else(|| Error::ColumnDataTypeMismatch {
                         name: col_name.into(),
                         expect: DataType::Struct(Fields::empty()),
-                        actual: resource_col.data_type().clone(),
+                        actual: struct_col.data_type().clone(),
                     })?;
-                if let Some(resource_ids) = resource_col.column_by_name(consts::ID) {
-                    sort_columns[sort_columns_idx] = Some(resource_ids.clone());
+                if let Some(ids) = struct_array.column_by_name(consts::ID) {
+                    sort_columns[sort_columns_idx] =
+                        Some(ids.as_any().downcast_ref::<UInt16Array>().ok_or_else(|| {
+                            Error::ColumnDataTypeMismatch {
+                                name: col_name.into(),
+                                expect: DataType::UInt16,
+                                actual: ids.data_type().clone(),
+                            }
+                        })?);
                     sort_columns_idx += 1;
                 }
             }
         }
 
-        match sort_columns {
-            // use row-sorter if we need to sort by both columns
-            [Some(resource_ids), Some(scope_ids)] => {
-                let rows = self
-                    .row_converter
-                    .convert_columns(&[resource_ids, scope_ids])
-                    .map_err(|e| Error::UnexpectedRecordBatchState {
-                        reason: format!("unexpected resource/scope ID columns for sorting: {e:?}"),
-                    })?;
-                let mut sort = Self::reuse_rows_vec(std::mem::take(&mut self.rows));
-                sort.extend(rows.iter().enumerate());
-                sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
-                // populate the cursor
-                cursor.sorted_indices.extend(sort.iter().map(|(i, _)| *i));
-
-                // save the rows vec allocation for next batch needs sorting
-                self.rows = Self::reuse_rows_vec(sort);
-            }
-
-            //there's only one ID column, so we'll visit in the order of this column.
-            [Some(ids), None] => {
-                let ids = ids.as_any().downcast_ref::<UInt16Array>().ok_or_else(|| {
+        if let Some(ids) = record_batch.column_by_name(consts::ID) {
+            sort_columns[sort_columns_idx] =
+                Some(ids.as_any().downcast_ref::<UInt16Array>().ok_or_else(|| {
                     Error::ColumnDataTypeMismatch {
                         name: consts::ID.into(),
                         expect: DataType::UInt16,
                         actual: ids.data_type().clone(),
                     }
-                })?;
+                })?);
+        }
+
+        match sort_columns {
+            // Pack 3 u16 IDs into a u64 for composite sorting by resource, scope, then row ID.
+            [Some(resource_ids), Some(scope_ids), Some(ids)] => {
+                self.u64_ids.clear();
+                self.u64_ids.extend(
+                    resource_ids
+                        .values()
+                        .iter()
+                        .zip(scope_ids.values().iter())
+                        .zip(ids.values().iter())
+                        .enumerate()
+                        .map(|(i, ((r, s), id))| {
+                            (i, (*r as u64) << 32 | (*s as u64) << 16 | *id as u64)
+                        }),
+                );
+                self.u64_ids.sort_unstable_by_key(|&(_, v)| v);
+                cursor
+                    .sorted_indices
+                    .extend(self.u64_ids.iter().map(|(i, _)| *i));
+            }
+            // Pack 2 u16 IDs into a u32 for composite sorting by resource, then scope ID.
+            [Some(ids1), Some(ids2), None] => {
+                self.u32_ids.clear();
+                self.u32_ids.extend(
+                    ids1.values()
+                        .iter()
+                        .zip(ids2.values().iter())
+                        .enumerate()
+                        .map(|(i, (a, b))| (i, (*a as u32) << 16 | *b as u32)),
+                );
+                self.u32_ids.sort_unstable_by_key(|&(_, v)| v);
+                cursor
+                    .sorted_indices
+                    .extend(self.u32_ids.iter().map(|(i, _)| *i));
+            }
+            // Single ID column — sort directly by u16 value.
+            [Some(ids), None, None] => {
                 self.init_cursor_for_u16_id_column(&MaybeDictArrayAccessor::Native(ids), cursor);
             }
-
-            // no scope/resource ID columns....
-            // just configure cursor to visit the root record batch in order
-            [None, None] => {
+            // No ID columns — visit in natural order.
+            [None, None, None] => {
                 cursor.sorted_indices.extend(0..record_batch.num_rows());
             }
-
             _ => unreachable!(),
         }
 
@@ -927,10 +934,9 @@ mod test {
     }
 
     #[test]
-    fn test_batch_sorter_reuse_rows_alloc() {
-        // test that we're able to reuse the batch sorter's 'rows' heap allocation
-        // between sortings -- e.g. we're trying to test the functionality of
-        // BatchSorter::reuse_rows
+    fn test_batch_sorter_reuse_alloc() {
+        // test that we're able to reuse the batch sorter's sort vec heap allocation
+        // between sortings
 
         let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
         let record_batch = RecordBatch::try_new(
@@ -963,17 +969,17 @@ mod test {
 
         let mut cursor = SortedBatchCursor::new();
         let mut batch_sorter = BatchSorter::new();
-        // call once ot allocate the vec
+        // call once to allocate the vec
         batch_sorter
             .init_cursor_for_root_batch(&record_batch, &mut cursor)
             .unwrap();
 
         // the vec should have enough capacity not to get reallocated and we reuse it
-        let rows_ptr_before = batch_sorter.rows.as_ptr();
+        let ids_ptr_before = batch_sorter.u32_ids.as_ptr();
         batch_sorter
             .init_cursor_for_root_batch(&record_batch, &mut cursor)
             .unwrap();
-        assert_eq!(rows_ptr_before, batch_sorter.rows.as_ptr());
+        assert_eq!(ids_ptr_before, batch_sorter.u32_ids.as_ptr());
     }
 
     //

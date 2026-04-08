@@ -24,6 +24,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
@@ -57,6 +58,7 @@ pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:processor:debug";
 pub struct DebugProcessor {
     config: Config,
     metrics: MetricSet<DebugPdataMetrics>,
+    compute_duration: ComputeDuration,
     sampler: Sampler,
 }
 
@@ -99,10 +101,12 @@ impl DebugProcessor {
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
         let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let sampler = Sampler::new(config.sampling());
         DebugProcessor {
             config,
             metrics,
+            compute_duration,
             sampler,
         }
     }
@@ -110,6 +114,7 @@ impl DebugProcessor {
     /// Creates a new DebugProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -118,6 +123,7 @@ impl DebugProcessor {
         Ok(DebugProcessor {
             config,
             metrics,
+            compute_duration,
             sampler,
         })
     }
@@ -247,6 +253,11 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .output_message("Shutdown message received\n")
                             .await?;
                     }
+                    NodeControlMsg::DrainIngress { .. } => {
+                        debug_output
+                            .output_message("DrainIngress message received\n")
+                            .await?;
+                    }
                     NodeControlMsg::Ack(ackmsg) => {
                         match DebugCallData::try_from(ackmsg.unwind.route.calldata.clone()) {
                             Ok(dd) => {
@@ -295,6 +306,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         mut metrics_reporter,
                     } => {
                         _ = metrics_reporter.report(&mut self.metrics);
+                        self.compute_duration.report(&mut metrics_reporter);
                     }
                     _ => {}
                 }
@@ -325,13 +337,16 @@ impl local::Processor<OtapPdata> for DebugProcessor {
 
                 let (_context, payload) = pdata.into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
+
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Logs) {
-                            let req = LogsData::decode(bytes.as_ref()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytes: {e}"),
-                                }
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                LogsData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
                             })?;
                             self.process_log(req, debug_output.as_mut()).await?;
                         }
@@ -339,10 +354,12 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Metrics) {
-                            let req = MetricsData::decode(bytes.as_ref()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytes: {e}"),
-                                }
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                MetricsData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
                             })?;
                             self.process_metric(req, debug_output.as_mut()).await?;
                         }
@@ -350,10 +367,12 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Spans) {
-                            let req = TracesData::decode(bytes.as_ref()).map_err(|e| {
-                                Error::PdataConversionError {
-                                    error: format!("error decoding proto bytes: {e}"),
-                                }
+                            let req = effect_handler.timed(&self.compute_duration, || {
+                                TracesData::decode(bytes.as_ref()).map_err(|e| {
+                                    Error::PdataConversionError {
+                                        error: format!("error decoding proto bytes: {e}"),
+                                    }
+                                })
                             })?;
                             self.process_trace(req, debug_output.as_mut()).await?;
                         }
@@ -1361,17 +1380,18 @@ mod tests {
     }
 
     /// Creates a debug processor test setup for ACK/NACK forwarding tests.
-    /// Returns (test_runtime, processor, pipeline_ctrl_tx, pipeline_ctrl_rx, output_file).
+    /// Returns (test_runtime, processor, runtime_ctrl_tx, pipeline_completion_tx, pipeline_completion_rx, output_file).
     fn create_ack_nack_test_setup(
         output_file: &str,
     ) -> (
         TestRuntime<OtapPdata>,
         ProcessorWrapper<OtapPdata>,
-        otap_df_engine::control::PipelineCtrlMsgSender<OtapPdata>,
-        otap_df_engine::control::PipelineCtrlMsgReceiver<OtapPdata>,
+        otap_df_engine::control::RuntimeCtrlMsgSender<OtapPdata>,
+        otap_df_engine::control::PipelineCompletionMsgSender<OtapPdata>,
+        otap_df_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
         String,
     ) {
-        use otap_df_engine::control::pipeline_ctrl_msg_channel;
+        use otap_df_engine::control::{pipeline_completion_msg_channel, runtime_ctrl_msg_channel};
 
         let test_runtime = TestRuntime::new();
         let signals = HashSet::from([SignalActive::Logs]);
@@ -1397,13 +1417,18 @@ mod tests {
             test_runtime.config(),
         );
 
-        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(10);
+        let (runtime_ctrl_tx, runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(10);
+        let (pipeline_completion_tx, pipeline_completion_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
+
+        drop(runtime_ctrl_rx);
 
         (
             test_runtime,
             processor,
-            pipeline_ctrl_tx,
-            pipeline_ctrl_rx,
+            runtime_ctrl_tx,
+            pipeline_completion_tx,
+            pipeline_completion_rx,
             output_file.to_string(),
         )
     }
@@ -1417,17 +1442,24 @@ mod tests {
     #[test]
     fn test_debug_processor_forwards_ack_upstream() {
         use otap_df_engine::Interests;
-        use otap_df_engine::control::{AckMsg, PipelineControlMsg};
+        use otap_df_engine::control::{AckMsg, PipelineCompletionMsg};
         use otap_df_otap::testing::TestCallData;
 
-        let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
-            create_ack_nack_test_setup("debug_output_ack_test.txt");
+        let (
+            test_runtime,
+            processor,
+            runtime_ctrl_tx,
+            pipeline_completion_tx,
+            mut pipeline_completion_rx,
+            output_file,
+        ) = create_ack_nack_test_setup("debug_output_ack_test.txt");
 
         test_runtime
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                    ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                    ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 42usize;
@@ -1441,8 +1473,8 @@ mod tests {
                         .await
                         .expect("Processor failed on ACK");
 
-                    match pipeline_ctrl_rx.try_recv() {
-                        Ok(PipelineControlMsg::DeliverAck { ack }) => {
+                    match pipeline_completion_rx.try_recv() {
+                        Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
                             let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(
                                 node_id, upstream_node_id,
@@ -1469,17 +1501,24 @@ mod tests {
     #[test]
     fn test_debug_processor_forwards_nack_upstream() {
         use otap_df_engine::Interests;
-        use otap_df_engine::control::{NackMsg, PipelineControlMsg};
+        use otap_df_engine::control::{NackMsg, PipelineCompletionMsg};
         use otap_df_otap::testing::TestCallData;
 
-        let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
-            create_ack_nack_test_setup("debug_output_nack_test.txt");
+        let (
+            test_runtime,
+            processor,
+            runtime_ctrl_tx,
+            pipeline_completion_tx,
+            mut pipeline_completion_rx,
+            output_file,
+        ) = create_ack_nack_test_setup("debug_output_nack_test.txt");
 
         test_runtime
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                    ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                    ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 99usize;
@@ -1494,8 +1533,8 @@ mod tests {
                         .await
                         .expect("Processor failed on NACK");
 
-                    match pipeline_ctrl_rx.try_recv() {
-                        Ok(PipelineControlMsg::DeliverNack { nack }) => {
+                    match pipeline_completion_rx.try_recv() {
+                        Ok(PipelineCompletionMsg::DeliverNack { nack }) => {
                             let (node_id, nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(
@@ -1525,14 +1564,21 @@ mod tests {
     fn test_debug_processor_ack_nack_no_subscriber() {
         use otap_df_engine::control::{AckMsg, NackMsg};
 
-        let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
-            create_ack_nack_test_setup("debug_output_no_subscriber_test.txt");
+        let (
+            test_runtime,
+            processor,
+            runtime_ctrl_tx,
+            pipeline_completion_tx,
+            mut pipeline_completion_rx,
+            output_file,
+        ) = create_ack_nack_test_setup("debug_output_no_subscriber_test.txt");
 
         test_runtime
             .set_processor(processor)
             .run_test(move |mut ctx| {
                 Box::pin(async move {
-                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+                    ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                    ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                     let pdata_no_sub = create_empty_test_pdata();
 
@@ -1549,7 +1595,7 @@ mod tests {
 
                     // Verify no messages were forwarded (channel should be empty)
                     assert!(
-                        pipeline_ctrl_rx.try_recv().is_err(),
+                        pipeline_completion_rx.try_recv().is_err(),
                         "Expected no forwarded messages when there are no subscribers"
                     );
                 })

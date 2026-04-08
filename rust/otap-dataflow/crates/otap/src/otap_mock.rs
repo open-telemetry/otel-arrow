@@ -18,7 +18,9 @@ use arrow::{
 };
 use otap_df_pdata::{
     Consumer,
-    otap::{Logs, Metrics, OtapArrowRecords, Traces, from_record_messages},
+    otap::{
+        Logs, Metrics, OtapArrowRecords, Traces, from_record_messages, testing::complete_batch,
+    },
     proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
         arrow_logs_service_server::ArrowLogsService,
@@ -92,8 +94,11 @@ impl ArrowLogsService for ArrowLogsServiceMock {
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
-                let batch_data = consumer.consume_bar(&mut batch).unwrap();
-                let pdata = OtapArrowRecords::Logs(from_record_messages(batch_data));
+                let batch_data = consumer
+                    .consume_bar(&mut batch)
+                    .expect("failed to decode log batch in mock OTAP stream");
+                let pdata =
+                    OtapArrowRecords::Logs(from_record_messages(batch_data).expect("valid"));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone
@@ -139,8 +144,11 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
-                let batch_data = consumer.consume_bar(&mut batch).unwrap();
-                let pdata = OtapArrowRecords::Metrics(from_record_messages(batch_data));
+                let batch_data = consumer
+                    .consume_bar(&mut batch)
+                    .expect("failed to decode metrics batch in mock OTAP stream");
+                let pdata =
+                    OtapArrowRecords::Metrics(from_record_messages(batch_data).expect("valid"));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone
@@ -185,8 +193,11 @@ impl ArrowTracesService for ArrowTracesServiceMock {
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
-                let batch_data = consume.consume_bar(&mut batch).unwrap();
-                let pdata = OtapArrowRecords::Traces(from_record_messages(batch_data));
+                let batch_data = consume
+                    .consume_bar(&mut batch)
+                    .expect("failed to decode trace batch in mock OTAP stream");
+                let pdata =
+                    OtapArrowRecords::Traces(from_record_messages(batch_data).expect("valid"));
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone
@@ -223,20 +234,20 @@ pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapA
             batch_id as u16,
         ]))],
     )
-    .unwrap();
+    .expect("failed to build test OTAP batch record");
+
+    let record_batch = complete_batch(payload_type, record_batch);
 
     let mut otap_batch = match payload_type {
         ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
         ArrowPayloadType::Spans => OtapArrowRecords::Traces(Traces::default()),
-        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
-            OtapArrowRecords::Metrics(Metrics::default())
-        }
+        ArrowPayloadType::UnivariateMetrics => OtapArrowRecords::Metrics(Metrics::default()),
         _ => {
             panic!("unexpected payload_type")
         }
     };
 
-    otap_batch.set(payload_type, record_batch);
+    otap_batch.set(payload_type, record_batch).expect("valid");
 
     otap_batch
 }

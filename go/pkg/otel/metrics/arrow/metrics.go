@@ -24,15 +24,15 @@ import (
 var (
 	MetricsSchema = arrow.NewSchema([]arrow.Field{
 		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16, Metadata: schema.Metadata(schema.DeltaEncoding)},
-		{Name: constants.Resource, Type: carrow.ResourceDT, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.Scope, Type: carrow.ScopeDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.Resource, Type: carrow.ResourceDT, Metadata: schema.Metadata(schema.Optional), Nullable: true},
+		{Name: constants.Scope, Type: carrow.ScopeDT, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 		// This schema URL applies to the span and span events (the schema URL
 		// for the resource is in the resource struct).
-		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
+		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8), Nullable: true},
 		{Name: constants.MetricType, Type: arrow.PrimitiveTypes.Uint8},
 		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
-		{Name: constants.Description, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.Unit, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
+		{Name: constants.Description, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8), Nullable: true},
+		{Name: constants.Unit, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8), Nullable: true},
 		{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8), Nullable: true},
 		{Name: constants.IsMonotonic, Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 	}, nil)

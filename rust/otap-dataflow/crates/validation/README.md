@@ -4,6 +4,11 @@ End-to-end harness for standing up a **system-under-validation (SUV)**
 pipeline, driving OTLP/OTAP traffic into it, capturing the output, and
 asserting invariants.
 
+This crate is one layer in the broader OTAP-dataflow testing strategy. For
+guidance on when to use validation scenarios versus unit tests, node harnesses,
+small pipeline liveness tests, or deterministic simulation testing, see the
+[Testing Guide](../../docs/testing-guide.md).
+
 ## Framework components
 
 - `Scenario`: orchestrates end-to-end runs
@@ -69,13 +74,12 @@ e.g. `receiver`, `exporter`.
 
    ```rust
    use otap_df_validation::scenario::Scenario;
-   use std::time::Duration;
 
    Scenario::new()
        .pipeline(pipeline)                      // add your system under validation pipeline
        .add_generator("traffic_gen", generator)       // add your configured generator pipeline
        .add_capture("validate", capture)          // add your configured capture pipeline
-       .expect_within(Duration::from_secs(200)) // optional timeout; default 140
+       .expect_within(30) // optional timeout; default 25
        .run()
        .expect("validation scenario failed");
    ```
@@ -86,13 +90,12 @@ e.g. `receiver`, `exporter`.
 
   ```rust
   use otap_df_validation::scenario::Scenario;
-  use std::time::Duration;
 
   Scenario::new()
       .pipeline(pipeline)               // required: rewired Pipeline
       .add_generator("traffic_gen", generator)                 // required: Generator config
       .add_capture("validate", capture)                 // required: Capture config
-      .expect_within(Duration::from_secs(180)) // optional; default 140s
+      .expect_within(30) // optional; default 25s
       .run()
       .expect("validation scenario failed");
   ```
@@ -106,10 +109,16 @@ e.g. `receiver`, `exporter`.
 - `add_capture("cap_key", Capture)` - add capture/validation config
   - required, at least one capture must be configured
   - can support multiple if your pipeline has multiple exporters
-- `expect_within(Duration)` - set max runtime
-  - optional; default: 140s
+- `add_container("label", ContainerConfig)` - add Docker container to run
+  - optional; used for test container scenarios
+  - the label is referenced by `ContainerConnection` and `PipelineContainerConnection`
+  - see [Test Containers](#test-containers) for details
+- `expect_within(u64)` - set max runtime in seconds
+  - optional; default: 25s
 - `run()` - renders template, launches pipelines, waits for readiness
   - required to run the validation stage
+  - when containers are configured, they are started before the pipeline
+    runs and stopped after it shuts down
   - returns `Result<(), ValidationError>` if invalid or timeout
 
 ## Pipeline
@@ -124,12 +133,18 @@ e.g. `receiver`, `exporter`.
   ```
 
 - `Pipeline::from_file(path)` / `from_yaml(str)` - load the SUV pipeline YAML.
+  - returns `Result<Self, ValidationError>`
 - `Pipeline::from_file_with_vars(path, vars)` - load the SUV pipeline YAML with
   `${VAR}` placeholder substitution.
   - `vars` is a `&[(&str, &str)]` slice of `(key, value)` pairs
   - each `${KEY}` in the YAML is replaced with the corresponding value
   - returns an error if any `${...}` placeholders remain unresolved
   - useful for injecting TLS cert/key paths at test time (see [TLS / mTLS](#tls--mtls))
+- `connect_container(PipelineContainerConnection)` - declare a connection between
+  a node in the SUV pipeline and a test container
+  - the framework rewrites the specified config key with the container's allocated
+    host port at runtime
+  - see [Test Containers](#test-containers) for details
 
 ## Generator
 
@@ -152,7 +167,7 @@ e.g. `receiver`, `exporter`.
 - `max_batch_size(usize)` - controls batch size
   - default: 100
 - `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to receiver
-  - required
+  - required (unless using `to_container`)
   - specifies which receiver in suv pipeline to send data to
   - also sets the exporter type of the generator
     - exporter type must match the receiver type
@@ -164,8 +179,12 @@ e.g. `receiver`, `exporter`.
 - `with_tls(TlsConfig)` - enable TLS on the generator's exporter
   - optional; see [TLS / mTLS](#tls--mtls) for details
   - requires the `experimental-tls` feature flag
+- `to_container(ContainerConnection)` - use a custom exporter that sends to a
+  test container instead of directly to the SUV pipeline receiver
+  - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
+  - see [Test Containers](#test-containers) for details
 
-> NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match
+> NOTE: When using `otlp_grpc()` / `otap_grpc()`, the node names must match
 the keys under `nodes:` in your pipeline YAML.
 
 ### TLS / mTLS
@@ -233,7 +252,6 @@ Your SUV pipeline YAML should include TLS configuration on the receiver with
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
-use std::time::Duration;
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -263,7 +281,7 @@ Scenario::new()
             .otlp_grpc("exporter")
             .control_streams(["traffic_gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()
     .expect("TLS validation scenario failed");
 ```
@@ -274,7 +292,6 @@ Scenario::new()
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
-use std::time::Duration;
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -307,7 +324,7 @@ Scenario::new()
             .otlp_grpc("exporter")
             .control_streams(["traffic_gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()
     .expect("mTLS validation scenario failed");
 ```
@@ -316,29 +333,30 @@ Scenario::new()
 
 - **Capture example (with validations)**
 
-  ```rust
-  use otap_df_validation::traffic::Capture;
-  use otap_df_validation::ValidationInstructions;
-  use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
+   ```rust
+   use otap_df_validation::traffic::Capture;
+   use otap_df_validation::ValidationInstructions;
+   use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
-  let capture = Capture::default()
-      .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
-      .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
-      .core_range(3, 5)    // optional; default 1-1
-      .validate(vec![           // required; define your validation instructions
-          ValidationInstructions::Equivalence,
-          ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
-          ValidationInstructions::AttributeRequireKeyValue {
-              domains: vec![AttributeDomain::Signal],
-              pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
-          },
-      ]);
-  ```
+   let capture = Capture::default()
+       .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
+       .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
+       .core_range(3, 5)    // optional; default 1-1
+       .idle_timeout(5)     // optional; seconds to wait for messages before validating; default 3
+       .validate(vec![           // required; define your validation instructions
+           ValidationInstructions::Equivalence,
+           ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
+           ValidationInstructions::AttributeRequireKeyValue {
+               domains: vec![AttributeDomain::Signal],
+               pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
+           },
+       ]);
+   ```
 
 - `Capture::default()` - create a Capture
 - `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to exporter
-  - required
-  - specifies which exporter in suv pipeline to send data to
+  - required (unless using `from_container`)
+  - specifies which exporter in suv pipeline to receive data from
   - also sets the receiver type of the capture
     - receiver type must match the exporter type
       - OTLP -> OTLP or OTAP -> OTAP
@@ -352,9 +370,30 @@ should receive control signals from
   - default: []
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 1-1
+- `idle_timeout(u8)` - set how long (in seconds) the validation exporter
+  waits without receiving any messages before declaring the data stream
+  settled and performing the final validation
+  - default: 3 seconds
+- `from_container(ContainerConnection)` - use a custom receiver that reads from
+  a test container instead of directly from the SUV pipeline exporter
+  - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
+  - see [Test Containers](#test-containers) for details
 
-> NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match
+> NOTE: When using `otlp_grpc()` / `otap_grpc()`, the node names must match
 the keys under `nodes:` in your pipeline YAML.
+
+### How `idle_timeout` works
+
+The validation exporter tracks the timestamp of the last received message.
+On each periodic telemetry tick (every 1 second), it checks whether the
+elapsed time since the last message exceeds the configured idle timeout. If
+so, it considers the data stream settled, performs the final validation, and
+signals completion.
+
+A shorter timeout makes tests complete faster but may trigger validation
+prematurely if there are natural pauses in message delivery. A longer
+timeout is safer for pipelines with bursty or delayed output but increases
+overall test runtime.
 
 ### Validation instructions (used with `Capture::validate`)
 
@@ -405,4 +444,289 @@ it should receive control signals from
   to receive from two generators
   - each generator label must match a label passed to `add_generator`
 
-### Test containers (WIP)
+### Test Containers
+
+Run Docker containers alongside your validation scenario using the
+[testcontainers](https://docs.rs/testcontainers) crate. This is useful when
+the system under validation interacts with external services (e.g. LocalStack
+for S3-compatible storage, Redis) that you want to spin up on-demand during
+tests.
+
+Containers are managed by the `Scenario`: they start **before** the pipeline
+runs and stop **after** it shuts down. Port mappings between the container and
+the host are allocated automatically by the framework.
+
+#### ContainerConfig
+
+Describes a Docker container to run alongside the scenario.
+
+```rust
+use otap_df_validation::ContainerConfig;
+
+let localstack = ContainerConfig::new("localstack/localstack", "3.4")
+    .env("SERVICES", "s3")
+    .env("DEFAULT_REGION", "us-east-1");
+```
+
+- `ContainerConfig::new(image, tag)` - create a container config for the given
+  Docker image and tag
+- `.env(key, value)` - set an environment variable on the container
+  - can be chained multiple times
+- `.env_host_port(key, value_template, internal_port)` - set an environment
+  variable whose value is a Jinja2 template; `{{ host_port }}` is replaced
+  with the host port mapped to `internal_port` after port allocation
+  - can be chained multiple times
+  - if no connection maps the given `internal_port`, the framework
+    auto-allocates a host port during config wiring
+  - the resolved host port is consistent with the port used for Docker
+    port mapping and any `ContainerConnection` or
+    `PipelineContainerConnection` referencing the same internal port
+- `.entrypoint(cmd)` - override the container's entrypoint
+  - optional
+
+##### Templated environment variables
+
+Some containers require environment variables that reference the host port
+assigned to one of their exposed ports. For example, Kafka's advertised
+listeners must contain the host-reachable address so that clients outside
+the container can connect. Use `env_host_port` for this:
+
+```rust
+use otap_df_validation::ContainerConfig;
+
+let kafka = ContainerConfig::new("confluentinc/cp-kafka", "7.5.0")
+    .env("KAFKA_NODE_ID", "1")
+    .env_host_port(
+        "KAFKA_ADVERTISED_LISTENERS",
+        "PLAINTEXT://127.0.0.1:{{ host_port }}",
+        9092,
+    );
+```
+
+After config wiring, if host port 54321 was allocated for container port
+9092, the container starts with `KAFKA_ADVERTISED_LISTENERS` set to
+`PLAINTEXT://127.0.0.1:54321`.
+
+If a `PipelineContainerConnection` or `ContainerConnection` also
+references internal port 9092 on the same container, they all share the
+same allocated host port.
+
+Register the container on the scenario with `add_container`:
+
+```rust
+Scenario::new()
+    .add_container("localstack", localstack)
+    // ...
+```
+
+#### ContainerConnection
+
+Describes a connection between a **Generator** or **Capture** and a test
+container. The connection carries a Jinja2 template for a custom node
+configuration that is rendered with `{{ port }}` set to the allocated host
+port.
+
+```rust
+use otap_df_validation::traffic::ContainerConnection;
+
+let conn = ContainerConnection::new("localstack")
+    .internal_port(4566)
+    .node_template(r#"
+type: "exporter:parquet"
+config:
+  storage:
+    s3:
+      base_uri: "s3://otel-test-bucket/telemetry"
+      region: "us-east-1"
+      endpoint: "http://127.0.0.1:{{ port }}"
+      allow_http: true
+      virtual_hosted_style_request: false
+      auth:
+        type: static_credentials
+        access_key_id: test
+        secret_access_key: test
+"#);
+```
+
+- `ContainerConnection::new(label)` - create a connection referencing a
+  container by its label (must match a label passed to `add_container`)
+- `.internal_port(port)` - the container's internal port to map
+  - required
+- `.node_template(template)` - Jinja2 template for the custom exporter or
+  receiver node config; `{{ port }}` is the allocated host port
+  - required
+
+Use the connection on a Generator or Capture:
+
+- `Generator::to_container(conn)` - the generator uses a custom exporter
+  defined by the template instead of `otlp_grpc` / `otap_grpc`
+- `Capture::from_container(conn)` - the capture uses a custom receiver
+  defined by the template instead of `otlp_grpc` / `otap_grpc`
+
+#### PipelineContainerConnection
+
+Describes a connection between a **node in the SUV pipeline** and a test
+container. Instead of providing a full node template, this rewrites a
+specific config key in the pipeline YAML with the rendered address.
+
+```rust
+use otap_df_validation::pipeline::PipelineContainerConnection;
+
+let conn = PipelineContainerConnection::new("localstack")
+    .internal_port(4566)
+    .node("parquet_exporter")
+    .config_key("storage.s3.endpoint")
+    .address_template("http://127.0.0.1:{{ port }}");
+```
+
+- `PipelineContainerConnection::new(label)` - create a connection referencing
+  a container by its label
+- `.internal_port(port)` - the container's internal port to map
+  - required
+- `.node(name)` - the node name in the SUV pipeline YAML whose config will
+  be rewritten
+  - required; must match a key under `nodes:` in the pipeline YAML
+- `.config_key(path)` - dot-separated path to the config key relative to
+  `nodes.<node>.config`
+  - required; e.g. `"storage.s3.endpoint"` or `"protocols.grpc.listening_addr"`
+- `.address_template(template)` - Jinja2 template for the address value;
+  `{{ port }}` is the allocated host port
+  - required; e.g. `"127.0.0.1:{{ port }}"` or `"http://127.0.0.1:{{ port }}"`
+
+Attach the connection to a Pipeline:
+
+```rust
+let pipeline = Pipeline::from_file("./validation_pipelines/parquet_pipeline.yaml")?
+    .connect_container(conn);
+```
+
+#### Connection patterns
+
+There are three patterns for wiring containers into a scenario:
+
+##### Pattern A: Generator -> Container (custom exporter)
+
+The generator sends signals to the container via a custom exporter. Useful
+when the container provides a service that the generator writes to directly
+(e.g. an S3-compatible object store where parquet files are written).
+
+```rust
+let generator = Generator::logs()
+    .fixed_count(500)
+    .to_container(
+        ContainerConnection::new("localstack")
+            .internal_port(4566)
+            .node_template(r#"
+type: "exporter:parquet"
+config:
+  storage:
+    s3:
+      base_uri: "s3://otel-test-bucket/telemetry"
+      region: "us-east-1"
+      endpoint: "http://127.0.0.1:{{ port }}"
+      allow_http: true
+      virtual_hosted_style_request: false
+      auth:
+        type: static_credentials
+        access_key_id: test
+        secret_access_key: test
+"#),
+    );
+```
+
+##### Pattern B: Container -> Capture (custom receiver)
+
+The capture reads signals from the container via a custom receiver. Useful
+when the container acts as the exit point of the system under validation
+(e.g. an S3-compatible object store where parquet files are read back from).
+
+```rust
+let capture = Capture::default()
+    .from_container(
+        ContainerConnection::new("localstack")
+            .internal_port(4566)
+            .node_template(r#"
+type: "receiver:parquet"
+config:
+  storage:
+    s3:
+      base_uri: "s3://otel-test-bucket/telemetry"
+      region: "us-east-1"
+      endpoint: "http://127.0.0.1:{{ port }}"
+      allow_http: true
+      virtual_hosted_style_request: false
+      auth:
+        type: static_credentials
+        access_key_id: test
+        secret_access_key: test
+"#),
+    )
+    .validate(vec![ValidationInstructions::Equivalence])
+    .control_streams(["gen"]);
+```
+
+##### Pattern C: Pipeline node -> Container (config key rewrite)
+
+A node in the SUV pipeline connects to the container. The framework
+rewrites a specific config key with the allocated address. Useful when
+the SUV pipeline itself needs to talk to the container (e.g. a parquet
+exporter node needs an S3 endpoint).
+
+```rust
+let pipeline = Pipeline::from_file("./validation_pipelines/parquet_pipeline.yaml")?
+    .connect_container(
+        PipelineContainerConnection::new("localstack")
+            .internal_port(4566)
+            .node("parquet_exporter")
+            .config_key("storage.s3.endpoint")
+            .address_template("http://127.0.0.1:{{ port }}"),
+    );
+```
+
+### Full example
+
+```rust
+use otap_df_validation::ContainerConfig;
+use otap_df_validation::ValidationInstructions;
+use otap_df_validation::pipeline::{Pipeline, PipelineContainerConnection};
+use otap_df_validation::scenario::Scenario;
+use otap_df_validation::traffic::{Capture, ContainerConnection, Generator};
+
+Scenario::new()
+    .pipeline(
+        Pipeline::from_file("./validation_pipelines/parquet_pipeline.yaml")?
+            .connect_container(
+                PipelineContainerConnection::new("localstack")
+                    .internal_port(4566)
+                    .node("parquet_exporter")
+                    .config_key("storage.s3.endpoint")
+                    .address_template("http://127.0.0.1:{{ port }}"),
+            ),
+    )
+    .add_container(
+        "localstack",
+        ContainerConfig::new("localstack/localstack", "3.4")
+            .env("SERVICES", "s3")
+            .env("DEFAULT_REGION", "us-east-1")
+            .env_host_port(
+                "LOCALSTACK_HOST",
+                "127.0.0.1:{{ host_port }}",
+                4566,
+            ),
+    )
+    .add_generator(
+        "gen",
+        Generator::logs()
+            .fixed_count(500)
+            .otlp_grpc("receiver"),
+    )
+    .add_capture(
+        "cap",
+        Capture::default()
+            .otlp_grpc("exporter")
+            .validate(vec![ValidationInstructions::Equivalence])
+            .control_streams(["gen"]),
+    )
+    .expect_within(30)
+    .run()?;
+```

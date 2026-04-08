@@ -12,8 +12,8 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-otap-df-core-nodes = { path = "../crates/core-nodes" }
-otap-df-otap = { path = "../crates/otap" }
+otap-df-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
+otap-df-otap = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
@@ -21,11 +21,12 @@ tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 
-otap-df-config = { path = "../crates/config" }
-otap-df-channel = { path = "../crates/channel" }
-otap-df-engine = { path = "../crates/engine"}
-otap-df-telemetry = { path="../crates/telemetry"}
-otap-df-pdata = { path="../crates/pdata", features = ["bench"]}
+otap-df-control-channel = { workspace = true }
+otap-df-config = { workspace = true }
+otap-df-channel = { workspace = true }
+otap-df-engine = { workspace = true }
+otap-df-telemetry = { workspace = true }
+otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
 otap-df-pdata-views = { workspace = true }
 
 smallvec.workspace = true
@@ -54,6 +55,10 @@ workspace = true
 
 [[bench]]
 name = "channel"
+harness = false
+
+[[bench]]
+name = "control_channel"
 harness = false
 
 [[bench]]

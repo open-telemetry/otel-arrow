@@ -14,6 +14,7 @@ ahash = { workspace = true }
 arrow = { workspace = true }
 arrow-ipc = { workspace = true }
 arrow-schema = { workspace = true }
+datafusion = { workspace = true }
 ciborium = { workspace = true }
 itertools = { workspace = true }
 otap-df-config = { workspace = true }
@@ -41,17 +42,21 @@ tonic-prost = { workspace = true }
 tokio-stream = { workspace = true }
 prost = { workspace = true }
 criterion = { workspace = true }
+portpicker = { workspace = true }
 
 [lints]
 workspace = true
 
 [features]
 bench = []
+testing = []
 
 [[bench]]
 name = "concatenate"
 harness = false
+required-features = ["testing"]
 
 [[bench]]
 name = "sort_by_parent_then_id"
 harness = false
+required-features = ["testing"]

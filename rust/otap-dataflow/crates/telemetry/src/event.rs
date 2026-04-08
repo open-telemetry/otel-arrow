@@ -3,6 +3,7 @@
 
 //! Definition of all signals/conditions that drive state transitions and log events.
 
+use crate::log_tap::InternalLogTapDropCounter;
 use crate::self_tracing::{LogRecord, format_log_record_to_string};
 use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
 use serde::Serialize;
@@ -11,22 +12,79 @@ use std::fmt;
 use std::time::SystemTime;
 
 /// A sharable/clonable observed event reporter sending events to an `ObservedStore`.
+///
+/// Engine lifecycle events (Admitted, Ready, …) can optionally be routed through
+/// a dedicated unbounded channel so they are never silently dropped under
+/// backpressure.  Log events always use the bounded/lossy path controlled by
+/// [`SendPolicy`].
 #[derive(Clone)]
 pub struct ObservedEventReporter {
     policy: SendPolicy,
     sender: flume::Sender<ObservedEvent>,
+    drop_counter: Option<InternalLogTapDropCounter>,
+    /// Dedicated reliable sender for engine lifecycle events.
+    /// When `Some`, [`report`](Self::report) bypasses the lossy path and uses
+    /// a blocking send on the unbounded engine channel.
+    engine_sender: Option<flume::Sender<EngineEvent>>,
 }
 
 impl ObservedEventReporter {
     /// Creates a new `ObservedEventReporter` with the given sender channel.
+    ///
+    /// Engine events sent via [`report`](Self::report) will follow the lossy
+    /// path governed by `policy`.  Use [`new_with_engine_sender`](Self::new_with_engine_sender)
+    /// to guarantee reliable delivery for engine events.
     #[must_use]
     pub const fn new(policy: SendPolicy, sender: flume::Sender<ObservedEvent>) -> Self {
-        Self { policy, sender }
+        Self {
+            policy,
+            sender,
+            drop_counter: None,
+            engine_sender: None,
+        }
+    }
+
+    /// Creates a reporter that delivers engine events reliably through a
+    /// dedicated unbounded channel while log events still use the bounded/lossy
+    /// path.
+    #[must_use]
+    pub const fn new_with_engine_sender(
+        policy: SendPolicy,
+        sender: flume::Sender<ObservedEvent>,
+        engine_sender: flume::Sender<EngineEvent>,
+    ) -> Self {
+        Self {
+            policy,
+            sender,
+            drop_counter: None,
+            engine_sender: Some(engine_sender),
+        }
+    }
+
+    /// Attach a counter for logs dropped before they reach retention.
+    #[must_use]
+    pub fn with_drop_counter(mut self, drop_counter: InternalLogTapDropCounter) -> Self {
+        self.drop_counter = Some(drop_counter);
+        self
     }
 
     /// Report an engine event.
+    ///
+    /// When a dedicated engine sender is configured, the event is delivered
+    /// reliably (blocking send on an unbounded channel).  Otherwise it falls
+    /// back to the shared lossy path.
     pub fn report(&self, event: EngineEvent) {
-        self.observe(ObservedEvent::Engine(event))
+        if let Some(engine_sender) = &self.engine_sender {
+            if let Err(e) = engine_sender.send(event) {
+                crate::raw_error!(
+                    "Engine channel disconnected, dropping engine event",
+                    event = ?e.into_inner()
+                );
+            }
+        } else {
+            // Fallback: lossy path (used in tests and backward-compat scenarios).
+            self.observe(ObservedEvent::Engine(event))
+        }
     }
 
     /// Report a log event.
@@ -35,10 +93,16 @@ impl ObservedEventReporter {
     }
 
     fn observe(&self, event: ObservedEvent) {
+        let is_log = matches!(event, ObservedEvent::Log(_));
         match self.policy.blocking_timeout {
             None => match self.sender.try_send(event) {
                 Ok(_) => {}
                 Err(err) => {
+                    if is_log {
+                        if let Some(drop_counter) = &self.drop_counter {
+                            drop_counter.increment();
+                        }
+                    }
                     if !self.policy.console_fallback {
                         return;
                     }
@@ -55,6 +119,11 @@ impl ObservedEventReporter {
             Some(timeout) => match self.sender.send_timeout(event, timeout) {
                 Ok(_) => {}
                 Err(err) => {
+                    if is_log {
+                        if let Some(drop_counter) = &self.drop_counter {
+                            drop_counter.increment();
+                        }
+                    }
                     if !self.policy.console_fallback {
                         return;
                     }
@@ -153,7 +222,7 @@ pub enum EventType {
 pub enum RequestEvent {
     /// A request to (re)start the pipeline lifecycle from a stopped state.
     StartRequested,
-    /// Begin graceful shutdown and quiesce existing work.
+    /// Begin graceful shutdown and drain existing work.
     ShutdownRequested,
     /// Request graceful deletion (drain if needed, then delete).
     DeleteRequested,
@@ -174,6 +243,12 @@ pub enum SuccessEvent {
     UpdateApplied,
     /// Rollback finished successfully; last known good is restored.
     RollbackComplete,
+    /// Graceful shutdown was latched and receivers were asked to stop new ingress.
+    IngressDrainStarted,
+    /// All receivers finished their drain work and downstream shutdown may proceed.
+    ReceiversDrained,
+    /// Shutdown has propagated from receivers to processors/exporters.
+    DownstreamShutdownStarted,
     /// All ongoing work has drained to zero; safe to stop or delete.
     Drained,
     /// Resource teardown has finished; nothing remains.
@@ -194,6 +269,8 @@ pub enum ErrorEvent {
     RollbackFailed(ErrorSummary),
     /// Draining failed or timed out according to policy.
     DrainError(ErrorSummary),
+    /// Graceful shutdown reached its deadline before natural drain completion.
+    DrainDeadlineReached,
     /// An unrecoverable runtime fault/crash occurred.
     RuntimeError(ErrorSummary),
     /// An error occurred during teardown.
@@ -292,6 +369,45 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::RollbackComplete),
+            message,
+        }
+    }
+
+    /// Create an `IngressDrainStarted` pipeline-level event.
+    #[must_use]
+    pub fn ingress_drain_started(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::IngressDrainStarted),
+            message,
+        }
+    }
+
+    /// Create a `ReceiversDrained` pipeline-level event.
+    #[must_use]
+    pub fn receivers_drained(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::ReceiversDrained),
+            message,
+        }
+    }
+
+    /// Create a `DownstreamShutdownStarted` pipeline-level event.
+    #[must_use]
+    pub fn downstream_shutdown_started(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::DownstreamShutdownStarted),
             message,
         }
     }
@@ -403,6 +519,19 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::DrainError(error)),
+            message,
+        }
+    }
+
+    /// Create a `DrainDeadlineReached` pipeline-level event.
+    #[must_use]
+    pub fn drain_deadline_reached(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::DrainDeadlineReached),
             message,
         }
     }

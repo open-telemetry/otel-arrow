@@ -88,20 +88,14 @@ impl ValidationInstructions {
         control: &[OtlpProtoMessage],
         suv: &[(OtlpProtoMessage, Duration)],
     ) -> bool {
+        let suv_msgs: Vec<OtlpProtoMessage> = suv.iter().map(|(msg, _)| msg.clone()).collect();
+
         match self {
-            ValidationInstructions::Equivalence => {
-                let suv_msgs: Vec<OtlpProtoMessage> =
-                    suv.iter().map(|(msg, _)| msg.clone()).collect();
-                validate_equivalent(control, &suv_msgs)
-            }
+            ValidationInstructions::Equivalence => validate_equivalent(control, &suv_msgs),
             ValidationInstructions::SignalDrop {
                 min_drop_ratio,
                 max_drop_ratio,
-            } => {
-                let suv_msgs: Vec<OtlpProtoMessage> =
-                    suv.iter().map(|(msg, _)| msg.clone()).collect();
-                validate_signal_drop(control, &suv_msgs, *min_drop_ratio, *max_drop_ratio)
-            }
+            } => validate_signal_drop(control, &suv_msgs, *min_drop_ratio, *max_drop_ratio),
             ValidationInstructions::BatchItems {
                 min_batch_size,
                 max_batch_size,
@@ -113,25 +107,15 @@ impl ValidationInstructions {
                 timeout,
             } => validate_batch_bytes(suv, min_bytes, max_bytes, timeout),
             ValidationInstructions::AttributeDeny { domains, keys } => {
-                let suv_msgs: Vec<OtlpProtoMessage> =
-                    suv.iter().map(|(msg, _)| msg.clone()).collect();
                 validate_deny_keys(&suv_msgs, domains, keys)
             }
             ValidationInstructions::AttributeRequireKey { domains, keys } => {
-                let suv_msgs: Vec<OtlpProtoMessage> =
-                    suv.iter().map(|(msg, _)| msg.clone()).collect();
                 validate_require_keys(&suv_msgs, domains, keys)
             }
             ValidationInstructions::AttributeRequireKeyValue { domains, pairs } => {
-                let suv_msgs: Vec<OtlpProtoMessage> =
-                    suv.iter().map(|(msg, _)| msg.clone()).collect();
                 validate_require_key_values(&suv_msgs, domains, pairs)
             }
-            ValidationInstructions::AttributeNoDuplicate => {
-                let suv_msgs: Vec<OtlpProtoMessage> =
-                    suv.iter().map(|(msg, _)| msg.clone()).collect();
-                validate_no_duplicate_keys(&suv_msgs)
-            }
+            ValidationInstructions::AttributeNoDuplicate => validate_no_duplicate_keys(&suv_msgs),
         }
     }
 }

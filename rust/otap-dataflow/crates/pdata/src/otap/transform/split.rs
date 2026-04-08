@@ -10,8 +10,9 @@ use arrow::array::{
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
 use crate::error::{Error, Result};
+use crate::otap::raw_batch_store::POSITION_LOOKUP;
 use crate::otap::transform::util::{id_column_dispatch, sort_otap_batch_by_parent_then_id};
-use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, num_items};
+use crate::otap::{Logs, Metrics, OtapBatchStore, Traces, num_items};
 use crate::otlp::metrics::MetricType;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, METRIC_TYPE, PARENT_ID};
@@ -744,13 +745,15 @@ mod tests {
     use super::*;
     use crate::otap::transform::concatenate::concatenate;
     use crate::otap::transform::reindex::reindex;
-    use crate::otap::transform::testing::{collect_row_ids, logs, metrics, payload_to_idx, traces};
+    use crate::otap::transform::testing::collect_row_ids;
     use crate::otap::transform::util::access_column;
+    use crate::otap::transform::util::payload_to_idx;
     use crate::otap::{Logs, Metrics, OtapArrowRecords, Traces, num_items};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::record_batch;
     use crate::testing::equiv::assert_equivalent;
     use crate::testing::round_trip::otap_to_otlp;
+    use crate::{logs, metrics, traces};
 
     // ---- Logs tests ----
     // TODO test all the referential integrity violation variants
@@ -758,7 +761,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_logs() {
-        test_split::<{ Logs::COUNT }>(&to_otap_logs, &[logs!(
+        test_split_stores(&[logs!(
             (Logs,
                 ("id", UInt16, vec![0u16, 1, 2, 3, 4, 5]),
                 ("scope.id", UInt16, vec![0u16, 0, 0, 1, 1, 2]),
@@ -786,7 +789,7 @@ mod tests {
                 ("parent_id", UInt16, vec![0u16])),
             (ResourceAttrs,
                 ("parent_id", UInt16, vec![0u16]))
-        );
+        ).into_batches();
 
         let result = split::<{ Logs::COUNT }>(
             &mut [batch], NonZeroU32::new(1).unwrap(),
@@ -830,7 +833,7 @@ mod tests {
         let resource_pids   = vec![0u16, 0, 1, 1];
 
         // Plain parent_ids
-        test_split::<{ Traces::COUNT }>(&to_otap_traces, &[traces!(
+        test_split_stores(&[traces!(
             (Spans,
                 ("id", UInt16, span_ids.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
@@ -852,7 +855,7 @@ mod tests {
         )]);
 
         // Dict<UInt8, UInt32> parent_ids for u32 columns
-        test_split::<{ Traces::COUNT }>(&to_otap_traces, &[traces!(
+        test_split_stores(&[traces!(
             (Spans,
                 ("id", UInt16, span_ids.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
@@ -874,7 +877,7 @@ mod tests {
         )]);
 
         // Dict<UInt16, UInt32> parent_ids for u32 columns
-        test_split::<{ Traces::COUNT }>(&to_otap_traces, &[traces!(
+        test_split_stores(&[traces!(
             (Spans,
                 ("id", UInt16, span_ids.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
@@ -909,7 +912,7 @@ mod tests {
                 ("parent_id", UInt16, vec![0u16, 0])),
             (SpanEventAttrs,
                 ("parent_id", UInt32, vec![0u32, 1]))
-        );
+        ).into_batches();
 
         let result = split::<{ Traces::COUNT }>(
             &mut [batch], NonZeroU32::new(1).unwrap(),
@@ -924,7 +927,7 @@ mod tests {
     fn test_split_overlapping_parent_ranges() {
         // Tests the scenario where some different child ids are associated to the same
         // parent.
-        test_split::<{ Traces::COUNT }>(&to_otap_traces, &[traces!(
+        test_split_stores(&[traces!(
             (Spans,
                 ("id", UInt16, vec![0u16, 1, 2, 3])),
             (SpanEvents,
@@ -956,7 +959,7 @@ mod tests {
         let gauge_types = vec![MetricType::Gauge as u8; 4];
 
         // Plain parent_ids
-        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
                 ("metric_type", UInt8, gauge_types.clone()),
@@ -981,7 +984,7 @@ mod tests {
         )]);
 
         // Dict<UInt8, UInt32> parent_ids for u32 columns
-        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
                 ("metric_type", UInt8, gauge_types.clone()),
@@ -1006,7 +1009,7 @@ mod tests {
         )]);
 
         // Dict<UInt16, UInt32> parent_ids for u32 columns
-        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
                 ("metric_type", UInt8, gauge_types.clone()),
@@ -1034,7 +1037,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_histogram_dp() {
-        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
                 ("metric_type", UInt8, vec![MetricType::Histogram as u8; 4]),
@@ -1062,7 +1065,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_exp_histogram_dp() {
-        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
                 ("metric_type", UInt8, vec![MetricType::ExponentialHistogram as u8; 4]),
@@ -1090,7 +1093,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_summary_dp() {
-        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
                 ("metric_type", UInt8, vec![MetricType::Summary as u8; 4]),
@@ -1124,7 +1127,7 @@ mod tests {
             (NumberDataPoints,
                 ("id", UInt32, vec![0u32, 1, 2, 3, 4, 5]),
                 ("parent_id", UInt16, vec![0u16, 0, 0, 0, 0, 0]))
-        );
+        ).into_batches();
 
         let result = split::<{ Metrics::COUNT }>(
             &mut [batch],
@@ -1145,7 +1148,7 @@ mod tests {
         //   metric 1 → Histogram    (2 dp)
         //   metric 2 → ExpHistogram (2 dp)
         //   metric 3 → Summary      (2 dp)
-        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
+        test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
                 ("metric_type", UInt8, vec![
@@ -1204,7 +1207,7 @@ mod tests {
             (ResourceAttrs,
                 ("parent_id", UInt16, vec![0u16, 0, 1]))
         );
-        test_split::<{ Logs::COUNT }>(&to_otap_logs, &[batch1, batch2]);
+        test_split_stores(&[batch1, batch2]);
     }
 
     #[test]
@@ -1239,7 +1242,7 @@ mod tests {
                 ("id", UInt32, vec![0u32, 1]),
                 ("parent_id", UInt16, vec![1u16, 2]))
         );
-        test_split::<{ Traces::COUNT }>(&to_otap_traces, &[batch1, batch2]);
+        test_split_stores(&[batch1, batch2]);
     }
 
     #[test]
@@ -1277,7 +1280,7 @@ mod tests {
                 ("id", UInt32, vec![0u32, 1, 2]),
                 ("parent_id", UInt16, vec![0u16, 0, 1]))
         );
-        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[batch1, batch2]);
+        test_split_stores(&[batch1, batch2]);
     }
 
     fn test_split<const N: usize>(
@@ -1302,7 +1305,7 @@ mod tests {
                 expected_ids.extend(root_ids(rb));
             }
         }
-        let expected_items: usize = batches.iter().map(num_items).sum();
+        let expected_items: usize = batches.iter().map(|b| num_items(b)).sum();
 
         for i in get_split_sizes(expected_items) {
             let mut result =
@@ -1317,7 +1320,7 @@ mod tests {
             assert_eq!(split_ids, expected_ids);
 
             // Total item count must be preserved.
-            let result_items: usize = result.iter().map(num_items).sum();
+            let result_items: usize = result.iter().map(|b| num_items(b)).sum();
             assert_eq!(result_items, expected_items);
 
             // For metrics, verify data point row counts are preserved per type.
@@ -1379,22 +1382,20 @@ mod tests {
         }
     }
 
-    fn to_otap_logs(batch: &[Option<RecordBatch>; Logs::COUNT]) -> OtapArrowRecords {
-        OtapArrowRecords::Logs(Logs {
-            batches: batch.clone(),
-        })
-    }
-
-    fn to_otap_metrics(batch: &[Option<RecordBatch>; Metrics::COUNT]) -> OtapArrowRecords {
-        OtapArrowRecords::Metrics(Metrics {
-            batches: batch.clone(),
-        })
-    }
-
-    fn to_otap_traces(batch: &[Option<RecordBatch>; Traces::COUNT]) -> OtapArrowRecords {
-        OtapArrowRecords::Traces(Traces {
-            batches: batch.clone(),
-        })
+    /// Generic test helper for split: converts a slice of stores into raw batch
+    /// arrays and delegates to [`test_split`].
+    fn test_split_stores<S, const N: usize>(stores: &[S])
+    where
+        S: OtapBatchStore<BatchArray = [Option<RecordBatch>; N]> + Into<OtapArrowRecords> + Clone,
+    {
+        let batches: Vec<[Option<RecordBatch>; N]> =
+            stores.iter().cloned().map(|s| s.into_batches()).collect();
+        let to_otap = |b: &[Option<RecordBatch>; N]| -> OtapArrowRecords {
+            let mut store = S::new();
+            store.batches_mut().clone_from_slice(b);
+            store.into()
+        };
+        test_split::<N>(&to_otap, &batches);
     }
 
     /// Derive the root `ArrowPayloadType` from the const generic batch size.

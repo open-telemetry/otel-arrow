@@ -27,7 +27,7 @@ pub use otlp::OtlpProtoBytes;
 pub use payload::{OtapPayload, OtapPayloadHelpers};
 
 /// Testing support
-// #[cfg(test)] ?
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 // The validation module is only used for integration tests with the OpenTelemetry Collector.

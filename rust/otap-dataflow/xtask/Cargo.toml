@@ -9,10 +9,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow = "1.0.98"
-toml = "0.8.22"
-tonic-prost-build = { version = "0.14", features = ["cleanup-markdown"] }
-prost-build = { version = "0.14" }
+anyhow = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+toml = { workspace = true }
+tonic-prost-build = { workspace = true, features = ["cleanup-markdown"] }
+prost-build = { workspace = true }
 otap-df-pdata-otlp-model = { workspace = true }
 
 [lints.rust]

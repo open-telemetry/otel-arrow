@@ -9,6 +9,7 @@ use crate::attributes::{
     PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
+use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
@@ -101,20 +102,31 @@ pub struct ControllerContext {
     host_id: Cow<'static, str>,
     container_id: Cow<'static, str>,
     numa_node_id: usize,
+    memory_pressure_state: MemoryPressureState,
+}
+
+/// Parameters required to create a pipeline context.
+#[derive(Clone, Debug)]
+pub struct PipelineContextParams {
+    /// Pipeline group ID for the current pipeline execution context.
+    pub pipeline_group_id: PipelineGroupId,
+    /// Pipeline ID for the current pipeline execution context.
+    pub pipeline_id: PipelineId,
+    /// Core ID for the current pipeline execution context.
+    pub core_id: usize,
+    /// Total number of cores allocated to this pipeline.
+    /// Used by nodes that need to share resources across cores (e.g., disk budgets).
+    pub num_cores: usize,
+    /// Thread ID for the current pipeline execution context.
+    pub thread_id: usize,
 }
 
 /// A lightweight/cloneable pipeline context.
 #[derive(Clone, Debug)]
 pub struct PipelineContext {
     controller_context: ControllerContext,
-    core_id: usize,
+    pipeline_context_params: PipelineContextParams,
     deployment_generation: u64,
-    /// Total number of cores allocated to this pipeline.
-    /// Used by nodes that need to share resources across cores (e.g., disk budgets).
-    num_cores: usize,
-    thread_id: usize,
-    pipeline_group_id: PipelineGroupId,
-    pipeline_id: PipelineId,
     pipeline_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     node_id: ConfigNodeId,
     node_urn: NodeUrn,
@@ -143,6 +155,7 @@ impl ControllerContext {
             host_id: HOST_ID.clone(),
             container_id: CONTAINER_ID.clone(),
             numa_node_id: 0, // ToDo(LQ): Set NUMA node ID if available
+            memory_pressure_state: MemoryPressureState::default(),
         }
     }
 
@@ -178,13 +191,15 @@ impl ControllerContext {
         thread_id: usize,
         deployment_generation: u64,
     ) -> PipelineContext {
-        PipelineContext::new(
+        PipelineContext::new_with_generation(
             self.clone(),
-            pipeline_group_id,
-            pipeline_id,
-            core_id,
-            num_cores,
-            thread_id,
+            PipelineContextParams {
+                pipeline_group_id,
+                pipeline_id,
+                core_id,
+                num_cores,
+                thread_id,
+            },
             deployment_generation,
         )
     }
@@ -210,27 +225,34 @@ impl ControllerContext {
     pub fn telemetry_registry(&self) -> TelemetryRegistryHandle {
         self.telemetry_registry_handle.clone()
     }
+
+    /// Returns the shared process-wide memory pressure state.
+    #[must_use]
+    pub fn memory_pressure_state(&self) -> MemoryPressureState {
+        self.memory_pressure_state.clone()
+    }
 }
 
 impl PipelineContext {
     /// Creates a new `PipelineContext`.
+    #[allow(dead_code)]
     pub(crate) fn new(
         parent_ctx: ControllerContext,
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        core_id: usize,
-        num_cores: usize,
-        thread_id: usize,
+        pipeline_context_params: PipelineContextParams,
+    ) -> Self {
+        Self::new_with_generation(parent_ctx, pipeline_context_params, 0)
+    }
+
+    /// Creates a new `PipelineContext` with an explicit deployment generation.
+    pub(crate) fn new_with_generation(
+        parent_ctx: ControllerContext,
+        pipeline_context_params: PipelineContextParams,
         deployment_generation: u64,
     ) -> Self {
         Self {
             controller_context: parent_ctx,
-            pipeline_id,
-            pipeline_group_id,
-            core_id,
+            pipeline_context_params,
             deployment_generation,
-            num_cores,
-            thread_id,
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
@@ -245,19 +267,19 @@ impl PipelineContext {
     /// Returns the pipeline group ID associated with this pipeline context.
     #[must_use]
     pub fn pipeline_group_id(&self) -> PipelineGroupId {
-        self.pipeline_group_id.clone()
+        self.pipeline_context_params.pipeline_group_id.clone()
     }
 
     /// Returns the pipeline ID associated with this pipeline context.
     #[must_use]
     pub fn pipeline_id(&self) -> PipelineId {
-        self.pipeline_id.clone()
+        self.pipeline_context_params.pipeline_id.clone()
     }
 
     /// Returns the core ID associated with this pipeline context.
     #[must_use]
     pub const fn core_id(&self) -> usize {
-        self.core_id
+        self.pipeline_context_params.core_id
     }
 
     /// Returns the deployment generation associated with this pipeline runtime.
@@ -272,7 +294,7 @@ impl PipelineContext {
     /// across all cores running the same pipeline.
     #[must_use]
     pub const fn num_cores(&self) -> usize {
-        self.num_cores
+        self.pipeline_context_params.num_cores
     }
 
     /// Sets the internal telemetry settings for the Internal Telemetry Receiver.
@@ -290,6 +312,12 @@ impl PipelineContext {
     #[must_use]
     pub const fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
         self.internal_telemetry.as_ref()
+    }
+
+    /// Returns the shared process-wide memory pressure state.
+    #[must_use]
+    pub fn memory_pressure_state(&self) -> MemoryPressureState {
+        self.controller_context.memory_pressure_state()
     }
 
     /// Sets the shared node-name-to-index mapping for this pipeline context.
@@ -451,7 +479,7 @@ impl PipelineContext {
                 host_id: self.controller_context.host_id.clone(),
                 container_id: self.controller_context.container_id.clone(),
             },
-            core_id: self.core_id,
+            core_id: self.pipeline_context_params.core_id,
             numa_node_id: self.controller_context.numa_node_id,
         }
     }
@@ -461,8 +489,8 @@ impl PipelineContext {
     pub fn pipeline_attribute_set(&self) -> PipelineAttributeSet {
         PipelineAttributeSet {
             engine_attrs: self.engine_attribute_set(),
-            pipeline_id: self.pipeline_id.clone(),
-            pipeline_group_id: self.pipeline_group_id.clone(),
+            pipeline_id: self.pipeline_context_params.pipeline_id.clone(),
+            pipeline_group_id: self.pipeline_context_params.pipeline_group_id.clone(),
             deployment_generation: self.deployment_generation,
         }
     }
@@ -554,11 +582,7 @@ impl PipelineContext {
     ) -> Self {
         Self {
             controller_context: self.controller_context.clone(),
-            core_id: self.core_id,
-            num_cores: self.num_cores,
-            thread_id: self.thread_id,
-            pipeline_group_id: self.pipeline_group_id.clone(),
-            pipeline_id: self.pipeline_id.clone(),
+            pipeline_context_params: self.pipeline_context_params.clone(),
             deployment_generation: self.deployment_generation,
             pipeline_telemetry_attrs: self.pipeline_telemetry_attrs.clone(),
             node_id,

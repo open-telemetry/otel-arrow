@@ -67,6 +67,7 @@ impl HttpClientSettings {
     /// Returns a configured client-builder
     pub async fn client_builder(&self) -> Result<ClientBuilder, HttpClientError> {
         let mut client_builder = ClientBuilder::new()
+            .use_rustls_tls()
             .connect_timeout(self.connect_timeout)
             .tcp_nodelay(self.tcp_nodelay)
             .connector_layer(ConcurrencyLimitLayer::new(

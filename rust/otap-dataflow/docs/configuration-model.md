@@ -21,7 +21,18 @@ The engine runtime accepts a single configuration file format (v1).
 - `engine`: optional engine-wide settings
 - `groups`: pipeline groups map
 
-The engine binary loads this configuration file via `--config`.
+The engine binary loads this configuration file via `--config`. The
+argument accepts a URI that selects the config source:
+
+| URI form | Behavior |
+| --- | --- |
+| `file:/path/to/config.yaml` | Read from a local file |
+| `env:MY_VAR` | Read the full config from an environment variable |
+| `/path/to/config.yaml` | Bare path, same as `file:` |
+
+If `--config` is omitted, the engine falls back to `config.yaml` in
+the current working directory.
+
 Standalone pipeline files are not a runtime root format.
 
 Contributor note: this top-level model is represented in code as
@@ -198,8 +209,8 @@ Optional observability policies are supported at:
 
 ## Policy Hierarchy
 
-Policies include channel capacity, health, runtime telemetry, and
-resources controls:
+Policies include channel capacity, health, runtime telemetry, resources
+controls, and transport headers:
 
 ```yaml
 policies:
@@ -207,17 +218,34 @@ policies:
       control:
         node: 256
         pipeline: 256
+        completion: 512
       pdata: 128
   health:
     # optional overrides; defaults are applied when omitted
   telemetry:
     pipeline_metrics: true
     tokio_metrics: true
-    channel_metrics: true
+    runtime_metrics: basic
   resources:
     core_allocation:
       type: all_cores
+    memory_limiter:
+      mode: observe_only
+      source: auto
+      soft_limit: 7 GiB
+      hard_limit: 8 GiB
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: ["x-tenant-id"]
+          store_as: tenant_id
+    header_propagation:
+      default:
+        selector: all_captured
 ```
+
+For full transport header policy documentation, see
+[transport-headers.md](transport-headers.md).
 
 Resolution order:
 
@@ -231,11 +259,43 @@ Defaults at top-level:
 
 - `channel_capacity.control.node = 256`
 - `channel_capacity.control.pipeline = 256`
+- `channel_capacity.control.completion = 512`
 - `channel_capacity.pdata = 128`
 - `telemetry.pipeline_metrics = true`
 - `telemetry.tokio_metrics = true`
-- `telemetry.channel_metrics = true`
+- `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+- `transport_headers = not set` (opt-in; no headers captured or propagated)
+
+Memory limiter configuration:
+
+- `policies.resources.memory_limiter` is optional and process-wide.
+- If configured, `mode` must be explicitly set to `enforce` or `observe_only`.
+- The policy is supported only at top-level `policies.resources`.
+  Group, pipeline, and observability-pipeline resource placements are rejected.
+- In Phase 1, `Soft` remains informational; `Hard` is the ingress-shedding
+  threshold.
+- Detailed runtime behavior and rollout guidance are documented in
+  [memory-limiter-phase1.md](memory-limiter-phase1.md).
+
+Control channel keys:
+
+- `node`: per-node control inboxes
+- `pipeline`: shared pipeline-runtime orchestration channel
+- `completion`: shared Ack/Nack completion channel
+
+Telemetry policy notes:
+
+- `telemetry.runtime_metrics` accepts `none`, `basic`, `normal`, or `detailed`
+- this level now gates:
+  - channel endpoint transport metrics
+  - per-node produced/consumed outcome metrics
+  - shared pipeline control-plane metrics such as `pipeline.runtime_control`
+    and `pipeline.completion`
+- `basic` exports gauges and transport counters
+- `normal` adds message and phase counters
+- `detailed` adds latency/duration summaries and completion unwind-depth
+  distribution
 
 Resolution semantics:
 
@@ -469,7 +529,8 @@ Config loading validates:
 - Missing source/destination nodes in connections.
 - Graph cycles.
 - Source output selector validity when node `outputs` is declared.
-- Non-zero channel capacities (`control.node`, `control.pipeline`, `pdata`).
+- Non-zero channel capacities (`control.node`, `control.pipeline`,
+  `control.completion`, `pdata`).
 - Non-zero topic queue capacities
   (`topics.*.policies.balanced.queue_capacity`,
   `topics.*.policies.broadcast.queue_capacity`).

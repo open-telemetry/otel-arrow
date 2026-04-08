@@ -10,15 +10,14 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_pdata_views::views::logs::LogsDataView;
 
-use super::auth::Auth;
+use super::auth::{Auth, PendingTokenRefresh};
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
 use super::error::Error;
@@ -34,12 +33,14 @@ use reqwest::header::HeaderValue;
 
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
+use bytes::Bytes;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Max concurrent HTTP requests in flight to the Logs Ingestion API.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
-const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
+
 /// Minimum interval between token refresh attempts (10 seconds).
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
 /// Buffer time before token expiry to trigger a refresh.
@@ -57,7 +58,7 @@ pub struct AzureMonitorExporter {
     client_pool: LogsIngestionClientPool,
     in_flight_exports: InFlightExports,
     last_batch_queued_at: tokio::time::Instant,
-    heartbeat: Heartbeat,
+    heartbeat: Option<Heartbeat>,
 }
 
 impl AzureMonitorExporter {
@@ -75,13 +76,17 @@ impl AzureMonitorExporter {
         ));
 
         // Create log transformer
-        let transformer = Transformer::new(&config, metrics.clone());
+        let transformer = Transformer::new(&config);
 
         // Create Gzip batcher
-        let gzip_batcher = GzipBatcher::new();
+        let gzip_batcher = GzipBatcher::new(config.api.gzip_compression_level);
 
         // Create heartbeat handler
-        let heartbeat = Heartbeat::new(&config.api)?;
+        let heartbeat = if config.heartbeat.enabled {
+            Some(Heartbeat::new(&config.api, &config.heartbeat.overrides)?)
+        } else {
+            None
+        };
 
         Ok(Self {
             config,
@@ -180,7 +185,7 @@ impl AzureMonitorExporter {
             m.add_failed_batch();
         }
 
-        otel_error!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
+        otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
         for (_, context, payload) in failed_messages {
             effect_handler
@@ -202,6 +207,13 @@ impl AzureMonitorExporter {
             None => return Ok(()), // No pending batch - nothing to do
         };
 
+        self.metrics
+            .borrow_mut()
+            .add_batch_uncompressed_size(pending_batch.uncompressed_size as f64);
+        self.metrics
+            .borrow_mut()
+            .add_batch_size(pending_batch.compressed_data.len() as f64);
+
         let client = self.client_pool.take();
         if let Some(completed_export) = self
             .in_flight_exports
@@ -222,12 +234,12 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    async fn handle_logs_view<T: LogsDataView>(
+    async fn handle_logs(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         context: Context,
         payload: OtapPayload,
-        logs_view: &T,
+        log_entries: Vec<Bytes>,
         msg_id: u64,
     ) -> Result<(), EngineError> {
         if context.may_return_payload() {
@@ -237,11 +249,9 @@ impl AzureMonitorExporter {
                 .add_msg_to_data(msg_id, context, OtapPayload::empty(SignalType::Logs));
         }
 
-        // Use a generic transformer method that accepts LogsDataView
-        let log_entries = self.transformer.convert_to_log_analytics(logs_view);
-
         for log_entry in log_entries {
-            match self.gzip_batcher.push(&log_entry) {
+            let entry_len = log_entry.len();
+            match self.gzip_batcher.push(log_entry) {
                 Ok(gzip_batcher::PushResult::Ok(batch_id)) => {
                     // current batch id is being associated with the current message
                     self.state.add_batch_msg_relationship(batch_id, msg_id);
@@ -257,7 +267,7 @@ impl AzureMonitorExporter {
                     otel_warn!(
                         "azure_monitor_exporter.message.log_entry_too_large",
                         msg_id = msg_id,
-                        size_bytes = log_entry.len()
+                        size_bytes = entry_len
                     );
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
@@ -385,29 +395,17 @@ impl AzureMonitorExporter {
             Ok(Message::PData(pdata)) => {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
-                let payload_to_match = payload.clone();
 
-                match payload_to_match {
+                let log_entries = match &payload {
                     OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
-                        OtapArrowRecords::Logs(otap_records) => {
-                            let otap_arrow_records = OtapArrowRecords::Logs(otap_records);
-
-                            let logs_view =
-                                OtapLogsView::try_from(&otap_arrow_records).map_err(|e| {
-                                    let error = Error::LogsViewCreationFailed { source: e };
-                                    EngineError::InternalError {
-                                        message: error.to_string(),
-                                    }
-                                })?;
-
-                            self.handle_logs_view(
-                                effect_handler,
-                                context,
-                                payload,
-                                &logs_view,
-                                *msg_id,
-                            )
-                            .await?;
+                        OtapArrowRecords::Logs(_) => {
+                            let logs_view = OtapLogsView::try_from(otap_records).map_err(|e| {
+                                let error = Error::LogsViewCreationFailed { source: e };
+                                EngineError::InternalError {
+                                    message: error.to_string(),
+                                }
+                            })?;
+                            Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
                             otel_warn!(
@@ -415,21 +413,13 @@ impl AzureMonitorExporter {
                                 signal = "metrics_or_traces",
                                 format = "otap_arrow"
                             );
+                            None
                         }
                     },
-
                     OtapPayload::OtlpBytes(otlp_bytes) => match otlp_bytes {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             let logs_view = RawLogsData::new(bytes.as_ref());
-
-                            self.handle_logs_view(
-                                effect_handler,
-                                context,
-                                payload,
-                                &logs_view,
-                                *msg_id,
-                            )
-                            .await?;
+                            Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtlpProtoBytes::ExportMetricsRequest(_)
                         | OtlpProtoBytes::ExportTracesRequest(_) => {
@@ -438,8 +428,14 @@ impl AzureMonitorExporter {
                                 signal = "metrics_or_traces",
                                 format = "otlp_proto"
                             );
+                            None
                         }
                     },
+                };
+
+                if let Some(log_entries) = log_entries {
+                    self.handle_logs(effect_handler, context, payload, log_entries, *msg_id)
+                        .await?;
                 }
             }
 
@@ -460,7 +456,7 @@ impl AzureMonitorExporter {
 impl Exporter<OtapPdata> for AzureMonitorExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
@@ -468,11 +464,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
             dcr = self.config.api.dcr.as_str(),
-            auth_method = self.config.auth.auth_method_name()
+            auth_method = self.config.auth.auth_method_name(),
+            gzip_compression_level = self.config.api.gzip_compression_level
         );
 
         let mut msg_id = 0;
-        let mut auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
+        let auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
             let error = Error::AuthHandlerCreation(Box::new(e));
             EngineError::InternalError {
                 message: error.to_string(),
@@ -497,70 +494,54 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 message: format!("Failed to start telemetry timer: {e}"),
             })?;
 
-        // Quick startup probe: try to acquire a token with a short timeout.
-        // On success, auth headers are set immediately and token refresh is scheduled normally.
-        // On failure (e.g., MSI on a non-Azure machine), a warning surfaces within ~5s
-        // and the main loop retries via the regular get_token() infinite retry path.
-        let mut next_token_refresh = match auth
-            .try_get_token(tokio::time::Duration::from_secs(5), 3)
-            .await
-        {
-            Ok(access_token) => {
-                match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
-                    Ok(header) => {
-                        self.client_pool.update_auth(header.clone());
-                        self.heartbeat.update_auth(header.clone());
-
-                        let next = Self::get_next_token_refresh(access_token);
-                        let refresh_in =
-                            next.saturating_duration_since(tokio::time::Instant::now());
-                        let total_secs = refresh_in.as_secs();
-                        let hours = total_secs / 3600;
-                        let minutes = (total_secs % 3600) / 60;
-                        let seconds = total_secs % 60;
-
-                        otel_info!(
-                            "azure_monitor_exporter.auth.initial_token_acquired",
-                            refresh_in = format!("{}h {}m {}s", hours, minutes, seconds)
-                        );
-                        next
-                    }
-                    Err(e) => {
-                        otel_warn!("azure_monitor_exporter.auth.initial_header_creation_failed", error = ?e);
-                        tokio::time::Instant::now()
-                    }
-                }
-            }
-            Err(e) => {
-                otel_warn!(
-                    "azure_monitor_exporter.auth.startup_probe_failed",
-                    error = %e,
-                    hint = "Check auth method configuration. Token acquisition will keep retrying in background."
-                );
-                tokio::time::Instant::now()
-            }
-        };
-
         let mut next_periodic_export = tokio::time::Instant::now()
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
         let mut next_heartbeat_send = tokio::time::Instant::now();
 
+        // Token acquisition starts immediately in the event loop.
+        // pdata is not accepted until we have a valid token with sufficient remaining lifetime.
+        let mut next_token_refresh = tokio::time::Instant::now();
+        let mut token_expiry_at = tokio::time::Instant::now();
+        let mut auth = Some(auth);
+        let mut pending_token = PendingTokenRefresh::new();
+
         loop {
-            // Determine if we should accept new messages
+            // We have a valid token when it won't expire within the buffer window
+            let has_token = token_expiry_at
+                > tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
             let at_capacity = self.in_flight_exports.len() >= MAX_IN_FLIGHT_EXPORTS;
+            let accepting_pdata = has_token && !at_capacity;
 
             tokio::select! {
                 biased;
 
-                _ = tokio::time::sleep_until(next_token_refresh) => {
-                    match auth.get_token().await {
+                // Start token acquisition when the timer fires and no acquisition is in progress
+                _ = tokio::time::sleep_until(next_token_refresh), if !pending_token.is_pending() => {
+                    pending_token.start(auth.take().expect("auth must be available when no token future is pending"));
+                }
+
+                // Poll the in-flight token acquisition (non-blocking for the rest of the loop)
+                token_result = pending_token.next_completion() => {
+                    auth = Some(token_result.auth);
+                    match token_result.result {
                         Ok(access_token) => {
                             match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
                                 Ok(header) => {
                                     self.client_pool.update_auth(header.clone());
-                                    self.heartbeat.update_auth(header.clone());
+                                    if let Some(ref mut hb) = self.heartbeat {
+                                        hb.update_auth(header.clone());
+                                    }
 
-                                    // Schedule next token refresh
+                                    // Compute expiry before consuming access_token
+                                    let now_utc = azure_core::time::OffsetDateTime::now_utc();
+                                    let expires_in = if access_token.expires_on > now_utc {
+                                        (access_token.expires_on - now_utc).unsigned_abs()
+                                    } else {
+                                        std::time::Duration::ZERO
+                                    };
+                                    token_expiry_at = tokio::time::Instant::now() + expires_in;
+
                                     next_token_refresh = Self::get_next_token_refresh(access_token);
 
                                     let refresh_in = next_token_refresh.saturating_duration_since(tokio::time::Instant::now());
@@ -573,26 +554,38 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                 }
                                 Err(e) => {
                                     otel_error!("azure_monitor_exporter.auth.header_creation_failed", error = ?e);
-                                    // Retry every 10 seconds
-                                    next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                                    let jitter = 1.0 + (rand::random::<f64>() * 0.6 - 0.3);
+                                    next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(10.0 * jitter);
                                 }
                             }
-
                         }
                         Err(e) => {
-                            otel_error!("azure_monitor_exporter.auth.token_refresh_failed", error = ?e);
-                            // Retry every 10 seconds
-                            next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                            let error_msg = e.to_string();
+                            let first_line = error_msg.lines().next().unwrap_or(&error_msg);
+
+                            otel_warn!(
+                                "azure_monitor_exporter.auth.token_acquisition_failed",
+                                error = %first_line
+                            );
+                            otel_debug!(
+                                "azure_monitor_exporter.auth.token_acquisition_failed.details",
+                                error = %e
+                            );
+                            self.metrics.borrow_mut().add_auth_failure();
+                            let jitter = 1.0 + (rand::random::<f64>() * 0.6 - 0.3);
+                            next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(10.0 * jitter);
                         }
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_heartbeat_send) => {
-                    next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
+                _ = tokio::time::sleep_until(next_heartbeat_send), if has_token && self.heartbeat.is_some() => {
+                    next_heartbeat_send = tokio::time::Instant::now() + self.config.heartbeat.frequency;
                     self.metrics.borrow_mut().add_heartbeat();
-                    match self.heartbeat.send().await {
-                        Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
-                        Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = ?e),
+                    if let Some(ref mut hb) = self.heartbeat {
+                        match hb.send().await {
+                            Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
+                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = ?e),
+                        }
                     }
                 }
 
@@ -602,7 +595,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_periodic_export), if !at_capacity => {
+                _ = tokio::time::sleep_until(next_periodic_export), if accepting_pdata => {
                     next_periodic_export = tokio::time::Instant::now() + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
 
                     if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL) && self.gzip_batcher.has_pending_data() {
@@ -611,8 +604,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                // Control always flows; pdata guarded by !at_capacity
-                msg = msg_chan.recv_when(!at_capacity) => {
+                // TODO: Ensure that when rejecting pdata, data loss doesn't occur. (pending on lquerel's msg channel rework)
+                // Control always flows; pdata guarded by has_token && !at_capacity
+                msg = msg_chan.recv_when(accepting_pdata) => {
                     match msg {
                         Ok(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
                             self.sync_gauges();
@@ -665,18 +659,23 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+    use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
     use super::*;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
     use http::StatusCode;
+    use otap_df_channel::mpsc;
+    use otap_df_engine::Interests;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
+    use otap_df_engine::local::message::LocalReceiver;
+    use otap_df_engine::message::Receiver;
     use otap_df_engine::node::NodeId;
     use otap_df_otap::pdata::Context;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     fn create_test_pipeline_ctx() -> PipelineContext {
         otap_df_otap::crypto::ensure_crypto_provider();
@@ -696,9 +695,33 @@ mod tests {
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),
                 },
+                azure_monitor_source_resourceid: None,
+                gzip_compression_level: 6,
             },
             auth: AuthConfig::default(),
+            heartbeat: HeartbeatConfig::default(),
         }
+    }
+
+    fn make_msg_channel(
+        capacity: usize,
+    ) -> (
+        mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        mpsc::Sender<OtapPdata>,
+        ExporterInbox<OtapPdata>,
+    ) {
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<OtapPdata>>::new(capacity);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<OtapPdata>::new(capacity);
+        (
+            control_tx,
+            pdata_tx,
+            ExporterInbox::new(
+                Receiver::Local(LocalReceiver::mpsc(control_rx)),
+                Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+                0,
+                Interests::empty(),
+            ),
+        )
     }
 
     #[test]
@@ -759,12 +782,7 @@ mod tests {
 
         // This might fail due to missing sender in effect_handler, but state should be updated
         let _ = exporter
-            .handle_export_success(
-                &effect_handler,
-                batch_id,
-                10,
-                std::time::Duration::from_secs(1),
-            )
+            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1))
             .await;
 
         // Verify stats
@@ -823,5 +841,52 @@ mod tests {
         // Verify state cleared
         assert!(exporter.state.batch_to_msg.is_empty());
         assert!(exporter.state.msg_to_data.is_empty());
+    }
+
+    // Azure Monitor can temporarily stop accepting new pdata while it is at
+    // capacity. Once shutdown is latched, the exporter channel must still drain
+    // already buffered pdata before delivering the final Shutdown message.
+    #[tokio::test]
+    async fn test_shutdown_drains_buffered_pdata_while_at_capacity() {
+        let (control_tx, pdata_tx, mut msg_chan) = make_msg_channel(8);
+        let at_capacity = true;
+
+        pdata_tx
+            .send_async(OtapPdata::new(
+                Context::default(),
+                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
+            ))
+            .await
+            .unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_millis(200),
+                reason: "test".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        control_tx
+            .send_async(NodeControlMsg::TimerTick {})
+            .await
+            .unwrap();
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::TimerTick {})
+        ));
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(msg, Message::PData(_)));
+
+        drop(pdata_tx);
+
+        let msg = msg_chan.recv_when(!at_capacity).await.unwrap();
+        assert!(matches!(
+            msg,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
     }
 }

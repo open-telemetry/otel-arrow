@@ -8,11 +8,11 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, transform_attributes};
+use otap_df_pdata::otap::transform::{AttributesTransform, apply_attribute_transform};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
@@ -52,29 +52,7 @@ impl PipelineStage for AttributeTransformPipelineStage {
             AttributesIdentifier::NonRoot(payload_type) => payload_type,
         };
 
-        let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
-            Some(rb) => rb,
-            None => {
-                // nothing to do, there are no attributes
-                return Ok(otap_batch);
-            }
-        };
-
-        // transform attributes
-        let attrs_transformed =
-            transform_attributes(attrs_record_batch, &self.transform).map_err(|e| {
-                Error::ExecutionError {
-                    cause: format!("error transforming attributes {e}"),
-                }
-            })?;
-
-        if attrs_transformed.num_rows() == 0 {
-            // all attributes deleted. remove as it's now empty
-            otap_batch.remove(attrs_payload_type);
-        } else {
-            // replace attributes batch with transformed attributes
-            otap_batch.set(attrs_payload_type, attrs_transformed);
-        }
+        _ = apply_attribute_transform(&mut otap_batch, attrs_payload_type, &self.transform, false)?;
 
         Ok(otap_batch)
     }

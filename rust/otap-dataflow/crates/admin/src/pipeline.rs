@@ -3,17 +3,17 @@
 
 //! Pipeline endpoints.
 //!
-//! - GET `/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+//! - GET `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 //!   Get the configuration of the specified pipeline.
-//! - GET `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
+//! - GET `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
 //!   Get the status of the specified pipeline.
-//! - GET `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
+//! - GET `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
 //!   Get the status of a specific rollout job for the logical pipeline.
-//! - GET `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
+//! - GET `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
 //!   Get the status of a specific shutdown job for the logical pipeline.
-//! - PUT `/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+//! - PUT `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 //!   Create or replace a pipeline and return a rollout job status snapshot.
-//! - POST `/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
+//! - POST `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
 //!   Shutdown a specific logical pipeline and return a shutdown job status snapshot.
 //!   - Query parameters:
 //!     - `wait` (bool, default: false) - if true, block until the pipeline stops

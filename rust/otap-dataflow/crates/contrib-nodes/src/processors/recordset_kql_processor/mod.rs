@@ -14,8 +14,6 @@ use otap_df_engine::{
 };
 use std::sync::Arc;
 
-// TODO metrics
-
 /// Factory function to create a KQL processor
 pub fn create_recordset_kql_processor(
     pipeline_ctx: PipelineContext,

@@ -9,15 +9,12 @@ use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::otel_warn;
-use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
 use super::config::{Config, SchemaConfig};
 use super::error::Error;
-use super::metrics::AzureMonitorExporterMetricsRc;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
@@ -26,8 +23,8 @@ const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 struct FieldMapping {
     /// The source field name (e.g., "time_unix_nano", "body")
     source: LogRecordField,
-    /// The destination field name in the output JSON
-    dest: String,
+    /// Pre-serialized JSON key with quotes and colon, e.g. `"TimeGenerated":`
+    dest_key_json: Vec<u8>,
 }
 
 /// Enum representing known log record fields for fast matching
@@ -81,8 +78,8 @@ struct ParsedSchema {
     scope_mapping: HashMap<String, String>,
     /// Pre-parsed log record field mappings
     field_mappings: Vec<FieldMapping>,
-    /// Pre-parsed attribute mappings (source attr -> dest field)
-    attribute_mapping: HashMap<String, String>,
+    /// Pre-parsed attribute mappings (source attr -> pre-serialized JSON key)
+    attribute_mapping: HashMap<String, Vec<u8>>,
 }
 
 impl ParsedSchema {
@@ -99,7 +96,7 @@ impl ParsedSchema {
                             .as_str()
                             .map(String::from)
                             .unwrap_or_else(|| attr_dest.to_string());
-                        _ = attribute_mapping.insert(attr_key.clone(), dest);
+                        _ = attribute_mapping.insert(attr_key.clone(), serialize_json_key(&dest));
                     }
                 }
             } else {
@@ -108,9 +105,11 @@ impl ParsedSchema {
                     .ok_or_else(|| Error::UnknownLogRecordField { field: key.clone() })?;
                 let dest = value
                     .as_str()
-                    .ok_or_else(|| Error::InvalidFieldMapping { field: key.clone() })?
-                    .to_string();
-                field_mappings.push(FieldMapping { source, dest });
+                    .ok_or_else(|| Error::InvalidFieldMapping { field: key.clone() })?;
+                field_mappings.push(FieldMapping {
+                    source,
+                    dest_key_json: serialize_json_key(dest),
+                });
             }
         }
 
@@ -123,11 +122,21 @@ impl ParsedSchema {
     }
 }
 
+/// Pre-serialize a JSON key with quotes and trailing colon: `"key":`
+/// Called once at config parse time so the hot path can use `extend_from_slice`.
+fn serialize_json_key(key: &str) -> Vec<u8> {
+    // JSON keys from config are simple ASCII identifiers; no escaping needed in practice,
+    // but we go through write_json_string for correctness.
+    let mut buf = Vec::with_capacity(key.len() + 3); // '"' + key + '"' + ':'
+    Transformer::write_json_string_public(key.as_bytes(), &mut buf);
+    buf.push(b':');
+    buf
+}
+
 /// Converts OTLP logs to Azure Log Analytics format
 #[derive(Debug)]
 pub struct Transformer {
     schema: ParsedSchema,
-    metrics: AzureMonitorExporterMetricsRc,
 }
 
 impl Transformer {
@@ -136,61 +145,77 @@ impl Transformer {
     /// # Panics
     /// Panics if the schema configuration contains invalid field names
     #[must_use]
-    pub fn new(config: &Config, metrics: AzureMonitorExporterMetricsRc) -> Self {
+    pub fn new(config: &Config) -> Self {
         Self {
             schema: ParsedSchema::from_config(&config.api.schema)
                 .expect("Invalid schema configuration"),
-            metrics,
         }
     }
 
     /// Create a new Transformer, returning an error if configuration is invalid
-    pub fn try_new(config: &Config, metrics: AzureMonitorExporterMetricsRc) -> Result<Self, Error> {
+    pub fn try_new(config: &Config) -> Result<Self, Error> {
         Ok(Self {
             schema: ParsedSchema::from_config(&config.api.schema)?,
-            metrics,
         })
     }
 
-    /// High-perf, single-threaded: one reusable BytesMut, grows to max size, no extra copies.
-    /// Now accepts any type implementing `LogsDataView` (both `OtapLogsView` and `RawLogsData`).
+    /// High-perf, single-threaded: pre-serializes resource+scope fields once per ScopeLogs,
+    /// then writes per-record fields directly to the buffer — no Map cloning or re-serialization.
+    /// Assumes non-overlapping mappings across resource, scope, and log record levels.
     #[must_use]
+    // TODO: When Rust generators stabilize (rust-lang/rust#117078), replace
+    // Vec<Bytes> return with a generator that yields &[u8] per record,
+    // allowing the caller to feed records directly into GzipBatcher
+    // without the intermediate Vec allocation and second iteration pass.
     pub fn convert_to_log_analytics<T: LogsDataView>(&self, logs_view: &T) -> Vec<Bytes> {
         let mut results = Vec::with_capacity(1024);
         let mut buf = BytesMut::with_capacity(2048);
-        let mut record_map = serde_json::Map::new();
+        let mut base_map = serde_json::Map::new();
+        let mut record_buf = Vec::with_capacity(512);
 
         for resource_logs in logs_view.resources() {
+            base_map.clear();
+            if let Some(r) = resource_logs.resource() {
+                self.apply_resource_mapping(&r, &mut base_map);
+            }
+
             for scope_logs in resource_logs.scopes() {
+                // Clone resource base once per ScopeLogs, add scope mappings
+                let mut scope_map = base_map.clone();
+                if let Some(s) = scope_logs.scope() {
+                    self.apply_scope_mapping(&s, &mut scope_map);
+                }
+
+                // Pre-serialize resource+scope as JSON bytes (once per ScopeLogs)
+                // Safety: base_map only contains valid JSON values from convert_any_value
+                let base_json = serde_json::to_vec(&scope_map).unwrap_or_default();
+                let has_base = base_json.len() > 2; // more than just "{}"
+                // Strip trailing '}' to allow appending record fields
+                let base_prefix = &base_json[..base_json.len() - 1];
+
                 for log_record in scope_logs.log_records() {
-                    record_map.clear();
+                    record_buf.clear();
 
-                    // normally config should be validated to avoid duplicate keys, but if that
-                    // ever happens for any reason such as a bug, then the logic below ensures that
-                    // the lowest level fields override the higher level ones.
-
-                    // apply resource mapping first to allow scope to override if needed
-                    if let Some(r) = resource_logs.resource() {
-                        self.apply_resource_mapping(&r, &mut record_map);
-                    }
-
-                    // apply scope mapping next to allow log record to override if needed
-                    if let Some(s) = scope_logs.scope() {
-                        self.apply_scope_mapping(&s, &mut record_map);
-                    }
-
-                    self.transform_log_record_to_map(&log_record, &mut record_map);
+                    let has_record = self.write_record_fields_json(&log_record, &mut record_buf);
 
                     buf.clear();
-                    {
-                        let writer = (&mut buf).writer();
-                        let mut ser = serde_json::Serializer::new(writer);
-                        if let Err(e) = record_map.serialize(&mut ser) {
-                            otel_warn!("azure_monitor_exporter.transform.serialize_failed",
-                                error = %e,
-                                message = "failed to serialize log record to JSON, skipping this record");
-                            self.metrics.borrow_mut().add_transform_failures(1);
-                            continue;
+                    match (has_base, has_record) {
+                        (true, true) => {
+                            buf.extend_from_slice(base_prefix);
+                            buf.put_u8(b',');
+                            buf.extend_from_slice(&record_buf);
+                            buf.put_u8(b'}');
+                        }
+                        (true, false) => {
+                            buf.extend_from_slice(&base_json);
+                        }
+                        (false, true) => {
+                            buf.put_u8(b'{');
+                            buf.extend_from_slice(&record_buf);
+                            buf.put_u8(b'}');
+                        }
+                        (false, false) => {
+                            buf.extend_from_slice(b"{}");
                         }
                     }
 
@@ -200,6 +225,296 @@ impl Transformer {
         }
 
         results
+    }
+
+    /// Write log record fields directly as JSON key:value pairs (no braces) to a byte buffer.
+    /// Returns true if any fields were written.
+    fn write_record_fields_json<R: LogRecordView>(
+        &self,
+        log_record: &R,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let mut has_field = false;
+
+        for fm in &self.schema.field_mappings {
+            if has_field {
+                out.push(b',');
+            }
+            has_field = true;
+            // Write pre-serialized key (e.g. `"TimeGenerated":`)
+            out.extend_from_slice(&fm.dest_key_json);
+            // Write value directly — avoids Value allocation for simple types
+            Self::write_field_value_json(fm.source, log_record, out);
+        }
+
+        if !self.schema.attribute_mapping.is_empty() {
+            for attr in log_record.attributes() {
+                let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
+                if let Some(dest) = self.schema.attribute_mapping.get(attr_key.as_ref()) {
+                    if let Some(val) = attr.value() {
+                        if has_field {
+                            out.push(b',');
+                        }
+                        has_field = true;
+                        out.extend_from_slice(dest);
+                        Self::write_any_value_json(&val, out);
+                    }
+                }
+            }
+        }
+
+        has_field
+    }
+
+    /// Write a field value directly to JSON bytes, avoiding intermediate Value allocation.
+    #[inline]
+    fn write_field_value_json<R: LogRecordView>(
+        field: LogRecordField,
+        log_record: &R,
+        out: &mut Vec<u8>,
+    ) {
+        match field {
+            LogRecordField::TimeUnixNano => {
+                Self::write_timestamp_json(log_record.time_unix_nano().unwrap_or(0), out);
+            }
+            LogRecordField::ObservedTimeUnixNano => {
+                Self::write_timestamp_json(log_record.observed_time_unix_nano().unwrap_or(0), out);
+            }
+            LogRecordField::TraceId => match log_record.trace_id() {
+                Some(id) => Self::write_json_hex(id, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            LogRecordField::SpanId => match log_record.span_id() {
+                Some(id) => Self::write_json_hex(id, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            LogRecordField::Flags => {
+                Self::write_u64(log_record.flags().unwrap_or(0).into(), out);
+            }
+            LogRecordField::SeverityNumber => {
+                Self::write_u64(log_record.severity_number().unwrap_or(0) as u64, out);
+            }
+            LogRecordField::SeverityText => {
+                Self::write_json_string(log_record.severity_text().unwrap_or(b""), out);
+            }
+            LogRecordField::Body => match log_record.body() {
+                Some(b) => Self::write_body_value_json(&b, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            LogRecordField::EventName => {
+                Self::write_json_string(log_record.event_name().unwrap_or(b""), out);
+            }
+        }
+    }
+
+    /// Write an AnyValueView directly as JSON bytes.
+    fn write_any_value_json<'a, V: AnyValueView<'a>>(value: &V, out: &mut Vec<u8>) {
+        match value.value_type() {
+            ValueType::String => match value.as_string() {
+                Some(s) => Self::write_json_string(s, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            ValueType::Int64 => match value.as_int64() {
+                Some(n) => Self::write_i64(n, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            ValueType::Double => match value.as_double() {
+                Some(d) if d.is_finite() => {
+                    let mut ryu_buf = ryu::Buffer::new();
+                    out.extend_from_slice(ryu_buf.format_finite(d).as_bytes());
+                }
+                _ => out.extend_from_slice(b"null"),
+            },
+            ValueType::Bool => match value.as_bool() {
+                Some(true) => out.extend_from_slice(b"true"),
+                Some(false) => out.extend_from_slice(b"false"),
+                None => out.extend_from_slice(b"null"),
+            },
+            ValueType::Bytes => match value.as_bytes() {
+                Some(b) => Self::write_json_hex(b, out),
+                None => out.extend_from_slice(b"null"),
+            },
+            ValueType::Array | ValueType::KeyValueList => {
+                let v = Self::convert_any_value(value);
+                _ = serde_json::to_writer(out, &v);
+            }
+            ValueType::Empty => out.extend_from_slice(b"null"),
+        }
+    }
+
+    /// Write a body AnyValueView as a JSON string directly.
+    /// For the common string case with valid UTF-8, writes raw bytes directly
+    /// to avoid the intermediate String allocation from `extract_string_value`.
+    /// Falls back to `from_utf8_lossy` for malformed input to guarantee valid JSON.
+    #[inline]
+    fn write_body_value_json<'a, V: AnyValueView<'a>>(value: &V, out: &mut Vec<u8>) {
+        match value.value_type() {
+            ValueType::String => match value.as_string() {
+                Some(s) => {
+                    let lossy = String::from_utf8_lossy(s);
+                    Self::write_json_string(lossy.as_bytes(), out);
+                }
+                None => out.extend_from_slice(b"null"),
+            },
+            _ => {
+                let s = Self::extract_string_value(value);
+                Self::write_json_string(s.as_bytes(), out);
+            }
+        }
+    }
+
+    /// Public wrapper for `write_json_string`, used by `serialize_json_key` at config time.
+    #[doc(hidden)]
+    pub fn write_json_string_public(s: &[u8], out: &mut Vec<u8>) {
+        Self::write_json_string(s, out);
+    }
+
+    /// Write a JSON-escaped string with quotes directly to output bytes.
+    /// Uses bulk-copy for runs of safe bytes to minimize per-byte overhead.
+    #[inline]
+    fn write_json_string(s: &[u8], out: &mut Vec<u8>) {
+        out.push(b'"');
+        let mut start = 0;
+        for (i, &b) in s.iter().enumerate() {
+            let needs_escape =
+                b == b'"' || b == b'\\' || b == b'\n' || b == b'\r' || b == b'\t' || b < 0x20;
+            if needs_escape {
+                if start < i {
+                    out.extend_from_slice(&s[start..i]);
+                }
+                match b {
+                    b'"' => out.extend_from_slice(b"\\\""),
+                    b'\\' => out.extend_from_slice(b"\\\\"),
+                    b'\n' => out.extend_from_slice(b"\\n"),
+                    b'\r' => out.extend_from_slice(b"\\r"),
+                    b'\t' => out.extend_from_slice(b"\\t"),
+                    _ => {
+                        // Control characters: \u00XX
+                        out.extend_from_slice(b"\\u00");
+                        out.push(HEX_CHARS[(b >> 4) as usize]);
+                        out.push(HEX_CHARS[(b & 0x0f) as usize]);
+                    }
+                }
+                start = i + 1;
+            }
+        }
+        if start < s.len() {
+            out.extend_from_slice(&s[start..]);
+        }
+        out.push(b'"');
+    }
+
+    /// Write hex-encoded bytes as a JSON string directly.
+    #[inline]
+    fn write_json_hex(bytes: &[u8], out: &mut Vec<u8>) {
+        out.reserve(bytes.len() * 2 + 2);
+        out.push(b'"');
+        for &byte in bytes {
+            out.push(HEX_CHARS[(byte >> 4) as usize]);
+            out.push(HEX_CHARS[(byte & 0x0f) as usize]);
+        }
+        out.push(b'"');
+    }
+
+    /// Write a u64 as decimal to output bytes.
+    #[inline]
+    fn write_u64(n: u64, out: &mut Vec<u8>) {
+        let mut itoa_buf = itoa::Buffer::new();
+        out.extend_from_slice(itoa_buf.format(n).as_bytes());
+    }
+
+    /// Write an i64 as decimal to output bytes.
+    #[inline]
+    fn write_i64(n: i64, out: &mut Vec<u8>) {
+        let mut itoa_buf = itoa::Buffer::new();
+        out.extend_from_slice(itoa_buf.format(n).as_bytes());
+    }
+
+    /// Write a 2-digit zero-padded number directly to output bytes.
+    #[inline]
+    fn write_2_digits(n: u32, out: &mut Vec<u8>) {
+        out.push(b'0' + (n / 10) as u8);
+        out.push(b'0' + (n % 10) as u8);
+    }
+
+    /// Write a 4-digit zero-padded year directly to output bytes.
+    #[inline]
+    fn write_4_digits(n: u32, out: &mut Vec<u8>) {
+        out.push(b'0' + (n / 1000) as u8);
+        out.push(b'0' + ((n / 100) % 10) as u8);
+        out.push(b'0' + ((n / 10) % 10) as u8);
+        out.push(b'0' + (n % 10) as u8);
+    }
+
+    /// Write nanoseconds with dot prefix, trimming trailing zero groups of 3
+    /// to match chrono's `to_rfc3339()` output (0, 3, 6, or 9 fractional digits).
+    #[inline]
+    fn write_nanos_trimmed(nanos: u32, out: &mut Vec<u8>) {
+        out.push(b'.');
+        let mut digits = [0u8; 9];
+        let mut n = nanos;
+        for d in digits.iter_mut().rev() {
+            *d = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        // Trim in groups of 3: 9 -> 6 -> 3 (never 0, caller checks nanos > 0)
+        let mut len = 9;
+        while len > 3
+            && digits[len - 1] == b'0'
+            && digits[len - 2] == b'0'
+            && digits[len - 3] == b'0'
+        {
+            len -= 3;
+        }
+        out.extend_from_slice(&digits[..len]);
+    }
+
+    /// Write a JSON-quoted RFC3339 timestamp directly to the output buffer.
+    /// Avoids String allocation since RFC3339 contains no JSON-special characters.
+    #[inline]
+    fn write_timestamp_json(time_unix_nano: u64, out: &mut Vec<u8>) {
+        out.reserve(32); // enough for full timestamp with quotes
+
+        if time_unix_nano == 0 {
+            let ts = chrono::Utc::now().to_rfc3339();
+            Self::write_json_string(ts.as_bytes(), out);
+            return;
+        }
+        let secs = (time_unix_nano / 1_000_000_000) as i64;
+        let nanos = (time_unix_nano % 1_000_000_000) as u32;
+        match chrono::DateTime::from_timestamp(secs, nanos) {
+            Some(dt) => {
+                use chrono::{Datelike, Timelike};
+                let year = dt.year();
+                // Safety: fall back to allocating path for unusual years
+                if !(0..=9999).contains(&year) {
+                    let ts = dt.to_rfc3339();
+                    Self::write_json_string(ts.as_bytes(), out);
+                    return;
+                }
+                out.push(b'"');
+                Self::write_4_digits(year as u32, out);
+                out.push(b'-');
+                Self::write_2_digits(dt.month(), out);
+                out.push(b'-');
+                Self::write_2_digits(dt.day(), out);
+                out.push(b'T');
+                Self::write_2_digits(dt.hour(), out);
+                out.push(b':');
+                Self::write_2_digits(dt.minute(), out);
+                out.push(b':');
+                Self::write_2_digits(dt.second(), out);
+                if nanos > 0 {
+                    Self::write_nanos_trimmed(nanos, out);
+                }
+                out.extend_from_slice(b"+00:00");
+                out.push(b'"');
+            }
+            None => {
+                let ts = chrono::Utc::now().to_rfc3339();
+                Self::write_json_string(ts.as_bytes(), out);
+            }
+        }
     }
 
     /// Apply resource mapping based on configuration
@@ -234,66 +549,6 @@ impl Transformer {
         }
     }
 
-    /// Transform log record fields into a Map (no longer returns Result - validation done at construction)
-    fn transform_log_record_to_map<R: LogRecordView>(
-        &self,
-        log_record: &R,
-        map: &mut serde_json::Map<String, Value>,
-    ) {
-        // Process pre-parsed field mappings
-        for field_mapping in &self.schema.field_mappings {
-            let value = Self::extract_field_value(field_mapping.source, log_record);
-            _ = map.insert(field_mapping.dest.clone(), value);
-        }
-
-        // Process attribute mappings
-        if !self.schema.attribute_mapping.is_empty() {
-            for attr in log_record.attributes() {
-                let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-                if let Some(dest_field) = self.schema.attribute_mapping.get(attr_key.as_ref()) {
-                    if let Some(val) = attr.value() {
-                        _ = map.insert(dest_field.clone(), Self::convert_any_value(&val));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Extract value from log record by pre-parsed field enum (no string comparison needed)
-    #[inline]
-    fn extract_field_value<R: LogRecordView>(field: LogRecordField, log_record: &R) -> Value {
-        match field {
-            LogRecordField::TimeUnixNano => Value::String(Self::format_timestamp(
-                log_record.time_unix_nano().unwrap_or(0),
-            )),
-            LogRecordField::ObservedTimeUnixNano => Value::String(Self::format_timestamp(
-                log_record.observed_time_unix_nano().unwrap_or(0),
-            )),
-            LogRecordField::TraceId => log_record
-                .trace_id()
-                .map(|id| Value::String(Self::bytes_to_hex(id)))
-                .unwrap_or(Value::Null),
-            LogRecordField::SpanId => log_record
-                .span_id()
-                .map(|id| Value::String(Self::bytes_to_hex(id)))
-                .unwrap_or(Value::Null),
-            LogRecordField::Flags => Value::Number(log_record.flags().unwrap_or(0).into()),
-            LogRecordField::SeverityNumber => {
-                Value::Number((log_record.severity_number().unwrap_or(0) as i64).into())
-            }
-            LogRecordField::SeverityText => Value::String(Self::str_to_string(
-                log_record.severity_text().unwrap_or(b""),
-            )),
-            LogRecordField::Body => log_record
-                .body()
-                .map(|b| Value::String(Self::extract_string_value(&b)))
-                .unwrap_or(Value::Null),
-            LogRecordField::EventName => {
-                Value::String(Self::str_to_string(log_record.event_name().unwrap_or(b"")))
-            }
-        }
-    }
-
     /// Convert Str<'_> (&[u8]) to String
     #[inline]
     fn str_to_string(s: Str<'_>) -> String {
@@ -309,19 +564,6 @@ impl Transformer {
             hex.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
         }
         hex
-    }
-
-    /// Format nanosecond timestamp to RFC3339
-    #[inline]
-    fn format_timestamp(time_unix_nano: u64) -> String {
-        if time_unix_nano == 0 {
-            return chrono::Utc::now().to_rfc3339();
-        }
-        let secs = (time_unix_nano / 1_000_000_000) as i64;
-        let nanos = (time_unix_nano % 1_000_000_000) as u32;
-        chrono::DateTime::from_timestamp(secs, nanos)
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
     }
 
     /// Convert AnyValueView to serde_json::Value
@@ -391,27 +633,12 @@ mod tests {
         resource::v1::Resource,
     };
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::testing::EmptyAttributes;
     use prost::Message;
     use serde_json::json;
-    use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use super::super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsTracker};
-
-    fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
-        let registry = TelemetryRegistryHandle::new();
-        let metric_set =
-            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
-        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
-            metric_set,
-        )))
-    }
 
     fn create_test_config() -> Config {
-        use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+        use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
 
         Config {
             api: ApiConfig {
@@ -430,15 +657,18 @@ mod tests {
                         ("attributes".into(), json!({"test.attr": "TestAttr"})),
                     ]),
                 },
+                azure_monitor_source_resourceid: None,
+                gzip_compression_level: 6,
             },
             auth: AuthConfig::default(),
+            heartbeat: HeartbeatConfig::default(),
         }
     }
 
     #[test]
     fn test_schema_mapping() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -508,7 +738,7 @@ mod tests {
             ("severity_number".to_string(), json!("SeverityNum")),
         ]);
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -552,7 +782,7 @@ mod tests {
     #[test]
     fn test_any_value_types() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -590,7 +820,7 @@ mod tests {
     #[test]
     fn test_kvlist_value() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -642,7 +872,7 @@ mod tests {
             .log_record_mapping
             .insert("body".into(), json!("Body"));
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -672,14 +902,19 @@ mod tests {
 
     #[test]
     fn test_zero_timestamp() {
-        let timestamp = Transformer::format_timestamp(0);
-        assert!(timestamp.contains('T'));
+        let mut out = Vec::new();
+        Transformer::write_timestamp_json(0, &mut out);
+        let s = String::from_utf8(out).unwrap();
+        // Should produce a quoted RFC3339 timestamp with 'T' separator
+        assert!(s.starts_with('"'));
+        assert!(s.ends_with('"'));
+        assert!(s.contains('T'));
     }
 
     #[test]
     fn test_try_new_success() {
         let config = create_test_config();
-        let result = Transformer::try_new(&config, create_test_metrics());
+        let result = Transformer::try_new(&config);
         assert!(result.is_ok());
     }
 
@@ -692,7 +927,7 @@ mod tests {
             .log_record_mapping
             .insert("invalid_field".into(), json!("Invalid"));
 
-        let result = Transformer::try_new(&config, create_test_metrics());
+        let result = Transformer::try_new(&config);
         assert!(result.is_err());
         assert!(
             result
@@ -712,14 +947,14 @@ mod tests {
             .log_record_mapping
             .insert("body".into(), json!({"nested": "object"}));
 
-        let result = Transformer::try_new(&config, create_test_metrics());
+        let result = Transformer::try_new(&config);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("must be a string"));
     }
 
     #[test]
     fn test_empty_schema_mappings() {
-        use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+        use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
 
         let config = Config {
             api: ApiConfig {
@@ -731,11 +966,14 @@ mod tests {
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),
                 },
+                azure_monitor_source_resourceid: None,
+                gzip_compression_level: 6,
             },
             auth: AuthConfig::default(),
+            heartbeat: HeartbeatConfig::default(),
         };
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -771,7 +1009,7 @@ mod tests {
     #[test]
     fn test_attribute_with_no_value() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -821,7 +1059,7 @@ mod tests {
     #[test]
     fn test_multiple_log_records() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -870,7 +1108,7 @@ mod tests {
         let mut config = create_test_config();
         config.api.schema.log_record_mapping = HashMap::from([("body".into(), json!("Body"))]);
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -917,7 +1155,7 @@ mod tests {
             ("SEVERITY_TEXT".into(), json!("Severity")),
         ]);
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -951,7 +1189,7 @@ mod tests {
     #[test]
     fn test_double_nan_becomes_null() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -991,7 +1229,7 @@ mod tests {
             ("severity_text".into(), json!("Severity")),
         ]);
 
-        let transformer = Transformer::new(&config, create_test_metrics());
+        let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -1029,5 +1267,443 @@ mod tests {
         let json2: Value = serde_json::from_slice(&result[1]).unwrap();
         assert_eq!(json2["EventName"], "");
         assert_eq!(json2["Severity"], "");
+    }
+
+    /// Round-trip test: every record produced by the transformer must be valid JSON
+    /// that can be deserialized back into a serde_json::Value and re-serialized
+    /// to produce identical output.
+    #[test]
+    fn test_roundtrip_json_validity() {
+        let config = create_test_config();
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("my-service".into())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "test".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.name".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("my-scope".into())),
+                            }),
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hello world".into())),
+                        }),
+                        severity_text: "INFO".into(),
+                        attributes: vec![KeyValue {
+                            key: "test.attr".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::BoolValue(true)),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+
+        for (i, result) in results.iter().enumerate() {
+            // Must parse as valid JSON
+            let parsed: Value = serde_json::from_slice(result).unwrap_or_else(|e| {
+                panic!(
+                    "record {i} is not valid JSON: {e}\nraw: {}",
+                    String::from_utf8_lossy(result)
+                )
+            });
+
+            // Re-serialize and re-parse must produce identical value
+            let re_serialized = serde_json::to_vec(&parsed).unwrap();
+            let re_parsed: Value = serde_json::from_slice(&re_serialized).unwrap();
+            assert_eq!(parsed, re_parsed, "round-trip mismatch for record {i}");
+        }
+    }
+
+    /// Test that UTF-8 multi-byte strings (emoji, CJK, etc.) survive the
+    /// direct JSON serialization without corruption.
+    #[test]
+    fn test_utf8_multibyte_strings() {
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([
+            ("body".into(), json!("Body")),
+            ("severity_text".into(), json!("Sev")),
+        ]);
+
+        let transformer = Transformer::new(&config);
+
+        let test_strings = vec![
+            "hello world",                  // ASCII
+            "héllo wörld",                  // Latin diacritics
+            "日本語テスト",                 // CJK
+            "🚀🔥💯",                       // Emoji
+            "mixed: café ☕ naïve 日本 🎉", // Mixed scripts
+            "line1\nline2\ttab",            // Escape sequences
+            "quote\"and\\backslash",        // JSON-special chars
+            "\x01\x02\x1f",                 // Control characters
+            "",                             // Empty string
+        ];
+
+        for test_str in &test_strings {
+            let request = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    resource: None,
+                    scope_logs: vec![ScopeLogs {
+                        scope: None,
+                        log_records: vec![LogRecord {
+                            body: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue(test_str.to_string())),
+                            }),
+                            severity_text: test_str.to_string(),
+                            ..Default::default()
+                        }],
+                        schema_url: String::new(),
+                    }],
+                    schema_url: String::new(),
+                }],
+            };
+
+            let bytes = request.encode_to_vec();
+            let logs_view = RawLogsData::new(&bytes);
+            let results = transformer.convert_to_log_analytics(&logs_view);
+
+            assert_eq!(
+                results.len(),
+                1,
+                "expected 1 result for input: {test_str:?}"
+            );
+
+            let json: Value = serde_json::from_slice(&results[0]).unwrap_or_else(|e| {
+                panic!(
+                    "invalid JSON for input {test_str:?}: {e}\nraw bytes: {:?}",
+                    &results[0]
+                )
+            });
+
+            // Verify the body value round-trips correctly
+            let body = json["Body"].as_str().unwrap_or_else(|| {
+                panic!("Body field missing or not a string for input: {test_str:?}")
+            });
+            assert_eq!(body, *test_str, "body mismatch for input: {test_str:?}");
+
+            // Verify severity_text also round-trips
+            let sev = json["Sev"].as_str().unwrap();
+            assert_eq!(sev, *test_str, "severity mismatch for input: {test_str:?}");
+        }
+    }
+
+    /// Test that write_json_string produces output identical to serde_json
+    /// for various edge-case strings.
+    #[test]
+    fn test_write_json_string_matches_serde() {
+        let cases = vec![
+            "",
+            "simple",
+            "with \"quotes\"",
+            "back\\slash",
+            "new\nline",
+            "tab\there",
+            "carriage\rreturn",
+            "\x00\x01\x1f", // control chars
+            "emoji 🎉 and ñ",
+            "日本語",
+            "mixed\t\"escape\"\n🚀",
+        ];
+
+        for input in &cases {
+            let mut our_output = Vec::new();
+            Transformer::write_json_string(input.as_bytes(), &mut our_output);
+
+            let serde_output = serde_json::to_vec(input).unwrap();
+
+            assert_eq!(
+                our_output,
+                serde_output,
+                "mismatch for input {input:?}:\n  ours:  {}\n  serde: {}",
+                String::from_utf8_lossy(&our_output),
+                String::from_utf8_lossy(&serde_output)
+            );
+        }
+    }
+
+    /// Test numeric formatting matches serde_json output.
+    #[test]
+    fn test_numeric_formatting_matches_serde() {
+        // Integers via itoa
+        let int_cases: Vec<i64> = vec![0, 1, -1, 42, -42, i64::MAX, i64::MIN];
+        for n in &int_cases {
+            let mut our_output = Vec::new();
+            Transformer::write_i64(*n, &mut our_output);
+            let serde_output = serde_json::to_vec(n).unwrap();
+            assert_eq!(
+                our_output,
+                serde_output,
+                "i64 mismatch for {n}: ours={}, serde={}",
+                String::from_utf8_lossy(&our_output),
+                String::from_utf8_lossy(&serde_output)
+            );
+        }
+
+        // Unsigned via itoa
+        let uint_cases: Vec<u64> = vec![0, 1, 42, u64::MAX];
+        for n in &uint_cases {
+            let mut our_output = Vec::new();
+            Transformer::write_u64(*n, &mut our_output);
+            let serde_output = serde_json::to_vec(n).unwrap();
+            assert_eq!(
+                our_output,
+                serde_output,
+                "u64 mismatch for {n}: ours={}, serde={}",
+                String::from_utf8_lossy(&our_output),
+                String::from_utf8_lossy(&serde_output)
+            );
+        }
+    }
+
+    /// Test that attribute values with type mismatch (e.g. value_type says Int64
+    /// but as_int64() returns None) produce null instead of silently defaulting
+    /// to 0, false, or empty string. This covers the null-safe extraction in
+    /// write_any_value_json.
+    #[test]
+    fn test_null_safe_attribute_value_extraction() {
+        // Test each value type mapped as a log record attribute
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([(
+            "attributes".into(),
+            json!({
+                "str_attr": "StrCol",
+                "int_attr": "IntCol",
+                "dbl_attr": "DblCol",
+                "bool_attr": "BoolCol",
+                "bytes_attr": "BytesCol",
+            }),
+        )]);
+
+        let transformer = Transformer::new(&config);
+
+        // Normal case: all attributes present with valid values
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            KeyValue {
+                                key: "str_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::StringValue("hello".into())),
+                                }),
+                            },
+                            KeyValue {
+                                key: "int_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::IntValue(42)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "dbl_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::DoubleValue(2.72)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "bool_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::BoolValue(true)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "bytes_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::BytesValue(vec![0xCA, 0xFE])),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&results[0]).unwrap();
+
+        assert_eq!(json["StrCol"], "hello");
+        assert_eq!(json["IntCol"], 42);
+        assert_eq!(json["DblCol"], 2.72);
+        assert_eq!(json["BoolCol"], true);
+        assert_eq!(json["BytesCol"], "cafe");
+
+        // NaN/Infinity doubles become null
+        let request_nan = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            KeyValue {
+                                key: "dbl_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::DoubleValue(f64::NAN)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "int_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::DoubleValue(f64::INFINITY)),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request_nan.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&results[0]).unwrap();
+
+        assert_eq!(json["DblCol"], json!(null), "NaN must become null");
+        assert_eq!(json["IntCol"], json!(null), "Infinity must become null");
+
+        // Boolean false is a real value, not null
+        let request_false = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "bool_attr".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::BoolValue(false)),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request_false.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&results[0]).unwrap();
+
+        assert_eq!(
+            json["BoolCol"], false,
+            "false must be serialized as false, not null"
+        );
+    }
+
+    /// Test that invalid UTF-8 bytes in a body string produce valid JSON
+    /// (using lossy replacement) instead of invalid JSON output.
+    #[test]
+    fn test_invalid_utf8_body_produces_valid_json() {
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([("body".into(), json!("Body"))]);
+
+        let transformer = Transformer::new(&config);
+
+        // Construct a protobuf request with invalid UTF-8 in the body.
+        // Protobuf string fields are nominally UTF-8, but in practice
+        // the bytes can be anything when transported via byte slices.
+        let mut request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue(String::new())),
+                        }),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        // Encode, then patch the body bytes with invalid UTF-8.
+        // We'll set a known placeholder first, then swap the raw bytes.
+        request.resource_logs[0].scope_logs[0].log_records[0].body = Some(AnyValue {
+            value: Some(OtelAnyValueEnum::StringValue("PLACEHOLDER".into())),
+        });
+        let mut encoded = request.encode_to_vec();
+
+        // Find the placeholder bytes and replace with invalid UTF-8 sequence.
+        // \x80\xFF are not valid UTF-8 start bytes.
+        let placeholder = b"PLACEHOLDER";
+        if let Some(pos) = encoded
+            .windows(placeholder.len())
+            .position(|w| w == placeholder)
+        {
+            // Replace first 3 bytes of PLACEHOLDER with invalid UTF-8
+            encoded[pos] = 0x80;
+            encoded[pos + 1] = 0xFF;
+            encoded[pos + 2] = 0xFE;
+            // Keep remaining bytes as valid ASCII filler (same length = no protobuf reframing)
+            encoded[pos + 3] = b'o';
+            encoded[pos + 4] = b'k';
+            encoded[pos + 5] = b'_';
+            encoded[pos + 6] = b't';
+            encoded[pos + 7] = b'a';
+            encoded[pos + 8] = b'i';
+            encoded[pos + 9] = b'l';
+            encoded[pos + 10] = b'!';
+        }
+
+        let logs_view = RawLogsData::new(&encoded);
+        let results = transformer.convert_to_log_analytics(&logs_view);
+        assert_eq!(results.len(), 1, "expected one log record");
+
+        // The output MUST be valid JSON — serde_json::from_slice must not fail.
+        let json: Value = serde_json::from_slice(&results[0]).unwrap_or_else(|e| {
+            panic!(
+                "invalid JSON from body with invalid UTF-8: {e}\nraw: {:?}",
+                String::from_utf8_lossy(&results[0])
+            )
+        });
+
+        // The body value must be a string (not null) and must contain the
+        // Unicode replacement character U+FFFD for the invalid bytes.
+        let body = json["Body"].as_str().expect("Body should be a JSON string");
+        assert!(
+            body.contains('\u{FFFD}'),
+            "expected replacement character in body, got: {body:?}"
+        );
     }
 }

@@ -6,9 +6,10 @@ use std::num::{NonZeroU32, NonZeroU64};
 
 use crate::{
     otap::{
-        Logs, Metrics, OtapArrowRecords, OtapBatchStore, POSITION_LOOKUP, Traces,
+        Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces,
         error::{Error, Result},
-        num_items,
+        num_items, raw_batch_store,
+        raw_batch_store::POSITION_LOOKUP,
     },
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -155,20 +156,28 @@ impl RecordsGroup {
 
     // FIXME: replace this with an Extend impl to avoid unnecessary allocations
     /// Convert into a sequence of `OtapArrowRecords`
-    #[must_use]
-    pub(crate) fn into_otap_arrow_records(self) -> Vec<OtapArrowRecords> {
+    pub(crate) fn into_otap_arrow_records(self) -> Result<Vec<OtapArrowRecords>> {
         match self {
             RecordsGroup::Logs(items) => items
                 .into_iter()
-                .map(|batches| OtapArrowRecords::Logs(Logs { batches }))
+                .map(|batches| {
+                    let raw = raw_batch_store::RawLogsStore::from_batches(batches);
+                    Logs::try_from(raw).map(OtapArrowRecords::Logs)
+                })
                 .collect(),
             RecordsGroup::Metrics(items) => items
                 .into_iter()
-                .map(|batches| OtapArrowRecords::Metrics(Metrics { batches }))
+                .map(|batches| {
+                    let raw = raw_batch_store::RawMetricsStore::from_batches(batches);
+                    Metrics::try_from(raw).map(OtapArrowRecords::Metrics)
+                })
                 .collect(),
             RecordsGroup::Traces(items) => items
                 .into_iter()
-                .map(|batches| OtapArrowRecords::Traces(Traces { batches }))
+                .map(|batches| {
+                    let raw = raw_batch_store::RawTracesStore::from_batches(batches);
+                    Traces::try_from(raw).map(OtapArrowRecords::Traces)
+                })
                 .collect(),
         }
     }

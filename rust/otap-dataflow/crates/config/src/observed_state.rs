@@ -10,10 +10,18 @@ use std::time::Duration;
 /// Configuration for the observed state store.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ObservedStateSettings {
-    /// The size of the reporting channel.
+    /// Size of the bounded channel used for lossy observed events such as
+    /// async internal logs.
+    ///
+    /// Engine lifecycle events use a separate reliable path and are not
+    /// affected by this setting.
     pub reporting_channel_size: usize,
 
-    /// Engine events
+    /// Send policy for engine events when they are sent through the bounded
+    /// observed-event path.
+    ///
+    /// The main controller path uses a dedicated reliable channel for engine
+    /// lifecycle events, so this primarily applies to fallback and test usage.
     pub engine_events: SendPolicy,
 
     /// Internal logging

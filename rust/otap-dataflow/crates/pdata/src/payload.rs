@@ -291,7 +291,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportMetricsRequest(bytes) => {
                 let metrics_data_view = RawMetricsData::new(bytes.as_ref());
-                use crate::views::metrics::{
+                use otap_df_pdata_views::views::metrics::{
                     DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
                     MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
                 };
@@ -349,7 +349,7 @@ impl From<OtlpProtoBytes> for OtapPayload {
 }
 
 impl TryFrom<OtapPayload> for OtapArrowRecords {
-    type Error = Error;
+    type Error = crate::encode::Error;
 
     fn try_from(value: OtapPayload) -> Result<Self, Self::Error> {
         match value {
@@ -402,7 +402,7 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
 }
 
 impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
-    type Error = Error;
+    type Error = crate::encode::Error;
 
     fn try_from(value: OtlpProtoBytes) -> Result<Self, Self::Error> {
         match value {

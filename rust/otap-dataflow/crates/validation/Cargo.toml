@@ -23,32 +23,32 @@ tokio = { workspace = true }
 portpicker = { workspace = true }
 humantime-serde = { workspace = true }
 
-minijinja = "1"
-reqwest = { version = "0.12", features = ["json"] }
+testcontainers = { workspace = true }
+minijinja = { workspace = true }
+reqwest = { workspace = true, features = ["json", "query"] }
 
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-
-otap-df-engine = { path = "../engine" }
-otap-df-channel = { path = "../channel" }
-otap-df-config = { path = "../config" }
-otap-df-core-nodes = { path = "../core-nodes" }
-otap-df-pdata = { path = "../pdata" }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-telemetry-macros = { path = "../telemetry-macros" }
-otap-df-otap = { path = "../otap" }
-otap-df-controller = { path = "../controller" }
+otap-df-engine = { workspace = true }
+otap-df-channel = { workspace = true }
+otap-df-config = { workspace = true }
+otap-df-core-nodes = { workspace = true, features = ["dev-tools"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }
+otap-df-telemetry = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
+otap-df-otap = { workspace = true }
+otap-df-controller = { workspace = true }
 prost = { workspace = true }
 
 [features]
-experimental-tls = ["otap-df-otap/experimental-tls"]
+experimental-tls = ["otap-df-otap/experimental-tls", "otap-df-core-nodes/experimental-tls"]
 crypto-ring = ["otap-df-otap/crypto-ring"]
 crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
 crypto-openssl = ["otap-df-otap/crypto-openssl"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 otap-test-tls-certs = { workspace = true }
+weaver_common = { workspace = true }
+weaver_forge = { workspace = true }
+weaver_resolved_schema = { workspace = true }
+weaver_resolver = { workspace = true }
+weaver_semconv = { workspace = true }

@@ -19,11 +19,13 @@ use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR
 use otap_df_core_nodes::receivers::fake_data_generator::config::{
     Config as FakeDataGeneratorConfig, DataSource, TrafficConfig,
 };
+use otap_df_core_nodes::receivers::otlp_receiver::OTLP_RECEIVER_URN;
 use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
+use otap_df_engine::control::{
+    RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+};
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use otap_df_otap::otlp_receiver::OTLP_RECEIVER_URN;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::{json, to_value};
@@ -38,10 +40,10 @@ fn test_telemetry_registries_cleanup() {
     let config = build_test_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
+    let runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
     assert!(
-        channel_metrics_enabled,
-        "channel metrics should be enabled for this test"
+        runtime_metrics_enabled,
+        "runtime metrics should be enabled for this test"
     );
 
     // Pipeline + nodes + control channels (one per node) + pdata channels (sender+receiver per edge).
@@ -66,15 +68,18 @@ fn test_telemetry_registries_cleanup() {
             config.clone(),
             channel_capacity_policy.clone(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
     assert_eq!(registry.entity_count(), expected_entities);
 
-    let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
-        pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-    let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
+    let (runtime_ctrl_tx, runtime_ctrl_rx) =
+        runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+    let (pipeline_completion_tx, pipeline_completion_rx) =
+        pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
+    let runtime_ctrl_tx_for_shutdown = runtime_ctrl_tx.clone();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
 
@@ -90,8 +95,8 @@ fn test_telemetry_registries_cleanup() {
     let shutdown_handle = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
         let deadline = Instant::now() + Duration::from_millis(200);
-        pipeline_ctrl_tx_for_shutdown
-            .try_send(PipelineControlMsg::Shutdown {
+        runtime_ctrl_tx_for_shutdown
+            .try_send(RuntimeControlMsg::Shutdown {
                 deadline,
                 reason: "test shutdown".to_owned(),
             })
@@ -101,13 +106,20 @@ fn test_telemetry_registries_cleanup() {
     let run_result = {
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
+        let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
+            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+        );
         runtime_pipeline.run_forever(
             pipeline_key,
             pipeline_ctx,
             event_reporter,
             metrics_reporter,
-            pipeline_ctrl_tx,
-            pipeline_ctrl_rx,
+            Duration::from_secs(1),
+            memory_pressure_rx,
+            runtime_ctrl_tx,
+            runtime_ctrl_rx,
+            pipeline_completion_tx,
+            pipeline_completion_rx,
         )
     };
     let _ = shutdown_handle.join();
@@ -127,10 +139,10 @@ fn test_pipeline_fan_in_builds() {
     let config = build_fan_in_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
+    let runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
     assert!(
-        channel_metrics_enabled,
-        "channel metrics should be enabled for this test"
+        runtime_metrics_enabled,
+        "runtime metrics should be enabled for this test"
     );
 
     // Pipeline + nodes + control channels (one per node) + pdata channels (sender+receiver per edge).
@@ -149,7 +161,8 @@ fn test_pipeline_fan_in_builds() {
             config,
             ChannelCapacityPolicy::default(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build fan-in pipeline");
 
@@ -164,10 +177,10 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
         build_mixed_receiver_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
     let telemetry_policy = TelemetryPolicy::default();
-    let channel_metrics_enabled = telemetry_policy.channel_metrics >= MetricLevel::Basic;
+    let runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
     assert!(
-        channel_metrics_enabled,
-        "channel metrics should be enabled for this test"
+        runtime_metrics_enabled,
+        "runtime metrics should be enabled for this test"
     );
 
     // Pipeline + nodes + control channels (one per node) + pdata channels (sender+receiver per edge).
@@ -186,7 +199,8 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
             config,
             ChannelCapacityPolicy::default(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build mixed receiver pipeline");
 

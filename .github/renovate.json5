@@ -6,7 +6,7 @@
     // currently enforces 1.25.0 compatibility
     "go": "1.25.0",
     // keep pip-compile refreshes aligned with CI/runtime interpreter
-    "python": "==3.11"
+    "python": "==3.14"
   },
   "extends": [
     "config:recommended",
@@ -15,9 +15,7 @@
   ],
   "ignorePaths": [
     // this directory has generated code, don't send updates to it
-    "collector/cmd/otelarrowcol/**",
-    // this reference implementation has been removed from our build pipelines
-    "rust/beaubourg/**"
+    "collector/cmd/otelarrowcol/**"
   ],
   // NOTE: Rule ordering matters here
   // Later rules will override earlier rules
@@ -43,6 +41,18 @@
       "schedule": [
         "before 8am on Monday"
       ]
+    },
+    {
+      // group these dependencies that are tagged and released together
+      "groupName": "weaver crates",
+      "matchManagers": ["cargo"],
+      "matchDepNames": [
+        "weaver_common",
+        "weaver_forge",
+        "weaver_resolved_schema",
+        "weaver_resolver",
+        "weaver_semconv"
+      ],
     },
     {
       // group together all github action workflow changes
@@ -74,9 +84,24 @@
       ]
     },
     {
-      // prevent duplicate PRs from pip_requirements once pip-compile is enabled
+      // prevent duplicate PRs from pip_requirements once pip-compile is enabled;
+      // also disable on lock files so pip_requirements doesn't treat transitive
+      // deps (e.g. pydantic-core) as direct and raise independent update PRs
       "matchManagers": ["pip_requirements"],
-      "matchFileNames": ["tools/pipeline_perf_test/**/requirements.txt"],
+      "matchFileNames": [
+        "tools/pipeline_perf_test/**/requirements.txt",
+        "tools/pipeline_perf_test/**/requirements.lock.txt"
+      ],
+      "enabled": false
+    },
+    {
+      // indirect/transitive deps (e.g. pydantic-core) are fully controlled by
+      // their parent package's exact pin and cannot be updated independently in
+      // the lock file without also bumping the parent in requirements.txt.
+      // Disabling them here prevents Renovate from creating PRs that update only
+      // lock-file hashes for transitive deps, which produces invalid lock files.
+      "matchManagers": ["pip-compile"],
+      "matchDepTypes": ["indirect"],
       "enabled": false
     },
   ],

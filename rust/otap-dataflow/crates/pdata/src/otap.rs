@@ -26,9 +26,14 @@ pub mod batching_tests;
 /// filter support for the filter processor
 pub mod filter;
 pub mod groups;
+pub mod raw_batch_store;
 pub mod schema;
 #[allow(missing_docs)]
 pub mod transform;
+
+/// Testing utilities for constructing OTAP batches in tests.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,9 +48,9 @@ pub enum OtapArrowRecords {
 }
 
 impl OtapArrowRecords {
-    /// Set the record batch for the given payload type. If the payload type is not valid
-    /// for this type of telemetry signal, this method does nothing.
-    pub fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) {
+    /// Set the record batch for the given payload type. The batch is validated
+    /// against the OTAP schema spec before storing.
+    pub fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Result<()> {
         match self {
             Self::Logs(logs) => logs.set(payload_type, record_batch),
             Self::Metrics(metrics) => metrics.set(payload_type, record_batch),
@@ -176,28 +181,105 @@ impl From<Traces> for OtapArrowRecords {
     }
 }
 
+impl From<Logs> for raw_batch_store::RawLogsStore {
+    fn from(logs: Logs) -> Self {
+        logs.inner
+    }
+}
+
+impl From<Metrics> for raw_batch_store::RawMetricsStore {
+    fn from(metrics: Metrics) -> Self {
+        metrics.inner
+    }
+}
+
+impl From<Traces> for raw_batch_store::RawTracesStore {
+    fn from(traces: Traces) -> Self {
+        traces.inner
+    }
+}
+
+impl TryFrom<OtapArrowRecords> for Logs {
+    type Error = error::Error;
+
+    fn try_from(value: OtapArrowRecords) -> Result<Self> {
+        match value {
+            OtapArrowRecords::Logs(logs) => Ok(logs),
+            OtapArrowRecords::Traces(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Traces,
+                expected: SignalType::Logs,
+            }),
+            OtapArrowRecords::Metrics(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Metrics,
+                expected: SignalType::Logs,
+            }),
+        }
+    }
+}
+
+impl TryFrom<OtapArrowRecords> for Metrics {
+    type Error = error::Error;
+
+    fn try_from(value: OtapArrowRecords) -> Result<Self> {
+        match value {
+            OtapArrowRecords::Metrics(metrics) => Ok(metrics),
+            OtapArrowRecords::Logs(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Logs,
+                expected: SignalType::Metrics,
+            }),
+            OtapArrowRecords::Traces(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Traces,
+                expected: SignalType::Metrics,
+            }),
+        }
+    }
+}
+
+impl TryFrom<OtapArrowRecords> for Traces {
+    type Error = error::Error;
+
+    fn try_from(value: OtapArrowRecords) -> Result<Self> {
+        match value {
+            OtapArrowRecords::Traces(traces) => Ok(traces),
+            OtapArrowRecords::Logs(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Logs,
+                expected: SignalType::Traces,
+            }),
+            OtapArrowRecords::Metrics(_) => Err(error::Error::UnexpectedSignalType {
+                found: SignalType::Metrics,
+                expected: SignalType::Traces,
+            }),
+        }
+    }
+}
+
+pub(crate) mod sealed {
+    use arrow::array::RecordBatch;
+
+    /// Sealed trait that prevents [`super::OtapBatchStore`] from being
+    /// implemented outside of this crate. Also provides mutable slice
+    /// access to the underlying batch storage for crate-internal code.
+    pub trait OtapBatchStore {
+        /// Mutable access to the underlying batch storage as a slice.
+        fn batches_mut(&mut self) -> &mut [Option<RecordBatch>];
+    }
+}
+
 /// The ArrowBatchStore helper trait is used to define a common interface for
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
 /// methods to efficiently set and get record batches.
-pub trait OtapBatchStore: Default + Clone {
-    /// Internally, implementers should use a bitmask for the types they support.
-    /// The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
-    const TYPE_MASK: u64;
-
+pub trait OtapBatchStore:
+    sealed::OtapBatchStore + Default + Clone + Into<OtapArrowRecords>
+{
     /// The number of `RecordBatch`es needed for this kind of telemetry.
     const COUNT: usize;
 
+    /// The signal represented by this type
+    const SIGNAL_TYPE: SignalType;
+
     /// The type of array used to store the record batches.
     type BatchArray;
-
-    /// Mutable access to the batch array. The array the implementer returns
-    /// should be the size of the number of types it supports, and it should expect
-    /// that types to be positioned in the array according to the POSITION_LOOKUP array.
-    fn batches_mut(&mut self) -> &mut [Option<RecordBatch>];
-
-    /// return the list of batches
-    fn batches(&self) -> &[Option<RecordBatch>];
 
     /// convert this into a list of batches
     fn into_batches(self) -> Self::BatchArray;
@@ -227,36 +309,17 @@ pub trait OtapBatchStore: Default + Clone {
         Self::default()
     }
 
-    /// Check if the given payload type is valid for this store.
-    /// This is done by checking if the bitmask for the type is set in the
-    /// implementer's TYPE_MASK.
-    #[must_use]
-    fn is_valid_type(payload_type: ArrowPayloadType) -> bool {
-        Self::TYPE_MASK & (1 << payload_type as u64) != 0
-    }
-
-    /// Set the record batch for the given payload type
-    fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) {
-        if Self::is_valid_type(payload_type) {
-            self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = Some(record_batch);
-        }
-    }
+    /// Set the record batch for the given payload type. The batch is validated
+    /// against the OTAP schema spec before storing.
+    ///
+    /// See [crate::schema::schema::Schema::check_match]
+    fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Result<()>;
 
     /// Remove the record batch for the given payload type
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        if Self::is_valid_type(payload_type) {
-            self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = None;
-        }
-    }
+    fn remove(&mut self, payload_type: ArrowPayloadType);
 
     /// Get the record batch for the given payload type
-    fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
-        if !Self::is_valid_type(payload_type) {
-            None
-        } else {
-            self.batches()[POSITION_LOOKUP[payload_type as usize]].as_ref()
-        }
-    }
+    fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch>;
 
     /// Get the number of items in the batch. Counts using Otel semantics where logs/traces are
     /// the number log records and spans respectively, whereas for metrics it's the count of
@@ -266,100 +329,56 @@ pub trait OtapBatchStore: Default + Clone {
 
 /// Convert the list of decoded messages into an OtapBatchStore implementation
 #[allow(private_bounds)]
-#[must_use]
-pub fn from_record_messages<T: OtapBatchStore>(record_messages: Vec<RecordMessage>) -> T {
+pub fn from_record_messages<T: OtapBatchStore>(record_messages: Vec<RecordMessage>) -> Result<T> {
     let mut batch_store = T::new();
     for message in record_messages {
-        batch_store.set(message.payload_type, message.record);
+        batch_store.set(message.payload_type, message.record)?;
     }
 
-    batch_store
+    Ok(batch_store)
 }
 
-/// The POSITION_LOOKUP array is used to map the ArrowPayloadType enum values to
-/// positions in predefined arrays for each telemetry signal type. This allows
-/// for efficient storage and retrieval of record batches based on their payload type.
-const POSITION_LOOKUP: &[usize] = &[
-    UNUSED_INDEX, // Unknown = 0,
-    // common:
-    0,            // ResourceAttrs = 1,
-    1,            // ScopeAttrs = 2,
-    UNUSED_INDEX, // 3
-    UNUSED_INDEX, // 4
-    UNUSED_INDEX, // 5
-    UNUSED_INDEX, // 6
-    UNUSED_INDEX, // 7
-    UNUSED_INDEX, // 8
-    UNUSED_INDEX, // 9
-    // metrics:
-    2,            // UnivariateMetrics = 10,
-    3,            // NumberDataPoints = 11,
-    4,            // SummaryDataPoints = 12,
-    5,            // HistogramDataPoints = 13,
-    6,            // ExpHistogramDataPoints = 14,
-    7,            // NumberDpAttrs = 15,
-    8,            // SummaryDpAttrs = 16,
-    9,            // HistogramDpAttrs = 17,
-    10,           // ExpHistogramDpAttrs = 18,
-    11,           // NumberDpExemplars = 19,
-    12,           // HistogramDpExemplars = 20,
-    13,           // ExpHistogramDpExemplars = 21,
-    14,           // NumberDpExemplarAttrs = 22,
-    15,           // HistogramDpExemplarAttrs = 23,
-    16,           // ExpHistogramDpExemplarAttrs = 24,
-    17,           // MultivariateMetrics = 25,
-    18,           // MetricAttrs = 26,
-    UNUSED_INDEX, // 27
-    UNUSED_INDEX, // 28
-    UNUSED_INDEX, // 29
-    // logs:
-    2,            // Logs = 30,
-    3,            // LogAttrs = 31,
-    UNUSED_INDEX, // 32
-    UNUSED_INDEX, // 33
-    UNUSED_INDEX, // 34
-    UNUSED_INDEX, // 35
-    UNUSED_INDEX, // 36
-    UNUSED_INDEX, // 37
-    UNUSED_INDEX, // 38
-    UNUSED_INDEX, // 39
-    // traces:
-    2, // Spans = 40,
-    3, // SpanAttrs = 41,
-    4, // SpanEvents = 42,
-    5, // SpanLinks = 43,
-    6, // SpanEventAttrs = 44,
-    7, // SpanLinkAttrs = 45,
-];
-const UNUSED_INDEX: usize = 99;
+use raw_batch_store::POSITION_LOOKUP;
 
 /// Store of record batches for a batch of OTAP logs data.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Logs {
-    batches: [Option<RecordBatch>; Logs::COUNT],
+    inner: raw_batch_store::RawLogsStore,
+}
+
+impl Logs {
+    /// Consume this validated store and return the underlying
+    /// [`RawLogsStore`](raw_batch_store::RawLogsStore).
+    #[must_use]
+    pub fn into_raw(self) -> raw_batch_store::RawLogsStore {
+        self.inner
+    }
+}
+
+impl TryFrom<raw_batch_store::RawLogsStore> for Logs {
+    type Error = error::Error;
+
+    fn try_from(raw: raw_batch_store::RawLogsStore) -> Result<Self> {
+        validate_raw_batches(&raw, Self::allowed_payload_types())?;
+        Ok(Self { inner: raw })
+    }
+}
+
+impl sealed::OtapBatchStore for Logs {
+    fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
+        self.inner.batches_mut()
+    }
 }
 
 impl OtapBatchStore for Logs {
-    const TYPE_MASK: u64 = (1 << ArrowPayloadType::ResourceAttrs as u64)
-        + (1 << ArrowPayloadType::ScopeAttrs as u64)
-        + (1 << ArrowPayloadType::Logs as u64)
-        + (1 << ArrowPayloadType::LogAttrs as u64);
+    const COUNT: usize = raw_batch_store::LOGS_COUNT;
 
-    const COUNT: usize = 4;
+    const SIGNAL_TYPE: SignalType = SignalType::Logs;
 
     type BatchArray = [Option<RecordBatch>; Logs::COUNT];
 
-    fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
-        &mut self.batches
-    }
-
-    fn batches(&self) -> &[Option<RecordBatch>] {
-        &self.batches
-    }
-
     fn into_batches(self) -> Self::BatchArray {
-        let mut iter = self.batches.into_iter();
-        std::array::from_fn(|_| iter.next().unwrap_or_default())
+        self.inner.into_batches()
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
@@ -375,7 +394,7 @@ impl OtapBatchStore for Logs {
         for payload_type in Self::allowed_payload_types().iter().copied() {
             if let Some(rb) = otap_batch.get(payload_type) {
                 let rb = remove_transport_optimized_encodings(payload_type, rb)?;
-                otap_batch.set(payload_type, rb);
+                otap_batch.set(payload_type, rb)?;
             }
         }
 
@@ -387,7 +406,7 @@ impl OtapBatchStore for Logs {
         if let Some(rb) = otap_batch.get(ArrowPayloadType::Logs) {
             let (rb, id_remappings) =
                 apply_transport_optimized_encodings(&ArrowPayloadType::Logs, rb)?;
-            otap_batch.set(ArrowPayloadType::Logs, rb);
+            otap_batch.set(ArrowPayloadType::Logs, rb)?;
 
             // remap any of the child IDs if necessary ...
             if let Some(id_remappings) = id_remappings {
@@ -404,7 +423,7 @@ impl OtapBatchStore for Logs {
                             child_rb,
                             &id_remapping.remapped_ids,
                         )?;
-                        otap_batch.set(child_payload_type, rb);
+                        otap_batch.set(child_payload_type, rb)?;
                     }
                 }
             }
@@ -418,15 +437,86 @@ impl OtapBatchStore for Logs {
         ] {
             if let Some(rb) = otap_batch.get(payload_type) {
                 let (rb, _) = apply_transport_optimized_encodings(&payload_type, rb)?;
-                otap_batch.set(payload_type, rb);
+                otap_batch.set(payload_type, rb)?;
             }
         }
 
         Ok(())
     }
 
+    fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Result<()> {
+        validated_set(
+            &mut self.inner,
+            Self::SIGNAL_TYPE,
+            payload_type,
+            record_batch,
+        )
+    }
+
+    fn remove(&mut self, payload_type: ArrowPayloadType) {
+        validated_remove(&mut self.inner, payload_type);
+    }
+
+    fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
+        self.inner.get(payload_type)
+    }
+
     fn num_items(&self) -> usize {
-        num_items(&self.batches)
+        num_items(self.inner.batches())
+    }
+}
+
+/// Validate all present batches in a [`RawBatchStore`](raw_batch_store::RawBatchStore) against the
+/// OTAP schema spec.
+fn validate_raw_batches<const TYPE_MASK: u64, const COUNT: usize>(
+    raw: &raw_batch_store::RawBatchStore<TYPE_MASK, COUNT>,
+    allowed_payload_types: &[ArrowPayloadType],
+) -> Result<()> {
+    for &payload_type in allowed_payload_types {
+        if let Some(rb) = raw.get(payload_type) {
+            crate::schema::payloads::get(payload_type)
+                .check_match(rb)
+                .map_err(|source| error::Error::InvalidSchemaForPayload {
+                    payload_type,
+                    source,
+                })?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate the payload type and schema, then store the record batch.
+/// Shared implementation used by all [`OtapBatchStore::set`] impls.
+fn validated_set<const TYPE_MASK: u64, const COUNT: usize>(
+    inner: &mut raw_batch_store::RawBatchStore<TYPE_MASK, COUNT>,
+    signal_type: SignalType,
+    payload_type: ArrowPayloadType,
+    record_batch: RecordBatch,
+) -> Result<()> {
+    if !raw_batch_store::RawBatchStore::<TYPE_MASK, COUNT>::is_valid_type(payload_type) {
+        return Err(error::Error::InvalidPayloadTypeForSignal {
+            signal: signal_type,
+            payload_type,
+        });
+    }
+    crate::schema::payloads::get(payload_type)
+        .check_match(&record_batch)
+        .map_err(|source| error::Error::InvalidSchemaForPayload {
+            payload_type,
+            source,
+        })?;
+    inner.set(payload_type, record_batch);
+    Ok(())
+}
+
+/// Remove a batch for the given payload type if it is valid for this store.
+/// Shared implementation used by all [`OtapBatchStore::remove`] impls.
+fn validated_remove<const TYPE_MASK: u64, const COUNT: usize>(
+    inner: &mut raw_batch_store::RawBatchStore<TYPE_MASK, COUNT>,
+    payload_type: ArrowPayloadType,
+) {
+    if raw_batch_store::RawBatchStore::<TYPE_MASK, COUNT>::is_valid_type(payload_type) {
+        inner.remove(payload_type);
     }
 }
 
@@ -442,12 +532,12 @@ const DATA_POINTS_TYPES: [ArrowPayloadType; 4] = [
 /// all the usages in to groups.rs. Instead we can have each batch store
 /// define these.
 #[must_use]
-fn num_items<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
-    match N {
-        Logs::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]]
+fn num_items(batches: &[Option<RecordBatch>]) -> usize {
+    match batches.len() {
+        raw_batch_store::LOGS_COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]]
             .as_ref()
             .map_or(0, |batch| batch.num_rows()),
-        Metrics::COUNT => DATA_POINTS_TYPES
+        raw_batch_store::METRICS_COUNT => DATA_POINTS_TYPES
             .iter()
             .map(|&dpt| {
                 batches[POSITION_LOOKUP[dpt as usize]]
@@ -455,7 +545,7 @@ fn num_items<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
                     .map_or(0, |batch| batch.num_rows())
             })
             .sum(),
-        Traces::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Spans as usize]]
+        raw_batch_store::TRACES_COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Spans as usize]]
             .as_ref()
             .map_or(0, |batch| batch.num_rows()),
         _ => {
@@ -467,44 +557,42 @@ fn num_items<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
 /// Store of record batches for a batch of OTAP metrics data.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metrics {
-    batches: [Option<RecordBatch>; Metrics::COUNT],
+    inner: raw_batch_store::RawMetricsStore,
+}
+
+impl Metrics {
+    /// Consume this validated store and return the underlying
+    /// [`RawMetricsStore`](raw_batch_store::RawMetricsStore).
+    #[must_use]
+    pub fn into_raw(self) -> raw_batch_store::RawMetricsStore {
+        self.inner
+    }
+}
+
+impl TryFrom<raw_batch_store::RawMetricsStore> for Metrics {
+    type Error = error::Error;
+
+    fn try_from(raw: raw_batch_store::RawMetricsStore) -> Result<Self> {
+        validate_raw_batches(&raw, Self::allowed_payload_types())?;
+        Ok(Self { inner: raw })
+    }
+}
+
+impl sealed::OtapBatchStore for Metrics {
+    fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
+        self.inner.batches_mut()
+    }
 }
 
 impl OtapBatchStore for Metrics {
-    const TYPE_MASK: u64 = (1 << ArrowPayloadType::ResourceAttrs as u64)
-        + (1 << ArrowPayloadType::ScopeAttrs as u64)
-        + (1 << ArrowPayloadType::UnivariateMetrics as u64)
-        + (1 << ArrowPayloadType::NumberDataPoints as u64)
-        + (1 << ArrowPayloadType::SummaryDataPoints as u64)
-        + (1 << ArrowPayloadType::HistogramDataPoints as u64)
-        + (1 << ArrowPayloadType::ExpHistogramDataPoints as u64)
-        + (1 << ArrowPayloadType::NumberDpAttrs as u64)
-        + (1 << ArrowPayloadType::SummaryDpAttrs as u64)
-        + (1 << ArrowPayloadType::HistogramDpAttrs as u64)
-        + (1 << ArrowPayloadType::ExpHistogramDpAttrs as u64)
-        + (1 << ArrowPayloadType::NumberDpExemplars as u64)
-        + (1 << ArrowPayloadType::HistogramDpExemplars as u64)
-        + (1 << ArrowPayloadType::ExpHistogramDpExemplars as u64)
-        + (1 << ArrowPayloadType::NumberDpExemplarAttrs as u64)
-        + (1 << ArrowPayloadType::HistogramDpExemplarAttrs as u64)
-        + (1 << ArrowPayloadType::ExpHistogramDpExemplarAttrs as u64)
-        + (1 << ArrowPayloadType::MultivariateMetrics as u64)
-        + (1 << ArrowPayloadType::MetricAttrs as u64);
+    const COUNT: usize = raw_batch_store::METRICS_COUNT;
 
-    const COUNT: usize = 19;
+    const SIGNAL_TYPE: SignalType = SignalType::Metrics;
 
     type BatchArray = [Option<RecordBatch>; Metrics::COUNT];
 
-    fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
-        &mut self.batches
-    }
-
-    fn batches(&self) -> &[Option<RecordBatch>] {
-        &self.batches
-    }
-
     fn into_batches(self) -> Self::BatchArray {
-        self.batches
+        self.inner.into_batches()
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
@@ -535,7 +623,7 @@ impl OtapBatchStore for Metrics {
         for payload_type in Self::allowed_payload_types().iter().copied() {
             if let Some(rb) = otap_batch.get(payload_type) {
                 let rb = remove_transport_optimized_encodings(payload_type, rb)?;
-                otap_batch.set(payload_type, rb);
+                otap_batch.set(payload_type, rb)?;
             }
         }
 
@@ -547,7 +635,7 @@ impl OtapBatchStore for Metrics {
         if let Some(rb) = otap_batch.get(ArrowPayloadType::UnivariateMetrics) {
             let (rb, id_remappings) =
                 apply_transport_optimized_encodings(&ArrowPayloadType::UnivariateMetrics, rb)?;
-            otap_batch.set(ArrowPayloadType::UnivariateMetrics, rb);
+            otap_batch.set(ArrowPayloadType::UnivariateMetrics, rb)?;
 
             // remap any of the child IDs if necessary ...
             if let Some(id_remappings) = id_remappings {
@@ -572,7 +660,7 @@ impl OtapBatchStore for Metrics {
                                 child_rb,
                                 &id_remapping.remapped_ids,
                             )?;
-                            otap_batch.set(*child_payload_type, rb);
+                            otap_batch.set(*child_payload_type, rb)?;
                         }
                     }
                 }
@@ -615,7 +703,7 @@ impl OtapBatchStore for Metrics {
             };
 
             let (rb, id_remappings) = apply_transport_optimized_encodings(&payload_type, rb)?;
-            otap_batch.set(payload_type, rb);
+            otap_batch.set(payload_type, rb)?;
 
             let id_remappings = match id_remappings {
                 Some(rb) => rb,
@@ -634,7 +722,7 @@ impl OtapBatchStore for Metrics {
                             child_rb,
                             &id_remapping.remapped_ids,
                         )?;
-                        otap_batch.set(*child_payload_type, rb);
+                        otap_batch.set(*child_payload_type, rb)?;
                     }
                 }
             }
@@ -660,7 +748,7 @@ impl OtapBatchStore for Metrics {
             };
 
             let (rb, id_remappings) = apply_transport_optimized_encodings(&payload_type, rb)?;
-            otap_batch.set(payload_type, rb);
+            otap_batch.set(payload_type, rb)?;
 
             let id_remappings = match id_remappings {
                 Some(id_remappings) => id_remappings,
@@ -678,7 +766,7 @@ impl OtapBatchStore for Metrics {
                         child_rb,
                         &id_remapping.remapped_ids,
                     )?;
-                    otap_batch.set(child_payload_type, rb);
+                    otap_batch.set(child_payload_type, rb)?;
                 }
             }
         }
@@ -697,49 +785,74 @@ impl OtapBatchStore for Metrics {
         ] {
             if let Some(rb) = otap_batch.get(payload_type) {
                 let (rb, _) = apply_transport_optimized_encodings(&payload_type, rb)?;
-                otap_batch.set(payload_type, rb);
+                otap_batch.set(payload_type, rb)?;
             }
         }
 
         Ok(())
     }
 
+    fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Result<()> {
+        validated_set(
+            &mut self.inner,
+            Self::SIGNAL_TYPE,
+            payload_type,
+            record_batch,
+        )
+    }
+
+    fn remove(&mut self, payload_type: ArrowPayloadType) {
+        validated_remove(&mut self.inner, payload_type);
+    }
+
+    fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
+        self.inner.get(payload_type)
+    }
+
     fn num_items(&self) -> usize {
-        num_items(&self.batches)
+        num_items(self.inner.batches())
     }
 }
 
 /// Store of record batches for a batch of OTAP traces data.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Traces {
-    batches: [Option<RecordBatch>; Traces::COUNT],
+    inner: raw_batch_store::RawTracesStore,
+}
+
+impl Traces {
+    /// Consume this validated store and return the underlying
+    /// [`RawTracesStore`](raw_batch_store::RawTracesStore).
+    #[must_use]
+    pub fn into_raw(self) -> raw_batch_store::RawTracesStore {
+        self.inner
+    }
+}
+
+impl TryFrom<raw_batch_store::RawTracesStore> for Traces {
+    type Error = error::Error;
+
+    fn try_from(raw: raw_batch_store::RawTracesStore) -> Result<Self> {
+        validate_raw_batches(&raw, Self::allowed_payload_types())?;
+        Ok(Self { inner: raw })
+    }
+}
+
+impl sealed::OtapBatchStore for Traces {
+    fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
+        self.inner.batches_mut()
+    }
 }
 
 impl OtapBatchStore for Traces {
-    const TYPE_MASK: u64 = (1 << ArrowPayloadType::ResourceAttrs as u64)
-        + (1 << ArrowPayloadType::ScopeAttrs as u64)
-        + (1 << ArrowPayloadType::Spans as u64)
-        + (1 << ArrowPayloadType::SpanAttrs as u64)
-        + (1 << ArrowPayloadType::SpanEvents as u64)
-        + (1 << ArrowPayloadType::SpanLinks as u64)
-        + (1 << ArrowPayloadType::SpanEventAttrs as u64)
-        + (1 << ArrowPayloadType::SpanLinkAttrs as u64);
+    const COUNT: usize = raw_batch_store::TRACES_COUNT;
 
-    const COUNT: usize = 8;
+    const SIGNAL_TYPE: SignalType = SignalType::Traces;
 
     type BatchArray = [Option<RecordBatch>; Traces::COUNT];
 
-    fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
-        &mut self.batches
-    }
-
-    fn batches(&self) -> &[Option<RecordBatch>] {
-        &self.batches
-    }
-
     fn into_batches(self) -> Self::BatchArray {
-        let mut iter = self.batches.into_iter();
-        std::array::from_fn(|_| iter.next().unwrap_or_default())
+        self.inner.into_batches()
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
@@ -759,7 +872,7 @@ impl OtapBatchStore for Traces {
         for payload_type in Self::allowed_payload_types().iter().copied() {
             if let Some(rb) = otap_batch.get(payload_type) {
                 let rb = remove_transport_optimized_encodings(payload_type, rb)?;
-                otap_batch.set(payload_type, rb);
+                otap_batch.set(payload_type, rb)?;
             }
         }
 
@@ -770,7 +883,7 @@ impl OtapBatchStore for Traces {
         if let Some(rb) = otap_batch.get(ArrowPayloadType::Spans) {
             let (rb, id_remappings) =
                 apply_transport_optimized_encodings(&ArrowPayloadType::Spans, rb)?;
-            otap_batch.set(ArrowPayloadType::Spans, rb);
+            otap_batch.set(ArrowPayloadType::Spans, rb)?;
 
             // remap any of the child IDs if necessary ...
             if let Some(id_remappings) = id_remappings {
@@ -793,7 +906,7 @@ impl OtapBatchStore for Traces {
                                 child_rb,
                                 &id_remapping.remapped_ids,
                             )?;
-                            otap_batch.set(*child_payload_type, rb);
+                            otap_batch.set(*child_payload_type, rb)?;
                         }
                     }
                 }
@@ -812,7 +925,7 @@ impl OtapBatchStore for Traces {
                 None => continue,
             };
             let (rb, id_remappings) = apply_transport_optimized_encodings(&payload_type, rb)?;
-            otap_batch.set(payload_type, rb);
+            otap_batch.set(payload_type, rb)?;
 
             let id_remappings = match id_remappings {
                 Some(rb) => rb,
@@ -830,7 +943,7 @@ impl OtapBatchStore for Traces {
                         child_rb,
                         &id_remapping.remapped_ids,
                     )?;
-                    otap_batch.set(child_payload_type, rb);
+                    otap_batch.set(child_payload_type, rb)?;
                 }
             }
         }
@@ -844,15 +957,32 @@ impl OtapBatchStore for Traces {
         ] {
             if let Some(rb) = otap_batch.get(payload_type) {
                 let (rb, _) = apply_transport_optimized_encodings(&payload_type, rb)?;
-                otap_batch.set(payload_type, rb);
+                otap_batch.set(payload_type, rb)?;
             }
         }
 
         Ok(())
     }
 
+    fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Result<()> {
+        validated_set(
+            &mut self.inner,
+            Self::SIGNAL_TYPE,
+            payload_type,
+            record_batch,
+        )
+    }
+
+    fn remove(&mut self, payload_type: ArrowPayloadType) {
+        validated_remove(&mut self.inner, payload_type);
+    }
+
+    fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
+        self.inner.get(payload_type)
+    }
+
     fn num_items(&self) -> usize {
-        num_items(&self.batches)
+        num_items(self.inner.batches())
     }
 }
 
@@ -968,18 +1098,29 @@ pub const fn parent_payload_type(payload_type: ArrowPayloadType) -> Option<Paren
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        ArrowPrimitiveType, FixedSizeBinaryArray, Float64Array, Int64Array, RecordBatch,
-        StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
+        ArrowPrimitiveType, DurationNanosecondArray, FixedSizeBinaryArray, Float64Array,
+        Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array,
+        UInt16Array, UInt32Array,
     };
-    use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type, UInt32Type};
+    use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit, UInt16Type, UInt32Type};
     use std::sync::Arc;
 
     use crate::encode::record::array::{ArrayAppend, PrimitiveArrayBuilder};
     use crate::encode::record::attributes::AttributesRecordBatchBuilderConstructorHelper;
     use crate::otlp::attributes::AttributeValueType;
     use crate::schema::FieldExt;
+    use crate::{logs, metrics, record_batch, traces};
 
     use super::*;
+
+    /// Creates a minimal valid 1-row RecordBatch for the given payload type.
+    /// Includes all required columns plus `id` if present in the spec.
+    fn minimal_valid_batch(payload_type: ArrowPayloadType) -> RecordBatch {
+        testing::complete_batch(
+            payload_type,
+            RecordBatch::new_empty(Arc::new(Schema::empty())),
+        )
+    }
 
     /// helper function for easily constructing a record batch of attributes. In this particular
     /// generated batch, all the types will be string with the same key. The argument is an array
@@ -1029,94 +1170,44 @@ mod test {
 
     #[test]
     fn test_logs_num_items() {
-        let logs_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                false,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
-        )
-        .unwrap();
-        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, logs_rb);
+        let store: Logs = logs!((Logs, ("id", UInt16, vec![1u16, 2, 3, 4])));
+        let otap_batch: OtapArrowRecords = store.into();
         assert_eq!(otap_batch.num_items(), 4);
     }
 
     #[test]
     fn test_traces_num_items() {
-        let spans_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                false,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
-        )
-        .unwrap();
-        let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
-        otap_batch.set(ArrowPayloadType::Spans, spans_rb);
+        let store: Traces = traces!((Spans, ("id", UInt16, vec![1u16, 2, 3, 4])));
+        let otap_batch: OtapArrowRecords = store.into();
         assert_eq!(otap_batch.num_items(), 4);
     }
 
     #[test]
     fn test_metrics_num_items() {
-        let metrics_rb = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                consts::ID,
-                DataType::UInt16,
-                true,
-            )])),
-            vec![Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4]))],
-        )
-        .unwrap();
-        let dp_schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-        ]));
-        let numbers_dp_rb = RecordBatch::try_new(
-            dp_schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3])),
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1])),
-            ],
-        )
-        .unwrap();
-
-        let summary_dp_rb = RecordBatch::try_new(
-            dp_schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3])),
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1])),
-            ],
-        )
-        .unwrap();
-
-        let hist_dp_rb = RecordBatch::try_new(
-            dp_schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3, 7, 8])),
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1])),
-            ],
-        )
-        .unwrap();
-
-        let exp_hist_dp_rb = RecordBatch::try_new(
-            dp_schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from_iter_values(vec![2, 3])),
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1])),
-            ],
-        )
-        .unwrap();
-
-        let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
-        otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
-        otap_batch.set(ArrowPayloadType::NumberDataPoints, numbers_dp_rb);
-        otap_batch.set(ArrowPayloadType::SummaryDataPoints, summary_dp_rb);
-        otap_batch.set(ArrowPayloadType::HistogramDataPoints, hist_dp_rb);
-        otap_batch.set(ArrowPayloadType::ExpHistogramDataPoints, exp_hist_dp_rb);
-
+        let store: Metrics = metrics!(
+            (UnivariateMetrics, ("id", UInt16, vec![1u16, 2, 3, 4])),
+            (
+                NumberDataPoints,
+                ("id", UInt32, vec![1u32, 2, 3]),
+                ("parent_id", UInt16, vec![1u16, 1, 1])
+            ),
+            (
+                SummaryDataPoints,
+                ("id", UInt32, vec![1u32, 2, 3]),
+                ("parent_id", UInt16, vec![1u16, 1, 1])
+            ),
+            (
+                HistogramDataPoints,
+                ("id", UInt32, vec![1u32, 2, 3, 7, 8]),
+                ("parent_id", UInt16, vec![1u16, 1, 1, 1, 1])
+            ),
+            (
+                ExpHistogramDataPoints,
+                ("id", UInt32, vec![2u32, 3]),
+                ("parent_id", UInt16, vec![1u16, 1])
+            ),
+        );
+        let otap_batch: OtapArrowRecords = store.into();
         assert_eq!(otap_batch.num_items(), 13);
     }
 
@@ -1131,19 +1222,7 @@ mod test {
     fn test_log_getset() {
         let mut otap_batch = OtapArrowRecords::Logs(Logs::new());
 
-        // for purpose of this test, the shape of the data doesn't really matter...
-        let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(
-            Arc::new(schema),
-            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
-        )
-        .unwrap();
-
-        // the assertions here are maybe a bit more robust than the ones
-        // below for metrics and spans, but the logic this is testing for each of these is
-        // effectively the same for each of the three types
-
-        // assert everything is null to being with
+        // assert everything is null to begin with
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::Logs).is_none());
@@ -1157,26 +1236,56 @@ mod test {
                 .is_none()
         );
 
+        // setting an invalid payload type for this store should return an error
+        assert!(
+            otap_batch
+                .set(
+                    ArrowPayloadType::Spans,
+                    minimal_valid_batch(ArrowPayloadType::Spans)
+                )
+                .is_err()
+        );
+
         // add some batches and assert everything is correct
-        otap_batch.set(ArrowPayloadType::Logs, record_batch.clone());
+        otap_batch
+            .set(
+                ArrowPayloadType::Logs,
+                minimal_valid_batch(ArrowPayloadType::Logs),
+            )
+            .unwrap();
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::Logs).is_some());
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
-        otap_batch.set(ArrowPayloadType::LogAttrs, record_batch.clone());
+        otap_batch
+            .set(
+                ArrowPayloadType::LogAttrs,
+                minimal_valid_batch(ArrowPayloadType::LogAttrs),
+            )
+            .unwrap();
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::Logs).is_some());
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_some());
 
-        otap_batch.set(ArrowPayloadType::ResourceAttrs, record_batch.clone());
+        otap_batch
+            .set(
+                ArrowPayloadType::ResourceAttrs,
+                minimal_valid_batch(ArrowPayloadType::ResourceAttrs),
+            )
+            .unwrap();
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_some());
         assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_none());
         assert!(otap_batch.get(ArrowPayloadType::Logs).is_some());
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_some());
 
-        otap_batch.set(ArrowPayloadType::ScopeAttrs, record_batch.clone());
+        otap_batch
+            .set(
+                ArrowPayloadType::ScopeAttrs,
+                minimal_valid_batch(ArrowPayloadType::ScopeAttrs),
+            )
+            .unwrap();
         assert!(otap_batch.get(ArrowPayloadType::ResourceAttrs).is_some());
         assert!(otap_batch.get(ArrowPayloadType::ScopeAttrs).is_some());
         assert!(otap_batch.get(ArrowPayloadType::Logs).is_some());
@@ -1187,40 +1296,14 @@ mod test {
     fn test_metrics_getset() {
         let mut otap_batch = OtapArrowRecords::Metrics(Metrics::new());
 
-        // for purpose of this test, the shape of the data doesn't really matter...
-        let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(
-            Arc::new(schema),
-            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
-        )
-        .unwrap();
-
-        let metric_types = [
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-            ArrowPayloadType::UnivariateMetrics,
-            ArrowPayloadType::NumberDataPoints,
-            ArrowPayloadType::SummaryDataPoints,
-            ArrowPayloadType::HistogramDataPoints,
-            ArrowPayloadType::ExpHistogramDataPoints,
-            ArrowPayloadType::NumberDpAttrs,
-            ArrowPayloadType::SummaryDpAttrs,
-            ArrowPayloadType::HistogramDpAttrs,
-            ArrowPayloadType::ExpHistogramDpAttrs,
-            ArrowPayloadType::NumberDpExemplars,
-            ArrowPayloadType::HistogramDpExemplars,
-            ArrowPayloadType::ExpHistogramDpExemplars,
-            ArrowPayloadType::NumberDpExemplarAttrs,
-            ArrowPayloadType::HistogramDpExemplarAttrs,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-        ];
-
-        for metric_type in metric_types.iter() {
-            assert!(otap_batch.get(*metric_type).is_none());
-            otap_batch.set(*metric_type, record_batch.clone());
+        for payload_type in Metrics::allowed_payload_types() {
+            assert!(otap_batch.get(*payload_type).is_none());
+            otap_batch
+                .set(*payload_type, minimal_valid_batch(*payload_type))
+                .unwrap();
             assert!(
-                otap_batch.get(*metric_type).is_some(),
-                "Failed for type: {metric_type:?}"
+                otap_batch.get(*payload_type).is_some(),
+                "Failed for type: {payload_type:?}"
             );
         }
     }
@@ -1229,31 +1312,14 @@ mod test {
     fn test_traces_getset() {
         let mut otap_batch = OtapArrowRecords::Traces(Traces::new());
 
-        // for purpose of this test, the shape of the data doesn't really matter...
-        let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(
-            Arc::new(schema),
-            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
-        )
-        .unwrap();
-
-        let trace_types = [
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-            ArrowPayloadType::Spans,
-            ArrowPayloadType::SpanAttrs,
-            ArrowPayloadType::SpanEvents,
-            ArrowPayloadType::SpanLinks,
-            ArrowPayloadType::SpanEventAttrs,
-            ArrowPayloadType::SpanLinkAttrs,
-        ];
-
-        for trace_type in trace_types.iter() {
-            assert!(otap_batch.get(*trace_type).is_none());
-            otap_batch.set(*trace_type, record_batch.clone());
+        for payload_type in Traces::allowed_payload_types() {
+            assert!(otap_batch.get(*payload_type).is_none());
+            otap_batch
+                .set(*payload_type, minimal_valid_batch(*payload_type))
+                .unwrap();
             assert!(
-                otap_batch.get(*trace_type).is_some(),
-                "Failed for type: {trace_type:?}"
+                otap_batch.get(*payload_type).is_some(),
+                "Failed for type: {payload_type:?}"
             );
         }
     }
@@ -1314,10 +1380,16 @@ mod test {
         .unwrap();
 
         let mut batch = OtapArrowRecords::Logs(Logs::default());
-        batch.set(ArrowPayloadType::Logs, logs_rb);
-        batch.set(ArrowPayloadType::LogAttrs, attrs_rb.clone());
-        batch.set(ArrowPayloadType::ResourceAttrs, attrs_rb.clone());
-        batch.set(ArrowPayloadType::ScopeAttrs, attrs_rb.clone());
+        batch.set(ArrowPayloadType::Logs, logs_rb).unwrap();
+        batch
+            .set(ArrowPayloadType::LogAttrs, attrs_rb.clone())
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::ResourceAttrs, attrs_rb.clone())
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::ScopeAttrs, attrs_rb.clone())
+            .unwrap();
 
         batch.decode_transport_optimized_ids().unwrap();
 
@@ -1509,10 +1581,14 @@ mod test {
         );
 
         let mut batch = OtapArrowRecords::Logs(Logs::default());
-        batch.set(ArrowPayloadType::Logs, logs_rb);
-        batch.set(ArrowPayloadType::LogAttrs, log_attrs_rb);
-        batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs);
-        batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
+        batch.set(ArrowPayloadType::Logs, logs_rb).unwrap();
+        batch.set(ArrowPayloadType::LogAttrs, log_attrs_rb).unwrap();
+        batch
+            .set(ArrowPayloadType::ScopeAttrs, scope_attrs)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb)
+            .unwrap();
 
         batch.encode_transport_optimized().unwrap();
 
@@ -1671,16 +1747,18 @@ mod test {
         let struct_fields = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)]);
         let metrics_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(consts::ID, DataType::UInt16, true),
+                Field::new(consts::ID, DataType::UInt16, false),
                 Field::new(
                     consts::RESOURCE,
                     DataType::Struct(struct_fields.clone()),
                     true,
                 ),
                 Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+                Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(1), None])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1])),
                 Arc::new(StructArray::new(
                     struct_fields.clone(),
                     vec![Arc::new(UInt16Array::from_iter(vec![
@@ -1699,6 +1777,8 @@ mod test {
                     ]))],
                     None,
                 )),
+                Arc::new(UInt8Array::from_iter_values([0, 0, 0])),
+                Arc::new(StringArray::from_iter_values(["", "", ""])),
             ],
         )
         .unwrap();
@@ -1725,6 +1805,11 @@ mod test {
             Arc::new(Schema::new(vec![
                 Field::new(consts::ID, DataType::UInt32, true),
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter(vec![
@@ -1734,6 +1819,7 @@ mod test {
                     Some(1),
                 ])),
                 Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
+                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0, 0])),
             ],
         )
         .unwrap();
@@ -1761,6 +1847,11 @@ mod test {
                 Field::new(consts::ID, DataType::UInt32, true),
                 Field::new(consts::PARENT_ID, DataType::UInt32, false),
                 Field::new(consts::INT_VALUE, DataType::Int64, true),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter(vec![
@@ -1771,43 +1862,78 @@ mod test {
                 ])),
                 Arc::new(UInt32Array::from_iter_values(vec![1, 1, 1, 1])),
                 Arc::new(Int64Array::from_iter_values(vec![1, 1, 2, 2])),
+                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0, 0])),
             ],
         )
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
-        otap_batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
-        otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_16_rb.clone());
-        otap_batch.set(ArrowPayloadType::ScopeAttrs, attrs_16_rb.clone());
-        otap_batch.set(ArrowPayloadType::NumberDataPoints, data_points_rb.clone());
-        otap_batch.set(ArrowPayloadType::NumberDpAttrs, attrs_32_rb.clone());
-        otap_batch.set(ArrowPayloadType::NumberDpExemplars, exemplar_rb.clone());
-        otap_batch.set(ArrowPayloadType::NumberDpExemplarAttrs, attrs_32_rb.clone());
-        otap_batch.set(ArrowPayloadType::SummaryDataPoints, data_points_rb.clone());
-        otap_batch.set(ArrowPayloadType::SummaryDpAttrs, attrs_32_rb.clone());
-        otap_batch.set(
-            ArrowPayloadType::HistogramDataPoints,
-            data_points_rb.clone(),
-        );
-        otap_batch.set(ArrowPayloadType::HistogramDpAttrs, attrs_32_rb.clone());
-        otap_batch.set(ArrowPayloadType::HistogramDpExemplars, exemplar_rb.clone());
-        otap_batch.set(
-            ArrowPayloadType::HistogramDpExemplarAttrs,
-            attrs_32_rb.clone(),
-        );
-        otap_batch.set(
-            ArrowPayloadType::ExpHistogramDataPoints,
-            data_points_rb.clone(),
-        );
-        otap_batch.set(ArrowPayloadType::ExpHistogramDpAttrs, attrs_32_rb.clone());
-        otap_batch.set(
-            ArrowPayloadType::ExpHistogramDpExemplars,
-            exemplar_rb.clone(),
-        );
-        otap_batch.set(
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-            attrs_32_rb.clone(),
-        );
+        otap_batch
+            .set(ArrowPayloadType::UnivariateMetrics, metrics_rb)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ResourceAttrs, attrs_16_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ScopeAttrs, attrs_16_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::NumberDataPoints, data_points_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::NumberDpAttrs, attrs_32_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::NumberDpExemplars, exemplar_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::NumberDpExemplarAttrs, attrs_32_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SummaryDataPoints, data_points_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SummaryDpAttrs, attrs_32_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::HistogramDataPoints,
+                data_points_rb.clone(),
+            )
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::HistogramDpAttrs, attrs_32_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::HistogramDpExemplars, exemplar_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::HistogramDpExemplarAttrs,
+                attrs_32_rb.clone(),
+            )
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::ExpHistogramDataPoints,
+                data_points_rb.clone(),
+            )
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ExpHistogramDpAttrs, attrs_32_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::ExpHistogramDpExemplars,
+                exemplar_rb.clone(),
+            )
+            .unwrap();
+        otap_batch
+            .set(
+                ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+                attrs_32_rb.clone(),
+            )
+            .unwrap();
 
         otap_batch.decode_transport_optimized_ids().unwrap();
 
@@ -1816,7 +1942,7 @@ mod test {
         ]);
         let expected_metrics_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
                 Field::new(
                     consts::RESOURCE,
                     DataType::Struct(expected_struct_fields.clone()),
@@ -1827,9 +1953,11 @@ mod test {
                     DataType::Struct(expected_struct_fields.clone()),
                     true,
                 ),
+                Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter(vec![Some(1), Some(2), None])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
                 Arc::new(StructArray::new(
                     expected_struct_fields.clone(),
                     vec![Arc::new(UInt16Array::from_iter(vec![
@@ -1848,6 +1976,8 @@ mod test {
                     ]))],
                     None,
                 )),
+                Arc::new(UInt8Array::from_iter_values([0, 0, 0])),
+                Arc::new(StringArray::from_iter_values(["", "", ""])),
             ],
         )
         .unwrap();
@@ -1957,6 +2087,19 @@ mod test {
                     true,
                 ),
                 Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
+                Field::new(
+                    consts::START_TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    consts::DURATION_TIME_UNIX_NANO,
+                    DataType::Duration(TimeUnit::Nanosecond),
+                    false,
+                ),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter(vec![Some(1), Some(1), None])),
@@ -1978,6 +2121,21 @@ mod test {
                     ]))],
                     None,
                 )),
+                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(DurationNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 16], [0u8; 16], [0u8; 16]].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8], [0u8; 8], [0u8; 8]].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(StringArray::from_iter_values(["", "", ""])),
             ],
         )
         .unwrap();
@@ -2024,6 +2182,7 @@ mod test {
                 Field::new(consts::ID, DataType::UInt32, true),
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter(vec![
@@ -2042,6 +2201,12 @@ mod test {
                             (16u8..32u8).collect::<Vec<u8>>(),
                         ]
                         .into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8], [0u8; 8], [0u8; 8], [0u8; 8]].into_iter(),
                     )
                     .unwrap(),
                 ),
@@ -2068,14 +2233,28 @@ mod test {
         .unwrap();
 
         let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
-        otap_batch.set(ArrowPayloadType::Spans, spans_rb);
-        otap_batch.set(ArrowPayloadType::SpanAttrs, attrs_16_rb.clone());
-        otap_batch.set(ArrowPayloadType::ResourceAttrs, attrs_16_rb.clone());
-        otap_batch.set(ArrowPayloadType::ScopeAttrs, attrs_16_rb.clone());
-        otap_batch.set(ArrowPayloadType::SpanEvents, events_rb);
-        otap_batch.set(ArrowPayloadType::SpanLinks, links_rb);
-        otap_batch.set(ArrowPayloadType::SpanEventAttrs, attrs_32_rb.clone());
-        otap_batch.set(ArrowPayloadType::SpanLinkAttrs, attrs_32_rb.clone());
+        otap_batch.set(ArrowPayloadType::Spans, spans_rb).unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SpanAttrs, attrs_16_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ResourceAttrs, attrs_16_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ScopeAttrs, attrs_16_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SpanEvents, events_rb)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SpanLinks, links_rb)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SpanEventAttrs, attrs_32_rb.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::SpanLinkAttrs, attrs_32_rb.clone())
+            .unwrap();
 
         otap_batch.decode_transport_optimized_ids().unwrap();
 
@@ -2095,6 +2274,19 @@ mod test {
                     DataType::Struct(expected_struct_fields.clone()),
                     true,
                 ),
+                Field::new(
+                    consts::START_TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    consts::DURATION_TIME_UNIX_NANO,
+                    DataType::Duration(TimeUnit::Nanosecond),
+                    false,
+                ),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter(vec![Some(1), Some(2), None])),
@@ -2116,6 +2308,21 @@ mod test {
                     ]))],
                     None,
                 )),
+                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(DurationNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 16], [0u8; 16], [0u8; 16]].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8], [0u8; 8], [0u8; 8]].into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(StringArray::from_iter_values(["", "", ""])),
             ],
         )
         .unwrap();
@@ -2193,6 +2400,17 @@ mod test {
             Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
             Field::new(consts::NAME, DataType::Utf8, true),
             Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                consts::DURATION_TIME_UNIX_NANO,
+                DataType::Duration(TimeUnit::Nanosecond),
+                false,
+            ),
+            Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
         ]));
 
         // This data is meant to represent a batch of spans that will be sorted, and will need to
@@ -2268,6 +2486,11 @@ mod test {
                 )),
                 Arc::new(span_names),
                 Arc::new(trace_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(DurationNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(vec![[0u8; 8]; 10].into_iter()).unwrap(),
+                ),
             ],
         )
         .unwrap();
@@ -2373,6 +2596,7 @@ mod test {
                 Field::new(consts::ID, DataType::UInt32, true).with_plain_encoding(),
                 Field::new(consts::PARENT_ID, DataType::UInt16, true).with_plain_encoding(),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(
@@ -2387,20 +2611,40 @@ mod test {
                     )
                     .unwrap(),
                 ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8]; span_links_data.len()].into_iter(),
+                    )
+                    .unwrap(),
+                ),
             ],
         )
         .unwrap();
         let span_links_attrs_rb = span_events_attrs_rb.clone();
 
         let mut batch = OtapArrowRecords::Traces(Traces::default());
-        batch.set(ArrowPayloadType::Spans, spans_rb);
-        batch.set(ArrowPayloadType::SpanAttrs, span_attrs_rb);
-        batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs_rb);
-        batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
-        batch.set(ArrowPayloadType::SpanEvents, span_events_rb);
-        batch.set(ArrowPayloadType::SpanEventAttrs, span_events_attrs_rb);
-        batch.set(ArrowPayloadType::SpanLinks, span_links_rb);
-        batch.set(ArrowPayloadType::SpanLinkAttrs, span_links_attrs_rb);
+        batch.set(ArrowPayloadType::Spans, spans_rb).unwrap();
+        batch
+            .set(ArrowPayloadType::SpanAttrs, span_attrs_rb)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::ScopeAttrs, scope_attrs_rb)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::SpanEvents, span_events_rb)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::SpanEventAttrs, span_events_attrs_rb)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::SpanLinks, span_links_rb)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::SpanLinkAttrs, span_links_attrs_rb)
+            .unwrap();
 
         batch.encode_transport_optimized().unwrap();
 
@@ -2423,6 +2667,17 @@ mod test {
             ),
             Field::new(consts::NAME, DataType::Utf8, true),
             Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                consts::DURATION_TIME_UNIX_NANO,
+                DataType::Duration(TimeUnit::Nanosecond),
+                false,
+            ),
+            Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
         ]));
 
         let expected_spans_data = vec![
@@ -2463,6 +2718,11 @@ mod test {
                 )),
                 Arc::new(span_names),
                 Arc::new(trace_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(DurationNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(vec![[0u8; 8]; 10].into_iter()).unwrap(),
+                ),
             ],
         )
         .unwrap();
@@ -2621,6 +2881,7 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, true)
                     .with_encoding(consts::metadata::encodings::QUASI_DELTA),
                 Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
             ])),
             vec![
                 Arc::new(UInt32Array::from_iter_values(
@@ -2634,6 +2895,12 @@ mod test {
                         expected_span_links_data
                             .iter()
                             .map(|d| u128::to_be_bytes(d.2)),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![[0u8; 8]; expected_span_links_data.len()].into_iter(),
                     )
                     .unwrap(),
                 ),
@@ -2778,13 +3045,22 @@ mod test {
         let data_points_schema = Arc::new(Schema::new(vec![
             Field::new(consts::ID, DataType::UInt32, false).with_plain_encoding(),
             Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
         let data_points_data = [(0, 9), (1, 5), (3, 7), (2, 2), (4, 1)];
         let ids = UInt32Array::from_iter_values(data_points_data.iter().map(|d| d.0));
         let parent_ids = UInt16Array::from_iter_values(data_points_data.iter().map(|d| d.1));
         let data_points_rb = RecordBatch::try_new(
             data_points_schema,
-            vec![Arc::new(ids), Arc::new(parent_ids)],
+            vec![
+                Arc::new(ids),
+                Arc::new(parent_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 5])),
+            ],
         )
         .unwrap();
 
@@ -2829,6 +3105,11 @@ mod test {
             Field::new(consts::INT_VALUE, DataType::Int64, true),
             Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
             Field::new(consts::PARENT_ID, DataType::UInt32, false).with_plain_encoding(),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
 
         let exemplar_rb = RecordBatch::try_new(
@@ -2838,6 +3119,7 @@ mod test {
                 Arc::new(exemplar_ints),
                 Arc::new(exemplar_doubles),
                 Arc::new(exemplar_parent_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
             ],
         )
         .unwrap();
@@ -2858,17 +3140,25 @@ mod test {
         );
 
         let mut batch = OtapArrowRecords::Metrics(Metrics::default());
-        batch.set(ArrowPayloadType::UnivariateMetrics, metrics_rb);
-        batch.set(ArrowPayloadType::MetricAttrs, metric_attrs_rb);
-        batch.set(ArrowPayloadType::ScopeAttrs, scope_attrs);
-        batch.set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb);
+        batch
+            .set(ArrowPayloadType::UnivariateMetrics, metrics_rb)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::MetricAttrs, metric_attrs_rb)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::ScopeAttrs, scope_attrs)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::ResourceAttrs, resource_attrs_rb)
+            .unwrap();
         for payload_type in [
             ArrowPayloadType::SummaryDataPoints,
             ArrowPayloadType::NumberDataPoints,
             ArrowPayloadType::HistogramDataPoints,
             ArrowPayloadType::ExpHistogramDataPoints,
         ] {
-            batch.set(payload_type, data_points_rb.clone());
+            batch.set(payload_type, data_points_rb.clone()).unwrap();
         }
         for payload_type in [
             ArrowPayloadType::SummaryDpAttrs,
@@ -2876,7 +3166,9 @@ mod test {
             ArrowPayloadType::HistogramDpAttrs,
             ArrowPayloadType::ExpHistogramDpAttrs,
         ] {
-            batch.set(payload_type, data_point_attrs_rb.clone());
+            batch
+                .set(payload_type, data_point_attrs_rb.clone())
+                .unwrap();
         }
 
         for payload_type in [
@@ -2884,7 +3176,7 @@ mod test {
             ArrowPayloadType::HistogramDpExemplars,
             ArrowPayloadType::ExpHistogramDpExemplars,
         ] {
-            batch.set(payload_type, exemplar_rb.clone());
+            batch.set(payload_type, exemplar_rb.clone()).unwrap();
         }
 
         for payload_type in [
@@ -2892,7 +3184,7 @@ mod test {
             ArrowPayloadType::HistogramDpExemplarAttrs,
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
         ] {
-            batch.set(payload_type, exemplar_attrs_rb.clone());
+            batch.set(payload_type, exemplar_attrs_rb.clone()).unwrap();
         }
 
         batch.encode_transport_optimized().unwrap();
@@ -3068,10 +3360,19 @@ mod test {
                 .with_encoding(consts::metadata::encodings::DELTA),
             Field::new(consts::PARENT_ID, DataType::UInt16, false)
                 .with_encoding(consts::metadata::encodings::DELTA),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
         let expected_data_points_rb = RecordBatch::try_new(
             expected_data_points_schema,
-            vec![Arc::new(ids), Arc::new(parent_ids)],
+            vec![
+                Arc::new(ids),
+                Arc::new(parent_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 5])),
+            ],
         )
         .unwrap();
 
@@ -3166,6 +3467,11 @@ mod test {
             Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
             Field::new(consts::PARENT_ID, DataType::UInt32, false)
                 .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+            Field::new(
+                consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
 
         let expected_exemplar_rb = RecordBatch::try_new(
@@ -3175,6 +3481,7 @@ mod test {
                 Arc::new(exemplar_int_vals),
                 Arc::new(exemplar_double_vals),
                 Arc::new(exemplar_parent_ids),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
             ],
         )
         .unwrap();
@@ -3228,179 +3535,44 @@ mod test {
     // Tests to catch trait implementation issues
     #[test]
     fn test_logs_trait_implementation() {
-        let mut logs = Logs::new();
+        let logs = Logs::new();
 
         assert_eq!(Logs::COUNT, 4); // Logs should have 4 batches
 
-        // Test batches() and batches_mut()
-        assert_eq!(logs.batches().len(), Logs::COUNT);
-        assert_eq!(logs.batches_mut().len(), Logs::COUNT);
-
-        // Test into_batches() - this would have caught the original compilation error
+        // Test into_batches()
         let batches = logs.clone().into_batches();
         assert_eq!(batches.len(), Logs::COUNT);
+
+        // Test into_raw().batches()
+        assert_eq!(logs.into_raw().batches().len(), Logs::COUNT);
     }
 
     #[test]
     fn test_metrics_trait_implementation() {
-        let mut metrics = Metrics::new();
+        let metrics = Metrics::new();
 
         assert_eq!(Metrics::COUNT, 19); // Metrics should have 19 batches
 
-        // Test batches() and batches_mut()
-        assert_eq!(metrics.batches().len(), Metrics::COUNT);
-        assert_eq!(metrics.batches_mut().len(), Metrics::COUNT);
-
-        // Test into_batches() - this would have caught the original compilation error
+        // Test into_batches()
         let batches = metrics.clone().into_batches();
         assert_eq!(batches.len(), Metrics::COUNT);
+
+        // Test into_raw().batches()
+        assert_eq!(metrics.into_raw().batches().len(), Metrics::COUNT);
     }
 
     #[test]
     fn test_traces_trait_implementation() {
-        let mut traces = Traces::new();
+        let traces = Traces::new();
 
         assert_eq!(Traces::COUNT, 8); // Traces should have 8 batches
 
-        // Test batches() and batches_mut()
-        assert_eq!(traces.batches().len(), Traces::COUNT);
-        assert_eq!(traces.batches_mut().len(), Traces::COUNT);
-
-        // Test into_batches() - this would have caught the original compilation error
+        // Test into_batches()
         let batches = traces.clone().into_batches();
         assert_eq!(batches.len(), Traces::COUNT);
-    }
 
-    #[test]
-    fn test_service_type_validation_comprehensive() {
-        use ArrowPayloadType::*;
-        struct SignalTestCase {
-            signal_name: &'static str,
-            valid_types: &'static [ArrowPayloadType],
-            invalid_types: &'static [ArrowPayloadType],
-        }
-
-        let test_cases = [
-            SignalTestCase {
-                signal_name: "Logs",
-                valid_types: &[ResourceAttrs, ScopeAttrs, Logs, LogAttrs],
-                invalid_types: &[
-                    Unknown,
-                    UnivariateMetrics,
-                    NumberDataPoints,
-                    SummaryDataPoints,
-                    HistogramDataPoints,
-                    ExpHistogramDataPoints,
-                    NumberDpAttrs,
-                    SummaryDpAttrs,
-                    HistogramDpAttrs,
-                    ExpHistogramDpAttrs,
-                    NumberDpExemplars,
-                    HistogramDpExemplars,
-                    ExpHistogramDpExemplars,
-                    NumberDpExemplarAttrs,
-                    HistogramDpExemplarAttrs,
-                    ExpHistogramDpExemplarAttrs,
-                    MultivariateMetrics,
-                    MetricAttrs,
-                    Spans,
-                    SpanAttrs,
-                    SpanEvents,
-                    SpanLinks,
-                    SpanEventAttrs,
-                    SpanLinkAttrs,
-                ],
-            },
-            SignalTestCase {
-                signal_name: "Traces",
-                valid_types: &[
-                    ResourceAttrs,
-                    ScopeAttrs,
-                    Spans,
-                    SpanAttrs,
-                    SpanEvents,
-                    SpanLinks,
-                    SpanEventAttrs,
-                    SpanLinkAttrs,
-                ],
-                invalid_types: &[
-                    Unknown,
-                    UnivariateMetrics,
-                    NumberDataPoints,
-                    SummaryDataPoints,
-                    HistogramDataPoints,
-                    ExpHistogramDataPoints,
-                    NumberDpAttrs,
-                    SummaryDpAttrs,
-                    HistogramDpAttrs,
-                    ExpHistogramDpAttrs,
-                    NumberDpExemplars,
-                    HistogramDpExemplars,
-                    ExpHistogramDpExemplars,
-                    NumberDpExemplarAttrs,
-                    HistogramDpExemplarAttrs,
-                    ExpHistogramDpExemplarAttrs,
-                    MultivariateMetrics,
-                    MetricAttrs,
-                    Logs,
-                    LogAttrs,
-                ],
-            },
-            SignalTestCase {
-                signal_name: "Metrics",
-                valid_types: &[
-                    ResourceAttrs,
-                    ScopeAttrs,
-                    UnivariateMetrics,
-                    NumberDataPoints,
-                    SummaryDataPoints,
-                    HistogramDataPoints,
-                    ExpHistogramDataPoints,
-                    NumberDpAttrs,
-                    SummaryDpAttrs,
-                    HistogramDpAttrs,
-                    ExpHistogramDpAttrs,
-                    NumberDpExemplars,
-                    HistogramDpExemplars,
-                    ExpHistogramDpExemplars,
-                    NumberDpExemplarAttrs,
-                    HistogramDpExemplarAttrs,
-                    ExpHistogramDpExemplarAttrs,
-                    MultivariateMetrics,
-                    MetricAttrs,
-                ],
-                invalid_types: &[
-                    Unknown,
-                    Logs,
-                    LogAttrs,
-                    Spans,
-                    SpanAttrs,
-                    SpanEvents,
-                    SpanLinks,
-                    SpanEventAttrs,
-                    SpanLinkAttrs,
-                ],
-            },
-        ];
-
-        for case in test_cases {
-            for &valid_type in case.valid_types {
-                assert!(is_valid_for_service(case.signal_name, valid_type));
-            }
-
-            for &invalid_type in case.invalid_types {
-                assert!(!is_valid_for_service(case.signal_name, invalid_type));
-            }
-        }
-
-        fn is_valid_for_service(service: &str, payload_type: ArrowPayloadType) -> bool {
-            match service {
-                "Logs" => super::Logs::is_valid_type(payload_type),
-                "Traces" => Traces::is_valid_type(payload_type),
-                "Metrics" => Metrics::is_valid_type(payload_type),
-                _ => unreachable!("Unknown service name"),
-            }
-        }
+        // Test into_raw().batches()
+        assert_eq!(traces.into_raw().batches().len(), Traces::COUNT);
     }
 
     #[test]

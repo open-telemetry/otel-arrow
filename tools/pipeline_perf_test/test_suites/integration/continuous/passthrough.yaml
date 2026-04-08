@@ -21,7 +21,7 @@ components:
       docker_component:
         allocated_cores: 12
       prometheus:
-        endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
   df-engine:
     deployment:
       docker:
@@ -42,7 +42,7 @@ components:
       docker_component:
         allocated_cores: 1
       prometheus:
-        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
   backend-service:
     deployment:
       docker:
@@ -63,7 +63,7 @@ components:
       docker_component:
         allocated_cores: 2
       prometheus:
-        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
   - name: OTLP-OTLP
@@ -72,18 +72,6 @@ tests:
       variables:
         result_dir: continuous_passthrough
         engine_config_template: test_suites/integration/templates/configs/engine/passthrough/otlp-otlp.yaml
-        loadgen_exporter_type: otlp
-        backend_receiver_type: otlp
-        observation_interval: 60
-        signals_per_second: null
-        max_batch_size: 512
-
-  - name: OTLP-BATCH-OTLP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        result_dir: continuous_passthrough_batch
-        engine_config_template: test_suites/integration/templates/configs/engine/batch/otlp-batch-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         observation_interval: 60
