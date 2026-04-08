@@ -470,36 +470,33 @@ fn validate_tls_settings(settings: &HttpAdminClientSettings) -> Result<(), Error
     Ok(())
 }
 
-#[cfg(any(
-    all(feature = "crypto-ring", feature = "crypto-aws-lc"),
-    all(feature = "crypto-ring", feature = "crypto-openssl"),
-    all(feature = "crypto-aws-lc", feature = "crypto-openssl"),
-))]
-compile_error!("crypto provider features are mutually exclusive; enable exactly one");
 fn ensure_crypto_provider() -> Result<(), Error> {
     static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
     INIT.get_or_init(|| {
-        #[cfg(feature = "crypto-ring")]
+        // Feature unification can enable multiple crypto backends at once, for
+        // example during `--all-features` CI builds. Prefer the most explicit
+        // override in that case rather than failing the entire build.
+        #[cfg(feature = "crypto-openssl")]
         {
-            let _ = rustls::crypto::ring::default_provider().install_default();
+            let _ = rustls_openssl::default_provider().install_default();
             Ok(())
         }
 
-        #[cfg(all(feature = "crypto-aws-lc", not(feature = "crypto-ring")))]
+        #[cfg(all(feature = "crypto-aws-lc", not(feature = "crypto-openssl")))]
         {
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(all(
-            feature = "crypto-openssl",
-            not(feature = "crypto-ring"),
+            feature = "crypto-ring",
+            not(feature = "crypto-openssl"),
             not(feature = "crypto-aws-lc")
         ))]
         {
-            let _ = rustls_openssl::default_provider().install_default();
-            return Ok(());
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            Ok(())
         }
 
         #[cfg(not(any(

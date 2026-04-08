@@ -48,7 +48,7 @@ This enables:
 - `crypto-ring`
 
 If you need a different rustls crypto backend, disable default features and
-select exactly one provider feature explicitly:
+prefer enabling a single provider feature explicitly:
 
 ```toml
 [dependencies]
@@ -61,6 +61,9 @@ Available provider features:
 - `crypto-aws-lc`: alternative rustls backend.
 - `crypto-openssl`: recommended starting point for regulated or FIPS-oriented
   deployments that need an OpenSSL-based cryptographic stack.
+- If feature unification enables more than one provider, the SDK chooses one
+  deterministically with this precedence:
+  `crypto-openssl` > `crypto-aws-lc` > `crypto-ring`.
 
 For FIPS-oriented deployments, start with:
 
