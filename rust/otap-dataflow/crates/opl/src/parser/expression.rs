@@ -917,6 +917,13 @@ mod test {
                 )),
             ),
             (
+                "5.06",
+                StaticScalarExpression::Double(DoubleScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    5.06,
+                )),
+            ),
+            (
                 "-4.56",
                 StaticScalarExpression::Double(DoubleScalarExpression::new(
                     QueryLocation::new_fake(),
