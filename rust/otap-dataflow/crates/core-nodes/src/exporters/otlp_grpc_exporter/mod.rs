@@ -861,6 +861,10 @@ mod tests {
     use super::*;
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::transport_headers::TransportHeaders;
+    use otap_df_config::transport_headers_policy::{
+        HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
+    };
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::PipelineCompletionMsg;
@@ -881,6 +885,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -890,14 +895,12 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
-
     // Imports only used by tests that are skipped on Windows
     #[cfg(not(windows))]
     use {
-        otap_df_config::transport_headers::{TransportHeader, TransportHeaders},
+        otap_df_config::transport_headers::TransportHeader,
         otap_df_config::transport_headers_policy::{
-            HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
-            PropagationOverride, PropagationSelector,
+            PropagationAction, PropagationMatch, PropagationOverride,
         },
         otap_df_engine::control::{
             Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
@@ -908,7 +911,6 @@ mod tests {
         otap_df_engine::node::NodeWithPDataReceiver,
         otap_df_engine::testing::create_not_send_channel,
         otap_df_telemetry::metrics::MetricSetSnapshot,
-        otap_df_telemetry::reporter::MetricsReporter,
     };
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
