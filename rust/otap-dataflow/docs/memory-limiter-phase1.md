@@ -29,6 +29,8 @@ Implementation note:
 - Sampling and pressure classification remain process-wide in the controller.
 - On pressure transitions, the controller propagates updates to receivers
   through the pipeline control plane.
+- These transitions are delivered as receiver control messages
+  (`NodeControlMsg::MemoryPressureChanged`).
 - Each receiver maintains receiver-local admission state and consults that
   local state on ingress hot paths.
 
