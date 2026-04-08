@@ -7,6 +7,7 @@
 
 use crate::clock;
 use crate::error::{Error, TypedError};
+use crate::memory_limiter::MemoryPressureChanged;
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -229,6 +230,12 @@ pub enum NodeControlMsg<PData> {
 
         /// The data.
         data: Box<PData>,
+    },
+
+    /// Announces a process-wide memory pressure transition to receiver-local admission state.
+    MemoryPressureChanged {
+        /// Latest process-wide pressure transition snapshot.
+        update: MemoryPressureChanged,
     },
 
     /// Requests that a receiver stop admitting new external work while keeping

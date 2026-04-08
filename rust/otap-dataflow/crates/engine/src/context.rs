@@ -9,6 +9,7 @@ use crate::attributes::{
     PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
+use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
@@ -101,6 +102,7 @@ pub struct ControllerContext {
     host_id: Cow<'static, str>,
     container_id: Cow<'static, str>,
     numa_node_id: usize,
+    memory_pressure_state: MemoryPressureState,
 }
 
 /// Parameters required to create a pipeline context.
@@ -152,6 +154,7 @@ impl ControllerContext {
             host_id: HOST_ID.clone(),
             container_id: CONTAINER_ID.clone(),
             numa_node_id: 0, // ToDo(LQ): Set NUMA node ID if available
+            memory_pressure_state: MemoryPressureState::default(),
         }
     }
 
@@ -198,6 +201,12 @@ impl ControllerContext {
     #[must_use]
     pub fn telemetry_registry(&self) -> TelemetryRegistryHandle {
         self.telemetry_registry_handle.clone()
+    }
+
+    /// Returns the shared process-wide memory pressure state.
+    #[must_use]
+    pub fn memory_pressure_state(&self) -> MemoryPressureState {
+        self.memory_pressure_state.clone()
     }
 }
 
@@ -263,6 +272,12 @@ impl PipelineContext {
     #[must_use]
     pub const fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
         self.internal_telemetry.as_ref()
+    }
+
+    /// Returns the shared process-wide memory pressure state.
+    #[must_use]
+    pub fn memory_pressure_state(&self) -> MemoryPressureState {
+        self.controller_context.memory_pressure_state()
     }
 
     /// Sets the shared node-name-to-index mapping for this pipeline context.
