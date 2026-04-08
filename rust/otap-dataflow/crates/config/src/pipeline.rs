@@ -701,9 +701,25 @@ impl PipelineConfig {
                 errors.push(Error::InvalidUserConfig {
                     error: format!(
                         "Extension '{}' has a `capabilities` section, but extensions \
-                         provide capabilities — they don't consume them. \
+                         provide capabilities - they don't consume them. \
                          Move capability bindings to the nodes that need them.",
                         ext_id.as_ref(),
+                    ),
+                });
+            }
+        }
+
+        // Check that all entries in the extensions section have extension-kind URNs
+        for (ext_id, ext_config) in self.extensions.iter() {
+            if ext_config.kind() != NodeKind::Extension {
+                errors.push(Error::InvalidUserConfig {
+                    error: format!(
+                        "Extension '{}' has URN '{}' with kind '{}', but only \
+                         extension-kind URNs (e.g. `urn:<ns>:extension:<id>`) are \
+                         allowed in the `extensions` section.",
+                        ext_id.as_ref(),
+                        ext_config.r#type.as_str(),
+                        std::borrow::Cow::<str>::from(ext_config.kind()),
                     ),
                 });
             }
@@ -2730,10 +2746,10 @@ connections:
     }
 
     #[test]
-    fn test_receiver_urn_in_extensions_section_parsed() {
-        // A receiver URN placed in the `extensions:` section parses
-        // but has receiver kind — the engine should reject this at
-        // build time since the extension factory won't find it.
+    fn test_receiver_urn_in_extensions_section_rejected() {
+        // A receiver URN placed in the `extensions:` section is rejected
+        // during validation because only extension-kind URNs are allowed
+        // in the extensions section.
         let yaml = r#"
 nodes:
   receiver:
@@ -2749,11 +2765,13 @@ connections:
   - from: receiver
     to: exporter
 "#;
-        let config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
-
-        let (_, ext_cfg) = config.extension_iter().next().unwrap();
-        // The URN parses as receiver kind even though it's in extensions
-        assert_eq!(ext_cfg.kind(), NodeKind::Receiver);
+        let err = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml)
+            .expect_err("should reject non-extension URN in extensions section");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("misplaced") && msg.contains("extension"),
+            "expected rejection of non-extension URN in extensions section, got: {msg}"
+        );
     }
 
     #[test]
