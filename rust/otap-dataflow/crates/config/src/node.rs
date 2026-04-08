@@ -11,12 +11,52 @@
 use crate::error::Error;
 use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
 use crate::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
-use crate::{Description, NodeUrn, PortName};
+use crate::{CapabilityId, Description, NodeId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
+
+/// Deserializes a `HashMap<String, String>` while rejecting duplicate keys.
+///
+/// Standard serde deserialization into `HashMap` silently overwrites earlier
+/// entries when keys are duplicated in the source. This function detects that
+/// and returns an error so the user gets immediate feedback.
+fn deserialize_no_dup_keys<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<CapabilityId, NodeId>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{MapAccess, Visitor};
+    use std::fmt;
+
+    struct NoDupVisitor;
+
+    impl<'de> Visitor<'de> for NoDupVisitor {
+        type Value = HashMap<CapabilityId, NodeId>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map with no duplicate keys")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut result = HashMap::new();
+            while let Some((key, value)) = map.next_entry::<String, String>()? {
+                if result.contains_key(key.as_str()) {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate capability key '{key}'"
+                    )));
+                }
+                let _ = result.insert(CapabilityId::from(key), NodeId::from(value));
+            }
+            Ok(result)
+        }
+    }
+
+    deserializer.deserialize_map(NoDupVisitor)
+}
 
 /// User configuration for a node in the pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -59,6 +99,23 @@ pub struct NodeUserConfig {
     // The preserve-unknown-fields extension allows this to be correctly interpreted as "Any JSON type"
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub config: Value,
+
+    /// Capability bindings mapping capability names to extension instance names.
+    ///
+    /// Each entry maps a capability (e.g., `bearer_token_provider`) to the name
+    /// of an extension instance declared in the pipeline's `extensions` section.
+    ///
+    /// Example:
+    /// ```yaml
+    /// capabilities:
+    ///   bearer_token_provider: azure_auth
+    /// ```
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        deserialize_with = "deserialize_no_dup_keys"
+    )]
+    pub capabilities: HashMap<CapabilityId, NodeId>,
 
     /// Entity configuration for the node.
     ///
@@ -112,6 +169,8 @@ pub enum NodeKind {
     Processor,
     /// A sink of signals
     Exporter,
+    /// A provider of shared capabilities (e.g., auth, service discovery).
+    Extension,
 
     // ToDo(LQ) : Add more node kinds as needed.
     // A connector between two pipelines
@@ -126,6 +185,7 @@ impl From<NodeKind> for Cow<'static, str> {
             NodeKind::Receiver => "receiver".into(),
             NodeKind::Processor => "processor".into(),
             NodeKind::Exporter => "exporter".into(),
+            NodeKind::Extension => "extension".into(),
             NodeKind::ProcessorChain => "processor_chain".into(),
         }
     }
@@ -145,6 +205,7 @@ impl NodeUserConfig {
             default_output: None,
             entity: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         }
@@ -163,6 +224,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         }
@@ -181,6 +243,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         }
@@ -196,6 +259,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: user_config,
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         }
@@ -228,6 +292,7 @@ impl NodeUserConfig {
                         NodeKind::Processor => "processor",
                         NodeKind::Exporter => "exporter",
                         NodeKind::ProcessorChain => "processor_chain",
+                        NodeKind::Extension => "extension",
                         NodeKind::Receiver => unreachable!(),
                     }
                 ),
@@ -243,6 +308,7 @@ impl NodeUserConfig {
                         NodeKind::Receiver => "receiver",
                         NodeKind::Processor => "processor",
                         NodeKind::ProcessorChain => "processor_chain",
+                        NodeKind::Extension => "extension",
                         NodeKind::Exporter => unreachable!(),
                     }
                 ),
@@ -519,6 +585,23 @@ config:
     }
 
     #[test]
+    fn capabilities_rejects_duplicate_keys_yaml() {
+        let yaml = r#"
+type: "urn:otel:exporter:test"
+capabilities:
+  bearer_token_provider: ext_a
+  bearer_token_provider: ext_b
+"#;
+        let result: Result<NodeUserConfig, _> = serde_yaml::from_str(yaml);
+        let err = result.expect_err("should reject duplicate capability keys");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate"),
+            "error should mention duplicate: {msg}"
+        );
+    }
+
+    #[test]
     fn header_capture_on_processor_is_rejected() {
         let mut cfg = NodeUserConfig::new_processor_config("processor:batch");
         cfg.header_capture = Some(HeaderCapturePolicy::default());
@@ -559,5 +642,23 @@ config:
         let mut errors = Vec::new();
         cfg.validate_transport_header_fields("test", &mut errors);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn capabilities_rejects_duplicate_keys_json() {
+        let json = r#"{
+            "type": "urn:otel:exporter:test",
+            "capabilities": {
+                "bearer_token_provider": "ext_a",
+                "bearer_token_provider": "ext_b"
+            }
+        }"#;
+        let result: Result<NodeUserConfig, _> = serde_json::from_str(json);
+        let err = result.expect_err("should reject duplicate capability keys");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate"),
+            "error should mention duplicate: {msg}"
+        );
     }
 }
