@@ -271,7 +271,7 @@ impl StyledBufWriter<'_> {
         // See also: `encode_body_string` in encoder.rs.
         let has_body = body
             .as_ref()
-            .is_some_and(|v| v.as_string().map_or(true, |s| !s.is_empty()));
+            .is_some_and(|v| v.as_string().is_none_or(|s| !s.is_empty()));
         let has_attrs = attrs.peek().is_some();
 
         // Print separator after event_name if there's content following
