@@ -372,6 +372,7 @@ connections:
     }
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn license_text_is_embedded() {
         assert!(
             !LICENSE_TEXT.is_empty(),
@@ -384,6 +385,7 @@ connections:
     }
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn third_party_notices_are_embedded() {
         assert!(
             !THIRD_PARTY_NOTICES.is_empty(),
