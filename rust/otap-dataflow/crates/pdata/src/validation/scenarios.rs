@@ -28,6 +28,14 @@ pub async fn run_single_round_trip_test<I, O, F>(
     I::Response: std::fmt::Debug + PartialEq + Default,
     F: FnOnce() -> I::Request + 'static,
 {
+    if !super::collector::collector_available() {
+        eprintln!(
+            "Skipping validation test because collector binary is unavailable at '{}'.",
+            super::collector::COLLECTOR_PATH.as_str()
+        );
+        return;
+    }
+
     match run_single_round_trip::<I, O, F>(create_request, expected_error).await {
         Ok(_) => {}
         Err(err) => {
