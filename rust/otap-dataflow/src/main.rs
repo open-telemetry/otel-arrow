@@ -18,6 +18,11 @@ use otap_df_controller::startup;
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
+/// Project license text (Apache-2.0), embedded at compile time.
+const LICENSE_TEXT: &str = include_str!("../LICENSE");
+
+/// Third-party notices, embedded at compile time from the repository root.
+const THIRD_PARTY_NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.txt");
 
 fn memory_allocator_name() -> &'static str {
     if cfg!(feature = "mimalloc") {
@@ -131,6 +136,10 @@ struct Args {
     /// - Component-specific config validation (when supported by the component)
     #[arg(long)]
     validate_and_exit: bool,
+
+    /// Print the project license (Apache-2.0) and third-party notices, then exit.
+    #[arg(long)]
+    license: bool,
 }
 
 fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
@@ -186,7 +195,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         core_id_range,
         http_admin_bind,
         validate_and_exit,
+        license,
     } = Args::parse();
+
+    if license {
+        println!("{LICENSE_TEXT}");
+        println!("\n--- Third-Party Notices ---\n");
+        println!("{THIRD_PARTY_NOTICES}");
+        std::process::exit(0);
+    }
 
     println!(
         "{}",
@@ -340,6 +357,38 @@ connections:
         )
         .expect_err("semantic component validation should fail");
         assert!(err.to_string().contains("Unknown receiver component"));
+    }
+
+    #[test]
+    fn parse_license_flag() {
+        let args = Args::parse_from(["df_engine", "--license"]);
+        assert!(args.license);
+    }
+
+    #[test]
+    fn license_flag_is_false_by_default() {
+        let args = Args::parse_from(["df_engine", "--validate-and-exit"]);
+        assert!(!args.license);
+    }
+
+    #[test]
+    fn license_text_is_embedded() {
+        assert!(
+            !LICENSE_TEXT.is_empty(),
+            "LICENSE should be embedded at compile time"
+        );
+        assert!(
+            LICENSE_TEXT.contains("Apache License"),
+            "LICENSE should contain Apache License text"
+        );
+    }
+
+    #[test]
+    fn third_party_notices_are_embedded() {
+        assert!(
+            !THIRD_PARTY_NOTICES.is_empty(),
+            "THIRD_PARTY_NOTICES should be embedded at compile time"
+        );
     }
 
     #[test]
