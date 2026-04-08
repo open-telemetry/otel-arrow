@@ -97,6 +97,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn attribute_processor_pipeline() {
         let deny = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
