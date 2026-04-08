@@ -70,6 +70,7 @@ pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
 pub mod local;
+pub mod memory_limiter;
 pub mod node;
 pub mod output_router;
 pub mod pipeline_ctrl;

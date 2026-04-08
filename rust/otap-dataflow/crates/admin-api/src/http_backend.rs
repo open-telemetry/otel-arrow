@@ -657,6 +657,7 @@ mod tests {
                     probe: engine::ProbeKind::Livez,
                     status: engine::ProbeStatus::Failed,
                     generated_at: "2026-01-01T00:00:00Z".to_string(),
+                    message: None,
                     failing: vec![],
                 }),
             )

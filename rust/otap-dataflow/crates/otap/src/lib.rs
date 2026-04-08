@@ -39,6 +39,9 @@ pub(crate) mod socket_options;
 /// Shared concurrency limiting across protocol servers
 pub mod shared_concurrency;
 
+/// Shared ingress shedding based on process-wide memory pressure.
+pub mod memory_pressure_layer;
+
 /// gRPC service implementation
 pub mod otlp_grpc;
 

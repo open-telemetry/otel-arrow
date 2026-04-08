@@ -1274,6 +1274,7 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use otap_df_config::observed_state::ObservedStateSettings;
+    use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
     use std::sync::Arc;
@@ -1323,6 +1324,7 @@ mod tests {
             metrics_registry,
             log_tap: None,
             ctrl_msg_senders: Arc::new(Mutex::new(Vec::new())),
+            memory_pressure_state: MemoryPressureState::default(),
         }
     }
 

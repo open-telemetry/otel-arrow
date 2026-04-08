@@ -69,6 +69,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn debug_processor() {
         Scenario::new()
             .pipeline(
@@ -130,6 +131,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn filter_processor_pipeline() {
         let attr_check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],

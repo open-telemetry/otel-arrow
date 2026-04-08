@@ -27,6 +27,9 @@ pub struct ProbeResponse {
     pub status: ProbeStatus,
     /// RFC 3339 timestamp when the probe result was generated.
     pub generated_at: String,
+    /// Informational probe message, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// Failing pipeline conditions, if any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failing: Vec<PipelineConditionFailure>,
@@ -93,6 +96,16 @@ mod tests {
 
     #[test]
     fn probe_response_roundtrips_current_wire_shape() {
+        assert_roundtrip::<ProbeResponse>(json!({
+            "probe": "readyz",
+            "status": "failed",
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "message": "process memory pressure at hard limit"
+        }));
+    }
+
+    #[test]
+    fn probe_response_roundtrips_failure_details_wire_shape() {
         assert_roundtrip::<ProbeResponse>(json!({
             "probe": "readyz",
             "status": "failed",

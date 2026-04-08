@@ -1123,6 +1123,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                 }
                 NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
+                NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
                 NodeControlMsg::DrainIngress { .. } => Ok(()),
                 NodeControlMsg::TimerTick { .. } => unreachable!(),
             },
