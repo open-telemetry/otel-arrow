@@ -202,6 +202,32 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
     assert_eq!(registry.entity_count(), expected_entities);
 }
 
+#[test]
+fn test_pipeline_with_processor_chain_builds() {
+    let pipeline_group_id: PipelineGroupId = "test-group".into();
+    let pipeline_id: PipelineId = "chain-pipeline".into();
+    let config =
+        build_processor_chain_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
+
+    let telemetry_system = InternalTelemetrySystem::default();
+    let registry = telemetry_system.registry();
+    let controller_ctx = ControllerContext::new(registry.clone());
+    let pipeline_ctx =
+        controller_ctx.pipeline_context_with(pipeline_group_id, pipeline_id, 0, 1, 0);
+
+    let _pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
+    let _runtime_pipeline = OTAP_PIPELINE_FACTORY
+        .build(
+            pipeline_ctx,
+            config,
+            ChannelCapacityPolicy::default(),
+            TelemetryPolicy::default(),
+            None,
+            None,
+        )
+        .expect("failed to build pipeline with processor chain");
+}
+
 fn build_test_pipeline_config(
     pipeline_group_id: PipelineGroupId,
     pipeline_id: PipelineId,
@@ -265,6 +291,40 @@ fn build_mixed_receiver_pipeline_config(
         )
         .add_exporter("exporter", NOOP_EXPORTER_URN, None)
         .one_of("shared_receiver", ["exporter"])
+        .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
+        .expect("failed to build pipeline config")
+}
+
+fn build_processor_chain_pipeline_config(
+    pipeline_group_id: PipelineGroupId,
+    pipeline_id: PipelineId,
+) -> PipelineConfig {
+    let receiver_config_value = fake_receiver_config_value();
+    let chain_config = json!({
+        "processors": [
+            {
+                "name": "step_1",
+                "type": "processor:debug",
+                "config": { "verbosity": "basic" }
+            },
+            {
+                "name": "step_2",
+                "type": "processor:debug",
+                "config": { "verbosity": "basic" }
+            }
+        ]
+    });
+
+    PipelineConfigBuilder::new()
+        .add_receiver(
+            "receiver",
+            OTAP_FAKE_DATA_GENERATOR_URN,
+            Some(receiver_config_value),
+        )
+        .add_node("chain", "processor_chain:composite", Some(chain_config))
+        .add_exporter("exporter", NOOP_EXPORTER_URN, None)
+        .one_of("receiver", ["chain"])
+        .one_of("chain", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
         .expect("failed to build pipeline config")
 }

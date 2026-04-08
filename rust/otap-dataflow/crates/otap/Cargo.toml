@@ -101,6 +101,7 @@ aws = ["object_store/aws", "object_store/cloud"]
 
 [dev-dependencies]
 flume.workspace = true
+otap-df-controller.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
