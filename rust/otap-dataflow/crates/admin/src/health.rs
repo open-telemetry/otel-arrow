@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Global health and status endpoints.
+//! Process-wide health and status endpoints.
 //!
 //! - GET `/api/v1/status` - list all pipelines and their status
 //! - GET `/api/v1/livez` - liveness probe
@@ -43,6 +43,8 @@ pub(crate) struct ProbeResponse {
     probe: &'static str,
     status: &'static str,
     generated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     failing: Vec<PipelineConditionFailure>,
 }
@@ -83,6 +85,16 @@ pub(crate) async fn livez(State(state): State<AppState>) -> (StatusCode, Json<Pr
 }
 
 pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<ProbeResponse>) {
+    if state.memory_pressure_state.should_fail_readiness() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ProbeResponse::with_message(
+                "readyz",
+                "process memory pressure at hard limit",
+            )),
+        );
+    }
+
     let snapshot = state.observed_state_store.snapshot();
     let failing = collect_condition_failures(
         &snapshot,
@@ -160,6 +172,7 @@ impl ProbeResponse {
             probe,
             status: "ok",
             generated_at: Utc::now().to_rfc3339(),
+            message: None,
             failing: Vec::new(),
         }
     }
@@ -169,7 +182,18 @@ impl ProbeResponse {
             probe,
             status: "failed",
             generated_at: Utc::now().to_rfc3339(),
+            message: None,
             failing,
+        }
+    }
+
+    fn with_message(probe: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            probe,
+            status: "failed",
+            generated_at: Utc::now().to_rfc3339(),
+            message: Some(message.into()),
+            failing: Vec::new(),
         }
     }
 }

@@ -48,7 +48,7 @@ use otap_df_telemetry::otel_warn;
 mod builder;
 mod config;
 mod identity;
-mod metrics;
+mod telemetry;
 
 use self::builder::{Checkpoint, MetricSignalBuilder, StreamMeta};
 use self::config::Config;
@@ -56,9 +56,7 @@ use self::identity::{
     HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId, StreamIdRef,
     metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
-use self::metrics::TemporalReaggregationMetrics;
-
-const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";
+use self::telemetry::TemporalReaggregationMetrics;
 
 /// Errors that can occur during view processing.
 #[derive(thiserror::Error, Debug)]
@@ -108,6 +106,11 @@ enum AggregationError {
     /// An ID counter would exceed its maximum value.
     #[error("Id overflow")]
     IdOverflow,
+
+    /// The number of unique metric streams in the current batch would exceed
+    /// the configured [`Config::max_stream_cardinality`] limit.
+    #[error("Stream cardinality exceeded")]
+    StreamCardinalityExceeded,
 }
 
 /// The URN for the temporal reaggregation processor.
@@ -144,45 +147,38 @@ pub fn create_temporal_reaggregation_processor(
     ))
 }
 
+/// A grouping of counters used to track the current otap id for each table.
+/// This is split out from [`IdentityState`] because the passthrough batch doesn't
+/// have a need for all of the hashmaps used to aggregate, but both batches need
+/// to track these ids.
+#[derive(Default)]
+struct OtapIdState {
+    resource: u16,
+    scope: u16,
+    metric: u16,
+    ndp: u32,
+    hdp: u32,
+    ehdp: u32,
+    sdp: u32,
+    ndp_exemplar: u32,
+    hdp_exemplar: u32,
+    ehdp_exemplar: u32,
+}
+
 /// State for the current in-progress batch. This is all the stuff that has to
 /// be cleared between batches
+#[derive(Default)]
 struct IdentityState {
     resources: HashMap<ResourceId, u16>,
     scopes: HashMap<ScopeId<'static>, u16>,
     metrics: HashMap<MetricId<'static>, u16>,
     streams: HashMap<StreamId<'static>, StreamMeta>,
-
-    next_id_resource: u16,
-    next_id_scope: u16,
-    next_id_metric: u16,
-    next_id_ndp: u32,
-    next_id_hdp: u32,
-    next_id_ehdp: u32,
-    next_id_sdp: u32,
-    next_id_ndp_exemplar: u32,
-    next_id_hdp_exemplar: u32,
-    next_id_ehdp_exemplar: u32,
+    next: OtapIdState,
 }
 
 impl IdentityState {
     fn new() -> Self {
-        Self {
-            resources: HashMap::new(),
-            scopes: HashMap::new(),
-            metrics: HashMap::new(),
-            streams: HashMap::new(),
-
-            next_id_resource: 0,
-            next_id_scope: 0,
-            next_id_metric: 0,
-            next_id_ndp: 0,
-            next_id_hdp: 0,
-            next_id_ehdp: 0,
-            next_id_sdp: 0,
-            next_id_ndp_exemplar: 0,
-            next_id_hdp_exemplar: 0,
-            next_id_ehdp_exemplar: 0,
-        }
+        Self::default()
     }
 
     fn clear(&mut self) {
@@ -190,16 +186,7 @@ impl IdentityState {
         self.scopes.clear();
         self.metrics.clear();
         self.streams.clear();
-        self.next_id_resource = 0;
-        self.next_id_scope = 0;
-        self.next_id_metric = 0;
-        self.next_id_ndp = 0;
-        self.next_id_hdp = 0;
-        self.next_id_ehdp = 0;
-        self.next_id_sdp = 0;
-        self.next_id_ndp_exemplar = 0;
-        self.next_id_hdp_exemplar = 0;
-        self.next_id_ehdp_exemplar = 0;
+        self.next = OtapIdState::default();
     }
 }
 
@@ -210,10 +197,18 @@ impl IdentityState {
 /// stream. On each timer tick it flushes the accumulated state as an
 /// [`OtapArrowRecords`] batch.
 pub struct TemporalReaggregationProcessor {
+    /// Processor metrics
     metrics: MetricSet<TemporalReaggregationMetrics>,
+
+    /// The collection period for aggregating metrics before emitting a batch
     collection_period: Duration,
+
+    /// Maximum number of unique streams allowed in a single aggregating batch.
+    max_stream_cardinality: u16,
+
     /// Whether the periodic flush timer has been started.
     timer_started: bool,
+
     // Reusable byte buffer for computing attribute hashes.
     hash_buf: HashBuffer,
 
@@ -221,16 +216,12 @@ pub struct TemporalReaggregationProcessor {
     /// integer Ids. It is outside the scope of [Self::builder] to figure out
     /// what ids to assign, so we do that here. Like the builder, this is reset
     /// on every flush trigger.
-    id_state: IdentityState,
+    identities: IdentityState,
 
     /// The in progress aggregated metrics builder. All the data which can be
     /// aggregated for each inbound batch is accumulated here until a flush
     /// trigger is hit and the builder is reset.
     builder: MetricSignalBuilder,
-
-    /// Reusable state for the passthrough batch. Cleared before each use in
-    /// passthrough output.
-    passthrough_state: IdentityState,
 
     /// Contexts for all of the inbound batches that have not been fully
     /// acked or nacked
@@ -335,11 +326,11 @@ impl TemporalReaggregationProcessor {
         Ok(Self {
             metrics,
             collection_period: config.period,
+            max_stream_cardinality: config.max_stream_cardinality.get(),
             timer_started: false,
             hash_buf: HashBuffer::new(),
-            id_state: IdentityState::new(),
+            identities: IdentityState::new(),
             builder: MetricSignalBuilder::new(),
-            passthrough_state: IdentityState::new(),
             inbound_batches: SlotState::new(config.inbound_request_limit.get()),
             pending_flush: Vec::new(),
             outbound_batches: SlotState::new(config.outbound_request_limit.get()),
@@ -384,17 +375,12 @@ impl TemporalReaggregationProcessor {
         msg: AckMsg<OtapPdata>,
     ) -> Result<(), Error> {
         let Ok(outbound_key) = msg.unwind.route.calldata.clone().try_into() else {
-            // TODO: It's either this or we raise an engine error and crash.
-            // This is pretty bad as who knows if we're holding outbounds that
-            // can ever be cleared if this is malfunctioning. Best case
-            // scenario is the nack was erroneous and just didn't mean anything.
-            //
-            // TODO: Emit a warning event in this case.
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
         let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
-            // TODO: Same as above
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
@@ -427,7 +413,7 @@ impl TemporalReaggregationProcessor {
                     // this implies a lack of correctness in another component or the
                     // engine itself.
                     false => {
-                        // TODO: Emit some kind of warning event here.
+                        otel_warn!(telemetry::ERRONEOUS_ACK_EVENT);
                         continue;
                     }
                 },
@@ -482,17 +468,16 @@ impl TemporalReaggregationProcessor {
         msg: NackMsg<OtapPdata>,
     ) -> Result<(), Error> {
         let Ok(outbound_key) = msg.unwind.route.calldata.clone().try_into() else {
-            // TODO: It's either this or we raise an engine error and crash.
+            // It's either this or we raise an engine error and crash.
             // This is pretty bad as who knows if we're holding outbounds that
             // can ever be cleared if this is malfunctioning. Best case
             // scenario is the nack was erroneous and just didn't mean anything.
-            //
-            // TODO: Emit a warning event in this case.
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
         let Some(inbounds) = self.outbound_batches.take(outbound_key) else {
-            // TODO: Same as above
+            otel_warn!(telemetry::INVALID_CALLDATA_EVENT);
             return Ok(());
         };
 
@@ -551,7 +536,7 @@ impl TemporalReaggregationProcessor {
             OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
-                    otel_warn!(VIEW_CREATION_FAILED_EVENT, error = %e);
+                    otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
                     self.metrics.batches_rejected.inc();
                     let msg = format!("Failed to create view: {:#}", e);
                     effect_handler
@@ -743,12 +728,12 @@ impl TemporalReaggregationProcessor {
         match self.aggregate_view(view) {
             Ok(res) => Ok(res),
             Err(e) => match e {
-                // Id overflows are fine. In this case we seal the current
-                // outbound batch and then feed the data back into the next one. We do this to
-                // prevent complex ack/nack scenarios where an
-                // input batch has representation in multiple
-                // output batches.
-                AggregationError::IdOverflow => {
+                // Both ID overflow and stream cardinality overflow are handled
+                // the same way: seal the current outbound batch and feed the
+                // data back into a fresh one. This prevents complex ack/nack
+                // scenarios where a single input batch has representation in
+                // multiple output batches.
+                AggregationError::IdOverflow | AggregationError::StreamCardinalityExceeded => {
                     self.metrics.flushes_overflow.inc();
                     self.flush(effect_handler, Some(checkpoint)).await?;
                     Ok(self
@@ -768,7 +753,7 @@ impl TemporalReaggregationProcessor {
         &mut self,
         view: &V,
     ) -> Result<AggregationResult, AggregationError> {
-        self.passthrough_state.clear();
+        let mut next_pt_id = OtapIdState::default();
         let mut pt_builder = MetricSignalBuilder::new();
 
         for resource_metrics in view.resources() {
@@ -838,7 +823,7 @@ impl TemporalReaggregationProcessor {
                         let res_otap_id = match pt_resource_id {
                             Some(x) => x,
                             None => {
-                                let id = next_id_16(&mut self.passthrough_state.next_id_resource)?;
+                                let id = next_id_16(&mut next_pt_id.resource)?;
                                 if let Some(ref resource) = resource {
                                     pt_builder.append_resource(id, resource);
                                 }
@@ -850,7 +835,7 @@ impl TemporalReaggregationProcessor {
                         let scp_otap_id = match pt_scope_id {
                             Some(x) => x,
                             None => {
-                                let id = next_id_16(&mut self.passthrough_state.next_id_scope)?;
+                                let id = next_id_16(&mut next_pt_id.scope)?;
                                 if let Some(ref scope) = scope {
                                     pt_builder.append_scope(id, scope);
                                 }
@@ -859,8 +844,7 @@ impl TemporalReaggregationProcessor {
                             }
                         };
 
-                        let otap_metric_id =
-                            next_id_16(&mut self.passthrough_state.next_id_metric)?;
+                        let otap_metric_id = next_id_16(&mut next_pt_id.metric)?;
                         let (data_type, aggregation_temporality, is_monotonic) =
                             identity::metric_type_info_of(&data);
                         pt_builder.append_metric(
@@ -877,13 +861,18 @@ impl TemporalReaggregationProcessor {
                             scope_schema_url,
                         );
 
-                        self.append_passthrough_datapoints(&mut pt_builder, &data, otap_metric_id)?;
+                        self.append_passthrough_datapoints(
+                            &mut pt_builder,
+                            &mut next_pt_id,
+                            &data,
+                            otap_metric_id,
+                        )?;
                     }
                 }
             }
         }
 
-        if self.passthrough_state.next_id_metric == 0 {
+        if next_pt_id.metric == 0 {
             return Ok(AggregationResult::AllAggregated);
         }
 
@@ -895,14 +884,14 @@ impl TemporalReaggregationProcessor {
         resource_id: ResourceId,
         view: Option<&R>,
     ) -> Result<u16, AggregationError> {
-        match self.id_state.resources.entry_ref(&resource_id) {
+        match self.identities.resources.entry_ref(&resource_id) {
             Occupied(o) => Ok(*o.get()),
             Vacant(v) => {
-                let id = self.id_state.next_id_resource;
+                let id = self.identities.next.resource;
                 if id == u16::MAX {
                     return Err(AggregationError::IdOverflow);
                 }
-                self.id_state.next_id_resource += 1;
+                self.identities.next.resource += 1;
                 if let Some(view) = view {
                     self.builder.append_resource(id, view);
                 }
@@ -918,14 +907,14 @@ impl TemporalReaggregationProcessor {
         view: Option<&S>,
     ) -> Result<u16, AggregationError> {
         let lookup = ScopeIdRef(&scope_id.clone());
-        match self.id_state.scopes.entry_ref(&lookup) {
+        match self.identities.scopes.entry_ref(&lookup) {
             Occupied(o) => Ok(*o.get()),
             Vacant(v) => {
-                let id = self.id_state.next_id_scope;
+                let id = self.identities.next.scope;
                 if id == u16::MAX {
                     return Err(AggregationError::IdOverflow);
                 }
-                self.id_state.next_id_scope += 1;
+                self.identities.next.scope += 1;
                 if let Some(view) = view {
                     self.builder.append_scope(id, view);
                 }
@@ -947,14 +936,14 @@ impl TemporalReaggregationProcessor {
         scope_schema_url: &[u8],
     ) -> Result<u16, AggregationError> {
         let lookup = MetricIdRef(&metric_id.clone());
-        match self.id_state.metrics.entry_ref(&lookup) {
+        match self.identities.metrics.entry_ref(&lookup) {
             Occupied(o) => Ok(*o.get()),
             Vacant(v) => {
-                let id = self.id_state.next_id_metric;
+                let id = self.identities.next.metric;
                 if id == u16::MAX {
                     return Err(AggregationError::IdOverflow);
                 }
-                self.id_state.next_id_metric += 1;
+                self.identities.next.metric += 1;
                 self.builder.append_metric(
                     id,
                     view,
@@ -1039,8 +1028,9 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
+        let streams_len = self.identities.streams.len();
         let lookup = StreamIdRef(&stream_id.clone());
-        match self.id_state.streams.entry_ref(&lookup) {
+        match self.identities.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
                 let s = o.get_mut();
                 if time > s.time_unix_nano {
@@ -1050,11 +1040,14 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
-                let dp_id = self.id_state.next_id_ndp;
+                if streams_len >= self.max_stream_cardinality as usize {
+                    return Err(AggregationError::StreamCardinalityExceeded);
+                }
+                let dp_id = self.identities.next.ndp;
                 if dp_id == u32::MAX {
                     return Err(AggregationError::IdOverflow);
                 }
-                self.id_state.next_id_ndp += 1;
+                self.identities.next.ndp += 1;
                 let row_index = self.builder.append_number_dp(dp_id, otap_metric_id, dp);
                 _ = v.insert_with_key(
                     stream_id.into_owned(),
@@ -1075,8 +1068,9 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
+        let streams_len = self.identities.streams.len();
         let lookup = StreamIdRef(&stream_id.clone());
-        match self.id_state.streams.entry_ref(&lookup) {
+        match self.identities.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
                 let s = o.get_mut();
                 if time > s.time_unix_nano {
@@ -1086,11 +1080,14 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
-                let dp_id = self.id_state.next_id_hdp;
+                if streams_len >= self.max_stream_cardinality as usize {
+                    return Err(AggregationError::StreamCardinalityExceeded);
+                }
+                let dp_id = self.identities.next.hdp;
                 if dp_id == u32::MAX {
                     return Err(AggregationError::IdOverflow);
                 }
-                self.id_state.next_id_hdp += 1;
+                self.identities.next.hdp += 1;
                 let row_index = self.builder.append_histogram_dp(dp_id, otap_metric_id, dp);
                 _ = v.insert_with_key(
                     stream_id.into_owned(),
@@ -1111,8 +1108,9 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
+        let streams_len = self.identities.streams.len();
         let lookup = StreamIdRef(&stream_id.clone());
-        match self.id_state.streams.entry_ref(&lookup) {
+        match self.identities.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
                 let s = o.get_mut();
                 if time > s.time_unix_nano {
@@ -1122,11 +1120,14 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
-                let dp_id = self.id_state.next_id_ehdp;
+                if streams_len >= self.max_stream_cardinality as usize {
+                    return Err(AggregationError::StreamCardinalityExceeded);
+                }
+                let dp_id = self.identities.next.ehdp;
                 if dp_id == u32::MAX {
                     return Err(AggregationError::IdOverflow);
                 }
-                self.id_state.next_id_ehdp += 1;
+                self.identities.next.ehdp += 1;
                 let row_index = self
                     .builder
                     .append_exp_histogram_dp(dp_id, otap_metric_id, dp);
@@ -1149,8 +1150,9 @@ impl TemporalReaggregationProcessor {
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
         let time = dp.time_unix_nano();
+        let streams_len = self.identities.streams.len();
         let lookup = StreamIdRef(&stream_id.clone());
-        match self.id_state.streams.entry_ref(&lookup) {
+        match self.identities.streams.entry_ref(&lookup) {
             Occupied(mut o) => {
                 let s = o.get_mut();
                 if time > s.time_unix_nano {
@@ -1160,11 +1162,14 @@ impl TemporalReaggregationProcessor {
                 }
             }
             Vacant(v) => {
-                let dp_id = self.id_state.next_id_sdp;
+                if streams_len >= self.max_stream_cardinality as usize {
+                    return Err(AggregationError::StreamCardinalityExceeded);
+                }
+                let dp_id = self.identities.next.sdp;
                 if dp_id == u32::MAX {
                     return Err(AggregationError::IdOverflow);
                 }
-                self.id_state.next_id_sdp += 1;
+                self.identities.next.sdp += 1;
                 let row_index = self.builder.append_summary_dp(dp_id, otap_metric_id, dp);
                 _ = v.insert_with_key(
                     stream_id.into_owned(),
@@ -1183,6 +1188,7 @@ impl TemporalReaggregationProcessor {
     fn append_passthrough_datapoints<'a, D: DataView<'a>>(
         &mut self,
         pt_builder: &mut MetricSignalBuilder,
+        ids: &mut OtapIdState,
         data: &D,
         otap_metric_id: u16,
     ) -> Result<(), AggregationError> {
@@ -1190,38 +1196,30 @@ impl TemporalReaggregationProcessor {
             DataType::Gauge => {
                 if let Some(gauge) = data.as_gauge() {
                     for dp in gauge.data_points() {
-                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_ndp)?;
+                        let dp_id = next_id_32(&mut ids.ndp)?;
                         let _ = pt_builder.append_number_dp(dp_id, otap_metric_id, &dp);
-                        pt_builder.append_number_dp_exemplars(
-                            dp_id,
-                            &dp,
-                            &mut self.passthrough_state.next_id_ndp_exemplar,
-                        )?;
+                        pt_builder.append_number_dp_exemplars(dp_id, &dp, &mut ids.ndp_exemplar)?;
                     }
                 }
             }
             DataType::Sum => {
                 if let Some(sum) = data.as_sum() {
                     for dp in sum.data_points() {
-                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_ndp)?;
+                        let dp_id = next_id_32(&mut ids.ndp)?;
                         let _ = pt_builder.append_number_dp(dp_id, otap_metric_id, &dp);
-                        pt_builder.append_number_dp_exemplars(
-                            dp_id,
-                            &dp,
-                            &mut self.passthrough_state.next_id_ndp_exemplar,
-                        )?;
+                        pt_builder.append_number_dp_exemplars(dp_id, &dp, &mut ids.ndp_exemplar)?;
                     }
                 }
             }
             DataType::Histogram => {
                 if let Some(hist) = data.as_histogram() {
                     for dp in hist.data_points() {
-                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_hdp)?;
+                        let dp_id = next_id_32(&mut ids.hdp)?;
                         let _ = pt_builder.append_histogram_dp(dp_id, otap_metric_id, &dp);
                         pt_builder.append_histogram_dp_exemplars(
                             dp_id,
                             &dp,
-                            &mut self.passthrough_state.next_id_hdp_exemplar,
+                            &mut ids.hdp_exemplar,
                         )?;
                     }
                 }
@@ -1229,12 +1227,12 @@ impl TemporalReaggregationProcessor {
             DataType::ExponentialHistogram => {
                 if let Some(exp) = data.as_exponential_histogram() {
                     for dp in exp.data_points() {
-                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_ehdp)?;
+                        let dp_id = next_id_32(&mut ids.ehdp)?;
                         let _ = pt_builder.append_exp_histogram_dp(dp_id, otap_metric_id, &dp);
                         pt_builder.append_exp_histogram_dp_exemplars(
                             dp_id,
                             &dp,
-                            &mut self.passthrough_state.next_id_ehdp_exemplar,
+                            &mut ids.ehdp_exemplar,
                         )?;
                     }
                 }
@@ -1242,7 +1240,7 @@ impl TemporalReaggregationProcessor {
             DataType::Summary => {
                 if let Some(summary) = data.as_summary() {
                     for dp in summary.data_points() {
-                        let dp_id = next_id_32(&mut self.passthrough_state.next_id_sdp)?;
+                        let dp_id = next_id_32(&mut ids.sdp)?;
                         let _ = pt_builder.append_summary_dp(dp_id, otap_metric_id, &dp);
                     }
                 }
@@ -1252,7 +1250,7 @@ impl TemporalReaggregationProcessor {
     }
 
     fn clear_state(&mut self) {
-        self.id_state.clear();
+        self.identities.clear();
         self.builder.clear();
     }
 }
@@ -1330,6 +1328,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
     use otap_df_pdata::{metrics, record_batch};
     use serde_json::json;
+    use smallvec::smallvec;
 
     #[test]
     fn test_default_config_parsing() {
@@ -2019,87 +2018,54 @@ mod tests {
         // that fits), then send a batch with 2 more unique metrics. The first
         // batch should be flushed early and the overflowing batch retried into
         // clean state.
-        run_processor_test(json!({}), |mut ctx| async move {
-            let max_metrics = (u16::MAX - 1) as usize;
+        //
+        // Set max_stream_cardinality to u16::MAX so that the stream cardinality
+        // limit is never hit here and only the metric ID overflow path is exercised.
+        let max_metrics = (u16::MAX - 1) as usize;
+        run_processor_test(
+            json!({ "max_stream_cardinality": u16::MAX }),
+            move |mut ctx| async move {
+                let full_batch = make_otlp_bytes_pdata(make_n_gauge_metrics(max_metrics));
+                // Use offset to ensure distinct metric names from the first batch.
+                let overflow_batch =
+                    make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(2, max_metrics));
 
-            // First batch: fill to the limit.
-            let full_batch = make_otlp_bytes_pdata(make_n_gauge_metrics(max_metrics));
-            ctx.process(Message::PData(full_batch)).await.unwrap();
+                ctx.process(Message::PData(full_batch)).await.unwrap();
+                ctx.process(Message::PData(overflow_batch)).await.unwrap();
+                ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
 
-            // Second batch: 2 new unique metrics — triggers overflow.
-            let overflow_batch =
-                make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
-                    Resource::build().finish(),
-                    vec![ScopeMetrics::new(
-                        InstrumentationScope::build().finish(),
-                        vec![
-                            Metric::build()
-                                .name("overflow_a")
-                                .data_gauge(Gauge::new(vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(2000u64)
-                                        .value_double(1.0f64)
-                                        .finish(),
-                                ]))
-                                .finish(),
-                            Metric::build()
-                                .name("overflow_b")
-                                .data_gauge(Gauge::new(vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(2000u64)
-                                        .value_double(2.0f64)
-                                        .finish(),
-                                ]))
-                                .finish(),
-                        ],
-                    )],
-                )]));
-            ctx.process(Message::PData(overflow_batch)).await.unwrap();
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected early flush + timer flush");
+                assert_output_metric_count(&output[0], max_metrics);
+                assert_output_metric_count(&output[1], 2);
+            },
+        );
+    }
 
-            // Flush via timer tick.
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+    #[test]
+    fn test_stream_cardinality_overflow_triggers_early_flush() {
+        // Configure the processor to allow at most 2 unique streams in a batch.
+        // Send a batch with 2 streams (fills to the limit), then a second batch
+        // with 1 new stream. The new stream should trigger a cardinality overflow:
+        // the first batch is flushed early, then the overflowing data is retried
+        // into a fresh batch and flushed on the next timer tick.
+        run_processor_test(
+            json!({ "max_stream_cardinality": 2 }),
+            |mut ctx| async move {
+                let batch1 = make_otlp_bytes_pdata(make_n_gauge_metrics(2));
+                // Use offset to ensure distinct metric names from the first batch.
+                let batch2 = make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(1, 2));
 
-            let output = ctx.drain_pdata().await;
-            // Should have 2 outputs: the early flush (max_metrics gauges) and
-            // the timer flush (the 2 overflow metrics retried into clean state).
-            assert_eq!(output.len(), 2, "expected early flush + timer flush");
+                ctx.process(Message::PData(batch1)).await.unwrap();
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
 
-            // First output: the early flush should contain max_metrics data points.
-            let first = match output[0].payload_ref() {
-                OtapPayload::OtapArrowRecords(r) => r,
-                _ => panic!("expected OtapArrowRecords"),
-            };
-            let first_otlp = otap_to_otlp(first);
-            let first_md = match first_otlp {
-                otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
-                _ => panic!("expected metrics"),
-            };
-            let first_metric_count: usize = first_md
-                .resource_metrics
-                .iter()
-                .flat_map(|rm| &rm.scope_metrics)
-                .map(|sm| sm.metrics.len())
-                .sum();
-            assert_eq!(first_metric_count, max_metrics);
-
-            // Second output: the retried batch should contain the 2 overflow metrics.
-            let second = match output[1].payload_ref() {
-                OtapPayload::OtapArrowRecords(r) => r,
-                _ => panic!("expected OtapArrowRecords"),
-            };
-            let second_otlp = otap_to_otlp(second);
-            let second_md = match second_otlp {
-                otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
-                _ => panic!("expected metrics"),
-            };
-            let second_metric_count: usize = second_md
-                .resource_metrics
-                .iter()
-                .flat_map(|rm| &rm.scope_metrics)
-                .map(|sm| sm.metrics.len())
-                .sum();
-            assert_eq!(second_metric_count, 2);
-        });
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected early flush + timer flush");
+                assert_output_metric_count(&output[0], 2);
+                assert_output_metric_count(&output[1], 1);
+            },
+        );
     }
 
     #[test]
@@ -3327,6 +3293,76 @@ mod tests {
             Action::SendControl(NodeControlMsg::TimerTick {}),
             Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
             Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
+        ];
+        run_test(config, actions);
+    }
+
+    /// Sending an ack whose calldata has the wrong number of elements
+    /// (0 or 2 instead of exactly 1) should be silently ignored.
+    #[test]
+    fn test_ack_with_invalid_calldata_format() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::Ack(ack_with_calldata(CallData::default()))),
+            Action::SendControl(NodeControlMsg::Ack(ack_with_calldata(smallvec![
+                0u64.into(),
+                0u64.into()
+            ]))),
+            // No upstream acks or nacks should have been generated
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    /// Sending a nack whose calldata has the wrong number of elements
+    /// should be silently ignored.
+    #[test]
+    fn test_nack_with_invalid_calldata_format() {
+        let config = json!({});
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::Nack(nack_with_calldata(
+                CallData::default(),
+                "bad calldata",
+            ))),
+            Action::SendControl(NodeControlMsg::Nack(nack_with_calldata(
+                smallvec![0u64.into(), 0u64.into()],
+                "bad calldata",
+            ))),
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    /// Sending an ack with a structurally valid calldata (length 1) but
+    /// a key that does not correspond to any outbound slot should be
+    /// silently ignored.
+    #[test]
+    fn test_ack_with_unrecognized_calldata() {
+        let config = json!({});
+        // A single-element calldata passes TryFrom<CallData> for Key,
+        // but the fabricated value won't match any slot in outbound_batches.
+        let fabricated: CallData = smallvec![1000000000u64.into()];
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::Ack(ack_with_calldata(fabricated))),
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
+        ];
+        run_test(config, actions);
+    }
+
+    #[test]
+    fn test_nack_with_unrecognized_calldata() {
+        let config = json!({});
+        let fabricated: CallData = smallvec![1000000000u64.into()];
+        let actions = vec![
+            Action::SendControl(NodeControlMsg::Nack(nack_with_calldata(
+                fabricated,
+                "stale nack",
+            ))),
+            Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
+            Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
         ];
         run_test(config, actions);
     }

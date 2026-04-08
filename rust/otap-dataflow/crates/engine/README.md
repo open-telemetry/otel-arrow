@@ -231,7 +231,7 @@ closed normal admission.
 The current message families are:
 
 - **Node control messages**: `Ack`, `Nack`, `Config`, `TimerTick`,
-  `CollectTelemetry`, `DelayedData`, `DrainIngress`, `Shutdown`
+  `CollectTelemetry`, `Wakeup`, `DelayedData`, `DrainIngress`, `Shutdown`
 - **Runtime control messages**: `StartTimer`, `CancelTimer`,
   `StartTelemetryTimer`, `CancelTelemetryTimer`, `DelayData`,
   `ReceiverDrained`, `Shutdown`
@@ -273,6 +273,54 @@ behavior:
    work, drop their forward senders, and downstream `pdata` channels gradually
    empty and close. The later sections on Ack/Nack delivery and graceful
    shutdown cover this in more detail.
+
+### Processor-Local Wakeups
+
+Processors can schedule local wakeups through the processor effect handler:
+
+- `set_wakeup(slot, when)` schedules or replaces the wakeup for `slot` and
+  returns whether that slot was inserted or replaced, along with the accepted
+  wakeup revision
+- `cancel_wakeup(slot)` removes the wakeup for `slot` if one is live
+
+This API is intentionally processor-local:
+
+- `WakeupSlot` is scoped to one processor instance, not globally across the
+  pipeline
+- a processor can define its own slot constants such as `WakeupSlot(0)`
+- a processor can also encode compact structured local identifiers directly in
+  the widened `WakeupSlot(pub u128)` payload when that is more natural
+- the engine does not interpret slot meaning; it only routes the slot back to
+  the originating processor
+
+Wakeups are delivered through `ProcessorInbox` as
+`NodeControlMsg::Wakeup { slot, when, revision }`. They therefore participate
+in the same receive loop and the same bounded fairness policy as other control
+traffic.
+
+The current runtime properties and guarantees are:
+
+- **Keyed replacement:** there is at most one live wakeup per slot; scheduling
+  the same slot again replaces the previous due time
+- **Revisioned delivery:** every accepted schedule gets a scheduler-assigned
+  revision; re-scheduling a live slot gives it a new revision so processors can
+  ignore stale wakeups for reused slots
+- **Cancellation:** canceling a live slot prevents that wakeup from being
+  delivered later
+- **Bounded live state:** scheduler state is bounded by the number of live
+  wakeup slots accepted for the processor
+- **Deterministic ordering:** if two wakeups have the same due time, they are
+  delivered in schedule order
+- **No payload retention:** wakeups carry only `(slot, when, revision)` and do
+  not retain deferred `pdata`
+- **Shutdown rejection and drop:** once processor shutdown is latched, new
+  wakeups are rejected and pending wakeups are dropped immediately
+- **No flush-on-shutdown guarantee:** pending wakeups are not drained or forced
+  through during shutdown
+
+Wakeups are best-effort runtime scheduling signals. They are not durable work
+items and are not part of the runtime-control delayed-data mechanism that is
+still used by retry-oriented flows outside this API.
 
 ## Runtime Properties
 
@@ -316,6 +364,7 @@ In practice, effect handlers are how nodes:
 - subscribe to Ack/Nack interests on the forward path
 - emit Ack/Nack outcomes onto the pipeline-completion channel
 - schedule or cancel timers on the runtime-control channel
+- schedule or cancel processor-local wakeups
 - return delayed data
 - report `ReceiverDrained`
 - create listeners and sockets with engine-defined socket options
