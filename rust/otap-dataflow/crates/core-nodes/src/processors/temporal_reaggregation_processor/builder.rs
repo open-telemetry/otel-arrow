@@ -29,15 +29,19 @@ use arrow::array::{
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, Schema, TimeUnit};
+use otap_df_pdata::encode::Error as EncodeError;
 use otap_df_pdata::encode::append_attribute_value;
-use otap_df_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
+use otap_df_pdata::encode::record::attributes::{
+    AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper,
+};
 use otap_df_pdata::encode::record::metrics::{
     ExemplarsRecordBatchBuilder, MetricsRecordBatchBuilder,
 };
 use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
+use otap_df_pdata::otlp::attributes::parent_id::ParentId;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{FieldExt, consts};
-use otap_df_pdata_views::views::common::InstrumentationScopeView;
+use otap_df_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
 use otap_df_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, ExemplarView, ExponentialHistogramDataPointView,
     HistogramDataPointView, MetricView, NumberDataPointView, SummaryDataPointView, Value,
@@ -45,6 +49,8 @@ use otap_df_pdata_views::views::metrics::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::otel_warn;
+
+use super::telemetry;
 
 /// Snapshot of builder positions, used to slice back to the last valid position
 /// of each payload on error.
@@ -68,8 +74,6 @@ pub struct Checkpoint {
     sdp: usize,
     sdp_attrs: usize,
 }
-
-const ATTRIBUTE_ENCODE_FAILED_EVENT: &str = "temporal_reaggregation.attribute.encode_failed";
 
 /// Record batch builders for all metric signal payload types.
 pub struct MetricSignalBuilder {
@@ -276,24 +280,12 @@ impl MetricSignalBuilder {
 
     /// Append resource attributes for a newly seen resource.
     pub fn append_resource<R: ResourceView>(&mut self, id: u16, view: &R) {
-        for attr in view.attributes() {
-            self.resource_attrs.append_parent_id(&id);
-            if let Err(e) = append_attribute_value(&mut self.resource_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.resource_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.resource_attrs, &id, view.attributes());
     }
 
     /// Append scope attributes for a newly seen scope.
     pub fn append_scope<S: InstrumentationScopeView>(&mut self, id: u16, view: &S) {
-        for attr in view.attributes() {
-            self.scope_attrs.append_parent_id(&id);
-            if let Err(e) = append_attribute_value(&mut self.scope_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.scope_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.scope_attrs, &id, view.attributes());
     }
 
     /// Append a complete metric row for a newly seen metric.
@@ -352,13 +344,7 @@ impl MetricSignalBuilder {
         dp: &V,
     ) -> usize {
         let row = self.number_dps.append(dp_id, metric_id, dp);
-        for attr in dp.attributes() {
-            self.ndp_attrs.append_parent_id(&dp_id);
-            if let Err(e) = append_attribute_value(&mut self.ndp_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.ndp_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.ndp_attrs, &dp_id, dp.attributes());
         row
     }
 
@@ -378,13 +364,7 @@ impl MetricSignalBuilder {
         dp: &V,
     ) -> usize {
         let row = self.histogram_dps.append(dp_id, metric_id, dp);
-        for attr in dp.attributes() {
-            self.hdp_attrs.append_parent_id(&dp_id);
-            if let Err(e) = append_attribute_value(&mut self.hdp_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.hdp_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.hdp_attrs, &dp_id, dp.attributes());
         row
     }
 
@@ -401,13 +381,7 @@ impl MetricSignalBuilder {
         dp: &V,
     ) -> usize {
         let row = self.exp_histogram_dps.append(dp_id, metric_id, dp);
-        for attr in dp.attributes() {
-            self.ehdp_attrs.append_parent_id(&dp_id);
-            if let Err(e) = append_attribute_value(&mut self.ehdp_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.ehdp_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.ehdp_attrs, &dp_id, dp.attributes());
         row
     }
 
@@ -428,13 +402,7 @@ impl MetricSignalBuilder {
         dp: &V,
     ) -> usize {
         let row = self.summary_dps.append(dp_id, metric_id, dp);
-        for attr in dp.attributes() {
-            self.summary_attrs.append_parent_id(&dp_id);
-            if let Err(e) = append_attribute_value(&mut self.summary_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.summary_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.summary_attrs, &dp_id, dp.attributes());
         row
     }
 
@@ -560,12 +528,45 @@ fn append_exemplar<E: ExemplarView>(
         .append_trace_id(exemplar.trace_id().unwrap_or(&[0; 16]))
         .expect("TraceId type guarantees 16-byte width");
 
-    for kv in exemplar.filtered_attributes() {
-        attr_builder.append_parent_id(&id);
-        if let Err(e) = append_attribute_value(attr_builder, &kv) {
-            otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+    encode_attributes(attr_builder, &id, exemplar.filtered_attributes());
+}
+
+/// Maximum number of attribute encoding errors to capture per batch of attributes.
+const MAX_RECORDED_ATTR_ERRORS: usize = 5;
+
+/// Encode all attributes from `attrs` into `attr_builder`, coalescing encoding
+/// failures into at most one warning event.
+fn encode_attributes<T, I, KV>(
+    attr_builder: &mut AttributesRecordBatchBuilder<T>,
+    parent_id: &<<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+    attrs: I,
+) where
+    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+    I: IntoIterator<Item = KV>,
+    KV: AttributeView,
+{
+    let mut errors: [Option<EncodeError>; MAX_RECORDED_ATTR_ERRORS] =
+        [None, None, None, None, None];
+    let mut error_count: usize = 0;
+
+    for attr in attrs {
+        attr_builder.append_parent_id(parent_id);
+        if let Err(e) = append_attribute_value(attr_builder, &attr) {
+            if error_count < MAX_RECORDED_ATTR_ERRORS {
+                errors[error_count] = Some(e);
+            }
+            error_count += 1;
             attr_builder.any_values_builder.append_empty();
         }
+    }
+
+    if error_count > 0 {
+        let recorded: Vec<&EncodeError> = errors.iter().flatten().collect();
+        otel_warn!(
+            telemetry::ATTRIBUTE_ENCODE_FAILED_EVENT,
+            errors = ?recorded,
+            total_errors = error_count,
+        );
     }
 }
 
