@@ -465,6 +465,12 @@ fn validate_tls_settings(settings: &HttpAdminClientSettings) -> Result<(), Error
     Ok(())
 }
 
+#[cfg(any(
+    all(feature = "crypto-ring", feature = "crypto-aws-lc"),
+    all(feature = "crypto-ring", feature = "crypto-openssl"),
+    all(feature = "crypto-aws-lc", feature = "crypto-openssl"),
+))]
+compile_error!("crypto provider features are mutually exclusive; enable exactly one");
 fn ensure_crypto_provider() -> Result<(), Error> {
     static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
