@@ -15,6 +15,7 @@
 //! - Normalized logical names for policy matching
 
 use std::fmt;
+use std::sync::Arc;
 
 /// Kind of header value.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,9 +95,14 @@ impl TransportHeader {
 /// Headers are stored as a `Vec` to preserve insertion order and allow
 /// duplicate names (same logical name appearing multiple times), which
 /// is valid in both HTTP and gRPC metadata.
+///
+/// The inner vector is wrapped in an `Arc` so that cloning a
+/// `TransportHeaders` (e.g. when cloning a pipeline `Context`) is a
+/// cheap reference-count bump instead of a deep copy.  Mutation
+/// methods (`push`, `clear`) use copy-on-write via `Arc::make_mut`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransportHeaders {
-    headers: Vec<TransportHeader>,
+    headers: Arc<Vec<TransportHeader>>,
 }
 
 impl TransportHeaders {
@@ -104,7 +110,7 @@ impl TransportHeaders {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            headers: Vec::new(),
+            headers: Arc::new(Vec::new()),
         }
     }
 
@@ -112,18 +118,18 @@ impl TransportHeaders {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            headers: Vec::with_capacity(capacity),
+            headers: Arc::new(Vec::with_capacity(capacity)),
         }
     }
 
     /// Add a header to the collection.
     pub fn push(&mut self, header: TransportHeader) {
-        self.headers.push(header);
+        Arc::make_mut(&mut self.headers).push(header);
     }
 
     /// Remove all headers from the collection.
     pub fn clear(&mut self) {
-        self.headers.clear();
+        Arc::make_mut(&mut self.headers).clear();
     }
 
     /// Returns `true` if there are no headers.

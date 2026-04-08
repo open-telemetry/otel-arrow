@@ -110,6 +110,7 @@ Policy families:
 - `policies.telemetry.tokio_metrics`
 - `policies.telemetry.runtime_metrics`
 - `policies.resources.core_allocation`
+- `policies.resources.memory_limiter`
 
 Defaults:
 
@@ -147,6 +148,17 @@ Observability note:
 
 - `engine.observability.pipeline.policies.resources` is intentionally
   unsupported and rejected.
+
+Memory limiter policy:
+
+- `policies.resources.memory_limiter` is an optional process-wide policy.
+- If configured, `mode` must be explicitly set to either `enforce` or
+  `observe_only`.
+- This policy is supported only at top-level `policies.resources`.
+  Group/pipeline placements are rejected.
+- In Phase 1, `Soft` is informational only; `Hard` is the enforcement threshold.
+- For full runtime behavior, metrics, and operational guidance, see
+  [`docs/memory-limiter-phase1.md`](../../docs/memory-limiter-phase1.md).
 
 Resolution semantics:
 
