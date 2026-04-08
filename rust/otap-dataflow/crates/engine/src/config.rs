@@ -189,6 +189,15 @@ impl ExporterConfig {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ProcessorChainConfig {
     /// Configurations for the processors in the chain, in order.
+    ///
+    /// This is intentionally a separate struct as opposed to [`NodeUserConfig`]
+    /// because it explicitly allows for setting a 'name' for each sub-processor
+    /// which is already implied by the config structure for top-level nodes.
+    ///
+    /// In addition, sub-processors do not (currently) support some more advanced features
+    /// like named outputs.
+    ///
+    /// Tracking follow-up in https://github.com/open-telemetry/otel-arrow/issues/2576
     pub processors: Vec<SubProcessorConfig>,
 }
 

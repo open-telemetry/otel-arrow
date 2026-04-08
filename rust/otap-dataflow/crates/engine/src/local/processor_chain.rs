@@ -276,15 +276,8 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
 
                 // Record composite duration split by outcome.
                 if let Some(timer) = timer {
-                    let elapsed = timer.elapsed_nanos();
-                    let acc = if result.is_ok() {
-                        self.composite_duration.acc_success()
-                    } else {
-                        self.composite_duration.acc_failed()
-                    };
-                    let mut val = acc.get();
-                    val.record(elapsed);
-                    acc.set(val);
+                    self.composite_duration
+                        .record(timer.elapsed_nanos(), result.is_ok());
                 }
 
                 // Return staging buffers for reuse (already drained).
@@ -689,7 +682,7 @@ mod tests {
         assert!(s2 > 0.0, "sub-processor 2 duration should be > 0");
 
         // Composite duration should cover the full chain.
-        let snap = chain.composite_duration.acc_success().get().get();
+        let snap = chain.composite_duration.snapshot_success().get();
         assert_eq!(snap.count, 1, "one duration observation expected");
         assert!(
             snap.sum >= s1 + s2,
@@ -713,7 +706,7 @@ mod tests {
             .await
             .unwrap();
 
-        let snap = chain.composite_duration.acc_success().get().get();
+        let snap = chain.composite_duration.snapshot_success().get();
         assert_eq!(snap.count, 0, "no duration should be recorded");
     }
 
@@ -742,10 +735,10 @@ mod tests {
         let result = chain.process(Message::PData("hello".into()), &mut eh).await;
         assert!(result.is_err());
 
-        let success_snap = chain.composite_duration.acc_success().get().get();
+        let success_snap = chain.composite_duration.snapshot_success().get();
         assert_eq!(success_snap.count, 0, "success should have no observations");
 
-        let failed_snap = chain.composite_duration.acc_failed().get().get();
+        let failed_snap = chain.composite_duration.snapshot_failed().get();
         assert_eq!(failed_snap.count, 1, "failed should have one observation");
         assert!(failed_snap.sum > 0.0, "failed duration should be > 0");
     }
