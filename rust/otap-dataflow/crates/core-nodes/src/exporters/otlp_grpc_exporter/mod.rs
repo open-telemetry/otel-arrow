@@ -861,10 +861,7 @@ mod tests {
     use super::*;
 
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::transport_headers::TransportHeaders;
-    use otap_df_config::transport_headers_policy::{
-        HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
-    };
+
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::PipelineCompletionMsg;
@@ -898,9 +895,10 @@ mod tests {
     // Imports only used by tests that are skipped on Windows
     #[cfg(not(windows))]
     use {
-        otap_df_config::transport_headers::TransportHeader,
+        otap_df_config::transport_headers::{TransportHeader, TransportHeaders},
         otap_df_config::transport_headers_policy::{
-            PropagationAction, PropagationMatch, PropagationOverride,
+            HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
+            PropagationOverride, PropagationSelector,
         },
         otap_df_engine::control::{
             Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
@@ -911,6 +909,7 @@ mod tests {
         otap_df_engine::node::NodeWithPDataReceiver,
         otap_df_engine::testing::create_not_send_channel,
         otap_df_telemetry::metrics::MetricSetSnapshot,
+        otap_df_telemetry::reporter::MetricsReporter,
     };
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
@@ -1458,6 +1457,7 @@ mod tests {
     // ---- build_grpc_metadata unit tests ----------------------------------------
 
     /// Helper: Creates an [`EffectHandler`] with an optional propagation policy set.
+    #[cfg(not(windows))]
     fn make_effect_handler_with_policy(
         policy: Option<HeaderPropagationPolicy>,
     ) -> EffectHandler<OtapPdata> {
@@ -1469,6 +1469,7 @@ mod tests {
     }
 
     /// Helper: Creates a [`Context`] that carries the given transport headers.
+    #[cfg(not(windows))]
     fn context_with_headers(headers: TransportHeaders) -> Context {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
             .with_transport_headers(headers);
@@ -1477,6 +1478,7 @@ mod tests {
     }
 
     /// Helper: Creates a [`Context`] without any transport headers.
+    #[cfg(not(windows))]
     fn context_without_headers() -> Context {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
         let (context, _) = pdata.into_parts();
@@ -1484,6 +1486,7 @@ mod tests {
     }
 
     /// Helper: Propagation policy that propagates all captured headers.
+    #[cfg(not(windows))]
     fn propagate_all_policy() -> HeaderPropagationPolicy {
         HeaderPropagationPolicy::new(
             PropagationDefault {
