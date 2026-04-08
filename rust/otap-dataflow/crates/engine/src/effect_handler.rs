@@ -7,10 +7,12 @@ use crate::Interests;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::control::{
     AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
-    RuntimeCtrlMsgSender,
+    RuntimeCtrlMsgSender, WakeupSlot,
 };
 use crate::error::Error;
 use crate::node::NodeId;
+use crate::node_local_scheduler::NodeLocalSchedulerHandle;
+use crate::{WakeupError, WakeupSetOutcome};
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -58,6 +60,8 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) source_tag: SourceTagging,
     /// Precomputed node interests derived from metric level.
     node_interests: Interests,
+    /// Optional processor-local wakeup scheduler.
+    local_scheduler: Option<NodeLocalSchedulerHandle>,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -71,6 +75,7 @@ impl<PData> EffectHandlerCore<PData> {
             completion_emission_metrics: None,
             source_tag: SourceTagging::Disabled,
             node_interests: Interests::empty(),
+            local_scheduler: None,
         }
     }
 
@@ -101,6 +106,11 @@ impl<PData> EffectHandlerCore<PData> {
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
     ) {
         self.completion_emission_metrics = completion_emission_metrics;
+    }
+
+    /// Sets the processor-local wakeup scheduler for this effect handler.
+    pub(crate) fn set_local_scheduler(&mut self, local_scheduler: NodeLocalSchedulerHandle) {
+        self.local_scheduler = Some(local_scheduler);
     }
 
     /// Returns outgoing messages source tagging mode.
@@ -395,6 +405,48 @@ impl<PData> EffectHandlerCore<PData> {
                 _ => unreachable!(),
             }
         })
+    }
+
+    /// Set or replace a processor-local wakeup.
+    ///
+    /// Wakeups are keyed by [`WakeupSlot`]. Scheduling the same slot again
+    /// replaces the previous due time for that slot and assigns a new
+    /// scheduler revision for that slot.
+    ///
+    /// The returned [`WakeupSetOutcome`] tells the caller whether the slot was
+    /// newly inserted or whether an existing live wakeup was replaced, and
+    /// carries the accepted revision that will later be returned in
+    /// `NodeControlMsg::Wakeup`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WakeupError::Unsupported`] when the processor runtime did not
+    /// enable processor-local wakeups. Returns [`WakeupError::ShuttingDown`]
+    /// once processor shutdown has been latched. Returns
+    /// [`WakeupError::Capacity`] if the processor has reached its configured
+    /// live wakeup-slot capacity.
+    pub fn set_wakeup(
+        &self,
+        slot: WakeupSlot,
+        when: Instant,
+    ) -> Result<WakeupSetOutcome, WakeupError> {
+        self.local_scheduler
+            .as_ref()
+            .ok_or(WakeupError::Unsupported)?
+            .set_wakeup(slot, when)
+    }
+
+    /// Cancel a previously scheduled processor-local wakeup.
+    ///
+    /// Returns `true` when a live wakeup for `slot` was removed. Returns
+    /// `false` when the slot was not scheduled or when shutdown has already
+    /// been latched for the processor.
+    #[must_use]
+    pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
+        self.local_scheduler
+            .as_ref()
+            .map(|scheduler| scheduler.cancel_wakeup(slot))
+            .unwrap_or(false)
     }
 
     /// Notifies the runtime control manager that this receiver has completed

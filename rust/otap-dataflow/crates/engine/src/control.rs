@@ -76,6 +76,26 @@ impl From<Context8u8> for f64 {
 /// numbers, deadline, num_items, etc.
 pub type CallData = SmallVec<[Context8u8; 3]>;
 
+/// Opaque key used to identify a processor-local scheduled wakeup.
+///
+/// Slots are scoped to a single processor instance. They do not need to be
+/// globally unique across the pipeline, so processors can define local
+/// constants such as `WakeupSlot(0)` for their own internal timers.
+///
+/// Re-scheduling the same slot replaces the previous wakeup for that slot.
+/// The widened `u128` payload lets processors encode compact structured local
+/// identifiers directly when that is more natural than allocating slot numbers.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WakeupSlot(pub u128);
+
+/// Monotonic wakeup revision assigned by the scheduler each time a slot is set.
+///
+/// Re-scheduling an existing slot gives it a new revision. Processors can use
+/// the revision carried back in [`NodeControlMsg::Wakeup`] to distinguish a
+/// current wakeup from a stale delivery for the same slot.
+pub type WakeupRevision = u64;
+
 /// Engine-managed call data envelope. Wraps the CallData with an envelope
 /// containing timestamp. Lives on the forward path (in context stack frames).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -221,6 +241,26 @@ pub enum NodeControlMsg<PData> {
     CollectTelemetry {
         /// Metrics reporter used to collect telemetry metrics.
         metrics_reporter: MetricsReporter,
+    },
+
+    /// A processor-local wakeup scheduled by the processor effect handler.
+    ///
+    /// This is delivered back through the processor inbox as normal control
+    /// traffic. The slot identifies which logical wakeup fired; processors are
+    /// expected to interpret the slot according to their own local namespace.
+    /// The revision changes every time the slot is (re-)scheduled and allows
+    /// processors to ignore stale wakeups for a reused slot.
+    ///
+    /// Wakeups are best-effort runtime signals rather than durable work items:
+    /// once processor shutdown is latched, pending wakeups are dropped and no
+    /// further wakeups are accepted.
+    Wakeup {
+        /// Scheduled wakeup slot.
+        slot: WakeupSlot,
+        /// Scheduled due time currently associated with this slot.
+        when: Instant,
+        /// Scheduler-assigned revision for this slot schedule.
+        revision: WakeupRevision,
     },
 
     /// Delayed data returning to the node which delayed it.
