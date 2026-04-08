@@ -40,6 +40,10 @@ pub static COLLECTOR_PATH: LazyLock<String> = LazyLock::new(|| {
     path
 });
 
+pub(super) fn collector_available() -> bool {
+    Path::new(COLLECTOR_PATH.as_str()).exists()
+}
+
 /// Helper function to spawn an async task that reads lines from a buffer and logs them with a prefix.
 /// Optionally checks for a message substring and sends a signal when it matches.
 async fn spawn_line_reader<R>(
@@ -105,12 +109,26 @@ impl CollectorProcess {
             desc: "wait",
         })?;
 
-        status
-            .success()
-            .then_some(())
-            .ok_or_else(|| Error::BadExitStatus {
-                code: status.code(),
-            })
+        // Accept either a clean exit or signal-based termination from
+        // our SIGTERM. On Unix, a process killed by a signal has
+        // code() == None and success() == false, which is expected
+        // after we send SIGTERM.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if status.success() || status.signal() == Some(nix::libc::SIGTERM) {
+                return Ok(());
+            }
+        }
+
+        #[cfg(not(unix))]
+        if status.success() {
+            return Ok(());
+        }
+
+        Err(Error::BadExitStatus {
+            code: status.code(),
+        })
     }
 
     /// Start a collector with the given configuration

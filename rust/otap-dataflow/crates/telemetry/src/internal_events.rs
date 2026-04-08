@@ -36,6 +36,9 @@ macro_rules! otel_info {
     ($name:expr, $($fields:tt)+) => {
         $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
+    // The trailing "" is required because tracing macros need at least a format
+    // string or fields. The encoder skips empty strings so no body is encoded.
+    // See: `DirectFieldVisitor::encode_body_string` in encoder.rs.
     ($name:expr) => {
         $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };
@@ -58,6 +61,7 @@ macro_rules! otel_warn {
     ($name:expr, $($fields:tt)+) => {
         $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
+    // See otel_info! for why "" is needed here.
     ($name:expr) => {
         $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };
@@ -80,6 +84,7 @@ macro_rules! otel_debug {
     ($name:expr, $($fields:tt)+) => {
         $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
+    // See otel_info! for why "" is needed here.
     ($name:expr) => {
         $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };
@@ -102,6 +107,7 @@ macro_rules! otel_error {
     ($name:expr, $($fields:tt)+) => {
         $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
+    // See otel_info! for why "" is needed here.
     ($name:expr) => {
         $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };

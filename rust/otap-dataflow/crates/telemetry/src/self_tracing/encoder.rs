@@ -174,8 +174,16 @@ impl<'buf> DirectFieldVisitor<'buf> {
     }
 
     /// Encode the body (AnyValue message) as a string.
+    /// Empty strings are skipped to avoid encoding a semantically absent body.
+    /// The `otel_*!` macros pass `""` as a message when invoked without fields
+    /// (tracing macros require at least a format string). This guard ensures
+    /// that empty message does not produce an OTLP body or a trailing `:` in
+    /// console output.
     #[inline]
     pub fn encode_body_string(&mut self, value: &str) {
+        if value.is_empty() {
+            return;
+        }
         proto_encode_len_delimited_unknown_size!(
             LOG_RECORD_BODY,
             {
