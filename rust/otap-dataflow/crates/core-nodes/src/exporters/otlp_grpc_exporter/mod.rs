@@ -34,6 +34,7 @@ use otap_df_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
 use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_otap::transport_headers::ValueKind;
 use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
@@ -47,6 +48,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::codec::CompressionEncoding;
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
 /// The URN for the OTLP gRPC exporter
@@ -262,12 +264,17 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     let (context, payload) = pdata.into_parts();
                     self.pdata_metrics.inc_consumed(signal_type);
 
+                    // Build gRPC metadata from transport headers if a propagation
+                    // policy is configured. Computed once before signal dispatch.
+                    let metadata = build_grpc_metadata(&effect_handler, &context);
+
                     // Dispatch based on signal type and the concrete payload representation.
                     match (signal_type, payload) {
                         (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
+                                metadata,
                                 SignalType::Logs,
                                 &exporter_id,
                                 &mut logs_proto_buffer,
@@ -286,6 +293,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
+                                metadata,
                                 SignalType::Metrics,
                                 &exporter_id,
                                 &mut metrics_proto_buffer,
@@ -304,6 +312,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
+                                metadata,
                                 SignalType::Traces,
                                 &exporter_id,
                                 &mut traces_proto_buffer,
@@ -320,21 +329,27 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         }
                         (_, OtapPayload::OtlpBytes(service_req)) => {
                             let prepared = match service_req {
-                                OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                                    prepare_otlp_export(bytes, context, SignalType::Logs, |b| {
-                                        OtlpProtoBytes::ExportLogsRequest(b).into()
-                                    })
-                                }
-                                OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                                    prepare_otlp_export(bytes, context, SignalType::Metrics, |b| {
-                                        OtlpProtoBytes::ExportMetricsRequest(b).into()
-                                    })
-                                }
-                                OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                                    prepare_otlp_export(bytes, context, SignalType::Traces, |b| {
-                                        OtlpProtoBytes::ExportTracesRequest(b).into()
-                                    })
-                                }
+                                OtlpProtoBytes::ExportLogsRequest(bytes) => prepare_otlp_export(
+                                    bytes,
+                                    context,
+                                    metadata,
+                                    SignalType::Logs,
+                                    |b| OtlpProtoBytes::ExportLogsRequest(b).into(),
+                                ),
+                                OtlpProtoBytes::ExportMetricsRequest(bytes) => prepare_otlp_export(
+                                    bytes,
+                                    context,
+                                    metadata,
+                                    SignalType::Metrics,
+                                    |b| OtlpProtoBytes::ExportMetricsRequest(b).into(),
+                                ),
+                                OtlpProtoBytes::ExportTracesRequest(bytes) => prepare_otlp_export(
+                                    bytes,
+                                    context,
+                                    metadata,
+                                    SignalType::Traces,
+                                    |b| OtlpProtoBytes::ExportTracesRequest(b).into(),
+                                ),
                             };
 
                             let client = match signal_type {
@@ -397,6 +412,9 @@ struct EncodedExport {
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
+    /// gRPC metadata built from transport headers via the propagation policy.
+    /// `None` when no headers need to be propagated (zero overhead).
+    metadata: Option<MetadataMap>,
 }
 
 /// Encoding failed before the request was sent; we still need to surface a Nack with payload.
@@ -409,6 +427,7 @@ struct EncodingFailure {
 fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     mut otap_batch: OtapArrowRecords,
     context: Context,
+    metadata: Option<MetadataMap>,
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
     exporter: &NodeId,
@@ -450,12 +469,14 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
         context,
         saved_payload,
         signal_type,
+        metadata,
     })
 }
 
 fn prepare_otlp_export(
     bytes: Bytes,
     context: Context,
+    metadata: Option<MetadataMap>,
     signal_type: SignalType,
     save_payload_fn: impl FnOnce(Bytes) -> OtapPayload,
 ) -> EncodedExport {
@@ -470,6 +491,7 @@ fn prepare_otlp_export(
         context,
         saved_payload,
         signal_type,
+        metadata,
     }
 }
 
@@ -478,6 +500,7 @@ fn prepare_otlp_export(
 async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     otap_batch: OtapArrowRecords,
     context: Context,
+    metadata: Option<MetadataMap>,
     signal_type: SignalType,
     exporter_id: &NodeId,
     proto_buffer: &mut ProtoBuffer,
@@ -494,6 +517,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     match prepare_otap_export(
         otap_batch,
         context,
+        metadata,
         proto_buffer,
         encoder,
         exporter_id,
@@ -558,7 +582,79 @@ async fn finalize_completed_export(
     client
 }
 
+/// Builds a [`MetadataMap`] from the transport headers attached to a pdata
+/// message, filtered through the exporter's propagation policy.
+///
+/// Returns `None` when either the policy or the transport headers are absent,
+/// or when all headers are dropped by the policy (zero overhead in the common
+/// case).
+fn build_grpc_metadata(
+    effect_handler: &EffectHandler<OtapPdata>,
+    context: &Context,
+) -> Option<MetadataMap> {
+    let policy = effect_handler.propagation_policy()?;
+    let transport_headers = context.transport_headers()?;
+
+    let mut metadata = MetadataMap::new();
+    for header in policy.propagate(transport_headers) {
+        match header.value_kind {
+            ValueKind::Text => {
+                // ASCII metadata: parse the header name and value.
+                let Ok(key) = header
+                    .header_name
+                    .parse::<MetadataKey<tonic::metadata::Ascii>>()
+                else {
+                    otel_debug!(
+                        "otlp.exporter.grpc.header_skip",
+                        reason = "invalid ascii metadata key",
+                        header_name = header.header_name
+                    );
+                    continue;
+                };
+                let Ok(value) = MetadataValue::try_from(header.value) else {
+                    otel_debug!(
+                        "otlp.exporter.grpc.header_skip",
+                        reason = "invalid ascii metadata value",
+                        header_name = header.header_name
+                    );
+                    continue;
+                };
+                let _ = metadata.append(key, value);
+            }
+            ValueKind::Binary => {
+                // Binary metadata: gRPC binary metadata keys must end with `-bin`.
+                // Metadata map will error if attempting to insert key without `-bin`.
+                let key_name = if header.header_name.ends_with("-bin") {
+                    header.header_name.to_string()
+                } else {
+                    format!("{}-bin", header.header_name)
+                };
+                let Ok(key) = key_name.parse::<MetadataKey<tonic::metadata::Binary>>() else {
+                    otel_debug!(
+                        "otlp.exporter.grpc.header_skip",
+                        reason = "invalid binary metadata key",
+                        header_name = header.header_name
+                    );
+                    continue;
+                };
+                let value = MetadataValue::from_bytes(header.value);
+                let _ = metadata.append_bin(key, value);
+            }
+        }
+    }
+
+    if metadata.is_empty() {
+        None
+    } else {
+        Some(metadata)
+    }
+}
+
 /// Builds an export future for the provided payload, borrowing a signal-specific client from the pool.
+///
+/// When `metadata` is present in the [`EncodedExport`], the outbound gRPC
+/// request carries those entries as request metadata (HTTP/2 headers).
+/// Otherwise the request is sent with an empty metadata map (zero overhead).
 fn make_export_future(
     prepared: EncodedExport,
     client: SignalClient,
@@ -568,12 +664,19 @@ fn make_export_future(
         context,
         saved_payload,
         signal_type,
+        metadata,
     } = prepared;
+
+    // Build a tonic::Request that carries the propagated metadata.
+    let request = match metadata {
+        Some(md) => tonic::Request::from_parts(md, tonic::Extensions::new(), bytes),
+        None => tonic::Request::new(bytes),
+    };
 
     async move {
         match client {
             SignalClient::Logs(mut client) => {
-                let result = client.export(bytes).await.map(|_| ());
+                let result = client.export(request).await.map(|_| ());
                 CompletedExport {
                     result,
                     context,
@@ -583,7 +686,7 @@ fn make_export_future(
                 }
             }
             SignalClient::Metrics(mut client) => {
-                let result = client.export(bytes).await.map(|_| ());
+                let result = client.export(request).await.map(|_| ());
                 CompletedExport {
                     result,
                     context,
@@ -593,7 +696,7 @@ fn make_export_future(
                 }
             }
             SignalClient::Traces(mut client) => {
-                let result = client.export(bytes).await.map(|_| ());
+                let result = client.export(request).await.map(|_| ());
                 CompletedExport {
                     result,
                     context,
@@ -758,6 +861,7 @@ mod tests {
     use super::*;
 
     use otap_df_config::node::NodeUserConfig;
+
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::PipelineCompletionMsg;
@@ -787,10 +891,14 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
-
     // Imports only used by tests that are skipped on Windows
     #[cfg(not(windows))]
     use {
+        otap_df_config::transport_headers::{TransportHeader, TransportHeaders},
+        otap_df_config::transport_headers_policy::{
+            HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
+            PropagationOverride, PropagationSelector,
+        },
         otap_df_engine::control::{
             Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
             pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -1343,5 +1451,259 @@ mod tests {
         tokio_rt
             .block_on(server_handle)
             .expect("server shutdown success");
+    }
+
+    // ---- build_grpc_metadata unit tests ----------------------------------------
+
+    /// Helper: Creates an [`EffectHandler`] with an optional propagation policy set.
+    #[cfg(not(windows))]
+    fn make_effect_handler_with_policy(
+        policy: Option<HeaderPropagationPolicy>,
+    ) -> EffectHandler<OtapPdata> {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let node_id = test_node("test-exporter");
+        let mut handler = EffectHandler::new(node_id, metrics_reporter);
+        handler.set_propagation_policy(policy);
+        handler
+    }
+
+    /// Helper: Creates a [`Context`] that carries the given transport headers.
+    #[cfg(not(windows))]
+    fn context_with_headers(headers: TransportHeaders) -> Context {
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
+            .with_transport_headers(headers);
+        let (context, _) = pdata.into_parts();
+        context
+    }
+
+    /// Helper: Creates a [`Context`] without any transport headers.
+    #[cfg(not(windows))]
+    fn context_without_headers() -> Context {
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
+        let (context, _) = pdata.into_parts();
+        context
+    }
+
+    /// Helper: Propagation policy that propagates all captured headers.
+    #[cfg(not(windows))]
+    fn propagate_all_policy() -> HeaderPropagationPolicy {
+        HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector::AllCaptured,
+                ..PropagationDefault::default()
+            },
+            vec![],
+        )
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_grpc_metadata_returns_none_without_policy() {
+        let handler = make_effect_handler_with_policy(None);
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text("x-tenant-id", "x-tenant-id", b"acme"));
+        let context = context_with_headers(headers);
+
+        let result = build_grpc_metadata(&handler, &context);
+        assert!(result.is_none(), "should return None when no policy is set");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_grpc_metadata_returns_none_without_headers() {
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+        let context = context_without_headers();
+
+        let result = build_grpc_metadata(&handler, &context);
+        assert!(
+            result.is_none(),
+            "should return None when context has no transport headers"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_grpc_metadata_propagates_text_headers() {
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
+            "x-tenant-id",
+            "X-Tenant-Id",
+            b"tenant-abc-123",
+        ));
+        headers.push(TransportHeader::text(
+            "x-request-id",
+            "X-Request-Id",
+            b"req-xyz-789",
+        ));
+        let context = context_with_headers(headers);
+
+        let metadata = build_grpc_metadata(&handler, &context)
+            .expect("should produce metadata for text headers");
+
+        let tenant = metadata
+            .get("x-tenant-id")
+            .expect("x-tenant-id should be present");
+        assert_eq!(tenant.to_str().unwrap(), "tenant-abc-123");
+
+        let request_id = metadata
+            .get("x-request-id")
+            .expect("x-request-id should be present");
+        assert_eq!(request_id.to_str().unwrap(), "req-xyz-789");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_grpc_metadata_drops_filtered_headers() {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector::AllCaptured,
+                ..PropagationDefault::default()
+            },
+            vec![PropagationOverride {
+                match_rule: PropagationMatch {
+                    stored_names: vec!["authorization".to_string()],
+                },
+                action: PropagationAction::Drop,
+                name: None,
+                on_error: None,
+            }],
+        );
+        let handler = make_effect_handler_with_policy(Some(policy));
+
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text("x-tenant-id", "X-Tenant-Id", b"acme"));
+        headers.push(TransportHeader::text(
+            "authorization",
+            "Authorization",
+            b"Bearer secret-token",
+        ));
+        let context = context_with_headers(headers);
+
+        let metadata = build_grpc_metadata(&handler, &context)
+            .expect("should produce metadata (authorization dropped, x-tenant-id remains)");
+
+        assert!(
+            metadata.get("x-tenant-id").is_some(),
+            "x-tenant-id should be propagated"
+        );
+        assert!(
+            metadata.get("authorization").is_none(),
+            "authorization should be dropped by the override"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_grpc_metadata_propagates_binary_headers() {
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+
+        let binary_value: Vec<u8> = vec![0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F];
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::binary(
+            "trace-context-bin",
+            "trace-context-bin",
+            binary_value.clone(),
+        ));
+        let context = context_with_headers(headers);
+
+        let metadata = build_grpc_metadata(&handler, &context)
+            .expect("should produce metadata for binary headers");
+
+        let bin_val = metadata
+            .get_bin("trace-context-bin")
+            .expect("trace-context-bin should be present as binary metadata");
+        assert_eq!(
+            bin_val.to_bytes().unwrap(),
+            binary_value.as_slice(),
+            "binary value should be preserved"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_grpc_metadata_appends_bin_suffix_for_binary_headers() {
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+
+        let binary_value: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let mut headers = TransportHeaders::new();
+        // Wire name does NOT end with -bin; build_grpc_metadata should add the suffix.
+        headers.push(TransportHeader::binary(
+            "custom-binary",
+            "custom-binary",
+            binary_value.clone(),
+        ));
+        let context = context_with_headers(headers);
+
+        let metadata = build_grpc_metadata(&handler, &context)
+            .expect("should produce metadata for binary header without -bin suffix");
+
+        let bin_val = metadata
+            .get_bin("custom-binary-bin")
+            .expect("custom-binary-bin should be present (suffix appended)");
+        assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_grpc_metadata_preserves_duplicate_headers() {
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
+            "x-forwarded-for",
+            "X-Forwarded-For",
+            b"10.0.0.1",
+        ));
+        headers.push(TransportHeader::text(
+            "x-forwarded-for",
+            "X-Forwarded-For",
+            b"192.168.1.1",
+        ));
+        headers.push(TransportHeader::text(
+            "x-forwarded-for",
+            "X-Forwarded-For",
+            b"172.16.0.1",
+        ));
+        let context = context_with_headers(headers);
+
+        let metadata = build_grpc_metadata(&handler, &context)
+            .expect("should produce metadata with duplicate headers");
+
+        let values: Vec<&str> = metadata
+            .get_all("x-forwarded-for")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["10.0.0.1", "192.168.1.1", "172.16.0.1"],
+            "all duplicate header values should be preserved in order"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_grpc_metadata_returns_none_when_all_dropped() {
+        // Policy that drops everything (selector = None means no headers are selected).
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector::None,
+                ..PropagationDefault::default()
+            },
+            vec![],
+        );
+        let handler = make_effect_handler_with_policy(Some(policy));
+
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text("x-tenant-id", "X-Tenant-Id", b"acme"));
+        let context = context_with_headers(headers);
+
+        let result = build_grpc_metadata(&handler, &context);
+        assert!(
+            result.is_none(),
+            "should return None when policy drops all headers"
+        );
     }
 }
