@@ -1379,6 +1379,66 @@ mod tests {
             .run_validation(validation_procedure_pregenerated());
     }
 
+    /// Regression test: verifies that the receiver handles DrainIngress
+    /// promptly instead of stalling until the drain deadline expires.
+    /// Without proper DrainIngress handling the receiver would sleep
+    /// through the entire rate-limit interval, causing DrainDeadlineReached.
+    #[test]
+    fn test_drain_ingress_exits_promptly() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        // signals_per_second=1 means the receiver sleeps ~1s between sends.
+        // DrainIngress must interrupt that sleep and exit promptly.
+        let traffic_config = TrafficConfig::new(Some(1), None, 1, 0, 0, 1);
+        let config =
+            Config::new(traffic_config, registry_path).with_data_source(DataSource::Static);
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_drain"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let drain_scenario =
+            move |ctx: TestContext<OtapPdata>| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async move {
+                    // Let the receiver start and enter its rate-limit sleep.
+                    sleep(Duration::from_millis(200)).await;
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    ctx.send_control_msg(NodeControlMsg::DrainIngress {
+                        deadline,
+                        reason: "test drain".to_owned(),
+                    })
+                    .await
+                    .expect("Failed to send DrainIngress");
+                })
+            };
+
+        let drain_validation =
+            |_ctx: NotSendValidateContext<OtapPdata>| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async {})
+            };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(drain_scenario)
+            .run_validation(drain_validation);
+    }
+
     #[test]
     fn test_resource_attribute_rotation_across_batches() {
         use crate::receivers::fake_data_generator::config::ResourceAttributeSet;
