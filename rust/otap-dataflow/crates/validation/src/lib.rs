@@ -69,7 +69,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn debug_processor() {
         Scenario::new()
             .pipeline(
@@ -97,7 +96,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn attribute_processor_pipeline() {
         let deny = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
@@ -132,7 +130,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn filter_processor_pipeline() {
         let attr_check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
@@ -174,7 +171,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "https://github.com/open-telemetry/otel-arrow/issues/2498"]
     fn multiple_input_output() {
         Scenario::new()
             .pipeline(
