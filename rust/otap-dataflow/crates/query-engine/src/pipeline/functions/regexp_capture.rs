@@ -10,20 +10,18 @@ use arrow::array::{
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, Int8Type, Int16Type, Int32Type, Int64Type,
-    UInt8Type, UInt16Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, FieldRef, Int8Type, Int16Type,
+    Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
-use arrow::util::bit_iterator::BitIndexIterator;
 use arrow::util::bit_util;
 use datafusion::common::types::{NativeType, logical_int64, logical_string, logical_uint16};
 use datafusion::error::Result;
 use datafusion::functions::regex::compile_regex;
 use datafusion::logical_expr::{
-    Coercion, ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
-    TypeSignature, TypeSignatureClass, Volatility,
+    Coercion, ColumnarValue, Documentation, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl,
+    Signature, TypeSignature, TypeSignatureClass, Volatility,
 };
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RegexpCaptureFunc {
@@ -83,11 +81,21 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
     // TODO - not supposed to call this .... there's another one where we can figure out the
     // return type from the args
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        if arg_types.is_empty() {
-            todo!("TODO")
-        }
+        // TODO - return an error because this shouldn't be called
+        todo!()
+    }
 
-        Ok(arg_types[0].clone())
+    fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef> {
+        // TODO len check on args & scalar arguments
+        // TODO comment on why this is like this
+        let return_type =
+            if args.scalar_arguments[1].is_some() && args.scalar_arguments[2].is_some() {
+                args.arg_fields[0].data_type().clone()
+            } else {
+                DataType::Utf8
+            };
+
+        Ok(Arc::new(Field::new(self.name(), return_type, true)))
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
@@ -105,7 +113,10 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
         let str_arr = str_arr.to_array(len)?;
 
         let result = match str_arr.data_type() {
-            DataType::Utf8 => regex_capture(&str_arr.as_string::<i32>(), regexes, groups),
+            DataType::Utf8 => {
+                let str_arr = str_arr.as_string::<i32>();
+                regex_capture(str_arr.iter(), regexes, groups)
+            }
             DataType::Dictionary(k, v) => {
                 if !matches!(v.as_ref(), &DataType::Utf8) {
                     todo!("invalid type")
@@ -117,11 +128,24 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
                         // fast path, can just match the regexes against the dicts values and
                         // convert them to matched patterns
                         let dict_vals_str = dict_vals.as_string::<i32>();
-                        let new_vals = regex_capture(&dict_vals_str, regexes, groups)?;
+                        let new_vals = regex_capture(dict_vals_str.iter(), regexes, groups)?;
                         replace_dict_values(&str_arr, k.as_ref(), new_vals)
                     }
                     _ => {
-                        todo!()
+                        match k.as_ref() {
+                            DataType::UInt8 => {
+                                let dict_arr = as_dictionary_array::<UInt8Type>(&str_arr);
+
+                                // safety: we've checked the value type is utf8 the
+                                let strs = dict_arr
+                                    .downcast_dict::<StringArray>()
+                                    .expect("dict vals are strings");
+                                regex_capture(strs.into_iter(), regexes, groups)
+                            }
+                            _ => {
+                                todo!()
+                            }
+                        }
                     }
                 }
             }
@@ -143,8 +167,8 @@ fn get_dict_values(dict_arr: &ArrayRef, dict_key_type: &DataType) -> Result<Arra
     let dict_vals = match dict_key_type {
         DataType::UInt8 => as_dictionary_array::<UInt8Type>(&dict_arr).values(),
         DataType::UInt16 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
-        DataType::UInt32 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
-        DataType::UInt64 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
+        DataType::UInt32 => as_dictionary_array::<UInt32Type>(&dict_arr).values(),
+        DataType::UInt64 => as_dictionary_array::<UInt64Type>(&dict_arr).values(),
         DataType::Int8 => as_dictionary_array::<Int8Type>(&dict_arr).values(),
         DataType::Int16 => as_dictionary_array::<Int16Type>(&dict_arr).values(),
         DataType::Int32 => as_dictionary_array::<Int32Type>(&dict_arr).values(),
@@ -165,13 +189,27 @@ fn replace_dict_values(
         DataType::UInt8 => {
             replace_dict_values_generic(as_dictionary_array::<UInt8Type>(&dict_arr), new_values)
         }
-        // DataType::UInt16 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
-        // DataType::UInt32 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
-        // DataType::UInt64 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
-        // DataType::Int8 => as_dictionary_array::<Int8Type>(&dict_arr).values(),
-        // DataType::Int16 => as_dictionary_array::<Int16Type>(&dict_arr).values(),
-        // DataType::Int32 => as_dictionary_array::<Int32Type>(&dict_arr).values(),
-        // DataType::Int64 => as_dictionary_array::<Int64Type>(&dict_arr).values(),
+        DataType::UInt16 => {
+            replace_dict_values_generic(as_dictionary_array::<UInt16Type>(&dict_arr), new_values)
+        }
+        DataType::UInt32 => {
+            replace_dict_values_generic(as_dictionary_array::<UInt32Type>(&dict_arr), new_values)
+        }
+        DataType::UInt64 => {
+            replace_dict_values_generic(as_dictionary_array::<UInt64Type>(&dict_arr), new_values)
+        }
+        DataType::Int8 => {
+            replace_dict_values_generic(as_dictionary_array::<Int8Type>(&dict_arr), new_values)
+        }
+        DataType::Int16 => {
+            replace_dict_values_generic(as_dictionary_array::<Int16Type>(&dict_arr), new_values)
+        }
+        DataType::Int32 => {
+            replace_dict_values_generic(as_dictionary_array::<Int32Type>(&dict_arr), new_values)
+        }
+        DataType::Int64 => {
+            replace_dict_values_generic(as_dictionary_array::<Int64Type>(&dict_arr), new_values)
+        }
         _ => {
             todo!()
         }
@@ -218,13 +256,13 @@ fn replace_dict_values_generic<K: ArrowDictionaryKeyType>(
     }
 }
 
-fn regex_capture<'a, S>(
-    values: &S,
+fn regex_capture<'a, I>(
+    values: I,
     regexes: &ColumnarValue,
     groups: &ColumnarValue,
 ) -> Result<ArrayRef>
 where
-    S: StringArrayType<'a>,
+    I: Iterator<Item = Option<&'a str>>,
 {
     match regexes {
         ColumnarValue::Array(regex_arr) => match regex_arr.data_type() {
@@ -246,14 +284,14 @@ where
     }
 }
 
-fn regex_capture_with_regex_iter<'a, 'b, S, I>(
-    values: &S,
-    regexes: I,
+fn regex_capture_with_regex_iter<'a, 'b, I1, I2>(
+    values: I1,
+    regexes: I2,
     groups: &ColumnarValue,
 ) -> Result<ArrayRef>
 where
-    S: StringArrayType<'a>,
-    I: Iterator<Item = Option<&'b str>>,
+    I1: Iterator<Item = Option<&'a str>>,
+    I2: Iterator<Item = Option<&'b str>>,
 {
     match groups {
         ColumnarValue::Array(arr) => {
@@ -271,20 +309,20 @@ where
     }
 }
 
-fn regex_capture_with_group_iter<'a, 'b, S, I1, I2>(
-    values: &S,
-    regexes: I1,
-    groups: I2,
+fn regex_capture_with_group_iter<'a, 'b, I1, I2, I3>(
+    values: I1,
+    regexes: I2,
+    groups: I3,
 ) -> Result<ArrayRef>
 where
-    S: StringArrayType<'a>,
-    I1: Iterator<Item = Option<&'b str>>,
-    I2: Iterator<Item = Option<usize>>,
+    I1: Iterator<Item = Option<&'a str>>,
+    I2: Iterator<Item = Option<&'b str>>,
+    I3: Iterator<Item = Option<usize>>,
 {
     let mut result_builder = StringBuilder::new();
     let mut null_run = 0;
 
-    for ((value, regex), group) in values.iter().zip(regexes).zip(groups) {
+    for ((value, regex), group) in values.zip(regexes).zip(groups) {
         match (value, regex, group) {
             (Some(value), Some(regex), Some(group)) => {
                 let regex = compile_regex(regex, None)?;
@@ -330,7 +368,7 @@ mod test {
     // - uncoercable data types
 
     #[tokio::test]
-    async fn test_utf8_arr_scalar_pattern_scalar_group() {
+    async fn test_utf8_arr_values_scalar_pattern_scalar_group() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -373,7 +411,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_dict_utf8_arr_scalar_pattern_scalar_group() {
+    async fn test_dict_utf8_arr_values_scalar_pattern_scalar_group() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -410,6 +448,51 @@ mod test {
             UInt8Array::from_iter([Some(0), Some(0), None]),
             Arc::new(StringArray::from_iter_values(["world", ""])),
         ));
+        match result {
+            ColumnarValue::Array(arr) => {
+                assert_eq!(&arr, &expected)
+            }
+            s => {
+                panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dict_utf8_arr_values_dict_utf8_arr_pattern_scalar_group() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), col("regexp_col"), lit(1u16)],
+        ));
+
+        let input_col = DictionaryArray::new(
+            UInt8Array::from_iter_values(vec![0, 0, 1]),
+            Arc::new(StringArray::from_iter_values(["hello world", "arrow"])),
+        );
+        let regex_col = StringArray::from_iter_values([".(.).*", "..(..).*", "(arr)(ow)"]);
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("test_col", input_col.data_type().clone(), true),
+                Field::new("regexp_col", regex_col.data_type().clone(), true),
+            ])),
+            vec![Arc::new(input_col), Arc::new(regex_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+
+        let expected: ArrayRef = Arc::new(StringArray::from_iter_values(["e", "ll", "arr"]));
         match result {
             ColumnarValue::Array(arr) => {
                 assert_eq!(&arr, &expected)
