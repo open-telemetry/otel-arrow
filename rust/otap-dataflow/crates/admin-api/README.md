@@ -244,8 +244,8 @@ method and its operational purpose.
 | `GET /api/v1/pipeline-groups/status` | `pipeline_groups().status()` | Fleet-style pipeline status view. |
 | `POST /api/v1/pipeline-groups/shutdown` | `pipeline_groups().shutdown(...)` | Coordinated shutdown request across running pipelines. |
 | `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status` | `pipelines().status(...)` | Detailed status for a single pipeline. |
-| `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | `pipelines().livez(...)` | Plain-text liveness probe for a single pipeline. |
-| `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | `pipelines().readyz(...)` | Plain-text readiness probe for a single pipeline. |
+| `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | `pipelines().livez(...)` | Semantic liveness probe result for a single pipeline. |
+| `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | `pipelines().readyz(...)` | Semantic readiness probe result for a single pipeline. |
 | `GET /api/v1/telemetry/logs` | `telemetry().logs(...)` | Retained admin logs when log retention is enabled. |
 | `GET /api/v1/telemetry/metrics` | `telemetry().metrics(...)`, `telemetry().metrics_compact(...)` | Current engine metrics as structured JSON, using either the full or compact response shape. |
 
@@ -357,7 +357,9 @@ println!("shutdown={:?}", shutdown.status);
 
 ### Single-pipeline status and probes
 
-Use this when an external controller tracks one pipeline at a time.
+Use this when an external controller tracks one pipeline at a time. The public
+SDK returns transport-agnostic probe results here; the current HTTP backend
+maps the server's plain-text probe endpoints into this semantic shape.
 
 ```rust
 use otap_df_admin_api::{AdminClient, AdminEndpoint, HttpAdminClientSettings};
@@ -372,8 +374,8 @@ let livez = client.pipelines().livez("default", "main").await?;
 let readyz = client.pipelines().readyz("default", "main").await?;
 
 println!("pipeline_status_present={}", status.is_some());
-println!("pipeline_livez={} {}", livez.status_code, livez.body);
-println!("pipeline_readyz={} {}", readyz.status_code, readyz.body);
+println!("pipeline_livez={:?} {:?}", livez.status, livez.message);
+println!("pipeline_readyz={:?} {:?}", readyz.status, readyz.message);
 # Ok(())
 # }
 ```

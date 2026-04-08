@@ -308,13 +308,36 @@ impl<'de> Deserialize<'de> for ConditionReason {
     }
 }
 
-/// Plain-text probe response for a single pipeline.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProbeResponse {
-    /// HTTP status code.
-    pub status_code: u16,
-    /// Raw response body.
-    pub body: String,
+/// Probe status for a single pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeStatus {
+    /// Probe succeeded.
+    Ok,
+    /// Probe failed.
+    Failed,
+}
+
+/// Semantic probe result for a single pipeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeResult {
+    /// Probe status.
+    pub status: ProbeStatus,
+    /// Optional human-readable probe message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl ProbeResult {
+    /// Creates a probe result and normalizes empty messages to `None`.
+    #[must_use]
+    pub fn new(status: ProbeStatus, message: Option<String>) -> Self {
+        Self {
+            status,
+            message: message.filter(|value| !value.is_empty()),
+        }
+    }
 }
 
 /// Recent observed event.
@@ -571,5 +594,23 @@ mod tests {
             "core_id": 0,
             "deployment_generation": 7
         }));
+    }
+
+    #[test]
+    fn probe_result_normalizes_empty_message() {
+        assert_eq!(
+            ProbeResult::new(ProbeStatus::Ok, Some(String::new())),
+            ProbeResult {
+                status: ProbeStatus::Ok,
+                message: None,
+            }
+        );
+        assert_eq!(
+            ProbeResult::new(ProbeStatus::Failed, Some("NOT OK".to_string())),
+            ProbeResult {
+                status: ProbeStatus::Failed,
+                message: Some("NOT OK".to_string()),
+            }
+        );
     }
 }

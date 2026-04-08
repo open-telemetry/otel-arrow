@@ -55,20 +55,25 @@ impl HttpBackend {
         Ok((status, self.decode_json(&body)?))
     }
 
-    async fn request_text(
+    async fn request_probe(
         &self,
         method: Method,
         segments: &[&str],
         query: &[(&str, String)],
         expected_statuses: &[u16],
-    ) -> Result<pipelines::ProbeResponse, Error> {
-        let (status, body) = self
+    ) -> Result<pipelines::ProbeResult, Error> {
+        let (status_code, body) = self
             .request_raw(method, segments, query, expected_statuses)
             .await?;
-        Ok(pipelines::ProbeResponse {
-            status_code: status,
-            body: self.decode_text(&body)?,
-        })
+        let status = match status_code {
+            200 => pipelines::ProbeStatus::Ok,
+            500 | 503 => pipelines::ProbeStatus::Failed,
+            _ => unreachable!("request_raw should have filtered unexpected probe statuses"),
+        };
+        Ok(pipelines::ProbeResult::new(
+            status,
+            Some(self.decode_text(&body)?),
+        ))
     }
 
     async fn request_raw(
@@ -215,8 +220,8 @@ impl AdminBackend for HttpBackend {
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-    ) -> Result<pipelines::ProbeResponse, Error> {
-        self.request_text(
+    ) -> Result<pipelines::ProbeResult, Error> {
+        self.request_probe(
             Method::GET,
             &[
                 "api",
@@ -237,8 +242,8 @@ impl AdminBackend for HttpBackend {
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-    ) -> Result<pipelines::ProbeResponse, Error> {
-        self.request_text(
+    ) -> Result<pipelines::ProbeResult, Error> {
+        self.request_probe(
             Method::GET,
             &[
                 "api",
@@ -723,7 +728,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_livez_preserves_plain_text_status() {
+    async fn pipeline_livez_maps_failed_probe_and_message() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/pipeline-groups/default/pipelines/main/livez"))
@@ -736,8 +741,72 @@ mod tests {
             .livez("default", "main")
             .await
             .expect("pipeline livez should decode");
-        assert_eq!(response.status_code, 500);
-        assert_eq!(response.body, "NOT OK");
+        assert_eq!(response.status, pipelines::ProbeStatus::Failed);
+        assert_eq!(response.message.as_deref(), Some("NOT OK"));
+    }
+
+    #[tokio::test]
+    async fn pipeline_livez_maps_ok_probe_without_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/pipeline-groups/default/pipelines/main/livez"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .livez("default", "main")
+            .await
+            .expect("pipeline livez should decode");
+
+        assert_eq!(response.status, pipelines::ProbeStatus::Ok);
+        assert_eq!(response.message, None);
+    }
+
+    #[tokio::test]
+    async fn pipeline_readyz_maps_service_unavailable_to_failed_probe() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/v1/pipeline-groups/default/pipelines/main/readyz",
+            ))
+            .respond_with(ResponseTemplate::new(503).set_body_string("NOT OK"))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .readyz("default", "main")
+            .await
+            .expect("pipeline readyz should decode");
+
+        assert_eq!(response.status, pipelines::ProbeStatus::Failed);
+        assert_eq!(response.message.as_deref(), Some("NOT OK"));
+    }
+
+    #[tokio::test]
+    async fn pipeline_probe_unexpected_status_is_remote_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/pipeline-groups/default/pipelines/main/livez"))
+            .respond_with(ResponseTemplate::new(418).set_body_string("teapot"))
+            .mount(&server)
+            .await;
+
+        let err = client(&server)
+            .pipelines()
+            .livez("default", "main")
+            .await
+            .expect_err("pipeline probe should fail");
+
+        match err {
+            Error::RemoteStatus { status, body, .. } => {
+                assert_eq!(status, 418);
+                assert_eq!(body, "teapot");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[tokio::test]

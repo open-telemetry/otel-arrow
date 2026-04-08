@@ -259,23 +259,23 @@ impl PipelinesClient<'_> {
             .await
     }
 
-    /// Returns the plain-text liveness probe for one pipeline.
+    /// Returns the liveness probe for one pipeline.
     pub async fn livez(
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-    ) -> Result<pipelines::ProbeResponse, Error> {
+    ) -> Result<pipelines::ProbeResult, Error> {
         self.backend
             .pipeline_livez(pipeline_group_id, pipeline_id)
             .await
     }
 
-    /// Returns the plain-text readiness probe for one pipeline.
+    /// Returns the readiness probe for one pipeline.
     pub async fn readyz(
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-    ) -> Result<pipelines::ProbeResponse, Error> {
+    ) -> Result<pipelines::ProbeResult, Error> {
         self.backend
             .pipeline_readyz(pipeline_group_id, pipeline_id)
             .await
@@ -335,12 +335,12 @@ pub(crate) trait AdminBackend: Send + Sync {
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-    ) -> Result<pipelines::ProbeResponse, Error>;
+    ) -> Result<pipelines::ProbeResult, Error>;
     async fn pipeline_readyz(
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-    ) -> Result<pipelines::ProbeResponse, Error>;
+    ) -> Result<pipelines::ProbeResult, Error>;
 
     async fn telemetry_logs(
         &self,
