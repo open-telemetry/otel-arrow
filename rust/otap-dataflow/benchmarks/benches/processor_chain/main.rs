@@ -215,14 +215,14 @@ fn bench_processor_chain_high_work(c: &mut Criterion) {
 
                             let suffix = format!("_{i}");
                             let work_ns = SIMULATED_WORK_NS;
-                            let _ = tokio::task::spawn_local(async move {
+                            drop(tokio::task::spawn_local(async move {
                                 let mut proc = SuffixProcessor { suffix, work_ns };
                                 while let Ok(data) = inbox.recv().await {
                                     proc.process(Message::PData(data), &mut eh)
                                         .await
                                         .expect("process failed");
                                 }
-                            });
+                            }));
 
                             if i < chain_len - 1 {
                                 // Intermediate: next processor reads from this one's output
@@ -322,14 +322,14 @@ fn bench_processor_chain_low_work(c: &mut Criterion) {
 
                             let suffix = format!("_{i}");
                             let work_ns = LOW_WORK_NS;
-                            let _ = tokio::task::spawn_local(async move {
+                            drop(tokio::task::spawn_local(async move {
                                 let mut proc = SuffixProcessor { suffix, work_ns };
                                 while let Ok(data) = inbox.recv().await {
                                     proc.process(Message::PData(data), &mut eh)
                                         .await
                                         .expect("process failed");
                                 }
-                            });
+                            }));
 
                             if i < chain_len - 1 {
                                 prev_rx = Some(out_rx);
