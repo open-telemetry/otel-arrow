@@ -8,8 +8,8 @@
 //! settings.
 
 use indexmap::IndexMap;
-use otap_df_config::node::NodeUserConfig;
 use otap_df_config::NodeId;
+use otap_df_config::node::NodeUserConfig;
 
 /// Default control channel capacity used by legacy constructor paths.
 const DEFAULT_CONTROL_CHANNEL_CAPACITY: usize = 32;
@@ -219,8 +219,14 @@ mod tests {
         let keys: Vec<&String> = cfg.processors.keys().collect();
         assert_eq!(keys, vec!["attr", "dbg"]);
 
-        assert_eq!(cfg.processors["attr"].r#type.as_str(), "urn:otel:processor:attribute");
-        assert_eq!(cfg.processors["dbg"].r#type.as_str(), "urn:otel:processor:debug");
+        assert_eq!(
+            cfg.processors["attr"].r#type.as_str(),
+            "urn:otel:processor:attribute"
+        );
+        assert_eq!(
+            cfg.processors["dbg"].r#type.as_str(),
+            "urn:otel:processor:debug"
+        );
         assert!(cfg.processors["attr"].config.is_object());
     }
 
