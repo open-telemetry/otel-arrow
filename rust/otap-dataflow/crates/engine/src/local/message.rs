@@ -17,6 +17,10 @@ use std::rc::Rc;
 enum LocalSenderInner<T> {
     Mpsc(mpsc::Sender<T>),
     Mpmc(mpmc::Sender<T>),
+    /// A direct Vec buffer for zero-overhead in-process staging.
+    /// Used by `ProcessorChainNode` to avoid channel overhead between
+    /// intermediate sub-processors.
+    Vec(Rc<RefCell<Vec<T>>>),
 }
 
 /// A generic local channel Sender.
@@ -31,6 +35,7 @@ impl<T> Clone for LocalSender<T> {
         let inner = match &self.inner {
             LocalSenderInner::Mpsc(sender) => LocalSenderInner::Mpsc(sender.clone()),
             LocalSenderInner::Mpmc(sender) => LocalSenderInner::Mpmc(sender.clone()),
+            LocalSenderInner::Vec(buf) => LocalSenderInner::Vec(buf.clone()),
         };
         Self {
             inner,
@@ -69,6 +74,18 @@ impl<T> LocalSender<T> {
         }
     }
 
+    /// Creates a sender backed by a shared `Vec` buffer.
+    ///
+    /// Messages are pushed directly into the `Vec` with no channel overhead.
+    /// Used internally by `ProcessorChainNode` for intermediate sub-processor
+    /// staging.
+    pub fn vec_buffer(buffer: Rc<RefCell<Vec<T>>>) -> Self {
+        Self {
+            inner: LocalSenderInner::Vec(buffer),
+            metrics: None,
+        }
+    }
+
     /// Creates a new local MPMC sender with metrics attached.
     pub(crate) fn mpmc_with_metrics(
         sender: mpmc::Sender<T>,
@@ -90,6 +107,10 @@ impl<T> LocalSender<T> {
                 inner: LocalSenderInner::Mpmc(sender),
                 metrics,
             }),
+            LocalSenderInner::Vec(buf) => Err(Self {
+                inner: LocalSenderInner::Vec(buf),
+                metrics,
+            }),
         }
     }
 
@@ -98,6 +119,10 @@ impl<T> LocalSender<T> {
         let result = match &self.inner {
             LocalSenderInner::Mpsc(sender) => sender.send_async(msg).await,
             LocalSenderInner::Mpmc(sender) => sender.send_async(msg).await,
+            LocalSenderInner::Vec(buf) => {
+                buf.borrow_mut().push(msg);
+                return Ok(());
+            }
         };
 
         if let Some(metrics) = &self.metrics {
@@ -118,6 +143,10 @@ impl<T> LocalSender<T> {
         let result = match &self.inner {
             LocalSenderInner::Mpsc(sender) => sender.send(msg),
             LocalSenderInner::Mpmc(sender) => sender.send(msg),
+            LocalSenderInner::Vec(buf) => {
+                buf.borrow_mut().push(msg);
+                return Ok(());
+            }
         };
 
         if let Some(metrics) = &self.metrics {

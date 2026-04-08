@@ -122,6 +122,11 @@ impl<T> Sender<T> {
         Sender::Local(LocalSender::mpsc(mpsc_sender))
     }
 
+    /// Creates a new local Vec-backed sender for zero-overhead staging.
+    pub fn new_local_vec_sender(buffer: std::rc::Rc<std::cell::RefCell<Vec<T>>>) -> Self {
+        Sender::Local(LocalSender::vec_buffer(buffer))
+    }
+
     /// Sends a message to the channel.
     pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
         match self {

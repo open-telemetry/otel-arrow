@@ -9,29 +9,27 @@
 //!    connected by mpsc channels — matching how the real engine wires
 //!    individual processors via `ProcessorWrapper::start()`.
 //!
-//! This isolates the overhead of the chain's in-memory staging-buffer approach
+//! This isolates the overhead of the chain's Vec-backed staging approach
 //! vs. the baseline of individual processor tasks with inter-task channel
 //! coordination (async send/recv, task wake-ups, executor scheduling).
 //!
-//! The chain's value is twofold:
-//! - Eliminates inter-task wake-up and channel overhead between sub-processors.
-//! - Produces a correct composite duration metric (min/max/sum/count) across
-//!   all sub-processors, which is impossible with separate processors.
+//! The chain's value is the ability to produce a correct composite duration
+//! metric (min/max/sum/count) across all sub-processors, which is impossible
+//! with separate processors.
 //!
 //! ## Expected results
 //!
-//! **`processor_chain` group** (300µs simulated work per processor):
-//! Inter-task channel overhead (~500ns per hop) is <0.2% of work — well
-//! within noise. Both approaches show identical throughput.
+//! **`processor_chain_high_work` group** (300µs simulated work per processor):
+//! Both approaches show identical throughput — the chain's overhead is
+//! negligible relative to real processor work.
 //!
 //! **`processor_chain_low_work` group** (100ns simulated work per processor):
-//! The chain is actually *slower* than separate tasks (~20-25% for len=1,
-//! ~10% for len=3) because `ProcessorChainNode`'s internal staging buffers
-//! and intermediate `BufferSlot` channels add more per-message bookkeeping
-//! than a simple spawned task doing `recv → process → send`.
+//! The chain matches separate tasks for `len=1` (single-processor fast
+//! path delegates directly with zero staging overhead). For `len>=2`,
+//! the chain is ~5-8% slower due to the per-stage `Vec`/`RefCell`
+//! bookkeeping that is significant only at trivially low work levels.
 //!
-//! This confirms the chain's value is solely the composite duration metric,
-//! not throughput. At production workloads the overhead is negligible.
+//! At production workloads the overhead is negligible.
 
 #![allow(missing_docs)]
 
@@ -157,7 +155,7 @@ impl Processor<String> for SuffixProcessor {
 
 // ── Benchmarks ───────────────────────────────────────────────────────
 
-fn bench_processor_chain(c: &mut Criterion) {
+fn bench_processor_chain_high_work(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -168,7 +166,7 @@ fn bench_processor_chain(c: &mut Criterion) {
         let _ = core_affinity::set_for_current(*core);
     }
 
-    let mut group = c.benchmark_group("processor_chain");
+    let mut group = c.benchmark_group("processor_chain_high_work");
     let _ = group.throughput(Throughput::Elements(BATCH_COUNT as u64));
 
     for chain_len in [1, 2, 3] {
@@ -366,7 +364,7 @@ fn bench_processor_chain_low_work(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_processor_chain,
+    bench_processor_chain_high_work,
     bench_processor_chain_low_work
 );
 criterion_main!(benches);

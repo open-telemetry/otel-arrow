@@ -20,10 +20,11 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
 use async_trait::async_trait;
-use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// A processor that chains multiple sub-processors sequentially.
 ///
@@ -39,22 +40,28 @@ use std::collections::HashMap;
 ///
 /// # Buffer strategy
 ///
-/// Two kinds of buffers are used to minimize per-batch allocations:
+/// Three techniques minimize per-batch overhead:
 ///
-/// **Buffer effect handlers** (`buffer_handlers`): Each intermediate
-/// sub-processor needs somewhere to "send" its output. A normal processor
-/// sends to a downstream channel, but intermediate sub-processors in a
-/// chain have no real downstream — their output feeds the next stage.
-/// We give each one an `EffectHandler` wired to an mpsc channel that
-/// captures outputs. These are created once at construction and reused
-/// for every batch.
+/// **Single-item fast path**: For chains of length 1, the chain delegates
+/// directly to the sole sub-processor with the real `EffectHandler` —
+/// zero staging overhead. For chains of length ≥ 2, an optimistic fast
+/// path threads a single `PData` value through each intermediate stage
+/// without any `Vec` operations, falling back to staging vecs only when
+/// a stage produces 0 or 2+ outputs.
 ///
-/// **Staging vecs** (`stage_a`, `stage_b`): Two `Vec<PData>` hold the
-/// inputs/outputs between stages. Rather than allocating a new vec per
-/// stage, we swap between them: `current` holds this stage's inputs,
-/// `next` collects outputs, then they swap roles for the next stage.
-/// After the first batch, these vecs retain their capacity across
-/// subsequent calls.
+/// **Vec-backed buffer effect handlers** (`buffer_handlers`): Each
+/// intermediate sub-processor needs somewhere to "send" its output.
+/// Rather than using mpsc channels, we wire each one to a shared
+/// `Rc<RefCell<Vec<PData>>>` via a `VecSender`. When the sub-processor
+/// calls `send_message()`, the output is pushed directly into the `Vec`
+/// with no channel send/recv, waker management, or async polling.
+/// These are created once at construction and reused for every batch.
+///
+/// **Staging vecs** (`stage_a`, `stage_b`): Two `Vec<PData>` serve as
+/// fallback buffers when a stage produces multiple outputs. Rather than
+/// allocating a new vec per stage, `current` holds this stage's inputs
+/// and `next` collects outputs; after each stage they swap roles via
+/// `std::mem::swap`. These vecs retain their heap capacity across calls.
 pub struct ProcessorChainNode<PData> {
     /// Sub-processors in execution order.
     sub_processors: Vec<SubProcessor<PData>>,
@@ -77,13 +84,14 @@ struct SubProcessor<PData> {
 /// Pre-allocated buffer for an intermediate sub-processor.
 ///
 /// Each intermediate sub-processor (all except the last) gets one of these.
-/// The `effect_handler` is wired to an mpsc channel whose `receiver` we
-/// drain after each `process()` call to collect the sub-processor's output.
-/// The last sub-processor doesn't need a buffer — it uses the chain's real
-/// `EffectHandler` to send directly to the downstream channel.
+/// The `effect_handler` is wired to a shared `Vec` via a `VecSender`.
+/// After each `process()` call, outputs are collected directly from the
+/// `buffer` — no channel overhead involved. The last sub-processor doesn't
+/// need a buffer — it uses the chain's real `EffectHandler` to send directly
+/// to the downstream channel.
 struct BufferSlot<PData> {
     effect_handler: EffectHandler<PData>,
-    receiver: mpsc::Receiver<PData>,
+    buffer: Rc<RefCell<Vec<PData>>>,
 }
 
 impl<PData> ProcessorChainNode<PData> {
@@ -101,13 +109,7 @@ impl<PData> ProcessorChainNode<PData> {
         // effect handler).
         let intermediate_count = sub_processors.len().saturating_sub(1);
         let buffer_handlers: Vec<BufferSlot<PData>> = (0..intermediate_count)
-            .map(|_| {
-                let (effect_handler, receiver) = make_buffer_effect_handler(buffer_capacity);
-                BufferSlot {
-                    effect_handler,
-                    receiver,
-                }
-            })
+            .map(|_| make_buffer_slot(buffer_capacity))
             .collect();
 
         Self {
@@ -123,15 +125,21 @@ impl<PData> ProcessorChainNode<PData> {
     }
 }
 
-/// Create a buffer effect handler that captures outputs into an mpsc channel.
-fn make_buffer_effect_handler<PData>(
-    buffer_capacity: usize,
-) -> (EffectHandler<PData>, mpsc::Receiver<PData>) {
-    let (sender, receiver) = mpsc::Channel::new(buffer_capacity);
+/// Create a buffer slot with a Vec-backed effect handler.
+///
+/// The `EffectHandler` is wired to an `Rc<RefCell<Vec<PData>>>` via a
+/// `VecSender`. Outputs are pushed directly into the `Vec` — no channel
+/// send/recv overhead.
+fn make_buffer_slot<PData>(buffer_capacity: usize) -> BufferSlot<PData> {
+    let buffer: Rc<RefCell<Vec<PData>>> =
+        Rc::new(RefCell::new(Vec::with_capacity(buffer_capacity)));
     let default_port: PortName = "default".into();
 
     let mut pdata_senders: HashMap<PortName, Sender<PData>> = HashMap::new();
-    let _ = pdata_senders.insert(default_port.clone(), Sender::new_local_mpsc_sender(sender));
+    let _ = pdata_senders.insert(
+        default_port.clone(),
+        Sender::new_local_vec_sender(buffer.clone()),
+    );
 
     let node_id = NodeId {
         index: 0,
@@ -143,13 +151,9 @@ fn make_buffer_effect_handler<PData>(
         router: OutputRouter::new(node_id, pdata_senders, Some(default_port)),
     };
 
-    (effect_handler, receiver)
-}
-
-/// Drain all currently buffered items from a receiver into a destination vec.
-fn drain_into<PData>(receiver: &mpsc::Receiver<PData>, dest: &mut Vec<PData>) {
-    while let Ok(item) = receiver.try_recv() {
-        dest.push(item);
+    BufferSlot {
+        effect_handler,
+        buffer,
     }
 }
 
@@ -223,51 +227,108 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                     None
                 };
 
-                // Temporarily take ownership of the staging buffers.
-                // `current` starts with the incoming pdata; `next` collects
-                // outputs from each stage. After the loop, both are returned
-                // to `self` so their heap capacity is retained for the next
-                // `process()` call.
-                let (mut current, mut next) = (
-                    std::mem::take(&mut self.stage_a),
-                    std::mem::take(&mut self.stage_b),
-                );
-                current.push(pdata);
+                // Fast-path: single sub-processor — delegate directly, skip
+                // all staging-buffer bookkeeping.
+                if num_subs == 1 {
+                    let last = self.sub_processors.first_mut().expect("checked non-empty");
+                    let result = last
+                        .processor
+                        .process(Message::PData(pdata), effect_handler)
+                        .await;
 
-                // Run through all sub-processors except the last.
-                // Each sub-processor sends its output into the buffer slot's
-                // mpsc channel. We drain the channel into `next`, then swap
-                // `current` and `next` so the outputs become the next stage's
-                // inputs.
+                    if let Some(timer) = timer {
+                        self.composite_duration
+                            .record(timer.elapsed_nanos(), result.is_ok());
+                    }
+                    return result;
+                }
+
+                // Multi-sub path: optimistic single-item fast path.
+                //
+                // Most processors are 1:1 (one output per input). When that
+                // holds for every intermediate stage we can thread a single
+                // `PData` value through without touching Vec/staging buffers
+                // at all. If any stage produces 0 or 2+ outputs, we fall
+                // back to the general staging-vec path for the remaining
+                // stages.
                 let result: Result<(), Error> = async {
-                    for (sub, slot) in self.sub_processors[..num_subs - 1]
+                    let intermediates = &mut self.sub_processors[..num_subs - 1];
+                    let mut single = Some(pdata);
+                    let mut fallback_stage = None;
+
+                    for (i, (sub, slot)) in intermediates
                         .iter_mut()
                         .zip(self.buffer_handlers.iter_mut())
+                        .enumerate()
                     {
                         slot.effect_handler.core.set_node_interests(interests);
-                        next.clear();
+                        let data = single
+                            .take()
+                            .expect("single must be Some on each iteration");
+                        sub.processor
+                            .process(Message::PData(data), &mut slot.effect_handler)
+                            .await?;
 
-                        for data in current.drain(..) {
-                            sub.processor
-                                .process(Message::PData(data), &mut slot.effect_handler)
-                                .await?;
-                            drain_into(&slot.receiver, &mut next);
-                        }
-
-                        std::mem::swap(&mut current, &mut next);
-                        if current.is_empty() {
-                            break;
+                        let mut buf = slot.buffer.borrow_mut();
+                        match buf.len() {
+                            1 => {
+                                // Common 1:1 case — take the single output directly.
+                                single = Some(buf.pop().expect("len checked"));
+                            }
+                            0 => return Ok(()),
+                            _ => {
+                                // Multi-output: fall back to staging vecs for
+                                // the remaining stages.
+                                fallback_stage = Some(i + 1);
+                                let current = &mut self.stage_a;
+                                current.clear();
+                                current.append(&mut buf);
+                                break;
+                            }
                         }
                     }
 
-                    // Run the last sub-processor using the real effect handler.
-                    if !current.is_empty() {
+                    if let Some(start) = fallback_stage {
+                        // Continue with staging vecs from where the fast path
+                        // left off.
+                        let next = &mut self.stage_b;
+                        let current = &mut self.stage_a;
+
+                        for (sub, slot) in self.sub_processors[start..num_subs - 1]
+                            .iter_mut()
+                            .zip(self.buffer_handlers[start..].iter_mut())
+                        {
+                            slot.effect_handler.core.set_node_interests(interests);
+                            next.clear();
+
+                            for data in current.drain(..) {
+                                sub.processor
+                                    .process(Message::PData(data), &mut slot.effect_handler)
+                                    .await?;
+                            }
+                            next.append(&mut slot.buffer.borrow_mut());
+
+                            std::mem::swap(current, next);
+                            if current.is_empty() {
+                                return Ok(());
+                            }
+                        }
+
+                        // Last sub-processor with staging vecs.
                         let last = self.sub_processors.last_mut().expect("checked non-empty");
                         for data in current.drain(..) {
                             last.processor
                                 .process(Message::PData(data), effect_handler)
                                 .await?;
                         }
+                    } else {
+                        // Fast path completed — process last sub-processor
+                        // directly with the single item.
+                        let last = self.sub_processors.last_mut().expect("checked non-empty");
+                        let data = single.take().expect("single must be Some after fast path");
+                        last.processor
+                            .process(Message::PData(data), effect_handler)
+                            .await?;
                     }
 
                     Ok(())
@@ -279,12 +340,6 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                     self.composite_duration
                         .record(timer.elapsed_nanos(), result.is_ok());
                 }
-
-                // Return staging buffers for reuse (already drained).
-                current.clear();
-                next.clear();
-                self.stage_a = current;
-                self.stage_b = next;
 
                 result
             }
