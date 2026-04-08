@@ -269,17 +269,17 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
 
-### Emeritus Approvers
-
-- [Alex Boten](https://github.com/codeboten)
-- [Moh Osman](https://github.com/moh-osman3)
-
 ### Triagers
 
 - [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
+
+### Emeritus
+
+- [Alex Boten](https://github.com/codeboten), Approver
+- [Moh Osman](https://github.com/moh-osman3), Approver
 
 ### Thanks to all of our contributors
 

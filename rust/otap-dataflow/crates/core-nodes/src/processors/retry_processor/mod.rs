@@ -652,6 +652,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                     unreachable!("unused");
                 }
                 NodeControlMsg::Wakeup { .. } => Ok(()),
+                NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
                 NodeControlMsg::DrainIngress { .. } => Ok(()),
                 NodeControlMsg::Shutdown { .. } => Ok(()),
             },

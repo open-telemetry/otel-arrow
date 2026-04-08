@@ -66,9 +66,13 @@ pub fn apply_cli_overrides(
     http_admin_bind: Option<String>,
 ) {
     if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
-        engine_cfg
+        let mut resources = engine_cfg
             .policies
-            .set_resources(ResourcesPolicy { core_allocation });
+            .resources()
+            .cloned()
+            .unwrap_or_else(ResourcesPolicy::default);
+        resources.core_allocation = core_allocation;
+        engine_cfg.policies.set_resources(resources);
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
         engine_cfg.engine.http_admin = Some(http_admin);
