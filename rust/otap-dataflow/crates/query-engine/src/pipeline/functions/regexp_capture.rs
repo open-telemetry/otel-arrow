@@ -1,0 +1,307 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use std::any::Any;
+use std::sync::Arc;
+
+use arrow::array::{ArrayRef, AsArray, StringArrayType, StringBuilder};
+use arrow::datatypes::DataType;
+use datafusion::common::types::{NativeType, logical_int64, logical_string, logical_uint16};
+use datafusion::error::Result;
+use datafusion::functions::regex::compile_regex;
+use datafusion::logical_expr::{
+    Coercion, ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
+    TypeSignature, TypeSignatureClass, Volatility,
+};
+use datafusion::scalar::ScalarValue;
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct RegexpCaptureFunc {
+    signature: Signature,
+}
+
+impl Default for RegexpCaptureFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RegexpCaptureFunc {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::one_of(
+                vec![TypeSignature::Coercible(vec![
+                    Coercion::new_exact(TypeSignatureClass::Native(logical_string())),
+                    // TODO - if we don't end up supporting something dynamic on the other side
+                    // then we should maybe just make this 2nd arg a straight up str?
+                    Coercion::new_exact(TypeSignatureClass::Native(logical_string())),
+                    Coercion::new_implicit(
+                        // TODO - should we allow that there are more than u16::Max capture groups?
+                        TypeSignatureClass::Native(logical_uint16()),
+                        vec![
+                            // TODO are there others
+                            TypeSignatureClass::Native(logical_int64()),
+                        ],
+                        NativeType::UInt16,
+                    ),
+                ])],
+                Volatility::Immutable,
+            )
+            .with_parameter_names(vec![
+                "str".to_string(),
+                "pattern".to_string(),
+                "capture_group".to_string(),
+            ])
+            .expect("valid parameter names"),
+        }
+    }
+}
+
+impl ScalarUDFImpl for RegexpCaptureFunc {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "regexp_capture"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        if arg_types.is_empty() {
+            todo!("TODO")
+        }
+
+        Ok(arg_types[0].clone())
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 3 {
+            todo!("return error")
+        }
+
+        let str_arr = &args.args[0];
+        let regexes = &args.args[1];
+        let groups = &args.args[2];
+        let len = match str_arr {
+            ColumnarValue::Array(arr) => arr.len(),
+            ColumnarValue::Scalar(scalar) => 1,
+        };
+        let str_arr = str_arr.to_array(len)?;
+
+        let result = match str_arr.data_type() {
+            DataType::Utf8 => regex_capture(&str_arr.as_string::<i32>(), regexes, groups),
+            _ => {
+                todo!()
+            }
+        }?;
+
+        // TODO - maybe coerce back to scalar ..
+        Ok(ColumnarValue::Array(result))
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        None
+    }
+}
+
+fn regex_capture<'a, S>(
+    values: &S,
+    regexes: &ColumnarValue,
+    groups: &ColumnarValue,
+) -> Result<ArrayRef>
+where
+    S: StringArrayType<'a>,
+{
+    match regexes {
+        ColumnarValue::Array(regex_arr) => match regex_arr.data_type() {
+            DataType::Utf8 => {
+                let regex_arr_str = regex_arr.as_string::<i32>();
+                regex_capture_with_regex_iter(values, regex_arr_str.iter(), groups)
+            }
+            _ => {
+                todo!()
+            }
+        },
+        ColumnarValue::Scalar(regex_scalar) => {
+            let regex_scalar_str = regex_scalar.cast_to(&DataType::Utf8)?;
+            let ScalarValue::Utf8(str_regex) = regex_scalar_str else {
+                unreachable!("we've casted this to Utf8")
+            };
+            regex_capture_with_regex_iter(values, std::iter::repeat(str_regex.as_deref()), groups)
+        }
+    }
+}
+
+fn regex_capture_with_regex_iter<'a, 'b, S, I>(
+    values: &S,
+    regexes: I,
+    groups: &ColumnarValue,
+) -> Result<ArrayRef>
+where
+    S: StringArrayType<'a>,
+    I: Iterator<Item = Option<&'b str>>,
+{
+    match groups {
+        ColumnarValue::Array(arr) => {
+            todo!()
+        }
+        ColumnarValue::Scalar(scalar) => {
+            // TODO maybe like check if it's negative (at least to know what happens)
+            let u64_scalar = scalar.cast_to(&DataType::UInt64)?;
+            let ScalarValue::UInt64(group) = u64_scalar else {
+                unreachable!("we've casted this to UInt64")
+            };
+            let group = group.map(|i| i as usize);
+            regex_capture_with_group_iter(values, regexes, std::iter::repeat(group))
+        }
+    }
+}
+
+fn regex_capture_with_group_iter<'a, 'b, S, I1, I2>(
+    values: &S,
+    regexes: I1,
+    groups: I2,
+) -> Result<ArrayRef>
+where
+    S: StringArrayType<'a>,
+    I1: Iterator<Item = Option<&'b str>>,
+    I2: Iterator<Item = Option<usize>>,
+{
+    let mut result_builder = StringBuilder::new();
+    let mut null_run = 0;
+
+    for ((value, regex), group) in values.iter().zip(regexes).zip(groups) {
+        match (value, regex, group) {
+            (Some(value), Some(regex), Some(group)) => {
+                let regex = compile_regex(regex, None)?;
+                if let Some(capture) = regex.captures(value).map(|c| c.get(group)).flatten() {
+                    if null_run > 0 {
+                        result_builder.append_nulls(null_run);
+                    }
+
+                    result_builder.append_value(&value[capture.start()..capture.end()]);
+                    null_run = 0;
+                } else {
+                    null_run += 1
+                }
+            }
+            _ => {
+                null_run += 1;
+            }
+        }
+    }
+    if null_run > 0 {
+        result_builder.append_nulls(null_run);
+    }
+
+    Ok(Arc::new(result_builder.finish()))
+}
+
+#[cfg(test)]
+mod test {
+    use arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
+    use arrow::datatypes::{Field, Schema};
+    use datafusion::common::DFSchema;
+    use datafusion::logical_expr::ColumnarValue;
+    use datafusion::logical_expr::{Expr, col, expr::ScalarFunction, lit};
+    use datafusion::physical_expr::create_physical_expr;
+    use std::sync::Arc;
+
+    use crate::pipeline::Pipeline;
+    use crate::pipeline::functions::regexp_capture;
+
+    // TODO test cases:
+    // - negative group
+    // - zero group
+    // - uncoercable data types
+
+    #[tokio::test]
+    async fn test_utf8_arr_scalar_pattern_scalar_group() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), lit("hello (.*)"), lit(1u16)],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+
+        let expected: ArrayRef =
+            Arc::new(StringArray::from_iter([Some("world"), Some("otap"), None]));
+        match result {
+            ColumnarValue::Array(arr) => {
+                assert_eq!(&arr, &expected)
+            }
+            s => {
+                panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_utf8_arr_utf8_arr_pattern_scalar_group() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), col("regexp_col"), lit(1u16)],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
+        let regex_col = StringArray::from_iter_values([".(.).*", "..(..).*", "(arr)(ow)"]);
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("test_col", input_col.data_type().clone(), true),
+                Field::new("regexp_col", regex_col.data_type().clone(), true),
+            ])),
+            vec![Arc::new(input_col), Arc::new(regex_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+
+        let expected: ArrayRef =
+            Arc::new(StringArray::from_iter([Some("e"), Some("ll"), Some("arr")]));
+        match result {
+            ColumnarValue::Array(arr) => {
+                assert_eq!(&arr, &expected)
+            }
+            s => {
+                panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+            }
+        }
+    }
+}

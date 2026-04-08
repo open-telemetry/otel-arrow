@@ -10,10 +10,12 @@ use datafusion::functions::{export_functions, make_udf_function};
 use datafusion::logical_expr as datafusion_expr;
 
 mod contains;
+mod regexp_capture;
 mod substring;
 
 make_udf_function!(contains::ExtendedContainsFunc, contains);
 make_udf_function!(substring::SubstringFunc, substring);
+make_udf_function!(regexp_capture::RegexpCaptureFunc, regexp_capture);
 
 /// helper functions to create logical plan expressions that invoke UDFs
 pub mod expr_fn {
