@@ -484,9 +484,6 @@ impl std::io::Write for ProtoBuffer {
 /// An N-byte placeholder supports sizes up to 2^(8*n-1) bytes: 1=127, 2=16KiB, 3=2MiB, 4=256MiB
 #[macro_export]
 macro_rules! proto_encode_len_delimited_of_size {
-    /// Default case: 4
-    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{ $crate::proto_encode_len_delimited_of_size!($field_tag, $encode_fn, $buf, 4) }};
-    /// Variable case
     ($field_tag: expr, $encode_fn:expr, $buf:expr, $placeholder_bytes:literal) => {{
         $buf.encode_field_tag($field_tag, $crate::proto::consts::wire_types::LEN);
         let len_start_pos = $buf.len();
@@ -495,6 +492,13 @@ macro_rules! proto_encode_len_delimited_of_size {
         let len = $buf.len() - len_start_pos - $placeholder_bytes;
         $crate::otlp::common::patch_len_placeholder::<$placeholder_bytes>($buf, len, len_start_pos);
     }};
+}
+
+/// Deprecated form of helper proto_encode_len_delimited_of_size with 4 byte placeholder.
+/// Callers should use the _small or _large variations directly.
+#[macro_export]
+macro_rules! proto_encode_len_delimited_unknown_size {
+    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{ $crate::proto_encode_len_delimited_large!($field_tag, $encode_fn, $buf) }};
 }
 
 /// 2-byte placeholder for messages up to 16KiB.
