@@ -33,6 +33,7 @@ pub use error::ValidationError;
 pub use validation_types::ValidationInstructions;
 
 #[cfg(test)]
+#[cfg(validation_tests)]
 mod tests {
     use crate::ValidationInstructions;
     use crate::pipeline::Pipeline;
@@ -41,7 +42,6 @@ mod tests {
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
 
     #[test]
-    #[ignore]
     fn no_processor() {
         Scenario::new()
             .pipeline(
@@ -205,6 +205,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(validation_tests)]
 #[cfg(feature = "experimental-tls")]
 mod tls_tests {
     use crate::pipeline::Pipeline;
