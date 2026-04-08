@@ -882,7 +882,6 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
     use std::pin::Pin;
