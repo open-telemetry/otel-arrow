@@ -1992,7 +1992,8 @@ sink:
                 type: "processor_chain:composite"
                 config:
                   processors:
-                    - type: "processor:debug"
+                    dbg:
+                      type: "processor:debug"
                       config: {}
               exporter:
                 type: "exporter:noop"

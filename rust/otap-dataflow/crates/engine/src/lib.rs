@@ -1538,25 +1538,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         // Create each sub-processor using its factory.
         let mut sub_processors = Vec::with_capacity(chain_config.processors.len());
-        for (i, sub_cfg) in chain_config.processors.iter().enumerate() {
-            let index_str = i.to_string();
-            let sub_suffix = sub_cfg.name.as_deref().unwrap_or(&index_str);
+        for (sub_name_key, sub_cfg) in &chain_config.processors {
             let sub_name: Cow<'static, str> =
-                format!("{}/{}", chain_name.as_ref(), sub_suffix).into();
+                format!("{}/{}", chain_name.as_ref(), sub_name_key).into();
 
-            // Create a node context for each sub-processor so it can register
-            // its own metrics under a distinct entity.
-            let sub_urn = otap_df_config::node_urn::validate_plugin_urn(
-                &sub_cfg.r#type,
-                otap_df_config::node::NodeKind::Processor,
-            )
-            .map_err(|e| Error::ConfigError(Box::new(e)))?;
+            let sub_urn = sub_cfg.r#type.clone();
 
             let sub_ctx = pipeline_ctx.with_node_context(
                 sub_name.clone(),
                 sub_urn.clone(),
                 otap_df_config::node::NodeKind::Processor,
-                HashMap::new(),
+                sub_cfg.identity_attributes(),
             );
 
             // Register a distinct entity for this sub-processor so its metrics
@@ -1566,11 +1558,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             let sub_telemetry_handle =
                 NodeTelemetryHandle::new(sub_ctx.metrics_registry(), sub_entity_key);
 
-            // Build a NodeUserConfig for the sub-processor.
-            let sub_node_config = Arc::new(NodeUserConfig::with_user_config(
-                sub_urn.clone(),
-                sub_cfg.config.clone(),
-            ));
+            let sub_node_config = Arc::new(sub_cfg.clone());
 
             let sub_node_id = NodeId {
                 index: node_id.index,

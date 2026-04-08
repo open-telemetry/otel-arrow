@@ -213,31 +213,19 @@ fn validate_processor_chain_components<PData: 'static + Clone + Debug>(
             ))
         })?;
 
-    for (i, sub_cfg) in chain_config.processors.iter().enumerate() {
-        let sub_urn = otap_df_config::node_urn::validate_plugin_urn(
-            &sub_cfg.r#type,
-            NodeKind::Processor,
-        )
-        .map_err(|e| {
-            std::io::Error::other(format!(
-                "Invalid sub-processor URN `{}` in processor_chain node={} index={i} pipeline_group={} pipeline={}: {e}",
-                sub_cfg.r#type,
-                node_id.as_ref(),
-                pipeline_group_id.as_ref(),
-                pipeline_id.as_ref(),
-            ))
-        })?;
+    for (i, (sub_name, sub_cfg)) in chain_config.processors.iter().enumerate() {
+        let sub_urn = sub_cfg.r#type.as_str();
 
         let validate_fn = factory
             .get_processor_factory_map()
-            .get(sub_urn.as_str())
+            .get(sub_urn)
             .map(|f| f.validate_config);
 
         match validate_fn {
             None => {
                 return Err(std::io::Error::other(format!(
-                    "Unknown processor component `{}` in processor_chain node={} index={i} pipeline_group={} pipeline={}",
-                    sub_urn.as_str(),
+                    "Unknown processor component `{}` in processor_chain node={} sub_name={sub_name} index={i} pipeline_group={} pipeline={}",
+                    sub_urn,
                     node_id.as_ref(),
                     pipeline_group_id.as_ref(),
                     pipeline_id.as_ref(),
@@ -247,8 +235,8 @@ fn validate_processor_chain_components<PData: 'static + Clone + Debug>(
             Some(validate_fn) => {
                 validate_fn(&sub_cfg.config).map_err(|e| {
                     std::io::Error::other(format!(
-                        "Invalid config for sub-processor `{}` in processor_chain node={} index={i} pipeline_group={} pipeline={}: {e}",
-                        sub_urn.as_str(),
+                        "Invalid config for sub-processor `{}` in processor_chain node={} sub_name={sub_name} index={i} pipeline_group={} pipeline={}: {e}",
+                        sub_urn,
                         node_id.as_ref(),
                         pipeline_group_id.as_ref(),
                         pipeline_id.as_ref(),

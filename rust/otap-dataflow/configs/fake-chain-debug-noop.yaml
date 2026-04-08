@@ -33,14 +33,14 @@ groups:
             type: processor_chain:composite
             config:
               processors:
-                - name: insert_B
+                insert_B:
                   type: processor:attribute
                   config:
                     actions:
                       - action: insert
                         key: chain_step_1
                         value: B
-                - name: insert_C
+                insert_C:
                   type: processor:attribute
                   config:
                     actions:

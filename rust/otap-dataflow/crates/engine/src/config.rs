@@ -7,6 +7,8 @@
 //! focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
 //! settings.
 
+use indexmap::IndexMap;
+use otap_df_config::node::NodeUserConfig;
 use otap_df_config::NodeId;
 
 /// Default control channel capacity used by legacy constructor paths.
@@ -181,40 +183,21 @@ impl ExporterConfig {
 ///   type: processor_chain:composite
 ///   config:
 ///     processors:
-///       - type: processor:attribute
+///       insert_B:
+///         type: processor:attribute
 ///         config: { ... }
-///       - type: processor:condense_attributes
+///       condense:
+///         type: processor:condense_attributes
 ///         config: { ... }
 /// ```
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ProcessorChainConfig {
-    /// Configurations for the processors in the chain, in order.
+    /// Sub-processors keyed by name, in declaration order.
     ///
-    /// This is intentionally a separate struct as opposed to [`NodeUserConfig`]
-    /// because it explicitly allows for setting a 'name' for each sub-processor
-    /// which is already implied by the config structure for top-level nodes.
-    ///
-    /// In addition, sub-processors do not (currently) support some more advanced features
-    /// like named outputs.
-    ///
-    /// Tracking follow-up in https://github.com/open-telemetry/otel-arrow/issues/2576
-    pub processors: Vec<SubProcessorConfig>,
-}
-
-/// A single sub-processor entry inside a [`ProcessorChainConfig`].
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct SubProcessorConfig {
-    /// Optional name for this sub-processor. Used as the `node.id` suffix
-    /// in telemetry (e.g. chain/my_filter). If omitted, the index is used
-    /// (e.g. chain/0).
-    #[serde(default)]
-    pub name: Option<String>,
-    ///The processor type URN (e.g. `processor:attribute`).
-    pub r#type: String,
-    /// Optional sub-processor specific configuration. Passed verbatim
-    /// to the sub-processor's constructor.
-    #[serde(default)]
-    pub config: serde_json::Value,
+    /// The map key is used as the `node.id` suffix in telemetry
+    /// (e.g. `chain/insert_B`). Insertion order is preserved by
+    /// [`IndexMap`] and determines execution order.
+    pub processors: IndexMap<String, NodeUserConfig>,
 }
 
 #[cfg(test)]
@@ -224,35 +207,39 @@ mod tests {
     #[test]
     fn processor_chain_config_from_json() {
         let json = serde_json::json!({
-            "processors": [
-                { "type": "processor:attribute", "config": { "actions": [] } },
-                { "type": "processor:debug", "config": { "verbosity": "basic" } }
-            ]
+            "processors": {
+                "attr": { "type": "processor:attribute", "config": { "actions": [] } },
+                "dbg": { "type": "processor:debug", "config": { "verbosity": "basic" } }
+            }
         });
 
         let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
         assert_eq!(cfg.processors.len(), 2);
-        assert_eq!(cfg.processors[0].r#type, "processor:attribute");
-        assert_eq!(cfg.processors[1].r#type, "processor:debug");
-        assert!(cfg.processors[0].config.is_object());
+
+        let keys: Vec<&String> = cfg.processors.keys().collect();
+        assert_eq!(keys, vec!["attr", "dbg"]);
+
+        assert_eq!(cfg.processors["attr"].r#type.as_str(), "urn:otel:processor:attribute");
+        assert_eq!(cfg.processors["dbg"].r#type.as_str(), "urn:otel:processor:debug");
+        assert!(cfg.processors["attr"].config.is_object());
     }
 
     #[test]
     fn processor_chain_config_default_config() {
         let json = serde_json::json!({
-            "processors": [
-                { "type": "processor:debug" }
-            ]
+            "processors": {
+                "dbg": { "type": "processor:debug" }
+            }
         });
 
         let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
         assert_eq!(cfg.processors.len(), 1);
-        assert!(cfg.processors[0].config.is_null());
+        assert!(cfg.processors["dbg"].config.is_null());
     }
 
     #[test]
-    fn processor_chain_config_empty_list() {
-        let json = serde_json::json!({ "processors": [] });
+    fn processor_chain_config_empty_map() {
+        let json = serde_json::json!({ "processors": {} });
         let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
         assert!(cfg.processors.is_empty());
     }

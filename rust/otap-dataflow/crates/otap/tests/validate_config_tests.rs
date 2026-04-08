@@ -115,7 +115,8 @@ connections:
 fn validate_processor_chain_accepted() {
     let cfg = chain_pipeline(
         r#"      processors:
-        - type: processor:debug
+        dbg:
+          type: processor:debug
           config:
             verbosity: basic"#,
     );
@@ -134,7 +135,8 @@ fn validate_processor_chain_accepted() {
 fn validate_processor_chain_unknown_sub_processor_rejected() {
     let cfg = chain_pipeline(
         r#"      processors:
-        - type: "processor:nonexistent_processor""#,
+        bad:
+          type: "processor:nonexistent_processor""#,
     );
     let gid: PipelineGroupId = "test_group".into();
     let pid: PipelineId = "test_pipeline".into();

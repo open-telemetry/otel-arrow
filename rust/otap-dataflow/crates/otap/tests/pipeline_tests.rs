@@ -301,18 +301,16 @@ fn build_processor_chain_pipeline_config(
 ) -> PipelineConfig {
     let receiver_config_value = fake_receiver_config_value();
     let chain_config = json!({
-        "processors": [
-            {
-                "name": "step_1",
+        "processors": {
+            "step_1": {
                 "type": "processor:debug",
                 "config": { "verbosity": "basic" }
             },
-            {
-                "name": "step_2",
+            "step_2": {
                 "type": "processor:debug",
                 "config": { "verbosity": "basic" }
             }
-        ]
+        }
     });
 
     PipelineConfigBuilder::new()
