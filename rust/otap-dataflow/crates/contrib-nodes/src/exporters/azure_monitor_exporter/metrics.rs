@@ -69,9 +69,14 @@ pub struct AzureMonitorExporterMetrics {
     /// Authentication success latency in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
     pub auth_success_latency: Mmsc,
-    /// Batch size in bytes (min/max/sum/count).
+    /// Compressed batch size in bytes (min/max/sum/count).
+    /// Recorded once per batch; HTTP retries do not produce additional observations.
     #[metric(unit = "By")]
     pub batch_size: Mmsc,
+    /// Uncompressed batch size in bytes (min/max/sum/count).
+    /// Recorded once per batch, before compression.
+    #[metric(unit = "By")]
+    pub batch_uncompressed_size: Mmsc,
     /// Current number of in-flight export requests.
     #[metric(unit = "{export}")]
     pub in_flight_exports: Gauge<u64>,
@@ -90,9 +95,6 @@ pub struct AzureMonitorExporterMetrics {
     /// Number of successful heartbeat sends.
     #[metric(unit = "{heartbeat}")]
     pub heartbeats: Counter<u64>,
-    /// Number of log records that failed to serialize during transformation.
-    #[metric(unit = "{record}")]
-    pub transform_failures: Counter<u64>,
 }
 
 /// Full metrics tracker for the Azure Monitor exporter.
@@ -204,6 +206,13 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.batch_size.get()
     }
 
+    /// Get the uncompressed batch size snapshot (min/max/sum/count) in bytes.
+    #[inline]
+    #[must_use]
+    pub fn batch_uncompressed_size(&self) -> MmscSnapshot {
+        self.metrics.batch_uncompressed_size.get()
+    }
+
     /// Get the current in-flight exports gauge value.
     #[inline]
     #[must_use]
@@ -290,10 +299,16 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.auth_failures.inc();
     }
 
-    /// Record a batch size observation in bytes.
+    /// Record a compressed batch size observation in bytes.
     #[inline]
     pub fn add_batch_size(&mut self, size_bytes: f64) {
         self.metrics.batch_size.record(size_bytes);
+    }
+
+    /// Record an uncompressed batch size observation in bytes.
+    #[inline]
+    pub fn add_batch_uncompressed_size(&mut self, size_bytes: f64) {
+        self.metrics.batch_uncompressed_size.record(size_bytes);
     }
 
     /// Set the current number of in-flight exports.
@@ -336,12 +351,6 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     pub fn add_heartbeat(&mut self) {
         self.metrics.heartbeats.inc();
-    }
-
-    /// Increment the transform failures counter.
-    #[inline]
-    pub fn add_transform_failures(&mut self, count: u64) {
-        self.metrics.transform_failures.add(count);
     }
 
     /// Record an HTTP response status code.

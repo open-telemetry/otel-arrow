@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use anyhow::Error;
-use toml::Value;
+use toml::{Table, Value};
 
 /// Validates the entire structure of the project.
 ///
@@ -47,7 +47,7 @@ pub fn run() -> anyhow::Result<()> {
 
                 match std::fs::read_to_string(cargo_toml_path.clone()) {
                     Ok(contents) => {
-                        let toml = contents.parse::<Value>()?;
+                        let toml = contents.parse::<Table>()?;
 
                         if let Err(e) = check_package(cargo_toml_path.as_path(), &toml) {
                             errors.push(e);
@@ -132,7 +132,7 @@ fn check_path_is_true<P: AsRef<Path>>(
 
 /// Checks the `package` section of a Cargo.toml file.
 #[cfg(not(tarpaulin_include))]
-fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Value) -> anyhow::Result<()> {
+fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Result<()> {
     let package = toml.get("package").ok_or_else(|| {
         anyhow::anyhow!(
             "❌ Missing `package` section in {}",
@@ -184,7 +184,7 @@ fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Value) -> anyhow::Re
 
 /// Checks the `lints` section of a Cargo.toml file.
 #[cfg(not(tarpaulin_include))]
-fn check_lints_workspace<P: AsRef<Path>>(cargo_toml_path: P, toml: &Value) -> anyhow::Result<()> {
+fn check_lints_workspace<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Result<()> {
     let expected_lints = r#"Please add the following to your crate Cargo.toml:
 [lints]
 workspace = true

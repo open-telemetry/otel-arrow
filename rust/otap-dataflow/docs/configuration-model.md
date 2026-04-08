@@ -209,8 +209,8 @@ Optional observability policies are supported at:
 
 ## Policy Hierarchy
 
-Policies include channel capacity, health, runtime telemetry, and
-resources controls:
+Policies include channel capacity, health, runtime telemetry, resources
+controls, and transport headers:
 
 ```yaml
 policies:
@@ -229,7 +229,23 @@ policies:
   resources:
     core_allocation:
       type: all_cores
+    memory_limiter:
+      mode: observe_only
+      source: auto
+      soft_limit: 7 GiB
+      hard_limit: 8 GiB
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: ["x-tenant-id"]
+          store_as: tenant_id
+    header_propagation:
+      default:
+        selector: all_captured
 ```
+
+For full transport header policy documentation, see
+[transport-headers.md](transport-headers.md).
 
 Resolution order:
 
@@ -249,6 +265,18 @@ Defaults at top-level:
 - `telemetry.tokio_metrics = true`
 - `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+- `transport_headers = not set` (opt-in; no headers captured or propagated)
+
+Memory limiter configuration:
+
+- `policies.resources.memory_limiter` is optional and process-wide.
+- If configured, `mode` must be explicitly set to `enforce` or `observe_only`.
+- The policy is supported only at top-level `policies.resources`.
+  Group, pipeline, and observability-pipeline resource placements are rejected.
+- In Phase 1, `Soft` remains informational; `Hard` is the ingress-shedding
+  threshold.
+- Detailed runtime behavior and rollout guidance are documented in
+  [memory-limiter-phase1.md](memory-limiter-phase1.md).
 
 Control channel keys:
 

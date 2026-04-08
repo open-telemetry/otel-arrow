@@ -154,7 +154,8 @@ fn run_pipeline_with_condition<F>(
             config,
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -199,12 +200,16 @@ fn run_pipeline_with_condition<F>(
     let run_result = {
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
+        let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
+            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+        );
         runtime_pipeline.run_forever(
             pipeline_key,
             pipeline_ctx,
             event_reporter,
             metrics_reporter,
             Duration::from_secs(1),
+            memory_pressure_rx,
             runtime_ctrl_tx,
             runtime_ctrl_rx,
             pipeline_completion_tx,

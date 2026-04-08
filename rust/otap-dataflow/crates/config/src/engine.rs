@@ -154,6 +154,7 @@ impl EngineObservabilityPolicies {
             health: self.health,
             telemetry: self.telemetry,
             resources: None,
+            transport_headers: None,
         }
     }
 
@@ -315,6 +316,42 @@ groups:
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         assert!(config.engine.observability.pipeline.is_some());
+    }
+
+    #[test]
+    fn from_yaml_requires_explicit_memory_limiter_mode() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      source: auto
+      soft_limit: 1 GiB
+      hard_limit: 2 GiB
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("should reject missing mode");
+        match err {
+            Error::DeserializationError { details, .. } => {
+                assert!(details.contains("missing field `mode`"));
+            }
+            other => panic!("expected deserialization error, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -1450,6 +1487,229 @@ groups:
         let parsed = result.expect("json file should parse");
         assert_eq!(parsed.version, ENGINE_CONFIG_VERSION_V1);
         assert!(parsed.groups.contains_key("default"));
+    }
+
+    #[test]
+    fn resolve_transport_headers_pipeline_overrides_group() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    policies:
+      transport_headers:
+        header_capture:
+          headers:
+            - match_names: ["x-group-header"]
+    pipelines:
+      with_override:
+        policies:
+          transport_headers:
+            header_capture:
+              headers:
+                - match_names: ["x-pipeline-header"]
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        let pipeline = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "with_override")
+            .expect("pipeline should be resolved");
+
+        // Pipeline-level transport_headers should win over group-level.
+        let policy = pipeline
+            .policies
+            .transport_headers
+            .as_ref()
+            .expect("transport_headers should be resolved");
+        assert_eq!(policy.header_capture.headers.len(), 1);
+        assert_eq!(
+            policy.header_capture.headers[0].match_names,
+            vec!["x-pipeline-header"]
+        );
+    }
+
+    #[test]
+    fn resolve_transport_headers_group_overrides_engine() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: ["x-engine-header"]
+engine: {}
+groups:
+  default:
+    policies:
+      transport_headers:
+        header_capture:
+          headers:
+            - match_names: ["x-group-header"]
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        let pipeline = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "main")
+            .expect("pipeline should be resolved");
+
+        // Group-level transport_headers should win over engine-level.
+        let policy = pipeline
+            .policies
+            .transport_headers
+            .as_ref()
+            .expect("transport_headers should be resolved");
+        assert_eq!(policy.header_capture.headers.len(), 1);
+        assert_eq!(
+            policy.header_capture.headers[0].match_names,
+            vec!["x-group-header"]
+        );
+    }
+
+    #[test]
+    fn resolve_transport_headers_inherits_from_engine() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: ["x-engine-header"]
+    header_propagation:
+      default:
+        selector: all_captured
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        let pipeline = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "main")
+            .expect("pipeline should be resolved");
+
+        // Pipeline and group don't define transport_headers, so engine-level
+        // should be inherited.
+        let policy = pipeline
+            .policies
+            .transport_headers
+            .as_ref()
+            .expect("transport_headers should be inherited from engine level");
+        assert_eq!(policy.header_capture.headers.len(), 1);
+        assert_eq!(
+            policy.header_capture.headers[0].match_names,
+            vec!["x-engine-header"]
+        );
+        assert_eq!(
+            policy.header_propagation.default.selector,
+            crate::transport_headers_policy::PropagationSelector::AllCaptured
+        );
+    }
+
+    #[test]
+    fn resolve_observability_pipeline_has_no_transport_headers() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: ["x-engine-header"]
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "urn:otel:receiver:internal_telemetry"
+          config: {}
+        sink:
+          type: "urn:otel:exporter:console"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        // The observability pipeline should NOT inherit transport_headers from
+        // the engine level (it's explicitly set to None during resolution).
+        let obs = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.role == ResolvedPipelineRole::ObservabilityInternal)
+            .expect("observability pipeline should be resolved");
+        assert!(
+            obs.policies.transport_headers.is_none(),
+            "observability pipeline should not have transport_headers"
+        );
+
+        // Regular pipelines should still inherit engine-level transport_headers.
+        let main = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "main")
+            .expect("main pipeline should be resolved");
+        assert!(
+            main.policies.transport_headers.is_some(),
+            "regular pipelines should inherit transport_headers from engine level"
+        );
     }
 
     #[test]

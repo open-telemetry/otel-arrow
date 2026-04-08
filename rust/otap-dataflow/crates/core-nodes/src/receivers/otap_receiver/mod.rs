@@ -13,6 +13,7 @@
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::compression::CompressionMethod;
+use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, MemoryPressureRejectionMetrics};
 use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otap_df_otap::otap_grpc::{
@@ -32,6 +33,7 @@ use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
+use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
@@ -49,6 +51,7 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use std::ops::Add;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -110,6 +113,8 @@ const fn default_wait_for_result() -> bool {
 pub struct OTAPReceiver {
     config: Config,
     metrics: MetricSet<OtapReceiverMetrics>,
+    memory_pressure_metrics: Arc<SharedOtapMemoryPressureMetrics>,
+    admission_state: SharedReceiverAdmissionState,
 }
 
 /// Declares the OTAP receiver as a shared receiver factory
@@ -150,7 +155,14 @@ impl OTAPReceiver {
         // Register OTAP receiver metrics for this node.
         let metrics = pipeline_ctx.register_metrics::<OtapReceiverMetrics>();
 
-        Ok(OTAPReceiver { config, metrics })
+        Ok(OTAPReceiver {
+            config,
+            metrics,
+            memory_pressure_metrics: Arc::new(SharedOtapMemoryPressureMetrics::default()),
+            admission_state: SharedReceiverAdmissionState::from_process_state(
+                &pipeline_ctx.memory_pressure_state(),
+            ),
+        })
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
@@ -203,6 +215,10 @@ impl OTAPReceiver {
             RouteResponse::None => {}
         }
     }
+
+    fn flush_memory_pressure_metrics(&mut self) {
+        self.memory_pressure_metrics.flush_into(&mut self.metrics);
+    }
 }
 
 /// OTAP receiver metrics.
@@ -220,6 +236,41 @@ pub struct OtapReceiverMetrics {
     /// Number of invalid/expired acks/nacks.
     #[metric(unit = "{ack_or_nack}")]
     pub acks_nacks_invalid_or_expired: Counter<u64>,
+
+    /// Number of OTAP RPCs rejected before entering the pipeline.
+    #[metric(unit = "{requests}")]
+    pub rejected_requests: Counter<u64>,
+
+    /// Number of OTAP RPCs rejected specifically because memory pressure was active.
+    #[metric(unit = "{requests}")]
+    pub refused_memory_pressure: Counter<u64>,
+}
+
+#[derive(Default)]
+struct SharedOtapMemoryPressureMetrics {
+    rejected_requests: AtomicU64,
+    refused_memory_pressure: AtomicU64,
+}
+
+impl SharedOtapMemoryPressureMetrics {
+    fn flush_into(&self, metrics: &mut MetricSet<OtapReceiverMetrics>) {
+        let rejected_requests = self.rejected_requests.swap(0, Ordering::Relaxed);
+        if rejected_requests > 0 {
+            metrics.rejected_requests.add(rejected_requests);
+        }
+
+        let refused_memory_pressure = self.refused_memory_pressure.swap(0, Ordering::Relaxed);
+        if refused_memory_pressure > 0 {
+            metrics.refused_memory_pressure.add(refused_memory_pressure);
+        }
+    }
+}
+
+impl MemoryPressureRejectionMetrics for SharedOtapMemoryPressureMetrics {
+    fn record_memory_pressure_rejection(&self) {
+        let _ = self.rejected_requests.fetch_add(1, Ordering::Relaxed);
+        let _ = self.refused_memory_pressure.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// State shared between gRPC server task and the effect handler.
@@ -272,6 +323,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
             wait_for_result: self.config.wait_for_result,
+            admission_state: self.admission_state.clone(),
+            memory_pressure_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -326,6 +379,10 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
 
         let server = server_builder
+            .layer(MemoryPressureLayer::with_metrics(
+                self.admission_state.clone(),
+                self.memory_pressure_metrics.clone(),
+            ))
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_server)
             .add_service(metrics_server)
@@ -401,6 +458,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                         _ = handle.cancel().await;
                     }
                     effect_handler.notify_receiver_drained().await?;
+                    self.flush_memory_pressure_metrics();
                     terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
                     break;
                 }
@@ -440,11 +498,16 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             if let Some(handle) = telemetry_cancel_handle.take() {
                                 _ = handle.cancel().await;
                             }
+                            self.flush_memory_pressure_metrics();
                             terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
                             break;
                         }
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            self.flush_memory_pressure_metrics();
                             _ = metrics_reporter.report(&mut self.metrics);
+                        }
+                        Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
+                            self.admission_state.apply(update);
                         }
                         Ok(NodeControlMsg::Ack(ack)) => {
                             self.handle_ack_response(self.route_ack_response(&states, ack));
@@ -478,6 +541,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                         if let Some(handle) = telemetry_cancel_handle.take() {
                             _ = handle.cancel().await;
                         }
+                        self.flush_memory_pressure_metrics();
                         terminal_state = TerminalState::new(
                             clock::now().add(Duration::from_secs(1)),
                             [self.metrics.snapshot()],
@@ -526,6 +590,7 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_otap::memory_pressure_layer::MemoryPressureRejectionMetrics;
     use otap_df_otap::otap_mock::create_otap_batch;
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::{next_ack, next_nack};
@@ -541,6 +606,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use std::time::Instant;
     use tokio::time::{Duration, timeout};
 
@@ -1093,6 +1159,49 @@ mod tests {
             Some(CompressionMethod::Deflate)
         ));
         assert!(receiver.config.timeout.is_none());
+    }
+
+    #[test]
+    fn shared_memory_pressure_metrics_flush_into_reported_metric_set() {
+        use serde_json::json;
+
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let config = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "response_stream_channel_size": 100
+        });
+        let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
+
+        receiver
+            .memory_pressure_metrics
+            .record_memory_pressure_rejection();
+        receiver
+            .memory_pressure_metrics
+            .record_memory_pressure_rejection();
+
+        receiver.flush_memory_pressure_metrics();
+
+        assert_eq!(receiver.metrics.rejected_requests.get(), 2);
+        assert_eq!(receiver.metrics.refused_memory_pressure.get(), 2);
+        assert_eq!(
+            receiver
+                .memory_pressure_metrics
+                .rejected_requests
+                .load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            receiver
+                .memory_pressure_metrics
+                .refused_memory_pressure
+                .load(Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]

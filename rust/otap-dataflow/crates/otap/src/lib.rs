@@ -39,6 +39,9 @@ pub(crate) mod socket_options;
 /// Shared concurrency limiting across protocol servers
 pub mod shared_concurrency;
 
+/// Shared ingress shedding based on process-wide memory pressure.
+pub mod memory_pressure_layer;
+
 /// gRPC service implementation
 pub mod otlp_grpc;
 
@@ -54,6 +57,10 @@ pub mod object_store;
 
 /// Cryptographic provider initialization (see [`crypto::install_crypto_provider`]).
 pub mod crypto;
+
+/// Protocol-neutral transport header abstraction for end-to-end header
+/// propagation through the pipeline.
+pub mod transport_headers;
 
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]

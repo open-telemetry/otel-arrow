@@ -29,15 +29,19 @@ use arrow::array::{
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, Schema, TimeUnit};
+use otap_df_pdata::encode::Error as EncodeError;
 use otap_df_pdata::encode::append_attribute_value;
-use otap_df_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
+use otap_df_pdata::encode::record::attributes::{
+    AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper,
+};
 use otap_df_pdata::encode::record::metrics::{
     ExemplarsRecordBatchBuilder, MetricsRecordBatchBuilder,
 };
 use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
+use otap_df_pdata::otlp::attributes::parent_id::ParentId;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{FieldExt, consts};
-use otap_df_pdata_views::views::common::InstrumentationScopeView;
+use otap_df_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
 use otap_df_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, ExemplarView, ExponentialHistogramDataPointView,
     HistogramDataPointView, MetricView, NumberDataPointView, SummaryDataPointView, Value,
@@ -45,6 +49,8 @@ use otap_df_pdata_views::views::metrics::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::otel_warn;
+
+use super::telemetry;
 
 /// Snapshot of builder positions, used to slice back to the last valid position
 /// of each payload on error.
@@ -68,8 +74,6 @@ pub struct Checkpoint {
     sdp: usize,
     sdp_attrs: usize,
 }
-
-const ATTRIBUTE_ENCODE_FAILED_EVENT: &str = "temporal_reaggregation.attribute.encode_failed";
 
 /// Record batch builders for all metric signal payload types.
 pub struct MetricSignalBuilder {
@@ -121,10 +125,7 @@ impl MetricSignalBuilder {
     /// lengths captured in the checkpoint, discarding rows appended afterward.
     /// This is used by [super::TemporalReaggregationProcessor::flush_at] to
     /// discard some changes if we couldn't fully append an incoming pdata.
-    pub fn finish(
-        &mut self,
-        checkpoint: Option<Checkpoint>,
-    ) -> otap_df_pdata::error::Result<OtapArrowRecords> {
+    pub fn finish(&mut self, checkpoint: Option<Checkpoint>) -> OtapArrowRecords {
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
         let checkpoint = checkpoint.as_ref();
 
@@ -133,105 +134,105 @@ impl MetricSignalBuilder {
             ArrowPayloadType::UnivariateMetrics,
             &mut records,
             checkpoint.map(|c| c.metrics),
-        )?;
+        );
         finish_payload(
             self.resource_attrs.finish(),
             ArrowPayloadType::ResourceAttrs,
             &mut records,
             checkpoint.map(|c| c.resource_attrs),
-        )?;
+        );
         finish_payload(
             self.scope_attrs.finish(),
             ArrowPayloadType::ScopeAttrs,
             &mut records,
             checkpoint.map(|c| c.scope_attrs),
-        )?;
+        );
         finish_payload(
             self.number_dps.finish(),
             ArrowPayloadType::NumberDataPoints,
             &mut records,
             checkpoint.map(|c| c.ndp),
-        )?;
+        );
         finish_payload(
             self.ndp_attrs.finish(),
             ArrowPayloadType::NumberDpAttrs,
             &mut records,
             checkpoint.map(|c| c.ndp_attrs),
-        )?;
-        finish_exemplar_payload(
+        );
+        finish_payload(
             self.ndp_exemplars.finish(),
             ArrowPayloadType::NumberDpExemplars,
             &mut records,
             checkpoint.map(|c| c.ndp_exemplars),
-        )?;
+        );
         finish_payload(
             self.ndp_exemplar_attrs.finish(),
             ArrowPayloadType::NumberDpExemplarAttrs,
             &mut records,
             checkpoint.map(|c| c.ndp_exemplar_attrs),
-        )?;
+        );
         finish_payload(
             self.histogram_dps.finish(),
             ArrowPayloadType::HistogramDataPoints,
             &mut records,
             checkpoint.map(|c| c.hdp),
-        )?;
+        );
         finish_payload(
             self.hdp_attrs.finish(),
             ArrowPayloadType::HistogramDpAttrs,
             &mut records,
             checkpoint.map(|c| c.hdp_attrs),
-        )?;
-        finish_exemplar_payload(
+        );
+        finish_payload(
             self.hdp_exemplars.finish(),
             ArrowPayloadType::HistogramDpExemplars,
             &mut records,
             checkpoint.map(|c| c.hdp_exemplars),
-        )?;
+        );
         finish_payload(
             self.hdp_exemplar_attrs.finish(),
             ArrowPayloadType::HistogramDpExemplarAttrs,
             &mut records,
             checkpoint.map(|c| c.hdp_exemplar_attrs),
-        )?;
+        );
         finish_payload(
             self.exp_histogram_dps.finish(),
             ArrowPayloadType::ExpHistogramDataPoints,
             &mut records,
             checkpoint.map(|c| c.ehdp),
-        )?;
+        );
         finish_payload(
             self.ehdp_attrs.finish(),
             ArrowPayloadType::ExpHistogramDpAttrs,
             &mut records,
             checkpoint.map(|c| c.ehdp_attrs),
-        )?;
-        finish_exemplar_payload(
+        );
+        finish_payload(
             self.ehdp_exemplars.finish(),
             ArrowPayloadType::ExpHistogramDpExemplars,
             &mut records,
             checkpoint.map(|c| c.ehdp_exemplars),
-        )?;
+        );
         finish_payload(
             self.ehdp_exemplar_attrs.finish(),
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
             &mut records,
             checkpoint.map(|c| c.ehdp_exemplar_attrs),
-        )?;
+        );
         finish_payload(
             self.summary_dps.finish(),
             ArrowPayloadType::SummaryDataPoints,
             &mut records,
             checkpoint.map(|c| c.sdp),
-        )?;
+        );
         finish_payload(
             self.summary_attrs.finish(),
             ArrowPayloadType::SummaryDpAttrs,
             &mut records,
             checkpoint.map(|c| c.sdp_attrs),
-        )?;
+        );
 
-        Ok(records)
+        records
     }
 
     /// Capture the current builder positions as a [`Checkpoint`].
@@ -279,24 +280,12 @@ impl MetricSignalBuilder {
 
     /// Append resource attributes for a newly seen resource.
     pub fn append_resource<R: ResourceView>(&mut self, id: u16, view: &R) {
-        for attr in view.attributes() {
-            self.resource_attrs.append_parent_id(&id);
-            if let Err(e) = append_attribute_value(&mut self.resource_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.resource_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.resource_attrs, &id, view.attributes());
     }
 
     /// Append scope attributes for a newly seen scope.
     pub fn append_scope<S: InstrumentationScopeView>(&mut self, id: u16, view: &S) {
-        for attr in view.attributes() {
-            self.scope_attrs.append_parent_id(&id);
-            if let Err(e) = append_attribute_value(&mut self.scope_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.scope_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.scope_attrs, &id, view.attributes());
     }
 
     /// Append a complete metric row for a newly seen metric.
@@ -355,13 +344,7 @@ impl MetricSignalBuilder {
         dp: &V,
     ) -> usize {
         let row = self.number_dps.append(dp_id, metric_id, dp);
-        for attr in dp.attributes() {
-            self.ndp_attrs.append_parent_id(&dp_id);
-            if let Err(e) = append_attribute_value(&mut self.ndp_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.ndp_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.ndp_attrs, &dp_id, dp.attributes());
         row
     }
 
@@ -381,13 +364,7 @@ impl MetricSignalBuilder {
         dp: &V,
     ) -> usize {
         let row = self.histogram_dps.append(dp_id, metric_id, dp);
-        for attr in dp.attributes() {
-            self.hdp_attrs.append_parent_id(&dp_id);
-            if let Err(e) = append_attribute_value(&mut self.hdp_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.hdp_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.hdp_attrs, &dp_id, dp.attributes());
         row
     }
 
@@ -404,13 +381,7 @@ impl MetricSignalBuilder {
         dp: &V,
     ) -> usize {
         let row = self.exp_histogram_dps.append(dp_id, metric_id, dp);
-        for attr in dp.attributes() {
-            self.ehdp_attrs.append_parent_id(&dp_id);
-            if let Err(e) = append_attribute_value(&mut self.ehdp_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.ehdp_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.ehdp_attrs, &dp_id, dp.attributes());
         row
     }
 
@@ -431,13 +402,7 @@ impl MetricSignalBuilder {
         dp: &V,
     ) -> usize {
         let row = self.summary_dps.append(dp_id, metric_id, dp);
-        for attr in dp.attributes() {
-            self.summary_attrs.append_parent_id(&dp_id);
-            if let Err(e) = append_attribute_value(&mut self.summary_attrs, &attr) {
-                otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
-                self.summary_attrs.any_values_builder.append_empty();
-            }
-        }
+        encode_attributes(&mut self.summary_attrs, &dp_id, dp.attributes());
         row
     }
 
@@ -454,7 +419,7 @@ impl MetricSignalBuilder {
         dp_id: u32,
         dp: &V,
         next_exemplar_id: &mut u32,
-    ) -> Result<(), super::ProcessPdataError> {
+    ) -> Result<(), super::AggregationError> {
         for exemplar in dp.exemplars() {
             let id = super::next_id_32(next_exemplar_id)?;
             append_exemplar(
@@ -474,7 +439,7 @@ impl MetricSignalBuilder {
         dp_id: u32,
         dp: &V,
         next_exemplar_id: &mut u32,
-    ) -> Result<(), super::ProcessPdataError> {
+    ) -> Result<(), super::AggregationError> {
         for exemplar in dp.exemplars() {
             let id = super::next_id_32(next_exemplar_id)?;
             append_exemplar(
@@ -494,7 +459,7 @@ impl MetricSignalBuilder {
         dp_id: u32,
         dp: &V,
         next_exemplar_id: &mut u32,
-    ) -> Result<(), super::ProcessPdataError> {
+    ) -> Result<(), super::AggregationError> {
         for exemplar in dp.exemplars() {
             let id = super::next_id_32(next_exemplar_id)?;
             append_exemplar(
@@ -518,30 +483,7 @@ fn finish_payload(
     payload_type: ArrowPayloadType,
     records: &mut OtapArrowRecords,
     truncate_len: Option<usize>,
-) -> otap_df_pdata::error::Result<()> {
-    // safety: So long as the aggregation logic is keeping arrays
-    // the same length, this operation should be infallible.
-    let rb = result.expect("Valid record batch");
-    let rb = match truncate_len {
-        Some(len) => rb.slice(0, len),
-        None => rb,
-    };
-    if rb.num_rows() > 0 {
-        records.set(payload_type, rb)?;
-    }
-    Ok(())
-}
-
-/// Finish building an exemplar payload type and set it on the output records.
-///
-/// Like [`finish_payload`] but the exemplar builder uses adaptive schemas so
-/// the `finish` result may produce an empty batch that we can skip.
-fn finish_exemplar_payload(
-    result: Result<RecordBatch, arrow::error::ArrowError>,
-    payload_type: ArrowPayloadType,
-    records: &mut OtapArrowRecords,
-    truncate_len: Option<usize>,
-) -> otap_df_pdata::error::Result<()> {
+) {
     // safety: So long as the aggregation logic is keeping arrays
     // the same length, this operation should be infallible.
     let rb = result.expect("Valid record batch");
@@ -550,9 +492,11 @@ fn finish_exemplar_payload(
         _ => rb,
     };
     if rb.num_rows() > 0 {
-        records.set(payload_type, rb)?;
+        // safety: Our schemas are spec compliant
+        records
+            .set(payload_type, rb)
+            .expect("Valid schema for payload type");
     }
-    Ok(())
 }
 
 /// Append a single exemplar row to the given exemplar builder and its attribute
@@ -584,12 +528,45 @@ fn append_exemplar<E: ExemplarView>(
         .append_trace_id(exemplar.trace_id().unwrap_or(&[0; 16]))
         .expect("TraceId type guarantees 16-byte width");
 
-    for kv in exemplar.filtered_attributes() {
-        attr_builder.append_parent_id(&id);
-        if let Err(e) = append_attribute_value(attr_builder, &kv) {
-            otel_warn!(ATTRIBUTE_ENCODE_FAILED_EVENT, error = %e);
+    encode_attributes(attr_builder, &id, exemplar.filtered_attributes());
+}
+
+/// Maximum number of attribute encoding errors to capture per batch of attributes.
+const MAX_RECORDED_ATTR_ERRORS: usize = 5;
+
+/// Encode all attributes from `attrs` into `attr_builder`, coalescing encoding
+/// failures into at most one warning event.
+fn encode_attributes<T, I, KV>(
+    attr_builder: &mut AttributesRecordBatchBuilder<T>,
+    parent_id: &<<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+    attrs: I,
+) where
+    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+    I: IntoIterator<Item = KV>,
+    KV: AttributeView,
+{
+    let mut errors: [Option<EncodeError>; MAX_RECORDED_ATTR_ERRORS] =
+        [None, None, None, None, None];
+    let mut error_count: usize = 0;
+
+    for attr in attrs {
+        attr_builder.append_parent_id(parent_id);
+        if let Err(e) = append_attribute_value(attr_builder, &attr) {
+            if error_count < MAX_RECORDED_ATTR_ERRORS {
+                errors[error_count] = Some(e);
+            }
+            error_count += 1;
             attr_builder.any_values_builder.append_empty();
         }
+    }
+
+    if error_count > 0 {
+        let recorded: Vec<&EncodeError> = errors.iter().flatten().collect();
+        otel_warn!(
+            telemetry::ATTRIBUTE_ENCODE_FAILED_EVENT,
+            errors = ?recorded,
+            total_errors = error_count,
+        );
     }
 }
 
@@ -1598,14 +1575,9 @@ mod tests {
 
         // The builder should have compensated for the error by appending an empty value
         // Finish should succeed without panicking due to column length mismatch
-        let result = builder.finish(None);
-        assert!(
-            result.is_ok(),
-            "finish should succeed even with invalid attributes"
-        );
+        let records = builder.finish(None);
 
         // Verify the resource_attrs payload was created (has 1 row with empty value)
-        let records = result.unwrap();
         if let OtapArrowRecords::Metrics(metrics) = &records {
             let attrs_rb = metrics.get(ArrowPayloadType::ResourceAttrs);
             assert!(attrs_rb.is_some(), "resource attributes should be present");
@@ -1633,15 +1605,7 @@ mod tests {
         let row = builder.append_number_dp(0, 0, &dp);
         assert_eq!(row, 0, "should return row index 0");
 
-        // Finish should succeed without panicking due to column length mismatch
-        let result = builder.finish(None);
-        assert!(
-            result.is_ok(),
-            "finish should succeed even with invalid attributes"
-        );
-
-        // Verify the ndp_attrs payload was created
-        let records = result.unwrap();
+        let records = builder.finish(None);
         if let OtapArrowRecords::Metrics(metrics) = &records {
             let attrs_rb = metrics.get(ArrowPayloadType::NumberDpAttrs);
             assert!(
@@ -1675,10 +1639,7 @@ mod tests {
 
         builder.append_resource(0, &resource);
 
-        let result = builder.finish(None);
-        assert!(result.is_ok(), "finish should succeed");
-
-        let records = result.unwrap();
+        let records = builder.finish(None);
         if let OtapArrowRecords::Metrics(metrics) = &records {
             let attrs_rb = metrics.get(ArrowPayloadType::ResourceAttrs);
             assert!(attrs_rb.is_some(), "resource attributes should be present");
