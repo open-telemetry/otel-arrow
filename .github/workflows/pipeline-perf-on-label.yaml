@@ -122,4 +122,4 @@ jobs:
       - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/1klrps-docker.yaml

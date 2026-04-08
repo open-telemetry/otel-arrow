@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y protobuf-compiler
 COPY --from=otel-arrow /proto/opentelemetry/proto /build/proto/opentelemetry/proto
 COPY --from=otel-arrow /proto/opentelemetry-proto /build/proto/opentelemetry-proto
 COPY --from=otel-arrow /rust/experimental /build/rust/experimental
+COPY --from=otel-arrow /THIRD_PARTY_NOTICES.txt /build/THIRD_PARTY_NOTICES.txt
 
 COPY . /build/rust/dataflow/.
 
