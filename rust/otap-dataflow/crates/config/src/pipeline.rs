@@ -610,12 +610,18 @@ impl PipelineConfig {
     /// - Duplicate node IDs
     /// - Duplicate output ports (same source node + port name)
     /// - Invalid hyper-edges (missing source or target nodes)
+    /// - Invalid node-level transport header policy overrides
     pub fn validate(
         &self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         let mut errors = Vec::new();
+
+        // Validate node-level transport header policy fields.
+        for (node_name, node_config) in self.nodes.iter() {
+            node_config.validate_transport_header_fields(node_name, &mut errors);
+        }
 
         self.validate_connections(
             &self.nodes,
@@ -930,6 +936,8 @@ impl PipelineConfigBuilder {
                     outputs: Vec::new(),
                     default_output: None,
                     config: config.unwrap_or(Value::Null),
+                    header_capture: None,
+                    header_propagation: None,
                 },
             );
         }
@@ -2364,6 +2372,109 @@ sink:
             0,
             "all nodes should be removed, got: {:?}",
             config.nodes().keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_header_capture_on_exporter_rejected_by_validate() {
+        let yaml = r#"
+            nodes:
+              recv:
+                type: "receiver:otap"
+                config: {}
+              exp:
+                type: "exporter:otap"
+                header_capture:
+                  headers:
+                    - match_names: ["x-tenant-id"]
+                config: {}
+            connections:
+              - from: recv
+                to: exp
+        "#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        match result {
+            Err(Error::InvalidConfiguration { errors }) => {
+                let msgs: Vec<_> = errors
+                    .iter()
+                    .filter_map(|e| match e {
+                        Error::InvalidUserConfig { error } => Some(error.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    msgs.iter().any(|m| m.contains("header_capture")),
+                    "expected a header_capture validation error, got: {msgs:?}"
+                );
+            }
+            other => panic!(
+                "expected Err(InvalidConfiguration) with header_capture error, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_header_propagation_on_receiver_rejected_by_validate() {
+        let yaml = r#"
+            nodes:
+              recv:
+                type: "receiver:otap"
+                header_propagation:
+                  default:
+                    selector: all_captured
+                config: {}
+              exp:
+                type: "exporter:otap"
+                config: {}
+            connections:
+              - from: recv
+                to: exp
+        "#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        match result {
+            Err(Error::InvalidConfiguration { errors }) => {
+                let msgs: Vec<_> = errors
+                    .iter()
+                    .filter_map(|e| match e {
+                        Error::InvalidUserConfig { error } => Some(error.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    msgs.iter().any(|m| m.contains("header_propagation")),
+                    "expected a header_propagation validation error, got: {msgs:?}"
+                );
+            }
+            other => panic!(
+                "expected Err(InvalidConfiguration) with header_propagation error, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_valid_header_overrides_pass_validation() {
+        let yaml = r#"
+            nodes:
+              recv:
+                type: "receiver:otap"
+                header_capture:
+                  headers:
+                    - match_names: ["x-tenant-id"]
+                config: {}
+              exp:
+                type: "exporter:otap"
+                header_propagation:
+                  default:
+                    selector: all_captured
+                config: {}
+            connections:
+              - from: recv
+                to: exp
+        "#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        assert!(
+            result.is_ok(),
+            "expected valid pipeline with correct header overrides, got: {result:?}"
         );
     }
 

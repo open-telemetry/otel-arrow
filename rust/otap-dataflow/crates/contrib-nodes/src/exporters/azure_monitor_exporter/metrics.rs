@@ -73,6 +73,10 @@ pub struct AzureMonitorExporterMetrics {
     /// Recorded once per batch; HTTP retries do not produce additional observations.
     #[metric(unit = "By")]
     pub batch_size: Mmsc,
+    /// Uncompressed batch size in bytes (min/max/sum/count).
+    /// Recorded once per batch, before compression.
+    #[metric(unit = "By")]
+    pub batch_uncompressed_size: Mmsc,
     /// Current number of in-flight export requests.
     #[metric(unit = "{export}")]
     pub in_flight_exports: Gauge<u64>,
@@ -202,6 +206,13 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.batch_size.get()
     }
 
+    /// Get the uncompressed batch size snapshot (min/max/sum/count) in bytes.
+    #[inline]
+    #[must_use]
+    pub fn batch_uncompressed_size(&self) -> MmscSnapshot {
+        self.metrics.batch_uncompressed_size.get()
+    }
+
     /// Get the current in-flight exports gauge value.
     #[inline]
     #[must_use]
@@ -288,10 +299,16 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.auth_failures.inc();
     }
 
-    /// Record a batch size observation in bytes.
+    /// Record a compressed batch size observation in bytes.
     #[inline]
     pub fn add_batch_size(&mut self, size_bytes: f64) {
         self.metrics.batch_size.record(size_bytes);
+    }
+
+    /// Record an uncompressed batch size observation in bytes.
+    #[inline]
+    pub fn add_batch_uncompressed_size(&mut self, size_bytes: f64) {
+        self.metrics.batch_uncompressed_size.record(size_bytes);
     }
 
     /// Set the current number of in-flight exports.

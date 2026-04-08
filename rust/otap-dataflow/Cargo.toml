@@ -40,7 +40,6 @@ thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
-sysinfo.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -74,6 +73,8 @@ arrow-buffer = { version = "58.1" }
 arrow-ipc = { version = "58.1", features=["zstd"] }
 arrow-schema = { version = "58.1" }
 arrow-array = { version = "58.1" }
+arrow-cast = { version = "58.1" }
+arrow-select = { version = "58.1" }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"

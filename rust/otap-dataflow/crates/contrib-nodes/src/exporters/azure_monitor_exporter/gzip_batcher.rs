@@ -72,6 +72,8 @@ pub struct GzipResult {
     pub row_count: u64,
     /// Number of gzip sync flushes performed while building this batch.
     pub flush_count: usize,
+    /// Total uncompressed size of the JSON payload in bytes (including structural bytes).
+    pub uncompressed_size: usize,
 }
 
 impl GzipBatcher {
@@ -197,6 +199,7 @@ impl GzipBatcher {
 
         let row_count = self.row_count;
         let flush_count = self.flush_count;
+        let uncompressed_size = self.total_uncompressed_size + 1; // +1 for ']'
 
         // Reset state
         self.remaining_size = TARGET_COMPRESSED_LIMIT;
@@ -210,6 +213,7 @@ impl GzipBatcher {
             compressed_data: Bytes::from(compressed_data),
             row_count,
             flush_count,
+            uncompressed_size,
         });
 
         Ok(FinalizeResult::Ok)
