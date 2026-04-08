@@ -4,8 +4,17 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, AsArray, StringArrayType, StringBuilder};
-use arrow::datatypes::DataType;
+use arrow::array::{
+    Array, ArrayRef, AsArray, DictionaryArray, PrimitiveArray, StringArray, StringArrayType,
+    StringBuilder, as_dictionary_array, make_array,
+};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Int8Type, Int16Type, Int32Type, Int64Type,
+    UInt8Type, UInt16Type,
+};
+use arrow::util::bit_iterator::BitIndexIterator;
+use arrow::util::bit_util;
 use datafusion::common::types::{NativeType, logical_int64, logical_string, logical_uint16};
 use datafusion::error::Result;
 use datafusion::functions::regex::compile_regex;
@@ -14,6 +23,7 @@ use datafusion::logical_expr::{
     TypeSignature, TypeSignatureClass, Volatility,
 };
 use datafusion::scalar::ScalarValue;
+use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RegexpCaptureFunc {
@@ -70,6 +80,8 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
         &self.signature
     }
 
+    // TODO - not supposed to call this .... there's another one where we can figure out the
+    // return type from the args
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
         if arg_types.is_empty() {
             todo!("TODO")
@@ -94,6 +106,25 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
 
         let result = match str_arr.data_type() {
             DataType::Utf8 => regex_capture(&str_arr.as_string::<i32>(), regexes, groups),
+            DataType::Dictionary(k, v) => {
+                if !matches!(v.as_ref(), &DataType::Utf8) {
+                    todo!("invalid type")
+                }
+
+                let dict_vals = get_dict_values(&str_arr, k.as_ref())?;
+                match (regexes, groups) {
+                    (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_)) => {
+                        // fast path, can just match the regexes against the dicts values and
+                        // convert them to matched patterns
+                        let dict_vals_str = dict_vals.as_string::<i32>();
+                        let new_vals = regex_capture(&dict_vals_str, regexes, groups)?;
+                        replace_dict_values(&str_arr, k.as_ref(), new_vals)
+                    }
+                    _ => {
+                        todo!()
+                    }
+                }
+            }
             _ => {
                 todo!()
             }
@@ -105,6 +136,85 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
 
     fn documentation(&self) -> Option<&Documentation> {
         None
+    }
+}
+
+fn get_dict_values(dict_arr: &ArrayRef, dict_key_type: &DataType) -> Result<ArrayRef> {
+    let dict_vals = match dict_key_type {
+        DataType::UInt8 => as_dictionary_array::<UInt8Type>(&dict_arr).values(),
+        DataType::UInt16 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
+        DataType::UInt32 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
+        DataType::UInt64 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
+        DataType::Int8 => as_dictionary_array::<Int8Type>(&dict_arr).values(),
+        DataType::Int16 => as_dictionary_array::<Int16Type>(&dict_arr).values(),
+        DataType::Int32 => as_dictionary_array::<Int32Type>(&dict_arr).values(),
+        DataType::Int64 => as_dictionary_array::<Int64Type>(&dict_arr).values(),
+        _ => {
+            todo!()
+        }
+    };
+    Ok(Arc::clone(dict_vals))
+}
+
+fn replace_dict_values(
+    dict_arr: &ArrayRef,
+    dict_key_type: &DataType,
+    new_values: ArrayRef,
+) -> Result<ArrayRef> {
+    match dict_key_type {
+        DataType::UInt8 => {
+            replace_dict_values_generic(as_dictionary_array::<UInt8Type>(&dict_arr), new_values)
+        }
+        // DataType::UInt16 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
+        // DataType::UInt32 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
+        // DataType::UInt64 => as_dictionary_array::<UInt16Type>(&dict_arr).values(),
+        // DataType::Int8 => as_dictionary_array::<Int8Type>(&dict_arr).values(),
+        // DataType::Int16 => as_dictionary_array::<Int16Type>(&dict_arr).values(),
+        // DataType::Int32 => as_dictionary_array::<Int32Type>(&dict_arr).values(),
+        // DataType::Int64 => as_dictionary_array::<Int64Type>(&dict_arr).values(),
+        _ => {
+            todo!()
+        }
+    }
+}
+
+fn replace_dict_values_generic<K: ArrowDictionaryKeyType>(
+    dict_arr: &DictionaryArray<K>,
+    new_values: ArrayRef,
+) -> Result<ArrayRef> {
+    match new_values.nulls() {
+        Some(val_nulls) => {
+            let mut new_nulls = match dict_arr.keys().nulls() {
+                Some(key_nulls) => key_nulls.buffer().to_vec(),
+                None => vec![0xFF; bit_util::ceil(dict_arr.len(), 8)],
+            };
+
+            let dict_keys = dict_arr.keys();
+            for i in 0..dict_arr.len() {
+                let key = dict_keys.values()[i].as_usize();
+                if val_nulls.is_null(key) {
+                    bit_util::unset_bit(&mut new_nulls, i);
+                }
+            }
+
+            let new_data = new_values.to_data().into_builder().nulls(None).build()?;
+
+            Ok(Arc::new(DictionaryArray::new(
+                PrimitiveArray::<K>::new(
+                    dict_arr.keys().values().clone(),
+                    Some(NullBuffer::new(BooleanBuffer::new(
+                        new_nulls.into(),
+                        0,
+                        dict_arr.len(),
+                    ))),
+                ),
+                make_array(new_data),
+            )))
+        }
+        None => Ok(Arc::new(DictionaryArray::new(
+            dict_arr.keys().clone(),
+            new_values,
+        ))),
     }
 }
 
@@ -203,7 +313,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
+    use arrow::array::{Array, ArrayRef, DictionaryArray, RecordBatch, StringArray, UInt8Array};
     use arrow::datatypes::{Field, Schema};
     use datafusion::common::DFSchema;
     use datafusion::logical_expr::ColumnarValue;
@@ -252,6 +362,54 @@ mod test {
 
         let expected: ArrayRef =
             Arc::new(StringArray::from_iter([Some("world"), Some("otap"), None]));
+        match result {
+            ColumnarValue::Array(arr) => {
+                assert_eq!(&arr, &expected)
+            }
+            s => {
+                panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dict_utf8_arr_scalar_pattern_scalar_group() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), lit("hello (.*)"), lit(1u16)],
+        ));
+
+        let input_col = DictionaryArray::new(
+            UInt8Array::from_iter_values(vec![0, 0, 1]),
+            Arc::new(StringArray::from_iter_values(["hello world", "arrow"])),
+        );
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+
+        let expected: ArrayRef = Arc::new(DictionaryArray::new(
+            UInt8Array::from_iter([Some(0), Some(0), None]),
+            Arc::new(StringArray::from_iter_values(["world", ""])),
+        ));
         match result {
             ColumnarValue::Array(arr) => {
                 assert_eq!(&arr, &expected)
