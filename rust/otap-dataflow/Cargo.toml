@@ -45,6 +45,8 @@ mimalloc = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
+otap-df-admin-api = { path = "crates/admin-api" }
+otap-df-admin-types = { path = "crates/admin-types" }
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }

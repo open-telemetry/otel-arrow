@@ -6,11 +6,11 @@
 use otap_df_telemetry::attributes::AttributeValue;
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
 pub use otap_df_telemetry::metrics::MetricValue;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Shape of /telemetry/metrics (format=json) response.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     /// Time the snapshot was captured, as an RFC 3339 string.
     pub timestamp: String,
@@ -126,7 +126,7 @@ mod tests {
 }
 
 /// A single metric set emitted by the telemetry subsystem.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MetricSetSnapshot {
     /// Unique identifier of the metric set (usually a component name).
     pub name: String,
@@ -139,7 +139,7 @@ pub struct MetricSetSnapshot {
 }
 
 /// A single recorded metric, including its metadata and value.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MetricDataPoint {
     /// Metric name (e.g. `logs.produced`).
     pub name: String,
