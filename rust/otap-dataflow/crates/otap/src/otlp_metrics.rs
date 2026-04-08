@@ -38,7 +38,7 @@ pub struct OtlpReceiverMetrics {
     #[metric(unit = "{errors}")]
     pub transport_errors: Counter<u64>,
 
-    /// Total bytes received across OTLP requests (payload bytes).
+    /// Total decompressed payload bytes for successfully received OTLP requests.
     #[metric(unit = "By")]
     pub request_bytes: Counter<u64>,
 }

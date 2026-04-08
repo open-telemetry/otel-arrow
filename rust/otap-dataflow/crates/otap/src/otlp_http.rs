@@ -641,7 +641,6 @@ impl HttpHandler {
                 internal_error()
             })?;
             let body = collected.to_bytes();
-            self.metrics.lock().request_bytes.add(body.len() as u64);
 
             let body = decode_content_encoding(
                 self.settings.accept_compressed_requests,
@@ -649,6 +648,7 @@ impl HttpHandler {
                 body,
                 max_len,
             )?;
+            self.metrics.lock().request_bytes.add(body.len() as u64);
 
             let context = if self.settings.wait_for_result {
                 Context::with_capacity(1)
