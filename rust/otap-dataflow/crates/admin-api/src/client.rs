@@ -552,7 +552,7 @@ impl PipelinesClient<'_> {
         pipeline_group_id: &str,
         pipeline_id: &str,
         rollout_id: &str,
-    ) -> Result<Option<pipelines::PipelineRolloutStatus>, Error> {
+    ) -> Result<Option<pipelines::RolloutStatus>, Error> {
         self.backend
             .pipeline_rollout_status(pipeline_group_id, pipeline_id, rollout_id)
             .await
@@ -699,7 +699,7 @@ impl PipelinesClient<'_> {
         pipeline_group_id: &str,
         pipeline_id: &str,
         shutdown_id: &str,
-    ) -> Result<Option<pipelines::PipelineShutdownStatus>, Error> {
+    ) -> Result<Option<pipelines::ShutdownStatus>, Error> {
         self.backend
             .pipeline_shutdown_status(pipeline_group_id, pipeline_id, shutdown_id)
             .await
@@ -920,7 +920,7 @@ pub(crate) trait AdminBackend: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
         rollout_id: &str,
-    ) -> Result<Option<pipelines::PipelineRolloutStatus>, Error>;
+    ) -> Result<Option<pipelines::RolloutStatus>, Error>;
     async fn pipeline_livez(
         &self,
         pipeline_group_id: &str,
@@ -942,7 +942,7 @@ pub(crate) trait AdminBackend: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
         shutdown_id: &str,
-    ) -> Result<Option<pipelines::PipelineShutdownStatus>, Error>;
+    ) -> Result<Option<pipelines::ShutdownStatus>, Error>;
 
     async fn telemetry_logs(
         &self,
