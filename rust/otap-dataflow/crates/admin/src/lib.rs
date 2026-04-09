@@ -14,8 +14,8 @@ mod telemetry;
 use axum::Router;
 use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
 pub use otap_df_admin_types::pipelines::{
-    PipelineDetails, PipelineRolloutState, PipelineRolloutStatus, PipelineRolloutSummary,
-    PipelineShutdownStatus, ReconfigureRequest, RolloutCoreStatus, ShutdownCoreStatus,
+    PipelineDetails, PipelineRolloutState, PipelineRolloutSummary, ReconfigureRequest,
+    RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
 use serde::Serialize;
 use std::net::SocketAddr;
@@ -90,7 +90,7 @@ pub trait ControlPlane: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
-    ) -> Result<PipelineShutdownStatus, ControlPlaneError>;
+    ) -> Result<ShutdownStatus, ControlPlaneError>;
 
     /// Reconfigures a logical pipeline and returns the rollout job snapshot.
     fn reconfigure_pipeline(
@@ -98,7 +98,7 @@ pub trait ControlPlane: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
         request: ReconfigureRequest,
-    ) -> Result<PipelineRolloutStatus, ControlPlaneError>;
+    ) -> Result<RolloutStatus, ControlPlaneError>;
 
     /// Returns the live active config for a logical pipeline.
     fn pipeline_details(
@@ -113,7 +113,7 @@ pub trait ControlPlane: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
         rollout_id: &str,
-    ) -> Result<Option<PipelineRolloutStatus>, ControlPlaneError>;
+    ) -> Result<Option<RolloutStatus>, ControlPlaneError>;
 
     /// Returns the detailed status for a shutdown job.
     fn shutdown_status(
@@ -121,7 +121,7 @@ pub trait ControlPlane: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
         shutdown_id: &str,
-    ) -> Result<Option<PipelineShutdownStatus>, ControlPlaneError>;
+    ) -> Result<Option<ShutdownStatus>, ControlPlaneError>;
 }
 
 /// Shared state for the HTTP admin server.

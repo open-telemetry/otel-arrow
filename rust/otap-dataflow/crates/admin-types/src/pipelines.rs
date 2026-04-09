@@ -149,7 +149,7 @@ pub struct RolloutCoreStatus {
 /// status, not a stable pipeline definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PipelineRolloutStatus {
+pub struct RolloutStatus {
     /// Controller-assigned rollout identifier.
     pub rollout_id: String,
     /// Logical target pipeline group id.
@@ -199,7 +199,7 @@ pub struct ShutdownCoreStatus {
 /// status, not a stable pipeline definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PipelineShutdownStatus {
+pub struct ShutdownStatus {
     /// Controller-assigned shutdown identifier.
     pub shutdown_id: String,
     /// Logical target pipeline group id.
@@ -228,18 +228,18 @@ pub struct PipelineShutdownStatus {
 pub enum ReconfigureOutcome {
     /// The request was accepted and the rollout continues asynchronously.
     ///
-    /// Poll [`PipelineRolloutStatus`] later if you need progress or a terminal
+    /// Poll [`RolloutStatus`] later if you need progress or a terminal
     /// result.
-    Accepted(PipelineRolloutStatus),
+    Accepted(RolloutStatus),
     /// The rollout reached a successful terminal state within the requested wait window.
-    Completed(PipelineRolloutStatus),
+    Completed(RolloutStatus),
     /// The rollout reached a failed terminal state within the requested wait window.
-    Failed(PipelineRolloutStatus),
+    Failed(RolloutStatus),
     /// The requested wait window elapsed before the rollout reached a terminal state.
     ///
     /// The included snapshot is the latest known rollout status. The rollout
     /// may still continue running in the engine.
-    TimedOut(PipelineRolloutStatus),
+    TimedOut(RolloutStatus),
 }
 
 /// Caller-facing outcome of a pipeline shutdown request.
@@ -251,18 +251,18 @@ pub enum ReconfigureOutcome {
 pub enum ShutdownOutcome {
     /// The request was accepted and the shutdown continues asynchronously.
     ///
-    /// Poll [`PipelineShutdownStatus`] later if you need progress or a terminal
+    /// Poll [`ShutdownStatus`] later if you need progress or a terminal
     /// result.
-    Accepted(PipelineShutdownStatus),
+    Accepted(ShutdownStatus),
     /// The shutdown reached a successful terminal state within the requested wait window.
-    Completed(PipelineShutdownStatus),
+    Completed(ShutdownStatus),
     /// The shutdown reached a failed terminal state within the requested wait window.
-    Failed(PipelineShutdownStatus),
+    Failed(ShutdownStatus),
     /// The requested wait window elapsed before the shutdown reached a terminal state.
     ///
     /// The included snapshot is the latest known shutdown status. The shutdown
     /// may still continue running in the engine.
-    TimedOut(PipelineShutdownStatus),
+    TimedOut(ShutdownStatus),
 }
 
 /// Per-core pipeline status.
@@ -888,7 +888,7 @@ mod tests {
 
     #[test]
     fn pipeline_rollout_status_roundtrips_current_wire_shape() {
-        assert_roundtrip::<PipelineRolloutStatus>(json!({
+        assert_roundtrip::<RolloutStatus>(json!({
             "rolloutId": "rollout-2",
             "pipelineGroupId": "default",
             "pipelineId": "main",
@@ -913,7 +913,7 @@ mod tests {
 
     #[test]
     fn pipeline_shutdown_status_roundtrips_current_wire_shape() {
-        assert_roundtrip::<PipelineShutdownStatus>(json!({
+        assert_roundtrip::<ShutdownStatus>(json!({
             "shutdownId": "shutdown-1",
             "pipelineGroupId": "default",
             "pipelineId": "main",

@@ -48,9 +48,9 @@ use chrono::Utc;
 use core_affinity::CoreId;
 use otap_df_admin::{
     ControlPlane, ControlPlaneError, PipelineDetails,
-    PipelineRolloutState as ApiPipelineRolloutState, PipelineRolloutStatus,
-    PipelineRolloutSummary as ApiPipelineRolloutSummary, PipelineShutdownStatus,
-    ReconfigureRequest, RolloutCoreStatus, ShutdownCoreStatus,
+    PipelineRolloutState as ApiPipelineRolloutState,
+    PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
+    RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
 use otap_df_config::engine::{
     OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
@@ -301,8 +301,8 @@ impl RolloutRecord {
         }
     }
 
-    fn status(&self) -> PipelineRolloutStatus {
-        PipelineRolloutStatus {
+    fn status(&self) -> RolloutStatus {
+        RolloutStatus {
             rollout_id: self.rollout_id.clone(),
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
@@ -370,8 +370,8 @@ impl ShutdownRecord {
         }
     }
 
-    fn status(&self) -> PipelineShutdownStatus {
-        PipelineShutdownStatus {
+    fn status(&self) -> ShutdownStatus {
+        ShutdownStatus {
             shutdown_id: self.shutdown_id.clone(),
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
@@ -1224,7 +1224,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
-    fn rollout_status_snapshot(&self, rollout_id: &str) -> Option<PipelineRolloutStatus> {
+    fn rollout_status_snapshot(&self, rollout_id: &str) -> Option<RolloutStatus> {
         let state = self
             .state
             .lock()
@@ -1402,7 +1402,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
-    fn shutdown_status_snapshot(&self, shutdown_id: &str) -> Option<PipelineShutdownStatus> {
+    fn shutdown_status_snapshot(&self, shutdown_id: &str) -> Option<ShutdownStatus> {
         let state = self
             .state
             .lock()
@@ -1445,7 +1445,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     fn spawn_rollout(
         self: &Arc<Self>,
         plan: CandidateRolloutPlan,
-    ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
+    ) -> Result<RolloutStatus, ControlPlaneError> {
         let rollout_id = plan.rollout.rollout_id.clone();
         let pipeline_key = plan.pipeline_key.clone();
         self.insert_rollout(&pipeline_key, plan.rollout.clone())?;
@@ -1487,7 +1487,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     fn spawn_shutdown(
         self: &Arc<Self>,
         plan: CandidateShutdownPlan,
-    ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
+    ) -> Result<ShutdownStatus, ControlPlaneError> {
         let shutdown_id = plan.shutdown.shutdown_id.clone();
         let pipeline_key = plan.pipeline_key.clone();
         let initial_status = plan.shutdown.status();
@@ -2527,7 +2527,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
-    ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
+    ) -> Result<ShutdownStatus, ControlPlaneError> {
         let plan = self.prepare_shutdown_plan(pipeline_group_id, pipeline_id, timeout_secs)?;
         self.spawn_shutdown(plan)
     }
@@ -2571,7 +2571,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
-    ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
+    ) -> Result<ShutdownStatus, ControlPlaneError> {
         self.runtime
             .request_shutdown_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
     }
@@ -2581,7 +2581,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_group_id: &str,
         pipeline_id: &str,
         request: ReconfigureRequest,
-    ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
+    ) -> Result<RolloutStatus, ControlPlaneError> {
         let plan = self
             .runtime
             .prepare_rollout_plan(pipeline_group_id, pipeline_id, &request)?;
@@ -2604,7 +2604,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_group_id: &str,
         pipeline_id: &str,
         rollout_id: &str,
-    ) -> Result<Option<PipelineRolloutStatus>, ControlPlaneError> {
+    ) -> Result<Option<RolloutStatus>, ControlPlaneError> {
         let expected_key = PipelineKey::new(
             pipeline_group_id.to_owned().into(),
             pipeline_id.to_owned().into(),
@@ -2625,7 +2625,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_group_id: &str,
         pipeline_id: &str,
         shutdown_id: &str,
-    ) -> Result<Option<PipelineShutdownStatus>, ControlPlaneError> {
+    ) -> Result<Option<ShutdownStatus>, ControlPlaneError> {
         let expected_key = PipelineKey::new(
             pipeline_group_id.to_owned().into(),
             pipeline_id.to_owned().into(),
@@ -4695,7 +4695,7 @@ groups:
         runtime: &ControllerRuntime<()>,
         shutdown_id: &str,
         expected_state: &str,
-    ) -> PipelineShutdownStatus {
+    ) -> ShutdownStatus {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let status = runtime

@@ -231,7 +231,7 @@ pub async fn put_pipeline(
 pub async fn show_rollout(
     Path((pipeline_group_id, pipeline_id, rollout_id)): Path<(String, String, String)>,
     State(state): State<AppState>,
-) -> Result<Json<crate::PipelineRolloutStatus>, StatusCode> {
+) -> Result<Json<crate::RolloutStatus>, StatusCode> {
     match state
         .controller
         .rollout_status(&pipeline_group_id, &pipeline_id, &rollout_id)
@@ -246,7 +246,7 @@ pub async fn show_rollout(
 pub async fn show_shutdown(
     Path((pipeline_group_id, pipeline_id, shutdown_id)): Path<(String, String, String)>,
     State(state): State<AppState>,
-) -> Result<Json<crate::PipelineShutdownStatus>, StatusCode> {
+) -> Result<Json<crate::ShutdownStatus>, StatusCode> {
     match state
         .controller
         .shutdown_status(&pipeline_group_id, &pipeline_id, &shutdown_id)
@@ -398,10 +398,7 @@ async fn readiness(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ControlPlane, ControlPlaneError, PipelineDetails, PipelineRolloutStatus,
-        PipelineShutdownStatus,
-    };
+    use crate::{ControlPlane, ControlPlaneError, PipelineDetails, RolloutStatus, ShutdownStatus};
     use axum::body::to_bytes;
     use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
     use otap_df_config::observed_state::ObservedStateSettings;
@@ -413,10 +410,10 @@ mod tests {
 
     #[derive(Clone)]
     struct StubControlPlane {
-        replace_result: Result<PipelineRolloutStatus, ControlPlaneError>,
-        rollout_status_result: Result<Option<PipelineRolloutStatus>, ControlPlaneError>,
-        shutdown_result: Result<PipelineShutdownStatus, ControlPlaneError>,
-        shutdown_status_result: Result<Option<PipelineShutdownStatus>, ControlPlaneError>,
+        replace_result: Result<RolloutStatus, ControlPlaneError>,
+        rollout_status_result: Result<Option<RolloutStatus>, ControlPlaneError>,
+        shutdown_result: Result<ShutdownStatus, ControlPlaneError>,
+        shutdown_status_result: Result<Option<ShutdownStatus>, ControlPlaneError>,
     }
 
     impl ControlPlane for StubControlPlane {
@@ -429,7 +426,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _timeout_secs: u64,
-        ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
+        ) -> Result<ShutdownStatus, ControlPlaneError> {
             self.shutdown_result.clone()
         }
 
@@ -438,7 +435,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _request: crate::ReconfigureRequest,
-        ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
+        ) -> Result<RolloutStatus, ControlPlaneError> {
             self.replace_result.clone()
         }
 
@@ -455,7 +452,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _rollout_id: &str,
-        ) -> Result<Option<PipelineRolloutStatus>, ControlPlaneError> {
+        ) -> Result<Option<RolloutStatus>, ControlPlaneError> {
             self.rollout_status_result.clone()
         }
 
@@ -464,7 +461,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _shutdown_id: &str,
-        ) -> Result<Option<PipelineShutdownStatus>, ControlPlaneError> {
+        ) -> Result<Option<ShutdownStatus>, ControlPlaneError> {
             self.shutdown_status_result.clone()
         }
     }
@@ -500,7 +497,7 @@ mod tests {
         }
     }
 
-    fn rollout_status(state: PipelineRolloutState) -> PipelineRolloutStatus {
+    fn rollout_status(state: PipelineRolloutState) -> RolloutStatus {
         serde_json::from_value(json!({
             "rolloutId": "rollout-1",
             "pipelineGroupId": "default",
@@ -516,7 +513,7 @@ mod tests {
         .expect("fixture rollout status should deserialize")
     }
 
-    fn shutdown_status(state: &str) -> PipelineShutdownStatus {
+    fn shutdown_status(state: &str) -> ShutdownStatus {
         serde_json::from_value(json!({
             "shutdownId": "shutdown-1",
             "pipelineGroupId": "default",
@@ -583,7 +580,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body should collect");
-        let status: PipelineRolloutStatus =
+        let status: RolloutStatus =
             serde_json::from_slice(&body).expect("timeout body should deserialize");
         assert_eq!(status.rollout_id, "rollout-1");
         assert_eq!(status.state, PipelineRolloutState::Running);
@@ -639,7 +636,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body should collect");
-        let status: PipelineShutdownStatus =
+        let status: ShutdownStatus =
             serde_json::from_slice(&body).expect("timeout body should deserialize");
         assert_eq!(status.shutdown_id, "shutdown-1");
         assert_eq!(status.state, "running");

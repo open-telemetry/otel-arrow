@@ -265,7 +265,7 @@ impl AdminBackend for HttpBackend {
             202 => self
                 .decode_json(&body)
                 .map(pipelines::ReconfigureOutcome::Accepted),
-            409 => match self.decode_json::<pipelines::PipelineRolloutStatus>(&body) {
+            409 => match self.decode_json::<pipelines::RolloutStatus>(&body) {
                 Ok(status) => Ok(pipelines::ReconfigureOutcome::Failed(status)),
                 Err(_) => Err(self.decode_operation_error(status, &body)?),
             },
@@ -282,7 +282,7 @@ impl AdminBackend for HttpBackend {
         pipeline_group_id: &str,
         pipeline_id: &str,
         rollout_id: &str,
-    ) -> Result<Option<pipelines::PipelineRolloutStatus>, Error> {
+    ) -> Result<Option<pipelines::RolloutStatus>, Error> {
         let (status, body) = self
             .request_raw(
                 Method::GET,
@@ -406,7 +406,7 @@ impl AdminBackend for HttpBackend {
             202 => self
                 .decode_json(&body)
                 .map(pipelines::ShutdownOutcome::Accepted),
-            409 => match self.decode_json::<pipelines::PipelineShutdownStatus>(&body) {
+            409 => match self.decode_json::<pipelines::ShutdownStatus>(&body) {
                 Ok(status) => Ok(pipelines::ShutdownOutcome::Failed(status)),
                 Err(_) => Err(self.decode_operation_error(status, &body)?),
             },
@@ -423,7 +423,7 @@ impl AdminBackend for HttpBackend {
         pipeline_group_id: &str,
         pipeline_id: &str,
         shutdown_id: &str,
-    ) -> Result<Option<pipelines::PipelineShutdownStatus>, Error> {
+    ) -> Result<Option<pipelines::ShutdownStatus>, Error> {
         let (status, body) = self
             .request_raw(
                 Method::GET,

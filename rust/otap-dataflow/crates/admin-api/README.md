@@ -264,7 +264,7 @@ methods.
 
 ## Live pipeline control
 
-The SDK now exposes the live pipeline control surface behind typed methods:
+The SDK exposes the live pipeline control surface behind typed methods:
 
 - `pipelines().details(...)` reads the committed pipeline config and active
   rollout summary.

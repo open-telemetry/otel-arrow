@@ -1273,8 +1273,8 @@ fn escape_prom_help(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        ControlPlane, ControlPlaneError, PipelineDetails, PipelineRolloutStatus,
-        PipelineShutdownStatus, ReconfigureRequest,
+        ControlPlane, ControlPlaneError, PipelineDetails, ReconfigureRequest, RolloutStatus,
+        ShutdownStatus,
     };
     use axum::body::to_bytes;
     use otap_df_config::observed_state::ObservedStateSettings;
@@ -1297,7 +1297,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _timeout_secs: u64,
-        ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
+        ) -> Result<ShutdownStatus, ControlPlaneError> {
             Err(ControlPlaneError::Internal {
                 message: "not used in telemetry tests".to_string(),
             })
@@ -1308,7 +1308,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _request: ReconfigureRequest,
-        ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
+        ) -> Result<RolloutStatus, ControlPlaneError> {
             Err(ControlPlaneError::Internal {
                 message: "not used in telemetry tests".to_string(),
             })
@@ -1327,7 +1327,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _rollout_id: &str,
-        ) -> Result<Option<PipelineRolloutStatus>, ControlPlaneError> {
+        ) -> Result<Option<RolloutStatus>, ControlPlaneError> {
             Ok(None)
         }
 
@@ -1336,7 +1336,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _shutdown_id: &str,
-        ) -> Result<Option<PipelineShutdownStatus>, ControlPlaneError> {
+        ) -> Result<Option<ShutdownStatus>, ControlPlaneError> {
             Ok(None)
         }
     }

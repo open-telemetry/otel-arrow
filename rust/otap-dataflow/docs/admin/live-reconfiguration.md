@@ -151,7 +151,7 @@ Behavior:
 - If only the effective core allocation changed, the action is `resize`.
 - Otherwise the action is `replace`.
 
-Response body is a `PipelineRolloutStatus` with:
+Response body is a `RolloutStatus` with:
 
 - `rolloutId`
 - `action` (`create`, `noop`, `replace`, `resize`)
@@ -179,7 +179,7 @@ Status codes:
 
 `GET /groups/{group}/pipelines/{id}/rollouts/{rolloutId}`
 
-Returns the current `PipelineRolloutStatus` snapshot for that operation.
+Returns the current `RolloutStatus` snapshot for that operation.
 
 ### Read observed pipeline status
 
