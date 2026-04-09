@@ -773,6 +773,11 @@ mod tests {
         assert_eq!(ready.last_transition_time, Some(ts(12)));
     }
 
+    /// Scenario: observed state contains overlapping generations during a
+    /// mixed-generation rollout and the controller marks which generation is
+    /// serving on each core.
+    /// Guarantees: aggregation selects the serving generation per core so
+    /// total/running core counts and readiness reflect the active serving set.
     #[test]
     fn serving_generation_selection_supports_mixed_blue_green_rollout() {
         let mut status = new_status(HealthPolicy::default());

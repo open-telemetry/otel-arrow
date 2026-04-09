@@ -105,6 +105,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Scenario: the server returns a structured admin operation rejection in
+    /// the shared public wire format.
+    /// Guarantees: the SDK-owned `OperationError` model round-trips without
+    /// renaming fields or changing enum values.
     #[test]
     fn operation_error_roundtrips() {
         let value = json!({

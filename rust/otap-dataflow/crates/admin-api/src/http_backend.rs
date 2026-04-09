@@ -884,6 +884,10 @@ mod tests {
         assert_eq!(response.status, engine::ProbeStatus::Failed);
     }
 
+    /// Scenario: the SDK calls the group shutdown endpoint with wait/query
+    /// options and the server returns a non-200 success body.
+    /// Guarantees: the HTTP backend targets `/api/v1/groups/shutdown`,
+    /// forwards the query parameters, and still decodes the accepted response.
     #[tokio::test]
     async fn groups_shutdown_accepts_query_and_non_200_success_shapes() {
         let server = MockServer::start().await;
@@ -913,6 +917,9 @@ mod tests {
         assert_eq!(response.status, groups::ShutdownStatus::Accepted);
     }
 
+    /// Scenario: a caller requests group status through the public SDK.
+    /// Guarantees: the HTTP backend uses the `/api/v1/groups/status` route
+    /// instead of the older pipeline-groups path and decodes the payload.
     #[tokio::test]
     async fn groups_status_uses_groups_route() {
         let server = MockServer::start().await;
@@ -962,6 +969,10 @@ mod tests {
         assert!(response.is_some());
     }
 
+    /// Scenario: the server returns a committed pipeline details payload for an
+    /// existing logical pipeline.
+    /// Guarantees: the SDK surfaces that payload as `Some(...)` rather than
+    /// treating it as an optional or missing resource.
     #[tokio::test]
     async fn pipeline_details_returns_some_on_200() {
         let server = MockServer::start().await;
@@ -992,6 +1003,10 @@ mod tests {
         assert!(response.is_some());
     }
 
+    /// Scenario: a caller submits an asynchronous reconfigure request through
+    /// the public SDK.
+    /// Guarantees: the backend serializes the request body and query options
+    /// correctly and maps an accepted rollout response to `Accepted`.
     #[tokio::test]
     async fn pipeline_reconfigure_encodes_request_and_decodes_accepted() {
         let server = MockServer::start().await;
@@ -1046,6 +1061,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a waited reconfigure request reaches a terminal failed rollout
+    /// and the server reports that state with a 409 status body.
+    /// Guarantees: the backend treats this as an operation outcome, not a typed
+    /// request rejection, and returns `ReconfigureOutcome::Failed`.
     #[tokio::test]
     async fn pipeline_reconfigure_decodes_failed_outcome_from_409_status_body() {
         let server = MockServer::start().await;
@@ -1099,6 +1118,11 @@ mod tests {
         }
     }
 
+    /// Scenario: the server rejects a reconfigure request before any rollout
+    /// work starts and returns a structured operation error body.
+    /// Guarantees: the backend preserves that rejection as
+    /// `Error::AdminOperation` so callers can distinguish it from transport
+    /// failures and terminal rollout outcomes.
     #[tokio::test]
     async fn pipeline_reconfigure_decodes_admin_operation_error() {
         let server = MockServer::start().await;
@@ -1142,6 +1166,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a caller polls a rollout id that no longer exists or was never
+    /// created.
+    /// Guarantees: the backend maps HTTP 404 to `Ok(None)` for rollout status
+    /// lookups instead of treating it as an SDK error.
     #[tokio::test]
     async fn pipeline_rollout_status_returns_none_on_404() {
         let server = MockServer::start().await;
@@ -1162,6 +1190,10 @@ mod tests {
         assert!(response.is_none());
     }
 
+    /// Scenario: a caller waits on pipeline shutdown and the server times out
+    /// the wait while returning the latest shutdown snapshot.
+    /// Guarantees: the backend decodes that response as
+    /// `ShutdownOutcome::TimedOut` and preserves the embedded status.
     #[tokio::test]
     async fn pipeline_shutdown_decodes_timed_out_outcome() {
         let server = MockServer::start().await;
@@ -1202,6 +1234,9 @@ mod tests {
         }
     }
 
+    /// Scenario: a caller polls a known pipeline shutdown operation by id.
+    /// Guarantees: the backend decodes the returned shutdown snapshot and
+    /// surfaces it as `Some(...)`.
     #[tokio::test]
     async fn pipeline_shutdown_status_returns_some_on_200() {
         let server = MockServer::start().await;
