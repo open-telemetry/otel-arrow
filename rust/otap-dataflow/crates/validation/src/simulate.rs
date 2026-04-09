@@ -360,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_not_finished_keeps_polling() {
+    fn not_finished_keeps_polling() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: validation_set(0, 0, "cap1"),
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_finished_and_passed_returns_ok() {
+    fn finished_and_passed_returns_ok() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: validation_set(1, 1, "cap1"),
@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_finished_with_failures_reports_labels() {
+    fn finished_with_failures_reports_labels() {
         let mut sets = validation_set(1, 1, "cap1");
         sets.extend(validation_set(0, 1, "cap2"));
         let snap = MetricsSnapshot {
@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_mixed_finished_returns_not_finished() {
+    fn mixed_finished_returns_not_finished() {
         let mut sets = validation_set(1, 1, "cap1");
         sets.extend(validation_set(0, 0, "cap2"));
         let snap = MetricsSnapshot {
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_empty_snapshot_returns_not_finished() {
+    fn empty_snapshot_returns_not_finished() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![],
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_no_matching_metric_sets_returns_not_finished() {
+    fn no_matching_metric_sets_returns_not_finished() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![set_with_node(
