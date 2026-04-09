@@ -2254,8 +2254,18 @@ mod tests {
     #[test]
     fn log_filter_applied_consistently_to_snapshot_logs() {
         let filter = LogFilter::from_params(Some("important".to_string()), None);
-        let match_entry = make_log_entry("important event occurred", "INFO", "admin", "2026-01-01T00:00:00Z");
-        let no_match_entry = make_log_entry("routine heartbeat", "DEBUG", "admin", "2026-01-01T00:00:01Z");
+        let match_entry = make_log_entry(
+            "important event occurred",
+            "INFO",
+            "admin",
+            "2026-01-01T00:00:00Z",
+        );
+        let no_match_entry = make_log_entry(
+            "routine heartbeat",
+            "DEBUG",
+            "admin",
+            "2026-01-01T00:00:01Z",
+        );
 
         // The filter must pass the matching entry and reject the other.
         assert!(filter.matches(&match_entry));
