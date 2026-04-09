@@ -185,8 +185,16 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
             }
         }?;
 
-        // TODO - maybe coerce back to scalar ..
-        Ok(ColumnarValue::Array(result))
+        let all_scalar = matches!(sources, ColumnarValue::Scalar(_))
+            && matches!(regexes, ColumnarValue::Scalar(_))
+            && matches!(groups, ColumnarValue::Scalar(_));
+
+        if all_scalar {
+            let scalar = ScalarValue::try_from_array(&result, 0)?;
+            Ok(ColumnarValue::Scalar(scalar))
+        } else {
+            Ok(ColumnarValue::Array(result))
+        }
     }
 
     fn documentation(&self) -> Option<&Documentation> {
@@ -485,18 +493,19 @@ where
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, DictionaryArray, Int8Array, Int16Array,
-        Int32Array, Int64Array, LargeStringArray, PrimitiveArray, RecordBatch, StringArray,
-        StringViewArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, Int8Array, Int16Array, Int32Array,
+        Int64Array, LargeStringArray, PrimitiveArray, RecordBatch, StringArray, StringViewArray,
+        UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     };
     use arrow::datatypes::{
         ArrowDictionaryKeyType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema,
-        UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+        UInt8Type, UInt16Type, UInt64Type,
     };
     use datafusion::common::DFSchema;
     use datafusion::logical_expr::ColumnarValue;
     use datafusion::logical_expr::{Expr, col, expr::ScalarFunction, lit};
     use datafusion::physical_expr::create_physical_expr;
+    use datafusion::scalar::ScalarValue;
     use std::sync::Arc;
 
     use crate::pipeline::Pipeline;
@@ -1239,6 +1248,46 @@ mod test {
             s => {
                 panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_all_scalar_args_returns_scalar() {
+        let session_context = Pipeline::create_session_context();
+
+        // matching case
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![lit("hello world"), lit("hello (.*)"), lit(1u16)],
+        ));
+
+        let input = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        let df_schema = DFSchema::empty();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        match result {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, "world"),
+            other => panic!("expected Scalar(Utf8(Some(\"world\"))), got {other:?}"),
+        }
+
+        // non-matching case
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![lit("arrow"), lit("hello (.*)"), lit(1u16)],
+        ));
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        match result {
+            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {}
+            other => panic!("expected Scalar(Utf8(None)), got {other:?}"),
         }
     }
 }
