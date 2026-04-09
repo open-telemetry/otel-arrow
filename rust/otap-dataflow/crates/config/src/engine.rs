@@ -1792,7 +1792,7 @@ groups:
         let has_properties = spec_schema
             .properties
             .as_ref()
-            .map_or(false, |p| !p.is_empty());
+            .is_some_and(|p| !p.is_empty());
 
         assert!(
             has_properties,
