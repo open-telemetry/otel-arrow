@@ -87,7 +87,11 @@ pub struct Status {
     pub rollout: Option<PipelineRolloutSummary>,
 }
 
-/// Live logical pipeline view returned by the pipeline details endpoint.
+/// Committed live definition of one logical pipeline.
+///
+/// This is the configuration that the controller currently treats as active for
+/// the logical pipeline. It is not a runtime status snapshot; use [`Status`]
+/// when you need per-core progress or overlapping-instance state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineDetails {
@@ -105,7 +109,7 @@ pub struct PipelineDetails {
     pub rollout: Option<PipelineRolloutSummary>,
 }
 
-/// Request body for live pipeline reconfiguration.
+/// Desired pipeline definition and timing options for a live reconfiguration request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconfigureRequest {
@@ -139,7 +143,10 @@ pub struct RolloutCoreStatus {
     pub detail: Option<String>,
 }
 
-/// Detailed rollout status returned by rollout endpoints.
+/// Snapshot of one live reconfiguration operation.
+///
+/// This describes the current state of a specific rollout id. It is operation
+/// status, not a stable pipeline definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineRolloutStatus {
@@ -186,7 +193,10 @@ pub struct ShutdownCoreStatus {
     pub detail: Option<String>,
 }
 
-/// Detailed shutdown status returned by shutdown endpoints.
+/// Snapshot of one pipeline shutdown operation.
+///
+/// This describes the current state of a specific shutdown id. It is operation
+/// status, not a stable pipeline definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineShutdownStatus {
@@ -209,29 +219,49 @@ pub struct PipelineShutdownStatus {
     pub cores: Vec<ShutdownCoreStatus>,
 }
 
-/// Transport-agnostic outcome for a reconfigure request.
+/// Caller-facing outcome of a live reconfiguration request.
+///
+/// The variant tells you whether the request was only accepted, reached a
+/// terminal state within the requested wait window, or outlived that wait
+/// window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReconfigureOutcome {
-    /// The request was accepted and continues asynchronously.
+    /// The request was accepted and the rollout continues asynchronously.
+    ///
+    /// Poll [`PipelineRolloutStatus`] later if you need progress or a terminal
+    /// result.
     Accepted(PipelineRolloutStatus),
-    /// The operation completed successfully.
+    /// The rollout reached a successful terminal state within the requested wait window.
     Completed(PipelineRolloutStatus),
-    /// The waited operation completed with a failed terminal rollout state.
+    /// The rollout reached a failed terminal state within the requested wait window.
     Failed(PipelineRolloutStatus),
-    /// The waited operation did not complete within the requested timeout.
+    /// The requested wait window elapsed before the rollout reached a terminal state.
+    ///
+    /// The included snapshot is the latest known rollout status. The rollout
+    /// may still continue running in the engine.
     TimedOut(PipelineRolloutStatus),
 }
 
-/// Transport-agnostic outcome for a pipeline shutdown request.
+/// Caller-facing outcome of a pipeline shutdown request.
+///
+/// The variant tells you whether the request was only accepted, reached a
+/// terminal state within the requested wait window, or outlived that wait
+/// window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShutdownOutcome {
-    /// The request was accepted and continues asynchronously.
+    /// The request was accepted and the shutdown continues asynchronously.
+    ///
+    /// Poll [`PipelineShutdownStatus`] later if you need progress or a terminal
+    /// result.
     Accepted(PipelineShutdownStatus),
-    /// The operation completed successfully.
+    /// The shutdown reached a successful terminal state within the requested wait window.
     Completed(PipelineShutdownStatus),
-    /// The waited operation completed with a failed terminal shutdown state.
+    /// The shutdown reached a failed terminal state within the requested wait window.
     Failed(PipelineShutdownStatus),
-    /// The waited operation did not complete within the requested timeout.
+    /// The requested wait window elapsed before the shutdown reached a terminal state.
+    ///
+    /// The included snapshot is the latest known shutdown status. The shutdown
+    /// may still continue running in the engine.
     TimedOut(PipelineShutdownStatus),
 }
 

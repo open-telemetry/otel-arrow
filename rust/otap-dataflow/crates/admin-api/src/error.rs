@@ -90,7 +90,11 @@ pub enum Error {
         details: String,
     },
 
-    /// The server rejected a live admin operation request with a typed control-plane error.
+    /// The server rejected a live admin operation request before work started.
+    ///
+    /// This wraps a typed [`OperationError`] for request-level rejections such
+    /// as not found, conflict, or invalid request. Use the operation outcome
+    /// enums for requests that were accepted and later failed or timed out.
     #[error("admin operation rejected with status {status}: {error:?}")]
     AdminOperation {
         /// HTTP status code.
