@@ -828,25 +828,29 @@ mod test {
     /// indicates only a partial success
     fn run_error_server(
         tokio_rt: &Runtime,
-        endpoint_addr: &str,
         status_err: Option<u16>,
-    ) -> CancellationToken {
+    ) -> (String, CancellationToken) {
+        let listener = tokio_rt
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .expect("error test server should bind to an ephemeral port");
+        let endpoint_addr = listener
+            .local_addr()
+            .expect("error test server should expose its local address")
+            .to_string();
         let server_cancellation_token = CancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
-        let endpoint_addr = endpoint_addr.to_string();
         _ = tokio_rt.spawn(async move {
-            serve_errors(endpoint_addr, server_cancellation_token, status_err).await
+            serve_errors(listener, server_cancellation_token, status_err).await
         });
 
-        server_cancellation_token2
+        (endpoint_addr, server_cancellation_token2)
     }
 
     async fn serve_errors(
-        endpoint_addr: String,
+        listener: tokio::net::TcpListener,
         shutdown_token: CancellationToken,
         status_err: Option<u16>,
     ) {
-        let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
         let tracker = TaskTracker::new();
         loop {
             tokio::select! {
@@ -1279,16 +1283,12 @@ mod test {
     }
 
     fn run_error_status_code_test(status: u16, retryable: bool) {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
-        let endpoint = format!("http://{endpoint_addr}");
-
-        let config = default_test_config(endpoint);
-
         let tokio_rt = Runtime::new().unwrap();
+        let (endpoint_addr, server_cancellation_token) = run_error_server(&tokio_rt, Some(status));
+        let endpoint = format!("http://{endpoint_addr}");
+        let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, Some(status));
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
@@ -1445,17 +1445,13 @@ mod test {
 
     #[test]
     fn test_handles_partial_success() {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let tokio_rt = Runtime::new().unwrap();
+        let (endpoint_addr, server_cancellation_token) = run_error_server(&tokio_rt, None);
         let endpoint = format!("http://{endpoint_addr}");
-
         let config = default_test_config(endpoint);
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
-
-        let tokio_rt = Runtime::new().unwrap();
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, None);
 
         let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
 
@@ -1541,10 +1537,9 @@ mod test {
 
     #[test]
     fn test_handles_response_body_too_large() {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let tokio_rt = Runtime::new().unwrap();
+        let (endpoint_addr, server_cancellation_token) = run_error_server(&tokio_rt, None);
         let endpoint = format!("http://{endpoint_addr}");
-
         let config = Config {
             // smaller than expected response body
             max_response_body_length: 2,
@@ -1553,9 +1548,6 @@ mod test {
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
-
-        let tokio_rt = Runtime::new().unwrap();
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, None);
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
@@ -1654,16 +1646,12 @@ mod test {
 
     #[test]
     fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
-        let endpoint = format!("http://{endpoint_addr}");
-
-        let config = default_test_config(endpoint);
-
         let tokio_rt = Runtime::new().unwrap();
+        let (endpoint_addr, server_cancellation_token) = run_error_server(&tokio_rt, Some(500));
+        let endpoint = format!("http://{endpoint_addr}");
+        let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, Some(500));
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
@@ -1738,16 +1726,12 @@ mod test {
 
     #[test]
     fn test_nacks_for_otlp_payloads_when_context_indicates_no_payload_return() {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
-        let endpoint = format!("http://{endpoint_addr}");
-
-        let config = default_test_config(endpoint);
-
         let tokio_rt = Runtime::new().unwrap();
+        let (endpoint_addr, server_cancellation_token) = run_error_server(&tokio_rt, Some(500));
+        let endpoint = format!("http://{endpoint_addr}");
+        let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, Some(500));
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 

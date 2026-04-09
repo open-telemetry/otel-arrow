@@ -30,13 +30,14 @@
 //! ToDo Alternative -> avoid verb-y subpaths and support PATCH /.../pipelines/{pipelineId} with a body like {"status":"stopped"}. Use 409 if already stopping/stopped.
 
 use crate::AppState;
+use crate::convert::json_shape;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use otap_df_admin_types::pipelines::Status as ApiPipelineStatus;
 use otap_df_config::PipelineKey;
-use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_telemetry::otel_info;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
@@ -291,10 +292,14 @@ pub async fn shutdown_pipeline(
 pub async fn show_status(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,
-) -> Result<Json<Option<PipelineStatus>>, StatusCode> {
+) -> Result<Json<Option<ApiPipelineStatus>>, StatusCode> {
     let key = PipelineKey::new(pipeline_group_id.into(), pipeline_id.into());
     let pipeline_status = state.observed_state_store.pipeline_status(&key);
-    Ok(Json(pipeline_status))
+    Ok(Json(
+        pipeline_status
+            .as_ref()
+            .map(json_shape::<_, ApiPipelineStatus>),
+    ))
 }
 
 /// Used by the kubelet livenessProbe to decide whether to restart the container.

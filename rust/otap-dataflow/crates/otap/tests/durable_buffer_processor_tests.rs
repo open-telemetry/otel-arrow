@@ -602,13 +602,17 @@ where
     };
 
     let _ = shutdown_handle.join();
-    // Accept either Ok or a "Channel is closed" error during shutdown.
+    // Accept either Ok or a closed-channel error during shutdown.
     // When an always-NACK exporter races with shutdown, the exporter may try to
-    // send a NACK after the control channel has closed. This is expected behavior
-    // for this test scenario (error_exporter + time-based shutdown).
+    // return a NACK after shutdown has already started tearing down downstream
+    // channels. Depending on where the close is observed, the error may come
+    // from the control channel or from the data path.
     let is_acceptable_shutdown = match &run_result {
         Ok(_) => true,
-        Err(e) => e.to_string().contains("Channel is closed"),
+        Err(e) => {
+            let message = e.to_string();
+            message.contains("Channel is closed") || message.contains("downstream channel closed")
+        }
     };
     assert!(
         is_acceptable_shutdown,
@@ -904,7 +908,10 @@ where
 
     let is_acceptable_shutdown = match &run_result {
         Ok(_) => true,
-        Err(e) => e.to_string().contains("Channel is closed"),
+        Err(e) => {
+            let message = e.to_string();
+            message.contains("Channel is closed") || message.contains("downstream channel closed")
+        }
     };
     assert!(
         is_acceptable_shutdown,
