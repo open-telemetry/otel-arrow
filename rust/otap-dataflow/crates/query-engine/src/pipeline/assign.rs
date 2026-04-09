@@ -4352,4 +4352,60 @@ mod test {
     async fn test_update_attr_to_replace_with_non_scalar_args_kql_parser() {
         test_update_attr_to_replace_with_non_scalar_args::<KqlParser>("replace_string").await
     }
+
+    async fn test_update_attr_to_regexp_capture_with_scalars<P: Parser>(
+        fn_name: &str,
+        args: &[&str],
+    ) {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend attributes["s1"] = {fn_name}({})"#,
+            args.join(", ")
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello world")),
+                KeyValue::new("s1", AnyValue::new_string("world")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_scalars_opl_parser() {
+        test_update_attr_to_regexp_capture_with_scalars::<OplParser>(
+            "regexp_capture",
+            &["attributes[\"attr\"]", "\".*hello (.*)$\"", "1"],
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_scalars_kql_parser() {
+        test_update_attr_to_regexp_capture_with_scalars::<KqlParser>(
+            "extract",
+            &["\".*hello (.*)$\"", "1", "attributes[\"attr\"]"],
+        )
+        .await
+    }
 }

@@ -5,14 +5,15 @@ use std::sync::LazyLock;
 
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-    CollectionScalarExpression, CombineScalarExpression, ContainsLogicalExpression,
-    DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
-    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
-    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
-    ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
-    NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
-    ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression, SourceScalarExpression,
-    StaticScalarExpression, StringScalarExpression, TextScalarExpression, ValueAccessor,
+    CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
+    ContainsLogicalExpression, DoubleScalarExpression, DoubleValue, EqualToLogicalExpression,
+    Expression, GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
+    IntegerScalarExpression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
+    JoinTextScalarExpression, ListScalarExpression, LogicalExpression, MatchesLogicalExpression,
+    MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
+    QueryLocation, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
+    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, TextScalarExpression,
+    ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -800,6 +801,25 @@ fn parse_function_call(
             ))
             .into())
         }
+        "regexp_capture" => {
+            if args.len() != 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
+            let source = args.remove(0);
+            let pattern = args.remove(0);
+            let capture_group = args.remove(0);
+            Ok(ScalarExpression::Text(TextScalarExpression::Capture(
+                CaptureTextScalarExpression::new(query_location, source, pattern, capture_group),
+            ))
+            .into())
+        }
         "replace" => {
             if args.len() != 3 {
                 return Err(ParserError::SyntaxError(
@@ -889,15 +909,15 @@ mod test {
 
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-        CollectionScalarExpression, CombineScalarExpression, ContainsLogicalExpression,
-        DateTimeScalarExpression, DoubleScalarExpression, EqualToLogicalExpression,
-        GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-        IntegerScalarExpression, JoinTextScalarExpression, ListScalarExpression, LogicalExpression,
-        MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
-        OrLogicalExpression, PipelineFunction, PipelineFunctionParameter,
-        PipelineFunctionParameterType, QueryLocation, ReplaceTextScalarExpression,
-        ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-        TextScalarExpression, ValueAccessor,
+        CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
+        ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
+        EqualToLogicalExpression, GreaterThanLogicalExpression,
+        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, JoinTextScalarExpression,
+        ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+        NotLogicalExpression, NullScalarExpression, OrLogicalExpression, PipelineFunction,
+        PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation,
+        ReplaceTextScalarExpression, ScalarExpression, SourceScalarExpression,
+        StaticScalarExpression, StringScalarExpression, TextScalarExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::{ParserError, ParserFunction, ParserState};
     use pest::Parser;
@@ -2066,7 +2086,7 @@ mod test {
     }
 
     #[test]
-    fn test_parse_replace_with_delimiter_function_call() {
+    fn test_parse_replace_function_call() {
         let input = "replace(severity_text, \"N\", \"M\")";
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
@@ -2101,6 +2121,41 @@ mod test {
         assert_eq!(result, expected);
     }
 
+    #[test]
+    fn test_parse_regexp_capture_function_call() {
+        let input = "regexp_capture(severity_text, \".*(.).*\", 1)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = ScalarExpression::Text(TextScalarExpression::Capture(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "severity_text",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ".*(.).*"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
     fn parse_known_func_with_args(
         fn_name: &str,
         args: &[&str],
@@ -2121,6 +2176,22 @@ mod test {
             vec!["one", "two", "three", "four"],
         ] {
             let err = parse_known_func_with_args("replace", &args).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("Function 'replace' expects 3 arguments, got {}", args.len())
+            )
+        }
+    }
+
+    #[test]
+    fn parse_regexp_capture_function_call_with_wrong_arity() {
+        for args in [
+            vec![],
+            vec!["one"],
+            vec!["one", "two"],
+            vec!["one", "two", "three", "four"],
+        ] {
+            let err = parse_known_func_with_args("regexp_capture", &args).unwrap_err();
             assert_eq!(
                 err.to_string(),
                 format!("Function 'replace' expects 3 arguments, got {}", args.len())

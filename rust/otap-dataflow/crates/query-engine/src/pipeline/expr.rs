@@ -50,11 +50,12 @@ use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, Field, Schema};
 use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, BooleanValue, CollectionScalarExpression,
-    CombineScalarExpression, DoubleValue, Expression, IntegerValue, InvokeFunctionArgument,
-    InvokeFunctionScalarExpression, JoinTextScalarExpression, MathScalarExpression,
-    PipelineFunction, PipelineFunctionImplementation, ReplaceTextScalarExpression,
-    ScalarExpression, StaticScalarExpression, StringValue, TextScalarExpression,
+    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
+    CollectionScalarExpression, CombineScalarExpression, DoubleValue, Expression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
+    ReplaceTextScalarExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
+    StringValue, TextScalarExpression,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
@@ -83,7 +84,7 @@ use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::functions::substring;
+use crate::pipeline::functions::{regexp_capture, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -689,6 +690,46 @@ impl ExprLogicalPlanner {
         }
     }
 
+    fn plan_regex_capture_text_expr(
+        &self,
+        capture_text_expr: &CaptureTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let capture_scalar_expr = match capture_text_expr.get_pattern() {
+            ScalarExpression::Static(StaticScalarExpression::Regex(regexp_expr)) => {
+                // the datafusion UDF for this expects a string, so if the arg is a scalar regex
+                // convert it into a string so it will be planed as a scalar string literal
+                Cow::Owned(ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(
+                        regexp_expr.get_query_location().clone(),
+                        regexp_expr.get_value().as_str(),
+                    ),
+                )))
+            }
+            other => Cow::Borrowed(other),
+        };
+
+        let (df_udf_args, source_scope, requires_dict_downcast) = self.plan_function_args(
+            [
+                capture_text_expr.get_haystack(),
+                &capture_scalar_expr,
+                capture_text_expr.get_capture_group(),
+            ]
+            .into_iter(),
+            functions,
+        )?;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                regexp_capture(),
+                df_udf_args,
+            )),
+            expr_type: ExprLogicalType::String,
+            source: source_scope,
+            requires_dict_downcast,
+        })
+    }
+
     fn plan_replace_text_expr(
         &self,
         replace_text_expr: &ReplaceTextScalarExpression,
@@ -727,9 +768,9 @@ impl ExprLogicalPlanner {
             TextScalarExpression::Replace(replace_text_expr) => {
                 self.plan_replace_text_expr(replace_text_expr, functions)
             }
-            other_expr => Err(Error::NotYetSupportedError {
-                message: format!("text expression not yet supported {other_expr:?}"),
-            }),
+            TextScalarExpression::Capture(capture_text_expr) => {
+                self.plan_regex_capture_text_expr(capture_text_expr, functions)
+            }
         }
     }
 }
