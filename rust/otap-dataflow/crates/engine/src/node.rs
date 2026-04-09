@@ -59,6 +59,8 @@ pub enum NodeType {
     Processor,
     /// Represents a node that exports data to an external destination.
     Exporter,
+    /// Represents a node that provides shared capabilities to other components.
+    Extension,
 }
 
 /// Trait for nodes that can send pdata to a specific port.

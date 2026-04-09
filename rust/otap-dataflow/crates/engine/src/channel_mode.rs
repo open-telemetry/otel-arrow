@@ -20,7 +20,6 @@ use crate::channel_metrics::{
     ChannelSenderMetrics, control_channel_id,
 };
 use crate::context::PipelineContext;
-use crate::control::NodeControlMsg;
 use crate::entity_context::current_node_telemetry_handle;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -177,18 +176,15 @@ impl ChannelMode for SharedMode {
 /// The logic first attempts to unwrap the inner MPSC channel so metrics can be attached.
 /// If the channel is already wrapped, it preserves the existing wrapper to avoid double
 /// instrumentation.
-pub(crate) fn wrap_control_channel_metrics<M, PData>(
+pub(crate) fn wrap_control_channel_metrics<M, Msg>(
     node_id: &crate::node::NodeId,
     pipeline_ctx: &PipelineContext,
     channel_metrics: &mut ChannelMetricsRegistry,
     channel_metrics_enabled: bool,
     capacity: u64,
-    control_sender: M::ControlSender<NodeControlMsg<PData>>,
-    control_receiver: M::ControlReceiver<NodeControlMsg<PData>>,
-) -> (
-    M::ControlSender<NodeControlMsg<PData>>,
-    M::ControlReceiver<NodeControlMsg<PData>>,
-)
+    control_sender: M::ControlSender<Msg>,
+    control_receiver: M::ControlReceiver<Msg>,
+) -> (M::ControlSender<Msg>, M::ControlReceiver<Msg>)
 where
     M: ChannelMode,
 {

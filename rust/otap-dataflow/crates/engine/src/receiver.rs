@@ -248,7 +248,7 @@ impl<PData> ReceiverWrapper<PData> {
                 ..
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<LocalMode, PData>(
+                    wrap_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
                         &node_id,
                         pipeline_ctx,
                         channel_metrics,
@@ -287,7 +287,7 @@ impl<PData> ReceiverWrapper<PData> {
                 ..
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<SharedMode, PData>(
+                    wrap_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
                         &node_id,
                         pipeline_ctx,
                         channel_metrics,

@@ -705,6 +705,69 @@ where
     }
 }
 
+// ── Extension Control Messages ──────────────────────────────────────────────
+
+/// Control messages sent to extensions.
+///
+/// This is a PData-free subset of [`NodeControlMsg`] — extensions never process
+/// pipeline data, so they have no `Ack`, `Nack`, or `DelayedData` variants.
+#[derive(Debug, Clone)]
+pub enum ExtensionControlMsg {
+    /// Notifies the extension of a configuration change.
+    Config {
+        /// The new configuration as a JSON value.
+        config: serde_json::Value,
+    },
+
+    /// Asks the extension to collect/flush its local telemetry metrics.
+    CollectTelemetry {
+        /// Metrics reporter used to collect telemetry metrics.
+        metrics_reporter: MetricsReporter,
+    },
+
+    /// Requests a graceful shutdown.
+    Shutdown {
+        /// Deadline for shutdown.
+        deadline: Instant,
+        /// Human-readable reason for the shutdown.
+        reason: String,
+    },
+}
+
+impl ExtensionControlMsg {
+    /// Returns `true` if this control message is a shutdown request.
+    #[must_use]
+    pub const fn is_shutdown(&self) -> bool {
+        matches!(self, ExtensionControlMsg::Shutdown { .. })
+    }
+}
+
+/// A control sender for a single extension.
+///
+/// Stored separately from [`ControlSenders`] because extensions use
+/// [`ExtensionControlMsg`] (PData-free) rather than [`NodeControlMsg<PData>`].
+pub struct ExtensionControlSender {
+    /// Unique identifier of the extension.
+    #[allow(dead_code)] // Used by runtime pipeline in a follow-up PR.
+    pub(crate) node_id: NodeId,
+    /// The control message sender for the extension.
+    pub(crate) sender: Sender<ExtensionControlMsg>,
+}
+
+impl ExtensionControlSender {
+    /// Sends a control message to the extension.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SendError`] if the channel is closed.
+    pub async fn send(
+        &self,
+        msg: ExtensionControlMsg,
+    ) -> Result<(), SendError<ExtensionControlMsg>> {
+        self.sender.send(msg).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
