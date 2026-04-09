@@ -631,6 +631,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         kind: "ProcessorChain".into(),
                     });
                 }
+                otap_df_config::node::NodeKind::Extension => {
+                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
+                }
             };
             let node_id = build_state.next_node_id(name.clone(), node_type, pipe_node)?;
             let _ = node_ids.insert(name.clone(), node_id);
@@ -730,6 +733,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     unreachable!("rejected in first pass");
                 }
+                otap_df_config::node::NodeKind::Extension => {
+                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
+                }
             }
         }
 
@@ -821,6 +827,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     return Err(Error::UnsupportedNodeKind {
                         kind: "ProcessorChain".into(),
                     });
+                }
+                otap_df_config::node::NodeKind::Extension => {
+                    // Extensions don't participate in wiring contracts.
+                    continue;
                 }
             };
 

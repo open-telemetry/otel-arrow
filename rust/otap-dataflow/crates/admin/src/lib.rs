@@ -3,6 +3,7 @@
 
 //! HTTP server for exposing admin endpoints.
 
+mod convert;
 mod dashboard;
 pub mod error;
 mod health;

@@ -323,6 +323,13 @@ pub enum Error {
         plugin_urn: NodeUrn,
     },
 
+    /// An extension was placed in the `nodes` section instead of `extensions`.
+    #[error("Extension `{node}` was placed in `nodes` but belongs in the `extensions` section")]
+    ExtensionInNodesSection {
+        /// The node name that was misconfigured.
+        node: NodeName,
+    },
+
     /// Unknown node.
     #[error("Unknown node `{node}`")]
     UnknownNode {
@@ -503,6 +510,7 @@ impl Error {
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
+            Error::ExtensionInNodesSection { .. } => "ExtensionInNodesSection",
             Error::UnknownNode { .. } => "UnknownNode",
             Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",

@@ -25,8 +25,8 @@ humantime-serde = { workspace = true }
 
 testcontainers = { workspace = true }
 minijinja = { workspace = true }
-reqwest = { workspace = true, features = ["json", "query"] }
 
+otap-df-admin-api = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
@@ -46,6 +46,7 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+wiremock = { workspace = true }
 otap-test-tls-certs = { workspace = true }
 weaver_common = { workspace = true }
 weaver_forge = { workspace = true }
