@@ -564,25 +564,37 @@
           class="rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-200 hover:border-sky-400 hover:text-sky-200">
           Clear
         </button>
-        <!-- Text filter -->
+        <!-- Minimum level filter -->
+        <label for="logs-level-select" class="sr-only">Minimum log level</label>
+        <select id="logs-level-select"
+          class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-1 text-slate-200 focus:border-sky-400 focus:outline-none">
+          <option value="ALL">All levels</option>
+          <option value="TRACE">TRACE+</option>
+          <option value="DEBUG">DEBUG+</option>
+          <option value="INFO" selected>INFO+</option>
+          <option value="WARN">WARN+</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+        <!-- Text filter (label is visually hidden but announced by screen readers) -->
+        <label for="logs-filter-input" class="sr-only">Filter logs</label>
         <input id="logs-filter-input" type="search" placeholder="Filter logs…"
           class="w-40 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-200 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none" />
       </div>
     </div>
 
-    <!-- Status line -->
+    <!-- Status line — role=status + aria-live so screen readers announce changes -->
     <div class="mt-2 text-xs text-slate-400">
-      <span id="logs-status">Disconnected</span>
+      <span id="logs-status" role="status" aria-live="polite">Disconnected</span>
     </div>
 
-    <!-- Drop / lag warning banner -->
-    <div id="logs-drop-banner"
+    <!-- Drop / lag warning banner — role=alert for immediate screen-reader announcement -->
+    <div id="logs-drop-banner" role="alert"
       class="hidden mt-2 rounded border border-yellow-600/60 bg-yellow-900/30 px-3 py-1 text-xs text-yellow-300">
     </div>
 
     <!-- Log table -->
     <div class="logs-viewport mt-3 overflow-auto rounded border border-slate-700/60" style="max-height:28rem">
-      <table class="logs-table w-full text-xs">
+      <table class="logs-table w-full text-xs" aria-label="Internal log entries">
         <thead>
           <tr class="text-left text-slate-400 border-b border-slate-700">
             <th class="log-th log-ts">Time</th>

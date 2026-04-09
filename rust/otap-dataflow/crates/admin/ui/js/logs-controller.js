@@ -23,6 +23,18 @@ export const LEVEL_CLASSES = {
   TRACE: "log-level-trace",
 };
 
+// Numeric severity for client-side filtering (matches server-side level_severity()).
+export const LEVEL_SEVERITY = { TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4 };
+
+/**
+ * Return the numeric severity for a level string.  Unknown levels → 0 (TRACE).
+ * @param {string|undefined} levelStr
+ * @returns {number}
+ */
+export function levelSeverity(levelStr) {
+  return LEVEL_SEVERITY[(levelStr || "").toUpperCase()] ?? 0;
+}
+
 /**
  * Map a log-level string (any case) to its CSS badge class.
  * Unknown levels fall back to "log-level-trace".
@@ -88,6 +100,7 @@ export function createLogsController({ containerEl }) {
   const clearBtn = containerEl.querySelector("#logs-clear-btn");
   const backfillBtn = containerEl.querySelector("#logs-backfill-btn");
   const filterInput = containerEl.querySelector("#logs-filter-input");
+  const levelSelect = containerEl.querySelector("#logs-level-select");
   const statusEl = containerEl.querySelector("#logs-status");
   const dropBannerEl = containerEl.querySelector("#logs-drop-banner");
   const tableBody = containerEl.querySelector("#logs-tbody");
@@ -113,6 +126,10 @@ export function createLogsController({ containerEl }) {
   const logBuffer = [];
   let filterDebounceTimer = null;
   let reconnectTimer = null;
+  /** AbortController whose signal is passed to every DOM addEventListener so
+   *  destroy() can remove all listeners in one abort() call. */
+  const listenerAbort = new AbortController();
+  const { signal } = listenerAbort;
 
   // -------------------------------------------------------------------------
   // Public API wired up at the end of this function.
@@ -171,6 +188,7 @@ export function createLogsController({ containerEl }) {
       limit: 100,
       searchQuery: filterInput.value.trim() || null,
       minimumTimestamp: null,
+      minimumLevel: levelSelect ? (levelSelect.value || null) : null,
       paused: false,
     });
     updateButtons();
@@ -244,32 +262,51 @@ export function createLogsController({ containerEl }) {
   // ---- Buffer and rendering ------------------------------------------------
 
   /**
+   * Return the minimum numeric severity from the level dropdown.
+   * "ALL" or missing → 0 (accept everything).
+   * @returns {number}
+   */
+  function clientMinLevel() {
+    const val = levelSelect ? levelSelect.value : "ALL";
+    if (!val || val === "ALL") return 0;
+    return LEVEL_SEVERITY[val.toUpperCase()] ?? 0;
+  }
+
+  /**
    * Append new entries to the ring buffer and re-render the table.
-   * Keeps the buffer bounded to MAX_LOG_ROWS by evicting the oldest entries.
+   * Applies a client-side level gate as a safety net against the race window
+   * between sending setFilter and the server applying the new filter.
    * @param {Array<object>} entries
    */
   function appendEntries(entries) {
-    appendToBuffer(logBuffer, entries, MAX_LOG_ROWS);
+    const minLevel = clientMinLevel();
+    const filtered = minLevel > 0
+      ? entries.filter((e) => levelSeverity(e.level) >= minLevel)
+      : entries;
+    appendToBuffer(logBuffer, filtered, MAX_LOG_ROWS);
     renderTable();
   }
 
   function renderTable() {
+    // Capture scroll state BEFORE mutating the DOM.  After the mutation
+    // scrollHeight changes, so checking afterwards gives the wrong answer and
+    // causes the panel to stay pinned to the bottom even when the user has
+    // scrolled up to read older entries.
+    const viewport = tableBody.closest(".logs-viewport");
+    const atBottom = viewport
+      ? viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 60
+      : false;
+
     // Replace entire tbody content.  For up to 500 rows this is fast enough.
     const fragment = document.createDocumentFragment();
     for (const entry of logBuffer) {
-      const tr = buildRow(entry);
-      fragment.appendChild(tr);
+      fragment.appendChild(buildRow(entry));
     }
     tableBody.textContent = "";
     tableBody.appendChild(fragment);
-    // Auto-scroll to the bottom unless the user has scrolled up.
-    const viewport = tableBody.closest(".logs-viewport");
-    if (viewport) {
-      const atBottom =
-        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 60;
-      if (atBottom) {
-        viewport.scrollTop = viewport.scrollHeight;
-      }
+
+    if (atBottom && viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
     }
   }
 
@@ -334,7 +371,8 @@ export function createLogsController({ containerEl }) {
 
   function sendFilter() {
     const q = filterInput.value.trim() || null;
-    sendJson({ type: "setFilter", searchQuery: q, minimumTimestamp: null });
+    const level = levelSelect ? (levelSelect.value || null) : null;
+    sendJson({ type: "setFilter", searchQuery: q, minimumTimestamp: null, minimumLevel: level });
   }
 
   function requestBackfill() {
@@ -381,6 +419,8 @@ export function createLogsController({ containerEl }) {
   }
 
   // ---- Event wiring --------------------------------------------------------
+  // All listeners carry `signal` so destroy() can remove them all at once
+  // via listenerAbort.abort() without needing to keep individual references.
 
   connectBtn.addEventListener("click", () => {
     if (ws && connected) {
@@ -388,7 +428,7 @@ export function createLogsController({ containerEl }) {
     } else {
       connect();
     }
-  });
+  }, { signal });
 
   pauseBtn.addEventListener("click", () => {
     if (!connected) return;
@@ -397,7 +437,7 @@ export function createLogsController({ containerEl }) {
     } else {
       sendPause();
     }
-  });
+  }, { signal });
 
   clearBtn.addEventListener("click", () => {
     logBuffer.length = 0;
@@ -406,18 +446,30 @@ export function createLogsController({ containerEl }) {
       connected ? (paused ? `Paused — cursor ${serverCursor}` : `Live — 0 entries`) : "Disconnected",
       false
     );
-  });
+  }, { signal });
 
   backfillBtn.addEventListener("click", () => {
     if (connected) requestBackfill();
-  });
+  }, { signal });
 
   filterInput.addEventListener("input", () => {
     clearTimeout(filterDebounceTimer);
     filterDebounceTimer = setTimeout(() => {
       if (connected) sendFilter();
     }, FILTER_DEBOUNCE_MS);
-  });
+  }, { signal });
+
+  if (levelSelect) {
+    levelSelect.addEventListener("change", () => {
+      if (!connected) return;
+      // Clear the buffer so stale entries at the old level don't linger,
+      // then ask the server for a fresh snapshot at the new level.
+      logBuffer.length = 0;
+      tableBody.textContent = "";
+      sendFilter();
+      requestBackfill();
+    }, { signal });
+  }
 
   // ---- Initial button state ------------------------------------------------
   updateButtons();
@@ -425,7 +477,8 @@ export function createLogsController({ containerEl }) {
 
   // ---- Exported teardown ---------------------------------------------------
   function destroy() {
-    disconnect();
+    listenerAbort.abort();      // removes all DOM event listeners at once
+    disconnect();               // closes socket, clears reconnectTimer
     clearTimeout(filterDebounceTimer);
   }
 

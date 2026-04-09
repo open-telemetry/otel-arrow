@@ -7,6 +7,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   LEVEL_CLASSES,
+  LEVEL_SEVERITY,
+  levelSeverity,
   resolveLevelClass,
   formatTimestamp,
   appendToBuffer,
@@ -43,14 +45,17 @@ test("LEVEL_CLASSES covers the five standard levels", () => {
 
 // ---- formatTimestamp --------------------------------------------------------
 
-test("formatTimestamp returns a non-empty string for a valid RFC3339 date", () => {
-  const result = formatTimestamp("2026-04-08T12:34:56.789Z");
-  assert.ok(result.length > 0, "should return non-empty string");
-  // The time portion must appear somewhere in the formatted output.
-  assert.ok(
-    result.includes("34") && result.includes("56"),
-    `should contain minute/second from 12:34:56, got "${result}"`
-  );
+test("formatTimestamp formats a valid RFC3339 date as a locale time string", () => {
+  // Build the expected value using the same options the implementation uses so
+  // the assertion is locale-stable across environments (CI, macOS, Linux, etc.).
+  const input = "2026-04-08T12:34:56.789Z";
+  const expected = new Date(input).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3,
+  });
+  assert.equal(formatTimestamp(input), expected);
 });
 
 test("formatTimestamp returns the original string for an unparseable value", () => {
@@ -104,4 +109,49 @@ test("MAX_LOG_ROWS is a positive integer", () => {
   assert.ok(typeof MAX_LOG_ROWS === "number");
   assert.ok(MAX_LOG_ROWS > 0);
   assert.ok(Number.isInteger(MAX_LOG_ROWS));
+});
+
+// ---- levelSeverity ----------------------------------------------------------
+
+test("levelSeverity returns ascending values TRACE < DEBUG < INFO < WARN < ERROR", () => {
+  assert.ok(levelSeverity("TRACE") < levelSeverity("DEBUG"));
+  assert.ok(levelSeverity("DEBUG") < levelSeverity("INFO"));
+  assert.ok(levelSeverity("INFO")  < levelSeverity("WARN"));
+  assert.ok(levelSeverity("WARN")  < levelSeverity("ERROR"));
+});
+
+test("levelSeverity is case-insensitive", () => {
+  assert.equal(levelSeverity("error"), levelSeverity("ERROR"));
+  assert.equal(levelSeverity("warn"),  levelSeverity("WARN"));
+  assert.equal(levelSeverity("info"),  levelSeverity("INFO"));
+});
+
+test("levelSeverity returns 0 for unknown or empty input", () => {
+  assert.equal(levelSeverity("VERBOSE"), 0);
+  assert.equal(levelSeverity(""),        0);
+  assert.equal(levelSeverity(undefined), 0);
+});
+
+test("LEVEL_SEVERITY and levelSeverity are consistent", () => {
+  for (const [level, expected] of Object.entries(LEVEL_SEVERITY)) {
+    assert.equal(levelSeverity(level), expected);
+  }
+});
+
+// ---- level filter dropdown values -------------------------------------------
+
+test("LEVEL_CLASSES has a CSS class for every level shown in the dropdown", () => {
+  // These must match the <option> values in index.html #logs-level-select.
+  const dropdownLevels = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+  for (const level of dropdownLevels) {
+    assert.ok(LEVEL_CLASSES[level], `LEVEL_CLASSES missing entry for "${level}"`);
+  }
+});
+
+test("resolveLevelClass returns distinct classes for each dropdown level", () => {
+  const levels = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+  const classes = levels.map((l) => resolveLevelClass(l));
+  // All classes should be distinct so badges look different in the UI.
+  const unique = new Set(classes);
+  assert.equal(unique.size, levels.length, "some levels share the same CSS class");
 });

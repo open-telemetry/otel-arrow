@@ -9,7 +9,7 @@
 //! - /api/v1/telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
 
 use crate::AppState;
-use crate::convert::json_shape;
+use crate::convert::{convert_attribute_value, json_shape};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
@@ -27,7 +27,7 @@ use otap_df_telemetry::self_tracing::format_log_record_to_string;
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -147,40 +147,8 @@ struct AggregateGroup {
     metrics: HashMap<String, MetricValue>,
 }
 
-#[derive(Serialize)]
-pub(crate) struct LogsResponse {
-    oldest_seq: Option<u64>,
-    newest_seq: Option<u64>,
-    next_seq: u64,
-    truncated_before_seq: Option<u64>,
-    dropped_on_ingest: u64,
-    dropped_on_retention: u64,
-    retained_bytes: usize,
-    logs: Vec<LogEntry>,
-}
-
-#[derive(Serialize)]
-struct LogEntry {
-    seq: u64,
-    timestamp: String,
-    level: String,
-    target: String,
-    event_name: String,
-    file: Option<String>,
-    line: Option<u32>,
-    rendered: String,
-    contexts: Vec<ResolvedLogContext>,
-}
-
-#[derive(Serialize)]
-struct ResolvedLogContext {
-    entity_key: String,
-    schema_name: Option<String>,
-    attributes: HashMap<String, AttributeValue>,
-}
-
-fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> LogsResponse {
-    LogsResponse {
+fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> api::LogsResponse {
+    api::LogsResponse {
         oldest_seq: result.oldest_seq,
         newest_seq: result.newest_seq,
         next_seq: result.next_seq,
@@ -196,9 +164,9 @@ fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> 
     }
 }
 
-fn render_log_entry(registry: &TelemetryRegistryHandle, entry: &RetainedLogEvent) -> LogEntry {
+fn render_log_entry(registry: &TelemetryRegistryHandle, entry: &RetainedLogEvent) -> api::LogEntry {
     let callsite = entry.event.record.callsite();
-    LogEntry {
+    api::LogEntry {
         seq: entry.seq,
         timestamp: chrono::DateTime::<chrono::Utc>::from(entry.event.time).to_rfc3339(),
         level: callsite.level().to_string(),
@@ -218,25 +186,25 @@ fn render_log_message(event: &LogEvent) -> String {
 fn resolve_log_contexts(
     registry: &TelemetryRegistryHandle,
     event: &LogEvent,
-) -> Vec<ResolvedLogContext> {
+) -> Vec<api::ResolvedLogContext> {
     event
         .record
         .context
         .iter()
         .map(|entity_key| {
             registry
-                .visit_entity(*entity_key, |attrs| ResolvedLogContext {
+                .visit_entity(*entity_key, |attrs| api::ResolvedLogContext {
                     entity_key: format!("{entity_key:?}"),
                     schema_name: Some(attrs.schema_name().to_string()),
                     attributes: attrs
                         .iter_attributes()
-                        .map(|(key, value)| (key.to_string(), value.clone()))
+                        .map(|(key, value)| (key.to_string(), convert_attribute_value(value)))
                         .collect(),
                 })
-                .unwrap_or_else(|| ResolvedLogContext {
+                .unwrap_or_else(|| api::ResolvedLogContext {
                     entity_key: format!("{entity_key:?}"),
                     schema_name: None,
-                    attributes: HashMap::new(),
+                    attributes: BTreeMap::new(),
                 })
         })
         .collect()
@@ -265,10 +233,7 @@ pub async fn get_logs(
         after: q.after,
         limit,
     });
-    Ok(Json(json_shape(&logs_response(
-        &state.metrics_registry,
-        result,
-    ))))
+    Ok(Json(logs_response(&state.metrics_registry, result)))
 }
 
 /// Handler for the `/api/v1/telemetry/metrics` endpoint.
@@ -1277,6 +1242,18 @@ fn escape_prom_help(s: &str) -> String {
 // WebSocket live log stream  (/api/v1/telemetry/logs/stream)
 // ---------------------------------------------------------------------------
 
+/// Map a level string to a numeric severity (TRACE=0 … ERROR=4).
+/// Unknown levels are treated as TRACE (lowest severity).
+fn level_severity(level: &str) -> u8 {
+    match level.to_uppercase().as_str() {
+        "ERROR" => 4,
+        "WARN" => 3,
+        "INFO" => 2,
+        "DEBUG" => 1,
+        _ => 0, // TRACE and anything unknown
+    }
+}
+
 /// Optional text filter applied to rendered log entries on the server side.
 ///
 /// Applied after rendering so that `search_query` can match against the fully
@@ -1288,16 +1265,24 @@ struct LogFilter {
     search_query: Option<String>,
     /// Discard entries whose timestamp is strictly before this instant.
     minimum_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// Numeric minimum severity (TRACE=0, DEBUG=1, INFO=2, WARN=3, ERROR=4).
+    /// Entries with a lower severity are discarded.
+    minimum_level: Option<u8>,
 }
 
 impl LogFilter {
     /// Returns `true` when the rendered log entry passes all active criteria.
-    fn matches(&self, entry: &LogEntry) -> bool {
+    fn matches(&self, entry: &api::LogEntry) -> bool {
         if let Some(min_ts) = &self.minimum_timestamp {
             if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
                 if ts.with_timezone(&chrono::Utc) < *min_ts {
                     return false;
                 }
+            }
+        }
+        if let Some(min_level) = self.minimum_level {
+            if level_severity(&entry.level) < min_level {
+                return false;
             }
         }
         if let Some(q) = &self.search_query {
@@ -1321,7 +1306,11 @@ impl LogFilter {
     }
 
     /// Build a `LogFilter` from optional client-supplied strings.
-    fn from_params(search_query: Option<String>, minimum_timestamp: Option<String>) -> Self {
+    fn from_params(
+        search_query: Option<String>,
+        minimum_timestamp: Option<String>,
+        minimum_level: Option<String>,
+    ) -> Self {
         let minimum_timestamp = minimum_timestamp.and_then(|s| {
             chrono::DateTime::parse_from_rfc3339(&s)
                 .ok()
@@ -1332,6 +1321,10 @@ impl LogFilter {
             // on every log event that passes through the filter.
             search_query: search_query.map(|s| s.to_lowercase()),
             minimum_timestamp,
+            minimum_level: minimum_level
+                .as_deref()
+                .filter(|s| !s.eq_ignore_ascii_case("all") && !s.is_empty())
+                .map(level_severity),
         }
     }
 }
@@ -1353,6 +1346,9 @@ enum WsClientMsg {
         /// RFC 3339 minimum timestamp filter.
         #[serde(rename = "minimumTimestamp")]
         minimum_timestamp: Option<String>,
+        /// Minimum log level (TRACE/DEBUG/INFO/WARN/ERROR or ALL to disable).
+        #[serde(rename = "minimumLevel")]
+        minimum_level: Option<String>,
         /// Start paused (no live events sent until `resume`).
         paused: Option<bool>,
     },
@@ -1361,12 +1357,14 @@ enum WsClientMsg {
     Pause,
     /// Resume forwarding live events from the current live position.
     Resume,
-    /// Update the server-side text/timestamp filter.
+    /// Update the server-side text/timestamp/level filter.
     SetFilter {
         #[serde(rename = "searchQuery")]
         search_query: Option<String>,
         #[serde(rename = "minimumTimestamp")]
         minimum_timestamp: Option<String>,
+        #[serde(rename = "minimumLevel")]
+        minimum_level: Option<String>,
     },
     /// Request a retained-log snapshot (same as the HTTP query endpoint).
     Backfill {
@@ -1390,19 +1388,12 @@ enum WsServerMsg {
         dropped_on_ingest: u64,
         dropped_on_retention: u64,
         retained_bytes: usize,
-        logs: Vec<LogEntry>,
+        logs: Vec<api::LogEntry>,
     },
     /// Single live log entry pushed by the server.
     Log {
-        seq: u64,
-        timestamp: String,
-        level: String,
-        target: String,
-        event_name: String,
-        file: Option<String>,
-        line: Option<u32>,
-        rendered: String,
-        contexts: Vec<ResolvedLogContext>,
+        #[serde(flatten)]
+        entry: api::LogEntry,
     },
     /// Current pause state and cursor position.
     State { paused: bool, next_seq: u64 },
@@ -1521,8 +1512,8 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                                         break;
                                     }
                                 }
-                                Ok(WsClientMsg::SetFilter { search_query, minimum_timestamp }) => {
-                                    filter = LogFilter::from_params(search_query, minimum_timestamp);
+                                Ok(WsClientMsg::SetFilter { search_query, minimum_timestamp, minimum_level }) => {
+                                    filter = LogFilter::from_params(search_query, minimum_timestamp, minimum_level);
                                 }
                                 Ok(WsClientMsg::Backfill { after, limit }) => {
                                     let limit = limit.unwrap_or(100).clamp(1, 1000);
@@ -1574,17 +1565,8 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                                 if !paused {
                                     let rendered = render_log_entry(registry, &entry);
                                     if filter.matches(&rendered) {
-                                        // Move fields out of `rendered` — no per-field clone.
                                         let msg = WsServerMsg::Log {
-                                            seq: rendered.seq,
-                                            timestamp: rendered.timestamp,
-                                            level: rendered.level,
-                                            target: rendered.target,
-                                            event_name: rendered.event_name,
-                                            file: rendered.file,
-                                            line: rendered.line,
-                                            rendered: rendered.rendered,
-                                            contexts: rendered.contexts,
+                                            entry: rendered,
                                         };
                                         if !ws_send(&mut ws, &msg).await {
                                             break;
@@ -1625,6 +1607,7 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                         limit,
                         search_query,
                         minimum_timestamp,
+                        minimum_level,
                         paused: start_paused,
                     }) = serde_json::from_str::<WsClientMsg>(&text)
                     {
@@ -1636,7 +1619,8 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                         // duplicates for that race window.
                         live_rx = Some(log_tap.subscribe());
 
-                        filter = LogFilter::from_params(search_query, minimum_timestamp);
+                        filter =
+                            LogFilter::from_params(search_query, minimum_timestamp, minimum_level);
                         paused = start_paused.unwrap_or(false);
 
                         let limit = limit.unwrap_or(100).clamp(1, 1000);
@@ -2186,8 +2170,8 @@ mod tests {
     // LogFilter unit tests
     // ---------------------------------------------------------------------------
 
-    fn make_log_entry(rendered: &str, level: &str, target: &str, timestamp: &str) -> LogEntry {
-        LogEntry {
+    fn make_log_entry(rendered: &str, level: &str, target: &str, timestamp: &str) -> api::LogEntry {
+        api::LogEntry {
             seq: 1,
             timestamp: timestamp.to_string(),
             level: level.to_string(),
@@ -2209,7 +2193,7 @@ mod tests {
 
     #[test]
     fn log_filter_search_query_matches_rendered() {
-        let filter = LogFilter::from_params(Some("hello".to_string()), None);
+        let filter = LogFilter::from_params(Some("hello".to_string()), None, None);
         let yes = make_log_entry("say hello world", "INFO", "admin", "2026-01-01T00:00:00Z");
         let no = make_log_entry("goodbye world", "INFO", "admin", "2026-01-01T00:00:00Z");
         assert!(filter.matches(&yes));
@@ -2218,7 +2202,7 @@ mod tests {
 
     #[test]
     fn log_filter_search_query_matches_level() {
-        let filter = LogFilter::from_params(Some("WARN".to_string()), None);
+        let filter = LogFilter::from_params(Some("WARN".to_string()), None, None);
         let yes = make_log_entry("msg", "WARN", "admin", "2026-01-01T00:00:00Z");
         let no = make_log_entry("msg", "INFO", "admin", "2026-01-01T00:00:00Z");
         assert!(filter.matches(&yes));
@@ -2227,14 +2211,14 @@ mod tests {
 
     #[test]
     fn log_filter_search_query_is_case_insensitive() {
-        let filter = LogFilter::from_params(Some("HELLO".to_string()), None);
+        let filter = LogFilter::from_params(Some("HELLO".to_string()), None, None);
         let entry = make_log_entry("say hello world", "INFO", "admin", "2026-01-01T00:00:00Z");
         assert!(filter.matches(&entry));
     }
 
     #[test]
     fn log_filter_minimum_timestamp_excludes_older_entries() {
-        let filter = LogFilter::from_params(None, Some("2026-06-01T00:00:00Z".to_string()));
+        let filter = LogFilter::from_params(None, Some("2026-06-01T00:00:00Z".to_string()), None);
         let old_entry = make_log_entry("old", "INFO", "admin", "2026-01-01T00:00:00Z");
         let new_entry = make_log_entry("new", "INFO", "admin", "2026-07-01T00:00:00Z");
         assert!(!filter.matches(&old_entry));
@@ -2244,7 +2228,7 @@ mod tests {
     #[test]
     fn log_filter_invalid_minimum_timestamp_is_ignored() {
         // A malformed timestamp should not crash; the filter passes without the constraint.
-        let filter = LogFilter::from_params(None, Some("not-a-date".to_string()));
+        let filter = LogFilter::from_params(None, Some("not-a-date".to_string()), None);
         let entry = make_log_entry("msg", "INFO", "admin", "2026-01-01T00:00:00Z");
         assert!(filter.matches(&entry));
     }
@@ -2253,7 +2237,7 @@ mod tests {
     /// excludes an entry in the live stream must also exclude it in a snapshot.
     #[test]
     fn log_filter_applied_consistently_to_snapshot_logs() {
-        let filter = LogFilter::from_params(Some("important".to_string()), None);
+        let filter = LogFilter::from_params(Some("important".to_string()), None, None);
         let match_entry = make_log_entry(
             "important event occurred",
             "INFO",
@@ -2276,5 +2260,119 @@ mod tests {
         logs.retain(|e| filter.matches(e));
         assert_eq!(logs.len(), 1);
         assert!(logs[0].rendered.contains("important"));
+    }
+
+    #[test]
+    fn level_severity_ordering_is_correct() {
+        // TRACE < DEBUG < INFO < WARN < ERROR
+        assert!(level_severity("TRACE") < level_severity("DEBUG"));
+        assert!(level_severity("DEBUG") < level_severity("INFO"));
+        assert!(level_severity("INFO") < level_severity("WARN"));
+        assert!(level_severity("WARN") < level_severity("ERROR"));
+    }
+
+    #[test]
+    fn level_severity_is_case_insensitive() {
+        assert_eq!(level_severity("error"), level_severity("ERROR"));
+        assert_eq!(level_severity("warn"), level_severity("WARN"));
+        assert_eq!(level_severity("info"), level_severity("INFO"));
+        assert_eq!(level_severity("debug"), level_severity("DEBUG"));
+        assert_eq!(level_severity("trace"), level_severity("TRACE"));
+    }
+
+    #[test]
+    fn log_filter_minimum_level_excludes_lower_severity() {
+        let filter = LogFilter::from_params(None, None, Some("WARN".to_string()));
+        let trace = make_log_entry("msg", "TRACE", "t", "2026-01-01T00:00:00Z");
+        let debug = make_log_entry("msg", "DEBUG", "t", "2026-01-01T00:00:00Z");
+        let info = make_log_entry("msg", "INFO", "t", "2026-01-01T00:00:00Z");
+        let warn = make_log_entry("msg", "WARN", "t", "2026-01-01T00:00:00Z");
+        let error = make_log_entry("msg", "ERROR", "t", "2026-01-01T00:00:00Z");
+        assert!(!filter.matches(&trace));
+        assert!(!filter.matches(&debug));
+        assert!(!filter.matches(&info));
+        assert!(filter.matches(&warn));
+        assert!(filter.matches(&error));
+    }
+
+    #[test]
+    fn log_filter_minimum_level_all_disables_level_filter() {
+        let filter = LogFilter::from_params(None, None, Some("ALL".to_string()));
+        let trace = make_log_entry("msg", "TRACE", "t", "2026-01-01T00:00:00Z");
+        let error = make_log_entry("msg", "ERROR", "t", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&trace));
+        assert!(filter.matches(&error));
+    }
+
+    #[test]
+    fn log_filter_minimum_level_empty_string_disables_level_filter() {
+        let filter = LogFilter::from_params(None, None, Some(String::new()));
+        let trace = make_log_entry("msg", "TRACE", "t", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&trace));
+    }
+
+    #[test]
+    fn log_filter_minimum_level_and_search_query_combine() {
+        // Both constraints must pass.
+        let filter = LogFilter::from_params(
+            Some("critical".to_string()),
+            None,
+            Some("ERROR".to_string()),
+        );
+        let match_entry = make_log_entry("critical failure", "ERROR", "t", "2026-01-01T00:00:00Z");
+        let wrong_level = make_log_entry("critical info", "INFO", "t", "2026-01-01T00:00:00Z");
+        let wrong_text = make_log_entry("normal error", "ERROR", "t", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&match_entry));
+        assert!(!filter.matches(&wrong_level));
+        assert!(!filter.matches(&wrong_text));
+    }
+
+    // ---------------------------------------------------------------------------
+    // WebSocket ↔ HTTP schema alignment tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn ws_log_msg_serializes_same_fields_as_api_log_entry() {
+        let entry = make_log_entry("hello", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let msg = WsServerMsg::Log {
+            entry: entry.clone(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+        let obj = json.as_object().unwrap();
+
+        // The flattened entry must carry the same fields as api::LogEntry
+        // plus the discriminator tag.
+        assert_eq!(obj.get("type").unwrap(), "log");
+        assert_eq!(obj.get("seq").unwrap(), entry.seq);
+        assert_eq!(obj.get("timestamp").unwrap(), &entry.timestamp);
+        assert_eq!(obj.get("level").unwrap(), &entry.level);
+        assert_eq!(obj.get("target").unwrap(), &entry.target);
+        assert_eq!(obj.get("event_name").unwrap(), &entry.event_name);
+        assert_eq!(obj.get("rendered").unwrap(), &entry.rendered);
+        assert!(obj.contains_key("contexts"));
+    }
+
+    #[test]
+    fn ws_snapshot_logs_use_api_log_entry_shape() {
+        let entry = make_log_entry("hello", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let msg = WsServerMsg::Snapshot {
+            oldest_seq: Some(1),
+            newest_seq: Some(1),
+            next_seq: 1,
+            truncated_before_seq: None,
+            dropped_on_ingest: 0,
+            dropped_on_retention: 0,
+            retained_bytes: 0,
+            logs: vec![entry],
+        };
+        let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+        let logs = json.get("logs").unwrap().as_array().unwrap();
+        assert_eq!(logs.len(), 1);
+
+        // Each log in the snapshot must deserialize as a valid api::LogEntry.
+        let roundtrip: api::LogEntry = serde_json::from_value(logs[0].clone())
+            .expect("snapshot log should match api::LogEntry");
+        assert_eq!(roundtrip.seq, 1);
+        assert_eq!(roundtrip.rendered, "hello");
     }
 }

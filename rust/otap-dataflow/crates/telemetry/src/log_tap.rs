@@ -151,19 +151,22 @@ pub struct InternalLogTapHandle {
 impl InternalLogTapHandle {
     /// Record a structured internal log event in retention and fan it out
     /// non-blockingly to any active subscribers.
+    ///
+    /// The broadcast send is performed **while the write lock is still held**
+    /// so that concurrent `record()` callers cannot interleave their sends and
+    /// invert the monotonic seq order visible to subscribers.
+    /// `broadcast::send()` is non-blocking (it never waits for receivers), so
+    /// holding the lock is safe.
     pub fn record(&self, event: LogEvent) {
-        let retained = {
-            let mut state = self.state.write();
-            state.push(event)
-            // Write lock released here.
-        };
-        // Fan out to subscribers without holding any lock.
-        // Skip the atomic send when nobody is listening (benign race: a
-        // subscriber that connects between the check and the send will pick
-        // up the event from the snapshot query instead).
+        let mut state = self.state.write();
+        let retained = state.push(event);
+        // Skip the send when nobody is listening (benign race: a subscriber
+        // that connects between the check and the send picks up the event
+        // from the snapshot query instead).
         if self.subscribers.receiver_count() > 0 {
             let _ = self.subscribers.send(retained);
         }
+        // Write lock released here — after the send, preserving seq order.
     }
 
     /// Returns a counter that tracks logs dropped before retention.
@@ -493,6 +496,50 @@ mod tests {
 
         let entry = rx.recv().await.expect("second event");
         assert_eq!(entry.seq, 2);
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_events_in_seq_order_under_concurrency() {
+        // Regression test: seq is assigned under the write lock AND the
+        // broadcast send happens while the lock is still held, so concurrent
+        // record() callers cannot invert the order visible to subscribers.
+        let config = InternalLogTapConfig {
+            enabled: true,
+            max_entries: 200,
+            max_bytes: usize::MAX,
+        };
+        let handle = build(&config);
+        let mut rx = handle.subscribe();
+
+        const N: usize = 50;
+        // Spawn many concurrent tasks that each record one event.
+        let tasks: Vec<_> = (0..N)
+            .map(|i| {
+                let h = handle.clone();
+                tokio::spawn(async move {
+                    h.record(event_with_message(&i.to_string()));
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.expect("task panicked");
+        }
+
+        let mut seqs = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            seqs.push(e.seq);
+        }
+
+        assert_eq!(seqs.len(), N, "expected {N} events, got {}", seqs.len());
+        // Seqs must be strictly increasing — no inversions allowed.
+        for w in seqs.windows(2) {
+            assert!(
+                w[0] < w[1],
+                "out-of-order delivery: seq {} before {}",
+                w[0],
+                w[1]
+            );
+        }
     }
 
     #[test]
