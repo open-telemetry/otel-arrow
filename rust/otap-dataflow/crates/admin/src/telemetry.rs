@@ -1244,13 +1244,30 @@ fn escape_prom_help(s: &str) -> String {
 
 /// Map a level string to a numeric severity (TRACE=0 … ERROR=4).
 /// Unknown levels are treated as TRACE (lowest severity).
+///
+/// Uses ASCII-only comparison to avoid allocating a temporary uppercase string.
 fn level_severity(level: &str) -> u8 {
-    match level.to_uppercase().as_str() {
-        "ERROR" => 4,
-        "WARN" => 3,
-        "INFO" => 2,
-        "DEBUG" => 1,
-        _ => 0, // TRACE and anything unknown
+    if level.eq_ignore_ascii_case("ERROR") {
+        4
+    } else if level.eq_ignore_ascii_case("WARN") {
+        3
+    } else if level.eq_ignore_ascii_case("INFO") {
+        2
+    } else if level.eq_ignore_ascii_case("DEBUG") {
+        1
+    } else {
+        0 // TRACE and anything unknown
+    }
+}
+
+/// Map a `tracing::Level` to the same severity scale used by [`level_severity`].
+fn tracing_level_severity(level: &otap_df_telemetry::Level) -> u8 {
+    match *level {
+        otap_df_telemetry::Level::ERROR => 4,
+        otap_df_telemetry::Level::WARN => 3,
+        otap_df_telemetry::Level::INFO => 2,
+        otap_df_telemetry::Level::DEBUG => 1,
+        _ => 0, // TRACE
     }
 }
 
@@ -1288,6 +1305,11 @@ impl LogFilter {
         if let Some(q) = &self.search_query {
             // `q` is already lowercased at construction time; only the entry
             // fields need to be lowercased per event.
+            //
+            // TODO(perf): each `to_lowercase()` allocates a temporary String.
+            // If filter throughput ever becomes a concern, consider a
+            // case-insensitive substring search (e.g. `memchr` + manual ASCII
+            // comparison) to avoid per-field heap allocation.
             let matched = entry.rendered.to_lowercase().contains(q.as_str())
                 || entry.level.to_lowercase().contains(q.as_str())
                 || entry.target.to_lowercase().contains(q.as_str())
@@ -1299,6 +1321,28 @@ impl LogFilter {
                     .to_lowercase()
                     .contains(q.as_str());
             if !matched {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Cheap pre-filter on the raw (unrendered) log event.
+    ///
+    /// Checks `minimum_level` and `minimum_timestamp` without rendering the
+    /// entry, so we can skip the more expensive `render_log_entry()` call for
+    /// events that would be rejected anyway.  `search_query` is intentionally
+    /// not checked here because it operates on the rendered text.
+    fn prefilter_raw(&self, event: &RetainedLogEvent) -> bool {
+        if let Some(min_ts) = &self.minimum_timestamp {
+            let event_ts = chrono::DateTime::<chrono::Utc>::from(event.event.time);
+            if event_ts < *min_ts {
+                return false;
+            }
+        }
+        if let Some(min_level) = self.minimum_level {
+            let callsite = event.event.record.callsite();
+            if tracing_level_severity(callsite.level()) < min_level {
                 return false;
             }
         }
@@ -1563,13 +1607,17 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                                 cursor = entry_seq;
 
                                 if !paused {
-                                    let rendered = render_log_entry(registry, &entry);
-                                    if filter.matches(&rendered) {
-                                        let msg = WsServerMsg::Log {
-                                            entry: rendered,
-                                        };
-                                        if !ws_send(&mut ws, &msg).await {
-                                            break;
+                                    // Cheap pre-filter on level/timestamp before
+                                    // the more expensive render + search match.
+                                    if filter.prefilter_raw(&entry) {
+                                        let rendered = render_log_entry(registry, &entry);
+                                        if filter.matches(&rendered) {
+                                            let msg = WsServerMsg::Log {
+                                                entry: rendered,
+                                            };
+                                            if !ws_send(&mut ws, &msg).await {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
