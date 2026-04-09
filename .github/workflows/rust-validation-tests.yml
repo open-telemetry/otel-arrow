@@ -4,6 +4,9 @@
 # system resources when run in parallel. They are gated behind the custom
 # `validation_tests` cfg flag and excluded from the main Rust-CI workflow.
 #
+# Tests must be prefixed with `validation_` to be selected by the nextest
+# filter expression.
+#
 # Trigger manually from the GitHub Actions UI.
 name: Rust Validation Tests
 
@@ -11,14 +14,7 @@ permissions:
   contents: read
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-  merge_group:
-  # workflow_dispatch:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -67,7 +63,7 @@ jobs:
       - name: Build the test collector
         run: make otelarrowcol
 
-      - name: Run validation tests
+      - name: Run validation tests (sequential)
         env:
           RUSTFLAGS: "--cfg validation_tests"
         run: >
@@ -75,5 +71,6 @@ jobs:
           --workspace
           --all-features
           --test-threads 1
-          -E 'test(/^validation_/)'
+          --run-ignored all
+          -E 'test(/::validation_[^:]+$/)'
         working-directory: ./rust/otap-dataflow
