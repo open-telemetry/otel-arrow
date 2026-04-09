@@ -72,7 +72,8 @@ jobs:
           RUSTFLAGS: "--cfg validation_tests"
         run: >
           cargo nextest run
-          -p otap-df-validation
+          --workspace
           --all-features
           --test-threads 1
+          -E 'test(/^validation_/)'
         working-directory: ./rust/otap-dataflow

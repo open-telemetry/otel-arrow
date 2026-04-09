@@ -42,7 +42,7 @@ mod tests {
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
 
     #[test]
-    fn no_processor() {
+    fn validation_no_processor() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/no-processor.yaml")
@@ -69,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_processor() {
+    fn validation_debug_processor() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/debug-processor.yaml")
@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn attribute_processor_pipeline() {
+    fn validation_attribute_processor_pipeline() {
         let deny = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["ios.app.state".into()],
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_processor_pipeline() {
+    fn validation_filter_processor_pipeline() {
         let attr_check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new(
@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_input_output() {
+    fn validation_multiple_input_output() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/multiple-input-output.yaml")
@@ -215,7 +215,7 @@ mod tls_tests {
     /// End-to-end validation: traffic flows through a TLS-enabled OTLP gRPC
     /// receiver in the SUV pipeline.
     #[test]
-    fn tls_no_processor() {
+    fn validation_tls_no_processor() {
         let _ = otap_df_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -266,7 +266,7 @@ mod tls_tests {
     /// End-to-end validation: traffic flows through an mTLS-enabled OTLP gRPC
     /// receiver in the SUV pipeline, requiring client certificate authentication.
     #[test]
-    fn mtls_no_processor() {
+    fn validation_mtls_no_processor() {
         let _ = otap_df_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
