@@ -26,6 +26,7 @@ pub enum MetricsPeriodicExporterType {
 /// For `console`, `config` can be omitted or left empty.
 /// For `otlp`, `config` must contain a valid `OtlpExporterConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsPeriodicExporterConfig {
     /// The type of exporter to use.
     #[serde(rename = "type")]
@@ -138,6 +139,22 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let roundtripped: MetricsPeriodicExporterConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config, roundtripped);
+    }
+
+    #[test]
+    fn test_metrics_pull_exporter_config_extra_fields() {
+        let yaml_str = r#"
+        type: otlp
+        extra_field: bar
+        "#;
+        let result: Result<MetricsPeriodicExporterConfig, _> = serde_yaml::from_str(yaml_str);
+        match result {
+            Ok(_) => panic!("Deserialization should have failed for extra fields present"),
+            Err(err) => {
+                let err_msg = err.to_string();
+                assert!(err_msg.contains("unknown field `extra_field`"));
+            }
+        }
     }
 
     #[test]

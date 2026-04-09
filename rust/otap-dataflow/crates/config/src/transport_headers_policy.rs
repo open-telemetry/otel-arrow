@@ -294,6 +294,16 @@ impl HeaderPropagationPolicy {
         Self { default, overrides }
     }
 
+    /// Validate the propagation policy configuration.
+    ///
+    /// Currently validates the default selector shape. This is the single
+    /// entry-point that both pipeline-level and node-level validation use so
+    /// that invalid selectors cannot be silently accepted in one path while
+    /// being rejected in another.
+    pub fn validate(&self) -> Result<(), String> {
+        self.default.selector.validate()
+    }
+
     /// Returns an iterator over headers that should be propagated on
     /// egress. Each [`PropagatedHeader`] borrows from the captured
     /// headers
@@ -672,5 +682,36 @@ named:
         };
         let err = selector.validate().unwrap_err();
         assert!(err.contains("'named' must not be set"));
+    }
+
+    #[test]
+    fn propagation_policy_validate_delegates_to_selector() {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::Named,
+                    named: None,
+                },
+                ..Default::default()
+            },
+            vec![],
+        );
+        let err = policy.validate().unwrap_err();
+        assert!(err.contains("'named' list is required"));
+    }
+
+    #[test]
+    fn propagation_policy_validate_valid() {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
+                ..Default::default()
+            },
+            vec![],
+        );
+        assert!(policy.validate().is_ok());
     }
 }

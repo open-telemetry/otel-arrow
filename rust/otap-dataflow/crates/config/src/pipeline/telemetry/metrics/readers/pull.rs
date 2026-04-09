@@ -23,6 +23,7 @@ pub enum MetricsPullExporterType {
 /// If `config` is omitted, Prometheus defaults (host=0.0.0.0, port=9090,
 /// path=/metrics) are used.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsPullExporterConfig {
     /// The type of exporter to use.
     #[serde(rename = "type")]
@@ -205,6 +206,22 @@ mod tests {
         config
             .validate()
             .expect("Prometheus with defaults should be valid");
+    }
+
+    #[test]
+    fn test_metrics_pull_exporter_config_extra_fields() {
+        let yaml_str = r#"
+        type: prometheus
+        extra_field: bar
+        "#;
+        let result: Result<MetricsPullExporterConfig, _> = serde_yaml::from_str(yaml_str);
+        match result {
+            Ok(_) => panic!("Deserialization should have failed for extra fields present"),
+            Err(err) => {
+                let err_msg = err.to_string();
+                assert!(err_msg.contains("unknown field `extra_field`"));
+            }
+        }
     }
 
     #[test]

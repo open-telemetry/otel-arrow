@@ -180,12 +180,7 @@ impl Policies {
             }
         }
         if let Some(transport_headers) = &self.transport_headers {
-            if let Err(e) = transport_headers
-                .header_propagation
-                .default
-                .selector
-                .validate()
-            {
+            if let Err(e) = transport_headers.header_propagation.validate() {
                 errors.push(format!(
                     "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
                 ));
