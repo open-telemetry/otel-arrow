@@ -4729,6 +4729,10 @@ groups:
         }
     }
 
+    /// Scenario: a reconfigure request changes only the effective core
+    /// allocation from one assigned core to two.
+    /// Guarantees: rollout planning classifies the change as a resize, starts
+    /// only the added core, and keeps the current generation unchanged.
     #[test]
     fn prepare_rollout_plan_accepts_core_allocation_scale_up() {
         let config = engine_config_with_pipeline(
@@ -4809,6 +4813,10 @@ connections:
         );
     }
 
+    /// Scenario: a reconfigure request changes only the effective core
+    /// allocation from two assigned cores to one.
+    /// Guarantees: rollout planning classifies the change as a resize, stops
+    /// only the removed core, and keeps the current generation unchanged.
     #[test]
     fn prepare_rollout_plan_accepts_core_allocation_scale_down() {
         let config = engine_config_with_pipeline(
@@ -4891,6 +4899,10 @@ connections:
         );
     }
 
+    /// Scenario: the submitted pipeline config is effectively identical to the
+    /// committed active pipeline and serving footprint.
+    /// Guarantees: rollout planning short-circuits to `NoOp` rather than
+    /// scheduling a replace or resize operation.
     #[test]
     fn prepare_rollout_plan_returns_noop_for_identical_active_pipeline() {
         let config = engine_config_with_pipeline(
@@ -4959,6 +4971,11 @@ connections:
         assert!(plan.resize_stop_cores.is_empty());
     }
 
+    /// Scenario: the controller executes a rollout plan that has already been
+    /// classified as `NoOp`.
+    /// Guarantees: the controller returns an immediate successful rollout
+    /// snapshot, preserves the committed generation, and leaves no in-flight
+    /// rollout summary behind.
     #[test]
     fn spawn_rollout_returns_immediate_success_for_noop() {
         let config = engine_config_with_pipeline(
@@ -5043,6 +5060,10 @@ connections:
         assert_eq!(rollout.state, ApiPipelineRolloutState::Succeeded);
     }
 
+    /// Scenario: a reconfigure request changes the runtime graph shape while
+    /// also changing the resource footprint.
+    /// Guarantees: planning keeps the safer replace path instead of collapsing
+    /// the update into a resource-only resize.
     #[test]
     fn prepare_rollout_plan_keeps_replace_when_runtime_shape_changes() {
         let config = engine_config_with_pipeline(
@@ -5120,6 +5141,10 @@ connections:
         );
     }
 
+    /// Scenario: a reconfigure request would require a runtime topic-broker
+    /// mutation for an existing logical pipeline.
+    /// Guarantees: planning rejects the request before rollout starts and
+    /// surfaces an invalid-request error to the caller.
     #[test]
     fn prepare_rollout_plan_rejects_topic_runtime_mutation() {
         let config = OtelDataflowSpec::from_yaml(
@@ -5200,6 +5225,10 @@ connections:
         }
     }
 
+    /// Scenario: a second rollout is requested for a logical pipeline that
+    /// already has an active rollout record.
+    /// Guarantees: planning rejects the new request with a rollout conflict
+    /// instead of interleaving two rollout state machines.
     #[test]
     fn prepare_rollout_plan_rejects_concurrent_rollout_for_same_pipeline() {
         let config = engine_config_with_pipeline(
@@ -5276,6 +5305,10 @@ connections:
         assert_eq!(err, ControlPlaneError::RolloutConflict);
     }
 
+    /// Scenario: a new rollout has been registered for a logical pipeline but
+    /// has not yet committed its candidate config.
+    /// Guarantees: pipeline details still return the committed config while
+    /// exposing the pending rollout summary separately.
     #[test]
     fn pipeline_details_returns_committed_config_while_rollout_is_pending() {
         let config = engine_config_with_pipeline(
@@ -5362,6 +5395,10 @@ connections:
         );
     }
 
+    /// Scenario: a shutdown request targets a group id that does not exist in
+    /// the controller's committed config.
+    /// Guarantees: per-pipeline shutdown fails fast with `GroupNotFound`
+    /// instead of creating a shutdown record.
     #[test]
     fn request_shutdown_pipeline_rejects_missing_group() {
         let config = engine_config_with_pipeline(
@@ -5387,6 +5424,10 @@ connections:
         assert_eq!(err, ControlPlaneError::GroupNotFound);
     }
 
+    /// Scenario: a shutdown request targets a pipeline id that is not present
+    /// in an existing group.
+    /// Guarantees: per-pipeline shutdown rejects the request with
+    /// `PipelineNotFound` before any runtime instances are touched.
     #[test]
     fn request_shutdown_pipeline_rejects_missing_pipeline() {
         let config = engine_config_with_pipeline(
@@ -5412,6 +5453,10 @@ connections:
         assert_eq!(err, ControlPlaneError::PipelineNotFound);
     }
 
+    /// Scenario: a shutdown request arrives while the same logical pipeline is
+    /// already under rollout.
+    /// Guarantees: shutdown is rejected with a rollout conflict so the rollout
+    /// controller remains the single owner of that pipeline's lifecycle.
     #[test]
     fn request_shutdown_pipeline_rejects_active_rollout() {
         let config = engine_config_with_pipeline(
@@ -5448,6 +5493,10 @@ connections:
         assert_eq!(err, ControlPlaneError::RolloutConflict);
     }
 
+    /// Scenario: a second shutdown request targets a logical pipeline that
+    /// already has an active shutdown operation.
+    /// Guarantees: the controller rejects the duplicate request instead of
+    /// creating competing shutdown records.
     #[test]
     fn request_shutdown_pipeline_rejects_active_shutdown() {
         let config = engine_config_with_pipeline(
@@ -5490,6 +5539,10 @@ connections:
         assert_eq!(err, ControlPlaneError::RolloutConflict);
     }
 
+    /// Scenario: a shutdown request targets a committed pipeline that currently
+    /// has no active runtime instances.
+    /// Guarantees: the controller rejects the request as an invalid already
+    /// stopped pipeline instead of synthesizing a no-op shutdown operation.
     #[test]
     fn request_shutdown_pipeline_rejects_already_stopped_pipeline() {
         let config = engine_config_with_pipeline(
@@ -5521,6 +5574,10 @@ connections:
         }
     }
 
+    /// Scenario: a shutdown request targets one logical pipeline while other
+    /// pipelines and exited instances still exist in the runtime registry.
+    /// Guarantees: only active instances for the requested logical pipeline
+    /// receive shutdown control messages and relinquish their control senders.
     #[test]
     fn request_shutdown_pipeline_targets_only_active_instances_for_pipeline() {
         let config = OtelDataflowSpec::from_yaml(
@@ -5652,6 +5709,10 @@ groups:
         }
     }
 
+    /// Scenario: all targeted runtime instances exit cleanly after a pipeline
+    /// shutdown request is accepted.
+    /// Guarantees: the shutdown record reaches `succeeded`, tracks per-core
+    /// completion, and removes the active shutdown lock for that pipeline.
     #[test]
     fn request_shutdown_pipeline_tracks_completion() {
         let config = engine_config_with_pipeline(
@@ -5729,6 +5790,10 @@ groups:
         );
     }
 
+    /// Scenario: a pipeline shutdown request is accepted but the targeted
+    /// runtime instance never exits before the shutdown deadline.
+    /// Guarantees: the shutdown record transitions to `failed`, preserves the
+    /// timeout reason, and records the failed per-core state for callers.
     #[test]
     fn request_shutdown_pipeline_tracks_timeout_failure() {
         let config = engine_config_with_pipeline(

@@ -526,6 +526,10 @@ mod tests {
         .expect("fixture shutdown status should deserialize")
     }
 
+    /// Scenario: the control plane rejects a pipeline reconfigure request
+    /// before rollout work starts.
+    /// Guarantees: the admin handler converts that rejection into a structured
+    /// operation-error body with the expected HTTP status.
     #[tokio::test]
     async fn put_pipeline_returns_operation_error_body_on_invalid_request() {
         let response = put_pipeline(
@@ -557,6 +561,10 @@ mod tests {
         assert_eq!(error.message.as_deref(), Some("invalid candidate"));
     }
 
+    /// Scenario: a waited pipeline reconfigure request times out and the
+    /// control plane can still report the latest rollout snapshot.
+    /// Guarantees: the admin handler returns HTTP 504 with that rollout status
+    /// body instead of dropping the operation context.
     #[tokio::test]
     async fn put_pipeline_timeout_returns_latest_rollout_status_snapshot() {
         let response = put_pipeline(
@@ -586,6 +594,10 @@ mod tests {
         assert_eq!(status.state, PipelineRolloutState::Running);
     }
 
+    /// Scenario: a pipeline shutdown request collides with an active rollout
+    /// for the same logical pipeline.
+    /// Guarantees: the admin handler returns a typed conflict body so callers
+    /// can distinguish request rejection from shutdown progress.
     #[tokio::test]
     async fn shutdown_pipeline_returns_operation_error_body_on_conflict() {
         let response = shutdown_pipeline(
@@ -614,6 +626,10 @@ mod tests {
         assert_eq!(error.message, None);
     }
 
+    /// Scenario: a waited pipeline shutdown request times out while the control
+    /// plane still has a current shutdown snapshot.
+    /// Guarantees: the admin handler responds with HTTP 504 and the latest
+    /// shutdown status body for follow-up polling.
     #[tokio::test]
     async fn shutdown_pipeline_timeout_returns_latest_status_snapshot() {
         let response = shutdown_pipeline(

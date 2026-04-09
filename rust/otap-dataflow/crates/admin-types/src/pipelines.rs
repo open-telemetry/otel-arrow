@@ -844,6 +844,10 @@ mod tests {
         }));
     }
 
+    /// Scenario: a caller serializes or deserializes the public live
+    /// reconfiguration request body.
+    /// Guarantees: the shared SDK model preserves the committed camelCase wire
+    /// shape for pipeline config and timeout fields.
     #[test]
     fn reconfigure_request_roundtrips_current_wire_shape() {
         assert_roundtrip::<ReconfigureRequest>(json!({
@@ -861,6 +865,10 @@ mod tests {
         }));
     }
 
+    /// Scenario: a caller reads the committed pipeline-details resource through
+    /// the public SDK.
+    /// Guarantees: the shared model preserves the current wire shape for the
+    /// committed config, active generation, and embedded rollout summary.
     #[test]
     fn pipeline_details_roundtrips_current_wire_shape() {
         assert_roundtrip::<PipelineDetails>(json!({
@@ -886,6 +894,9 @@ mod tests {
         }));
     }
 
+    /// Scenario: a caller polls the status of one rollout operation by id.
+    /// Guarantees: the shared rollout snapshot model round-trips the current
+    /// wire shape, including action, lifecycle state, and per-core progress.
     #[test]
     fn pipeline_rollout_status_roundtrips_current_wire_shape() {
         assert_roundtrip::<RolloutStatus>(json!({
@@ -911,6 +922,10 @@ mod tests {
         }));
     }
 
+    /// Scenario: a caller polls the status of one pipeline shutdown operation
+    /// by id.
+    /// Guarantees: the shared shutdown snapshot model round-trips the current
+    /// wire shape, including failure detail and per-core progress.
     #[test]
     fn pipeline_shutdown_status_roundtrips_current_wire_shape() {
         assert_roundtrip::<ShutdownStatus>(json!({
@@ -932,6 +947,10 @@ mod tests {
         }));
     }
 
+    /// Scenario: the SDK receives a waited reconfigure result that completed
+    /// within the requested wait window.
+    /// Guarantees: the caller-facing outcome enum preserves the external wire
+    /// encoding for completed rollout results.
     #[test]
     fn reconfigure_outcome_roundtrips() {
         assert_roundtrip::<ReconfigureOutcome>(json!({
@@ -949,6 +968,10 @@ mod tests {
         }));
     }
 
+    /// Scenario: the SDK receives a waited shutdown result whose wait window
+    /// expired before the operation finished.
+    /// Guarantees: the caller-facing outcome enum preserves the external wire
+    /// encoding for timed-out shutdown results.
     #[test]
     fn shutdown_outcome_roundtrips() {
         assert_roundtrip::<ShutdownOutcome>(json!({
