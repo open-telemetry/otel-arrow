@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775608261886,
+  "lastUpdate": 1775694478515,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3188,6 +3188,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 101.2,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Gokhan Uslu",
+            "username": "gouslu",
+            "email": "geukhanuslu@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "640e70958186970ca79473697f3e0274e84a522f",
+          "message": "feat(config): extensions section, capabilities bindings, and config-level validation (#2538)\n\n# Change Summary\n\nThis is PR 1 based on\nhttps://github.com/open-telemetry/otel-arrow/pull/2510.\n\nAdd config parsing for pipeline extensions — the first building block of\nthe extension system ([architecture\ndoc](https://github.com/gouslu/otel-arrow/blob/gouslu/extension-system-doc/rust/otap-dataflow/docs/extension-system-architecture.md)).\n\nExtensions are standalone pipeline components that provide shared\ncapabilities (auth, storage, etc.) to data-path nodes. This PR adds\nconfig-level support only — no runtime behavior. Extensions are parsed\nand validated but not created or started.\n\n**Config changes:**\n- `extensions:` section in pipeline config, separate from `nodes:`\n- `capabilities:` field on nodes for binding capabilities to extension\ninstances\n- `NodeKind::Extension` variant for URN parsing (e.g.,\n`urn:otel:extension:auth`)\n- `ExtensionConfig` struct in engine config\n- `PipelineConfigBuilder::add_extension()` for programmatic config\nconstruction\n\n**Validations added:**\n- Capability bindings must reference extensions that exist in the\n`extensions:` section\n- Extensions cannot have `capabilities:` bindings (they provide\ncapabilities, not consume them)\n- Extension URN in `nodes:` section → `ExtensionInNodesSection` error\n- `extensions:` at group level rejected by serde (`deny_unknown_fields`)\n- Duplicate names across nodes and extensions rejected\n\n**Example config:**\n\n    extensions:\n      azure_auth:\n        type: \"urn:microsoft:extension:azure_identity_auth\"\n        config:\n          method: \"managed_identity\"\n\n    nodes:\n      exporter:\n        type: \"urn:microsoft:exporter:azure_monitor\"\n        capabilities:\n          bearer_token_provider: \"azure_auth\"\n\n## What issue does this PR close?\n\n* Part of the extension system initiative (Phase 1, PR 1 of 8)\n\n## How are these changes tested?\n\n13 new config tests covering:\n- Extensions parsed separately from nodes\n- Extension with config and capability bindings\n- Extension URN kind detection\n- Duplicate extension/node name rejection\n- Extension URN in nodes section detection\n- Non-extension URN in extensions section detection\n- Empty/missing extensions section\n- Empty capabilities\n- Multiple extensions with capability bindings\n- Capability binding to nonexistent extension (rejected)\n- Capability binding to existing extension (passes)\n- Capabilities on extension itself (rejected)\n- Extensions at group level (rejected by serde)\n\nAll 168 config tests pass. Example config YAML added to `configs/`.\n\n## Are there any user-facing changes?\n\nYes — pipeline YAML configs now support `extensions:` and\n`capabilities:` sections. These are optional and have no runtime effect\nin this PR.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-04-08T23:38:00Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/640e70958186970ca79473697f3e0274e84a522f"
+        },
+        "date": 1775694472523,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 101.99,
             "unit": "MB"
           }
         ]
