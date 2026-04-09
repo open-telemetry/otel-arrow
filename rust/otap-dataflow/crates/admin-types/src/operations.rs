@@ -34,7 +34,10 @@ const fn default_timeout_secs() -> u64 {
 }
 
 impl OperationOptions {
-    /// Converts this request into URL query pairs.
+    /// Converts these options into URL query pairs for SDK transports.
+    ///
+    /// Most callers do not need this directly because the built-in HTTP
+    /// transport uses it automatically.
     #[must_use]
     pub fn to_query_pairs(&self) -> Vec<(&'static str, String)> {
         vec![
@@ -60,7 +63,7 @@ pub struct OperationError {
 }
 
 impl OperationError {
-    /// Creates an error with no message.
+    /// Creates a typed operation rejection without a human-readable message.
     #[must_use]
     pub const fn new(kind: OperationErrorKind) -> Self {
         Self {
@@ -69,7 +72,7 @@ impl OperationError {
         }
     }
 
-    /// Attaches a human-readable message.
+    /// Attaches a human-readable detail message to the rejection.
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
