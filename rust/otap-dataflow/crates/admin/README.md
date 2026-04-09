@@ -31,16 +31,16 @@ For the operator guide to live pipeline mutation, see
 
 ### Health and status
 
- - `GET /api/v1/status`
- - `GET /api/v1/livez`
- - `GET /api/v1/readyz`
- - `GET /api/v1/groups/status`
- - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
- - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
- - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
- - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
- - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez`
- - `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz`
+- `GET /api/v1/status`
+- `GET /api/v1/livez`
+- `GET /api/v1/readyz`
+- `GET /api/v1/groups/status`
+- `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+- `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status`
+- `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
+- `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
+- `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez`
+- `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz`
 
 ### Pipeline lifecycle
 
