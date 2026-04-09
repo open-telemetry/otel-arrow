@@ -4408,4 +4408,73 @@ mod test {
         )
         .await
     }
+
+    async fn test_update_attr_to_regexp_capture_with_non_scalar_args<P: Parser>(
+        fn_name: &str,
+        args: &[&str],
+    ) {
+        // clearly this isn't a well formed batch of logs, but the test here is just to ensure
+        // that some non-scalar args can be passed into the function call
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .event_name("hello world")
+                .severity_text("(.).*")
+                .severity_number(1)
+                .finish(),
+            LogRecord::build()
+                .event_name("hello world")
+                .severity_text(".(.)(..).*")
+                .severity_number(2)
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend event_name = {fn_name}({})"#,
+            args.join(", ")
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &[
+                LogRecord::build()
+                    .event_name("h")
+                    .severity_text("(.).*")
+                    .severity_number(1)
+                    .finish(),
+                LogRecord::build()
+                    .event_name("ll")
+                    .severity_text(".(.)(..).*")
+                    .severity_number(2)
+                    .finish(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_non_scalar_args_opl_parser() {
+        test_update_attr_to_regexp_capture_with_non_scalar_args::<OplParser>(
+            "regexp_capture",
+            &["event_name", "severity_text", "severity_number"],
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_non_scalar_args_kql_parser() {
+        test_update_attr_to_regexp_capture_with_non_scalar_args::<KqlParser>(
+            "extract",
+            &["severity_text", "event_name", "severity_number"],
+        )
+        .await
+    }
 }

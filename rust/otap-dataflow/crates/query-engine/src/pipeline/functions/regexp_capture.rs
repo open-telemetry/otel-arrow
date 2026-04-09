@@ -218,10 +218,10 @@ fn invoke_for_dict_source<K: ArrowDictionaryKeyType>(
             replace_dict_values(&dict_arr, new_vals)
         }
         _ => {
-            let sources_iter = dict_arr
+            let typed_str_dict = dict_arr
                 .downcast_dict::<StringArray>()
                 .expect("dict vals are strings");
-            regex_capture(sources_iter.into_iter(), regexes, groups)
+            regex_capture(typed_str_dict.into_iter(), regexes, groups)
         }
     }
 }
@@ -286,6 +286,49 @@ where
                 let regex_arr_str = regex_arr.as_string::<i32>();
                 regex_capture_with_regex_iter(values, regex_arr_str.iter(), groups)
             }
+            // TODO need tests for this
+            DataType::Dictionary(k, v) => {
+                if !matches!(v.as_ref(), &DataType::Utf8) {
+                    return exec_err!(
+                        "Unsupported dictionary values type for regexes array {:?} in function `{}`",
+                        k.as_ref(),
+                        FUNC_NAME
+                    );
+                }
+
+                match k.as_ref() {
+                    DataType::Int8 => {
+                        invoke_for_dict_regex::<_, Int8Type>(values, regex_arr, groups)
+                    }
+                    DataType::Int16 => {
+                        invoke_for_dict_regex::<_, Int16Type>(values, regex_arr, groups)
+                    }
+                    DataType::Int32 => {
+                        invoke_for_dict_regex::<_, Int32Type>(values, regex_arr, groups)
+                    }
+                    DataType::Int64 => {
+                        invoke_for_dict_regex::<_, Int64Type>(values, regex_arr, groups)
+                    }
+                    DataType::UInt8 => {
+                        invoke_for_dict_regex::<_, UInt8Type>(values, regex_arr, groups)
+                    }
+                    DataType::UInt16 => {
+                        invoke_for_dict_regex::<_, UInt16Type>(values, regex_arr, groups)
+                    }
+                    DataType::UInt32 => {
+                        invoke_for_dict_regex::<_, UInt32Type>(values, regex_arr, groups)
+                    }
+                    DataType::UInt64 => {
+                        invoke_for_dict_regex::<_, UInt64Type>(values, regex_arr, groups)
+                    }
+                    other => {
+                        exec_err!(
+                            "Unsupported dictionary key type for regexes array {other:?} in function `{}`",
+                            FUNC_NAME
+                        )
+                    }
+                }
+            }
             other => {
                 exec_err!(
                     "Unsupported data type for regexes array {other:?} in function `{}`",
@@ -301,6 +344,24 @@ where
             regex_capture_with_regex_iter(values, std::iter::repeat(str_regex.as_deref()), groups)
         }
     }
+}
+
+/// Invoke the UDF for the case that the regex is a dictionary encoded array.
+///
+/// This expects that the type has already been verified to be `DataType::<K, Utf8>`
+fn invoke_for_dict_regex<'a, I, K: ArrowDictionaryKeyType>(
+    values: I,
+    regex_dict_arr: &ArrayRef,
+    groups: &ColumnarValue,
+) -> Result<ArrayRef>
+where
+    I: Iterator<Item = Option<&'a str>>,
+{
+    let dict_arr = regex_dict_arr.as_dictionary::<K>();
+    let typed_regex_dict = dict_arr
+        .downcast_dict::<StringArray>()
+        .expect("dict values are strings");
+    regex_capture_with_regex_iter(values, typed_regex_dict.into_iter(), groups)
 }
 
 macro_rules! dispatch_dict_groups {
