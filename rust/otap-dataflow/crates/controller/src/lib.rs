@@ -51,7 +51,9 @@ use otap_df_config::engine::{
 };
 use otap_df_config::node::{NodeKind, NodeUserConfig};
 use otap_df_config::policy::MemoryLimiterMode;
-use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy};
+use otap_df_config::policy::{
+    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,
+};
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
     TopicSpec,

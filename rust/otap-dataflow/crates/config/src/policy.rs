@@ -727,7 +727,7 @@ mod tests {
     fn validates_memory_limiter_settings() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::AllCores,
+                core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Auto,
@@ -755,7 +755,7 @@ mod tests {
     fn validates_memory_limiter_requires_both_limits_when_explicit() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::AllCores,
+                core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Rss,
@@ -781,7 +781,7 @@ mod tests {
     fn validates_memory_limiter_rejects_zero_soft_limit() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::AllCores,
+                core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Rss,
@@ -807,7 +807,7 @@ mod tests {
     fn validates_memory_limiter_requires_limits_for_non_auto_sources() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::AllCores,
+                core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Rss,
@@ -833,7 +833,7 @@ mod tests {
     fn validates_memory_limiter_rejects_zero_retry_after_secs() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::AllCores,
+                core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Auto,
@@ -859,7 +859,7 @@ mod tests {
     fn validates_memory_limiter_rejects_zero_purge_min_interval() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::AllCores,
+                core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Auto,
@@ -904,7 +904,7 @@ mod tests {
             }),
             ..Default::default()
         };
-       let errors = policies.validation_errors("policies");
+        let errors = policies.validation_errors("policies");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("transport_headers.header_propagation.default.selector"));
         assert!(errors[0].contains("'named' list is required"));
@@ -1015,6 +1015,7 @@ mod tests {
                     count: None,
                     set: None,
                 },
+                ..Default::default()
             }),
             ..Default::default()
         };
