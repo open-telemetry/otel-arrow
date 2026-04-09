@@ -29,17 +29,18 @@
 //! ToDo Other pipeline group operations will be added in the future.
 
 use crate::AppState;
+use crate::convert::json_shape;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use otap_df_config::PipelineKey;
-use otap_df_state::pipeline_status::PipelineStatus;
+use otap_df_admin_types::{
+    operations::OperationOptions,
+    pipeline_groups::{ShutdownResponse, ShutdownStatus, Status as PipelineGroupsStatus},
+};
 use otap_df_telemetry::otel_info;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// All the routes for pipeline groups.
@@ -52,49 +53,18 @@ pub(crate) fn routes() -> Router<AppState> {
     // ToDo Global liveness and readiness probes.
 }
 
-#[derive(Serialize)]
-pub struct PipelineGroupsStatusResponse {
-    generated_at: String,
-    pipelines: HashMap<PipelineKey, PipelineStatus>,
-}
-
-/// Response body.
-#[derive(Serialize)]
-struct ShutdownResponse {
-    status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    errors: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    duration_ms: Option<u64>,
-}
-
-/// Query parameters for the shutdown endpoint.
-#[derive(Deserialize)]
-struct ShutdownParams {
-    /// If true, block until all pipelines have stopped draining.
-    #[serde(default)]
-    wait: bool,
-    /// Maximum seconds to wait when `wait=true`. Defaults to 60.
-    #[serde(default = "default_timeout_secs")]
-    timeout_secs: u64,
-}
-
-const fn default_timeout_secs() -> u64 {
-    60
-}
-
 pub async fn show_status(
     State(state): State<AppState>,
-) -> Result<Json<PipelineGroupsStatusResponse>, StatusCode> {
-    Ok(Json(PipelineGroupsStatusResponse {
+) -> Result<Json<PipelineGroupsStatus>, StatusCode> {
+    Ok(Json(PipelineGroupsStatus {
         generated_at: Utc::now().to_rfc3339(),
-        pipelines: state.observed_state_store.snapshot(),
+        pipelines: json_shape(&state.observed_state_store.snapshot()),
     }))
 }
 
 async fn shutdown_all_pipelines(
     State(state): State<AppState>,
-    Query(params): Query<ShutdownParams>,
+    Query(params): Query<OperationOptions>,
 ) -> impl IntoResponse {
     let start_time = Instant::now();
 
@@ -127,7 +97,7 @@ async fn shutdown_all_pipelines(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ShutdownResponse {
-                status: "failed",
+                status: ShutdownStatus::Failed,
                 errors: Some(errors),
                 duration_ms: Some(start_time.elapsed().as_millis() as u64),
             }),
@@ -140,7 +110,7 @@ async fn shutdown_all_pipelines(
         return (
             StatusCode::ACCEPTED,
             Json(ShutdownResponse {
-                status: "accepted",
+                status: ShutdownStatus::Accepted,
                 errors: None,
                 duration_ms: None,
             }),
@@ -163,7 +133,7 @@ async fn shutdown_all_pipelines(
             return (
                 StatusCode::GATEWAY_TIMEOUT,
                 Json(ShutdownResponse {
-                    status: "timeout",
+                    status: ShutdownStatus::Timeout,
                     errors: Some(vec![format!(
                         "Shutdown did not complete within {} seconds",
                         params.timeout_secs
@@ -186,7 +156,7 @@ async fn shutdown_all_pipelines(
             return (
                 StatusCode::OK,
                 Json(ShutdownResponse {
-                    status: "completed",
+                    status: ShutdownStatus::Completed,
                     errors: None,
                     duration_ms: Some(start_time.elapsed().as_millis() as u64),
                 }),

@@ -384,6 +384,118 @@ impl FilterPlan {
         }
     }
 
+    fn try_from_contains_expr(
+        contains_expr: &ContainsLogicalExpression,
+        attr_keys_case_sensitive: bool,
+    ) -> Result<Self> {
+        let left_arg = BinaryArg::try_from(contains_expr.get_haystack())?;
+        let right_arg = BinaryArg::try_from(contains_expr.get_needle())?;
+
+        match left_arg {
+            BinaryArg::Column(left_column) => {
+                let (left_expr, attrs) = Self::contains_column_arg(left_column);
+                let right_expr = match right_arg {
+                    BinaryArg::Literal(right_lit) => try_static_scalar_to_attr_literal(&right_lit)?,
+                    _ => {
+                        return Err(Error::NotYetSupportedError {
+                            message:
+                                "text contains predicate comparing column left to non literal right"
+                                    .into(),
+                        });
+                    }
+                };
+
+                let contains_expr = contains(left_expr, right_expr);
+                Ok(match attrs {
+                    None => FilterPlan::from(contains_expr),
+                    Some((attrs_identifier, attrs_key)) => {
+                        FilterPlan::from(AttributesFilterPlan::new(
+                            Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive)
+                                .and(contains_expr),
+                            attrs_identifier,
+                        ))
+                    }
+                })
+            }
+            BinaryArg::Literal(left_lit) => {
+                let left_expr = try_static_scalar_to_attr_literal(&left_lit)?;
+                let (right_expr, attrs) = match right_arg {
+                    BinaryArg::Column(right_column) => Self::contains_column_arg(right_column),
+                    _ => {
+                        return Err(Error::NotYetSupportedError {
+                            message: "contains with left literal and right non-column".into(),
+                        });
+                    }
+                };
+
+                let contains_expr = contains(left_expr, right_expr);
+                Ok(match attrs {
+                    None => FilterPlan::from(contains_expr),
+                    Some((attrs_identifier, attrs_key)) => {
+                        FilterPlan::from(AttributesFilterPlan::new(
+                            Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive)
+                                .and(contains_expr),
+                            attrs_identifier,
+                        ))
+                    }
+                })
+            }
+            BinaryArg::Null => Err(Error::NotYetSupportedError {
+                message: "contains with left literal null".into(),
+            }),
+        }
+    }
+
+    fn try_from_matches_expr(
+        matches_expr: &MatchesLogicalExpression,
+        attr_keys_case_sensitive: bool,
+    ) -> Result<Self> {
+        let left_arg = BinaryArg::try_from(matches_expr.get_haystack())?;
+        let pattern = match matches_expr.get_pattern() {
+            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
+                lit(regex.get_value().as_str().to_string())
+            }
+            _ => {
+                return Err(Error::InvalidPipelineError {
+                    cause: "expected pattern to be a static regex".into(),
+                    query_location: Some(matches_expr.get_query_location().clone()),
+                });
+            }
+        };
+
+        match left_arg {
+            BinaryArg::Column(left_column) => Ok(match left_column {
+                ColumnAccessor::ColumnName(left_col_name) => FilterPlan::from(binary_expr(
+                    col(left_col_name),
+                    Operator::RegexMatch,
+                    pattern,
+                )),
+                ColumnAccessor::StructCol(struct_name, struct_field) => {
+                    FilterPlan::from(binary_expr(
+                        col(struct_name).field(struct_field),
+                        Operator::RegexMatch,
+                        pattern,
+                    ))
+                }
+                ColumnAccessor::Attributes(attrs_identifier, attr_key) => {
+                    FilterPlan::from(AttributesFilterPlan::new(
+                        Self::attr_key_equals(&attr_key, attr_keys_case_sensitive).and(
+                            binary_expr(col(consts::ATTRIBUTE_STR), Operator::RegexMatch, pattern),
+                        ),
+                        attrs_identifier,
+                    ))
+                }
+            }),
+            BinaryArg::Literal(_) => Err(Error::NotYetSupportedError {
+                message: "literal matches regex".into(),
+            }),
+            BinaryArg::Null => Err(Error::InvalidPipelineError {
+                cause: "cannot match null against regex".into(),
+                query_location: Some(matches_expr.get_query_location().clone()),
+            }),
+        }
+    }
+
     /// transform the arguments for a binary filter expression into case-insensitive equals
     /// if the operator and the types would support it
     ///
@@ -536,12 +648,12 @@ impl Composite<FilterPlan> {
                     Self::try_from(not_expr.get_inner_expression(), attr_keys_case_sensitive)?;
                 Ok(Self::not(inner))
             }
-            LogicalExpression::Contains(contains_expr) => {
-                Ok(Self::from(FilterPlan::try_from(contains_expr)?))
-            }
-            LogicalExpression::Matches(matches_expr) => {
-                Ok(Self::from(FilterPlan::try_from(matches_expr)?))
-            }
+            LogicalExpression::Contains(contains_expr) => Ok(Self::from(
+                FilterPlan::try_from_contains_expr(contains_expr, attr_keys_case_sensitive)?,
+            )),
+            LogicalExpression::Matches(matches_expr) => Ok(Self::from(
+                FilterPlan::try_from_matches_expr(matches_expr, attr_keys_case_sensitive)?,
+            )),
 
             LogicalExpression::Scalar(scalar_expr) => match scalar_expr {
                 ScalarExpression::Static(StaticScalarExpression::Boolean(bool)) => {
@@ -552,126 +664,6 @@ impl Composite<FilterPlan> {
                     message: format!("Logical expression not yet supported {logical_expr:?}"),
                 }),
             },
-        }
-    }
-}
-
-impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
-    type Error = Error;
-
-    fn try_from(contains_expr: &ContainsLogicalExpression) -> Result<Self> {
-        let left_arg = BinaryArg::try_from(contains_expr.get_haystack())?;
-        let right_arg = BinaryArg::try_from(contains_expr.get_needle())?;
-
-        match left_arg {
-            BinaryArg::Column(left_column) => {
-                let (left_expr, attrs) = Self::contains_column_arg(left_column);
-                let right_expr = match right_arg {
-                    BinaryArg::Literal(right_lit) => try_static_scalar_to_attr_literal(&right_lit)?,
-                    _ => {
-                        return Err(Error::NotYetSupportedError {
-                            message:
-                                "text contains predicate comparing column left to non literal right"
-                                    .into(),
-                        });
-                    }
-                };
-
-                let contains_expr = contains(left_expr, right_expr);
-                Ok(match attrs {
-                    None => FilterPlan::from(contains_expr),
-                    Some((attrs_identifier, attrs_key)) => {
-                        FilterPlan::from(AttributesFilterPlan::new(
-                            col(consts::ATTRIBUTE_KEY)
-                                .eq(lit(attrs_key))
-                                .and(contains_expr),
-                            attrs_identifier,
-                        ))
-                    }
-                })
-            }
-            BinaryArg::Literal(left_lit) => {
-                let left_expr = try_static_scalar_to_attr_literal(&left_lit)?;
-                let (right_expr, attrs) = match right_arg {
-                    BinaryArg::Column(right_column) => Self::contains_column_arg(right_column),
-                    _ => {
-                        return Err(Error::NotYetSupportedError {
-                            message: "contains with left literal and right non-column".into(),
-                        });
-                    }
-                };
-
-                let contains_expr = contains(left_expr, right_expr);
-                Ok(match attrs {
-                    None => FilterPlan::from(contains_expr),
-                    Some((attrs_identifier, attrs_key)) => {
-                        FilterPlan::from(AttributesFilterPlan::new(
-                            col(consts::ATTRIBUTE_KEY)
-                                .eq(lit(attrs_key))
-                                .and(contains_expr),
-                            attrs_identifier,
-                        ))
-                    }
-                })
-            }
-            BinaryArg::Null => Err(Error::NotYetSupportedError {
-                message: "contains with left literal null".into(),
-            }),
-        }
-    }
-}
-
-impl TryFrom<&MatchesLogicalExpression> for FilterPlan {
-    type Error = Error;
-
-    fn try_from(matches_expr: &MatchesLogicalExpression) -> Result<Self> {
-        let left_arg = BinaryArg::try_from(matches_expr.get_haystack())?;
-        let pattern = match matches_expr.get_pattern() {
-            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
-                lit(regex.get_value().as_str().to_string())
-            }
-            _ => {
-                return Err(Error::InvalidPipelineError {
-                    cause: "expected pattern to be a static regex".into(),
-                    query_location: Some(matches_expr.get_query_location().clone()),
-                });
-            }
-        };
-
-        match left_arg {
-            BinaryArg::Column(left_column) => Ok(match left_column {
-                ColumnAccessor::ColumnName(left_col_name) => FilterPlan::from(binary_expr(
-                    col(left_col_name),
-                    Operator::RegexMatch,
-                    pattern,
-                )),
-                ColumnAccessor::StructCol(struct_name, struct_field) => {
-                    FilterPlan::from(binary_expr(
-                        col(struct_name).field(struct_field),
-                        Operator::RegexMatch,
-                        pattern,
-                    ))
-                }
-                ColumnAccessor::Attributes(attrs_identifier, attr_key) => {
-                    FilterPlan::from(AttributesFilterPlan::new(
-                        col(consts::ATTRIBUTE_KEY)
-                            .eq(lit(attr_key))
-                            .and(binary_expr(
-                                col(consts::ATTRIBUTE_STR),
-                                Operator::RegexMatch,
-                                pattern,
-                            )),
-                        attrs_identifier,
-                    ))
-                }
-            }),
-            BinaryArg::Literal(_) => Err(Error::NotYetSupportedError {
-                message: "literal matches regex".into(),
-            }),
-            BinaryArg::Null => Err(Error::InvalidPipelineError {
-                cause: "cannot match null against regex".into(),
-                query_location: Some(matches_expr.get_query_location().clone()),
-            }),
         }
     }
 }
@@ -4988,6 +4980,76 @@ mod test {
         let query = "logs | where  \"val%1_1\" =~ attributes[\"key1\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_case_insensitive_key_match() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let query = "logs | where contains(attributes[\"key1\"], \"1\")";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_matches_case_insensitive_key_match() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let query = "logs | where matches(attributes[\"key1\"], \".*1\")";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
         let result = pipeline.execute(input.clone()).await.unwrap();
 
         let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {

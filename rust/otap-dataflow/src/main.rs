@@ -164,8 +164,8 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
 fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
     // Accept formats: "a..=b", "a..b", "a-b"
     let normalized = s.replace("..=", "-").replace("..", "-");
-    let mut parts = normalized.split('-');
-    let start = parts
+    let mut parts: std::str::Split<'_, char> = normalized.split('-');
+    let start: usize = parts
         .next()
         .ok_or_else(|| "missing start of core id range".to_string())?
         .trim()
