@@ -1,22 +1,27 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Global health and status endpoints.
+//! Process-wide health and status endpoints.
 //!
 //! - GET `/api/v1/status` - list all pipelines and their status
 //! - GET `/api/v1/livez` - liveness probe
 //! - GET `/api/v1/readyz` - readiness probe
 
 use crate::AppState;
+use crate::convert::json_shape;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
+use otap_df_admin_types::engine::{
+    PipelineConditionFailure, ProbeKind, ProbeResponse, ProbeStatus, Status as EngineStatus,
+};
 use otap_df_config::PipelineKey;
-use otap_df_state::conditions::{Condition, ConditionKind, ConditionReason, ConditionStatus};
-use otap_df_state::pipeline_status::PipelineStatus;
-use serde::Serialize;
+use otap_df_state::conditions::{
+    Condition as StateCondition, ConditionKind, ConditionReason, ConditionStatus,
+};
+use otap_df_state::pipeline_status::PipelineStatus as StatePipelineStatus;
 use std::collections::HashMap;
 
 /// All the routes for health and status endpoints.
@@ -30,36 +35,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/readyz", get(readyz))
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct StatusResponse {
-    generated_at: String,
-    pipelines: HashMap<PipelineKey, PipelineStatus>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeResponse {
-    probe: &'static str,
-    status: &'static str,
-    generated_at: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    failing: Vec<PipelineConditionFailure>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PipelineConditionFailure {
-    pipeline: PipelineKey,
-    condition: Condition,
-}
-
-pub async fn show_status(
-    State(state): State<AppState>,
-) -> Result<Json<StatusResponse>, StatusCode> {
-    Ok(Json(StatusResponse {
+pub async fn show_status(State(state): State<AppState>) -> Result<Json<EngineStatus>, StatusCode> {
+    Ok(Json(EngineStatus {
         generated_at: Utc::now().to_rfc3339(),
-        pipelines: state.observed_state_store.snapshot(),
+        pipelines: json_shape(&state.observed_state_store.snapshot()),
     }))
 }
 
@@ -73,16 +52,26 @@ pub(crate) async fn livez(State(state): State<AppState>) -> (StatusCode, Json<Pr
     );
 
     if failing.is_empty() {
-        (StatusCode::OK, Json(ProbeResponse::ok("livez")))
+        (StatusCode::OK, Json(ok_response(ProbeKind::Livez)))
     } else {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ProbeResponse::fail("livez", failing)),
+            Json(fail_response(ProbeKind::Livez, failing)),
         )
     }
 }
 
 pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<ProbeResponse>) {
+    if state.memory_pressure_state.should_fail_readiness() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(message_response(
+                ProbeKind::Readyz,
+                "process memory pressure at hard limit",
+            )),
+        );
+    }
+
     let snapshot = state.observed_state_store.snapshot();
     let failing = collect_condition_failures(
         &snapshot,
@@ -92,24 +81,24 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<P
     );
 
     if failing.is_empty() {
-        (StatusCode::OK, Json(ProbeResponse::ok("readyz")))
+        (StatusCode::OK, Json(ok_response(ProbeKind::Readyz)))
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ProbeResponse::fail("readyz", failing)),
+            Json(fail_response(ProbeKind::Readyz, failing)),
         )
     }
 }
 
 fn collect_condition_failures<FSkip, FFail>(
-    pipelines: &HashMap<PipelineKey, PipelineStatus>,
+    pipelines: &HashMap<PipelineKey, StatePipelineStatus>,
     condition_kind: ConditionKind,
     skip: FSkip,
     failure_predicate: FFail,
 ) -> Vec<PipelineConditionFailure>
 where
-    FSkip: Fn(&PipelineStatus) -> bool,
-    FFail: Fn(&Condition) -> bool,
+    FSkip: Fn(&StatePipelineStatus) -> bool,
+    FFail: Fn(&StateCondition) -> bool,
 {
     pipelines
         .iter()
@@ -120,14 +109,14 @@ where
                 .into_iter()
                 .find(|c| c.kind == condition_kind)?;
             failure_predicate(&condition).then(|| PipelineConditionFailure {
-                pipeline: key.clone(),
-                condition,
+                pipeline: key.as_string(),
+                condition: json_shape(&condition),
             })
         })
         .collect()
 }
 
-const fn acceptance_failure(condition: &Condition) -> bool {
+const fn acceptance_failure(condition: &StateCondition) -> bool {
     match condition.status {
         ConditionStatus::True => false,
         ConditionStatus::Unknown => {
@@ -150,27 +139,37 @@ const fn acceptance_failure(condition: &Condition) -> bool {
     }
 }
 
-fn skip_pipelines_without_runtimes(status: &PipelineStatus) -> bool {
+fn skip_pipelines_without_runtimes(status: &StatePipelineStatus) -> bool {
     status.total_cores() == 0
 }
 
-impl ProbeResponse {
-    fn ok(probe: &'static str) -> Self {
-        Self {
-            probe,
-            status: "ok",
-            generated_at: Utc::now().to_rfc3339(),
-            failing: Vec::new(),
-        }
+fn ok_response(probe: ProbeKind) -> ProbeResponse {
+    ProbeResponse {
+        probe,
+        status: ProbeStatus::Ok,
+        generated_at: Utc::now().to_rfc3339(),
+        message: None,
+        failing: Vec::new(),
     }
+}
 
-    fn fail(probe: &'static str, failing: Vec<PipelineConditionFailure>) -> Self {
-        Self {
-            probe,
-            status: "failed",
-            generated_at: Utc::now().to_rfc3339(),
-            failing,
-        }
+fn fail_response(probe: ProbeKind, failing: Vec<PipelineConditionFailure>) -> ProbeResponse {
+    ProbeResponse {
+        probe,
+        status: ProbeStatus::Failed,
+        generated_at: Utc::now().to_rfc3339(),
+        message: None,
+        failing,
+    }
+}
+
+fn message_response(probe: ProbeKind, message: impl Into<String>) -> ProbeResponse {
+    ProbeResponse {
+        probe,
+        status: ProbeStatus::Failed,
+        generated_at: Utc::now().to_rfc3339(),
+        message: Some(message.into()),
+        failing: Vec::new(),
     }
 }
 
@@ -180,8 +179,8 @@ mod tests {
 
     /// Build an Accepted condition with minimal fields to focus tests on the
     /// acceptance failure predicate behavior.
-    fn cond(status: ConditionStatus, reason: Option<ConditionReason>) -> Condition {
-        Condition {
+    fn cond(status: ConditionStatus, reason: Option<ConditionReason>) -> StateCondition {
+        StateCondition {
             kind: ConditionKind::Accepted,
             status,
             reason,

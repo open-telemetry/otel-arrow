@@ -339,6 +339,15 @@ impl AttributeHash {
         entries.sort_by(|a, b| a.key().cmp(b.key()));
 
         for attr in &entries {
+            match attr.value().map(|v| v.value_type()) {
+                // We're currently treating Maps and list attributes as
+                // non-identifying because we don't yet support these
+                // attribute types for OTAP views.
+                Some(ValueType::Array) | Some(ValueType::KeyValueList) => {
+                    continue;
+                }
+                _ => {}
+            };
             buf.buf.push(HashTag::Key as u8);
             write_len(&mut buf.buf, attr.key().len());
             buf.buf.extend_from_slice(attr.key());
@@ -389,7 +398,6 @@ fn write_attr_value<A: AttributeView>(buf: &mut Vec<u8>, attr: &A) {
         ValueType::Empty => {
             buf.push(HashTag::Empty as u8);
         }
-        // FIXME: Views don't support these types yet either.
         ValueType::Array | ValueType::KeyValueList => {
             buf.push(HashTag::Empty as u8);
         }
@@ -648,6 +656,37 @@ mod tests {
         assert_ne!(h1, h2);
     }
 
+    #[test]
+    fn test_array_and_kvlist_ignored_for_identity() {
+        let mut buf = HashBuffer::new();
+
+        let base = AttributeHash::compute(&mut buf, vec![str_attr("k", "v")].into_iter());
+
+        // Adding an array attribute alongside an identifying attribute should
+        // not change the hash - arrays are non-identifying.
+        let with_array = AttributeHash::compute(
+            &mut buf,
+            vec![str_attr("k", "v"), array_attr("list")].into_iter(),
+        );
+        assert_eq!(base, with_array, "array attr should be ignored");
+
+        // Same for a key-value-list attribute.
+        let with_kvlist = AttributeHash::compute(
+            &mut buf,
+            vec![str_attr("k", "v"), kvlist_attr("map")].into_iter(),
+        );
+        assert_eq!(base, with_kvlist, "kvlist attr should be ignored");
+
+        // An attribute set containing only non-identifying types should produce
+        // the same hash regardless of which non-identifying types are present.
+        let only_array = AttributeHash::compute(&mut buf, vec![array_attr("a")].into_iter());
+        let only_kvlist = AttributeHash::compute(&mut buf, vec![kvlist_attr("b")].into_iter());
+        assert_eq!(
+            only_array, only_kvlist,
+            "only-array and only-kvlist should hash identically"
+        );
+    }
+
     fn make_scope<'a>(resource: ResourceId, name: &'a [u8], version: &'a [u8]) -> ScopeId<'a> {
         ScopeId {
             resource,
@@ -687,6 +726,8 @@ mod tests {
         Bool(bool),
         Bytes(Vec<u8>),
         Empty,
+        Array,
+        KeyValueList,
     }
 
     struct TestAnyValue<'a>(&'a TestValue);
@@ -710,6 +751,8 @@ mod tests {
                 TestValue::Bool(_) => ValueType::Bool,
                 TestValue::Bytes(_) => ValueType::Bytes,
                 TestValue::Empty => ValueType::Empty,
+                TestValue::Array => ValueType::Array,
+                TestValue::KeyValueList => ValueType::KeyValueList,
             }
         }
         fn as_string(&self) -> Option<&[u8]> {
@@ -814,6 +857,20 @@ mod tests {
         TestAttr {
             key: key.as_bytes().to_vec(),
             val: None,
+        }
+    }
+
+    fn array_attr(key: &str) -> TestAttr {
+        TestAttr {
+            key: key.as_bytes().to_vec(),
+            val: Some(TestValue::Array),
+        }
+    }
+
+    fn kvlist_attr(key: &str) -> TestAttr {
+        TestAttr {
+            key: key.as_bytes().to_vec(),
+            val: Some(TestValue::KeyValueList),
         }
     }
 }

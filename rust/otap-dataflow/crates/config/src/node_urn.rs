@@ -209,6 +209,7 @@ const fn kind_suffix(expected_kind: NodeKind) -> &'static str {
         NodeKind::Processor => "processor",
         NodeKind::ProcessorChain => "processor_chain",
         NodeKind::Exporter => "exporter",
+        NodeKind::Extension => "extension",
     }
 }
 
@@ -230,10 +231,11 @@ fn parse_kind(raw: &str, kind: &str) -> Result<NodeKind, Error> {
         "processor" => Ok(NodeKind::Processor),
         "processor_chain" => Ok(NodeKind::ProcessorChain),
         "exporter" => Ok(NodeKind::Exporter),
+        "extension" => Ok(NodeKind::Extension),
         _ => Err(invalid_plugin_urn(
             raw,
             format!(
-                "expected kind `receiver`, `processor`, `processor_chain`, or `exporter`, found `{kind}`"
+                "expected kind `receiver`, `processor`, `processor_chain`, `exporter`, or `extension`, found `{kind}`"
             ),
         )),
     }

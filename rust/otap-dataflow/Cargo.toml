@@ -45,6 +45,8 @@ mimalloc = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
+otap-df-admin-api = { path = "crates/admin-api" }
+otap-df-admin-types = { path = "crates/admin-types" }
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
@@ -110,7 +112,8 @@ miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
 libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
 tikv-jemallocator = { version = "0.6.1" }
-tikv-jemalloc-ctl = { version = "0.6.1" }
+tikv-jemalloc-ctl = { version = "0.6.1", features = ["stats"] }
+tikv-jemalloc-sys = "0.6.1"
 memchr = "2.8.0"
 memmap2 = "0.9"
 memory-stats = "1"
