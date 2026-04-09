@@ -10,6 +10,7 @@
 
 use crate::AppState;
 use crate::convert::json_shape;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -28,12 +29,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 
 /// All the routes for telemetry.
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/telemetry/live-schema", get(get_live_schema))
         .route("/telemetry/logs", get(get_logs))
+        .route("/telemetry/logs/stream", get(ws_logs_stream))
         .route("/telemetry/metrics", get(get_metrics))
         .route("/telemetry/metrics/aggregate", get(get_metrics_aggregate))
         .route("/metrics", get(get_metrics))
@@ -1269,6 +1273,401 @@ fn escape_prom_help(s: &str) -> String {
     escape_prom_label_value(s)
 }
 
+// ---------------------------------------------------------------------------
+// WebSocket live log stream  (/api/v1/telemetry/logs/stream)
+// ---------------------------------------------------------------------------
+
+/// Optional text filter applied to rendered log entries on the server side.
+///
+/// Applied after rendering so that `search_query` can match against the fully
+/// formatted message text as well as metadata fields (level, target, etc.).
+#[derive(Default)]
+struct LogFilter {
+    /// Case-insensitive substring matched against: rendered message, level,
+    /// target, event_name, and file path.
+    search_query: Option<String>,
+    /// Discard entries whose timestamp is strictly before this instant.
+    minimum_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl LogFilter {
+    /// Returns `true` when the rendered log entry passes all active criteria.
+    fn matches(&self, entry: &LogEntry) -> bool {
+        if let Some(min_ts) = &self.minimum_timestamp {
+            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
+                if ts.with_timezone(&chrono::Utc) < *min_ts {
+                    return false;
+                }
+            }
+        }
+        if let Some(q) = &self.search_query {
+            // `q` is already lowercased at construction time; only the entry
+            // fields need to be lowercased per event.
+            let matched = entry.rendered.to_lowercase().contains(q.as_str())
+                || entry.level.to_lowercase().contains(q.as_str())
+                || entry.target.to_lowercase().contains(q.as_str())
+                || entry.event_name.to_lowercase().contains(q.as_str())
+                || entry
+                    .file
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(q.as_str());
+            if !matched {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Build a `LogFilter` from optional client-supplied strings.
+    fn from_params(search_query: Option<String>, minimum_timestamp: Option<String>) -> Self {
+        let minimum_timestamp = minimum_timestamp.and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+        });
+        Self {
+            // Pre-lowercase so `matches()` doesn't allocate a lowercase string
+            // on every log event that passes through the filter.
+            search_query: search_query.map(|s| s.to_lowercase()),
+            minimum_timestamp,
+        }
+    }
+}
+
+/// Client → server WebSocket messages.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum WsClientMsg {
+    /// Begin streaming.  Sends an initial retained-log snapshot, then follows
+    /// with live events.
+    Subscribe {
+        /// Cursor: only include retained entries strictly newer than this seq.
+        after: Option<u64>,
+        /// Maximum retained entries in the initial snapshot (clamped 1–1000).
+        limit: Option<usize>,
+        /// Case-insensitive text filter (applied server-side).
+        #[serde(rename = "searchQuery")]
+        search_query: Option<String>,
+        /// RFC 3339 minimum timestamp filter.
+        #[serde(rename = "minimumTimestamp")]
+        minimum_timestamp: Option<String>,
+        /// Start paused (no live events sent until `resume`).
+        paused: Option<bool>,
+    },
+    /// Stop forwarding live events (WebSocket stays open; server drains
+    /// broadcast to avoid lagging, but does not accumulate a client backlog).
+    Pause,
+    /// Resume forwarding live events from the current live position.
+    Resume,
+    /// Update the server-side text/timestamp filter.
+    SetFilter {
+        #[serde(rename = "searchQuery")]
+        search_query: Option<String>,
+        #[serde(rename = "minimumTimestamp")]
+        minimum_timestamp: Option<String>,
+    },
+    /// Request a retained-log snapshot (same as the HTTP query endpoint).
+    Backfill {
+        after: Option<u64>,
+        limit: Option<usize>,
+    },
+    /// Keep-alive; server replies with `pong`.
+    Ping,
+}
+
+/// Server → client WebSocket messages.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WsServerMsg {
+    /// Initial or backfill snapshot of retained logs.
+    Snapshot {
+        oldest_seq: Option<u64>,
+        newest_seq: Option<u64>,
+        next_seq: u64,
+        truncated_before_seq: Option<u64>,
+        dropped_on_ingest: u64,
+        dropped_on_retention: u64,
+        retained_bytes: usize,
+        logs: Vec<LogEntry>,
+    },
+    /// Single live log entry pushed by the server.
+    Log {
+        seq: u64,
+        timestamp: String,
+        level: String,
+        target: String,
+        event_name: String,
+        file: Option<String>,
+        line: Option<u32>,
+        rendered: String,
+        contexts: Vec<ResolvedLogContext>,
+    },
+    /// Current pause state and cursor position.
+    State { paused: bool, next_seq: u64 },
+    /// Server-side error notification (e.g. subscriber lagged and dropped events).
+    /// `lag_before_seq` is set on lag errors: it is the cursor value from just
+    /// before the gap so the client can issue a targeted backfill.
+    Error {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        lag_before_seq: Option<u64>,
+    },
+    /// Reply to a client `ping`.
+    Pong,
+}
+
+/// Upgrade handler for `GET /api/v1/telemetry/logs/stream`.
+async fn ws_logs_stream(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| handle_ws_logs(socket, state))
+}
+
+/// Send a serialized `WsServerMsg` as a WebSocket text frame.
+///
+/// Returns `false` if the socket is closed and the caller should stop sending.
+async fn ws_send(ws: &mut WebSocket, msg: &WsServerMsg) -> bool {
+    match serde_json::to_string(msg) {
+        Ok(text) => ws.send(Message::Text(text.into())).await.is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Build and send a `snapshot` message from a `LogQueryResult`.
+///
+/// Applies `filter` to the rendered entries so that snapshot and backfill
+/// responses are consistent with what the live stream sends for the same filter.
+async fn ws_send_snapshot(
+    ws: &mut WebSocket,
+    registry: &TelemetryRegistryHandle,
+    result: LogQueryResult,
+    filter: &LogFilter,
+) -> bool {
+    let mut resp = logs_response(registry, result);
+    resp.logs.retain(|entry| filter.matches(entry));
+    let msg = WsServerMsg::Snapshot {
+        oldest_seq: resp.oldest_seq,
+        newest_seq: resp.newest_seq,
+        next_seq: resp.next_seq,
+        truncated_before_seq: resp.truncated_before_seq,
+        dropped_on_ingest: resp.dropped_on_ingest,
+        dropped_on_retention: resp.dropped_on_retention,
+        retained_bytes: resp.retained_bytes,
+        logs: resp.logs,
+    };
+    ws_send(ws, &msg).await
+}
+
+/// Core WebSocket session loop for the live log stream.
+///
+/// # Protocol summary
+///
+/// 1. The client sends `subscribe` first.
+/// 2. The server sends the initial retained-log snapshot, then streams live
+///    events via `log` messages.
+/// 3. `pause` / `resume` toggle server-side forwarding without closing the
+///    socket.  While paused the server still drains the broadcast channel so
+///    that the producer is never slowed by this client.
+/// 4. On `backfill` the server re-queries the retained ring buffer and sends a
+///    `snapshot`.  The cursor is updated so subsequent live events do not
+///    duplicate.
+/// 5. If the client falls more than `SUBSCRIBER_CHANNEL_CAPACITY` events
+///    behind, the broadcast channel drops the overflow; the server notifies the
+///    client with an `error` message so it can issue a `backfill`.
+async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
+    let Some(log_tap) = state.log_tap.as_ref() else {
+        let _ = ws_send(
+            &mut ws,
+            &WsServerMsg::Error {
+                message: "log tap is not enabled".to_string(),
+                lag_before_seq: None,
+            },
+        )
+        .await;
+        return;
+    };
+
+    let registry = &state.metrics_registry;
+
+    // Live broadcast receiver; set once on `subscribe`.
+    let mut live_rx: Option<broadcast::Receiver<Arc<RetainedLogEvent>>> = None;
+    let mut paused = false;
+    let mut filter = LogFilter::default();
+    // Tracks the sequence number of the last event we acknowledged (sent or
+    // deliberately skipped while paused).  Used in `state` replies so the
+    // client knows where the live cursor stands.
+    let mut cursor: u64 = 0;
+
+    loop {
+        if let Some(rx) = live_rx.as_mut() {
+            // Subscribed: multiplex client messages and live log events.
+            tokio::select! {
+                biased; // prioritise client control messages
+
+                client_raw = ws.recv() => {
+                    match client_raw {
+                        Some(Ok(Message::Text(text))) => {
+                            match serde_json::from_str::<WsClientMsg>(&text) {
+                                Ok(WsClientMsg::Pause) => {
+                                    paused = true;
+                                    if !ws_send(&mut ws, &WsServerMsg::State { paused, next_seq: cursor }).await {
+                                        break;
+                                    }
+                                }
+                                Ok(WsClientMsg::Resume) => {
+                                    paused = false;
+                                    // Send current cursor so client can decide to backfill.
+                                    if !ws_send(&mut ws, &WsServerMsg::State { paused, next_seq: cursor }).await {
+                                        break;
+                                    }
+                                }
+                                Ok(WsClientMsg::SetFilter { search_query, minimum_timestamp }) => {
+                                    filter = LogFilter::from_params(search_query, minimum_timestamp);
+                                }
+                                Ok(WsClientMsg::Backfill { after, limit }) => {
+                                    let limit = limit.unwrap_or(100).clamp(1, 1000);
+                                    let result = log_tap.query(LogQuery { after, limit });
+                                    // Only advance cursor — never move it backward.  A
+                                    // client may request an older `after` (e.g. a lag
+                                    // gap backfill) while the live stream has already
+                                    // moved the cursor forward; preserving the maximum
+                                    // keeps the dedup guard in the live event arm sound.
+                                    cursor = cursor.max(result.next_seq);
+                                    if !ws_send_snapshot(&mut ws, registry, result, &filter).await {
+                                        break;
+                                    }
+                                }
+                                Ok(WsClientMsg::Ping) => {
+                                    if !ws_send(&mut ws, &WsServerMsg::Pong).await {
+                                        break;
+                                    }
+                                }
+                                Ok(WsClientMsg::Subscribe { .. }) => {
+                                    // Already subscribed; ignore duplicate.
+                                }
+                                Err(_) => {
+                                    // Unknown or malformed message; keep the session open.
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Ok(_)) => {} // binary / ping frames — ignore
+                        Some(Err(_)) => break,
+                    }
+                }
+
+                live_event = rx.recv() => {
+                    match live_event {
+                        Ok(entry) => {
+                            let entry_seq = entry.seq;
+
+                            // Skip entries whose seq is at or below cursor: they
+                            // were already delivered in the most recent snapshot
+                            // or backfill (the subscribe-before-query race window).
+                            if entry_seq <= cursor {
+                                // Discard silently — already in the snapshot.
+                            } else {
+                                // Advance cursor so `state` replies are accurate
+                                // even when paused or filtered.
+                                cursor = entry_seq;
+
+                                if !paused {
+                                    let rendered = render_log_entry(registry, &entry);
+                                    if filter.matches(&rendered) {
+                                        // Move fields out of `rendered` — no per-field clone.
+                                        let msg = WsServerMsg::Log {
+                                            seq: rendered.seq,
+                                            timestamp: rendered.timestamp,
+                                            level: rendered.level,
+                                            target: rendered.target,
+                                            event_name: rendered.event_name,
+                                            file: rendered.file,
+                                            line: rendered.line,
+                                            rendered: rendered.rendered,
+                                            contexts: rendered.contexts,
+                                        };
+                                        if !ws_send(&mut ws, &msg).await {
+                                            break;
+                                        }
+                                    }
+                                }
+                                // If paused: drain the channel to avoid lagging the
+                                // producer, but send nothing to the client.
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            // The client was too slow; events were dropped from its
+                            // receiver slot.  `cursor` here is the last seq we
+                            // successfully delivered — the client can use it as
+                            // the `after` param for a backfill to recover the gap.
+                            let msg = WsServerMsg::Error {
+                                message: format!(
+                                    "dropped {n} log event(s) due to slow consumption; \
+                                     send backfill to resync"
+                                ),
+                                lag_before_seq: Some(cursor),
+                            };
+                            if !ws_send(&mut ws, &msg).await {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        } else {
+            // Not yet subscribed: wait for a `subscribe` message only.
+            let client_raw = ws.recv().await;
+            match client_raw {
+                Some(Ok(Message::Text(text))) => {
+                    if let Ok(WsClientMsg::Subscribe {
+                        after,
+                        limit,
+                        search_query,
+                        minimum_timestamp,
+                        paused: start_paused,
+                    }) = serde_json::from_str::<WsClientMsg>(&text)
+                    {
+                        // Subscribe to the broadcast channel BEFORE querying
+                        // retained logs so we do not miss events recorded between
+                        // the query and the first receive.  Live events with
+                        // seq <= cursor (set from snapshot.next_seq below) are
+                        // silently discarded in the live_event arm to prevent
+                        // duplicates for that race window.
+                        live_rx = Some(log_tap.subscribe());
+
+                        filter = LogFilter::from_params(search_query, minimum_timestamp);
+                        paused = start_paused.unwrap_or(false);
+
+                        let limit = limit.unwrap_or(100).clamp(1, 1000);
+                        let result = log_tap.query(LogQuery { after, limit });
+                        cursor = result.next_seq;
+
+                        if !ws_send_snapshot(&mut ws, registry, result, &filter).await {
+                            break;
+                        }
+                        if !ws_send(
+                            &mut ws,
+                            &WsServerMsg::State {
+                                paused,
+                                next_seq: cursor,
+                            },
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                    // Other messages before subscribe are silently ignored.
+                }
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(_)) => break,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1781,5 +2180,91 @@ mod tests {
         assert!(output.contains("request_duration_max=100"));
         assert!(output.contains("request_duration_sum=250.5"));
         assert!(output.contains("request_duration_count=10i"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // LogFilter unit tests
+    // ---------------------------------------------------------------------------
+
+    fn make_log_entry(rendered: &str, level: &str, target: &str, timestamp: &str) -> LogEntry {
+        LogEntry {
+            seq: 1,
+            timestamp: timestamp.to_string(),
+            level: level.to_string(),
+            target: target.to_string(),
+            event_name: "test.event".to_string(),
+            file: Some("src/lib.rs".to_string()),
+            line: Some(1),
+            rendered: rendered.to_string(),
+            contexts: vec![],
+        }
+    }
+
+    #[test]
+    fn log_filter_no_criteria_always_matches() {
+        let filter = LogFilter::default();
+        let entry = make_log_entry("hello world", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&entry));
+    }
+
+    #[test]
+    fn log_filter_search_query_matches_rendered() {
+        let filter = LogFilter::from_params(Some("hello".to_string()), None);
+        let yes = make_log_entry("say hello world", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let no = make_log_entry("goodbye world", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&yes));
+        assert!(!filter.matches(&no));
+    }
+
+    #[test]
+    fn log_filter_search_query_matches_level() {
+        let filter = LogFilter::from_params(Some("WARN".to_string()), None);
+        let yes = make_log_entry("msg", "WARN", "admin", "2026-01-01T00:00:00Z");
+        let no = make_log_entry("msg", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&yes));
+        assert!(!filter.matches(&no));
+    }
+
+    #[test]
+    fn log_filter_search_query_is_case_insensitive() {
+        let filter = LogFilter::from_params(Some("HELLO".to_string()), None);
+        let entry = make_log_entry("say hello world", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&entry));
+    }
+
+    #[test]
+    fn log_filter_minimum_timestamp_excludes_older_entries() {
+        let filter = LogFilter::from_params(None, Some("2026-06-01T00:00:00Z".to_string()));
+        let old_entry = make_log_entry("old", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let new_entry = make_log_entry("new", "INFO", "admin", "2026-07-01T00:00:00Z");
+        assert!(!filter.matches(&old_entry));
+        assert!(filter.matches(&new_entry));
+    }
+
+    #[test]
+    fn log_filter_invalid_minimum_timestamp_is_ignored() {
+        // A malformed timestamp should not crash; the filter passes without the constraint.
+        let filter = LogFilter::from_params(None, Some("not-a-date".to_string()));
+        let entry = make_log_entry("msg", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&entry));
+    }
+
+    /// Verifies that snapshot filtering is applied consistently: a filter that
+    /// excludes an entry in the live stream must also exclude it in a snapshot.
+    #[test]
+    fn log_filter_applied_consistently_to_snapshot_logs() {
+        let filter = LogFilter::from_params(Some("important".to_string()), None);
+        let match_entry = make_log_entry("important event occurred", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let no_match_entry = make_log_entry("routine heartbeat", "DEBUG", "admin", "2026-01-01T00:00:01Z");
+
+        // The filter must pass the matching entry and reject the other.
+        assert!(filter.matches(&match_entry));
+        assert!(!filter.matches(&no_match_entry));
+
+        // Simulate the retain() call used in ws_send_snapshot.
+        let mut logs = vec![match_entry, no_match_entry];
+        logs.retain(|e| filter.matches(e));
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].rendered.contains("important"));
     }
 }
