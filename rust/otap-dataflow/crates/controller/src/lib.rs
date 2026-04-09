@@ -47,8 +47,10 @@ use crate::thread_task::spawn_thread_local_task;
 use chrono::Utc;
 use core_affinity::CoreId;
 use otap_df_admin::{
-    ControlPlane, ControlPlaneError, PipelineDetails, PipelineRolloutStatus,
-    PipelineShutdownStatus, ReplacePipelineRequest, RolloutCoreStatus, ShutdownCoreStatus,
+    ControlPlane, ControlPlaneError, PipelineDetails,
+    PipelineRolloutState as ApiPipelineRolloutState, PipelineRolloutStatus,
+    PipelineRolloutSummary as ApiPipelineRolloutSummary, PipelineShutdownStatus,
+    ReconfigureRequest, RolloutCoreStatus, ShutdownCoreStatus,
 };
 use otap_df_config::engine::{
     OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
@@ -184,17 +186,6 @@ enum RolloutLifecycleState {
 }
 
 impl RolloutLifecycleState {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Running => "running",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-            Self::RollingBack => "rolling_back",
-            Self::RollbackFailed => "rollback_failed",
-        }
-    }
-
     const fn as_pipeline_rollout_state(self) -> PipelineRolloutState {
         match self {
             Self::Pending => PipelineRolloutState::Pending,
@@ -203,6 +194,17 @@ impl RolloutLifecycleState {
             Self::Failed => PipelineRolloutState::Failed,
             Self::RollingBack => PipelineRolloutState::RollingBack,
             Self::RollbackFailed => PipelineRolloutState::RollbackFailed,
+        }
+    }
+
+    const fn as_api_pipeline_rollout_state(self) -> ApiPipelineRolloutState {
+        match self {
+            Self::Pending => ApiPipelineRolloutState::Pending,
+            Self::Running => ApiPipelineRolloutState::Running,
+            Self::Succeeded => ApiPipelineRolloutState::Succeeded,
+            Self::Failed => ApiPipelineRolloutState::Failed,
+            Self::RollingBack => ApiPipelineRolloutState::RollingBack,
+            Self::RollbackFailed => ApiPipelineRolloutState::RollbackFailed,
         }
     }
 }
@@ -288,13 +290,24 @@ impl RolloutRecord {
         }
     }
 
+    fn api_summary(&self) -> ApiPipelineRolloutSummary {
+        ApiPipelineRolloutSummary {
+            rollout_id: self.rollout_id.clone(),
+            state: self.state.as_api_pipeline_rollout_state(),
+            target_generation: self.target_generation,
+            started_at: self.started_at.clone(),
+            updated_at: self.updated_at.clone(),
+            failure_reason: self.failure_reason.clone(),
+        }
+    }
+
     fn status(&self) -> PipelineRolloutStatus {
         PipelineRolloutStatus {
             rollout_id: self.rollout_id.clone(),
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
             action: self.action.as_str().to_owned(),
-            state: self.state.as_str().to_owned(),
+            state: self.state.as_api_pipeline_rollout_state(),
             target_generation: self.target_generation,
             previous_generation: self.previous_generation,
             started_at: self.started_at.clone(),
@@ -871,7 +884,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-        request: &ReplacePipelineRequest,
+        request: &ReconfigureRequest,
     ) -> Result<CandidateRolloutPlan, ControlPlaneError> {
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
@@ -1419,7 +1432,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .active_rollouts
             .get(pipeline_key)
             .and_then(|rollout_id| state.rollouts.get(rollout_id))
-            .map(RolloutRecord::summary);
+            .map(RolloutRecord::api_summary);
         Ok(Some(PipelineDetails {
             pipeline_group_id: pipeline_key.pipeline_group_id().clone(),
             pipeline_id: pipeline_key.pipeline_id().clone(),
@@ -2563,11 +2576,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .request_shutdown_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
     }
 
-    fn replace_pipeline(
+    fn reconfigure_pipeline(
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-        request: ReplacePipelineRequest,
+        request: ReconfigureRequest,
     ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
         let plan = self
             .runtime
@@ -4769,7 +4782,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement,
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,
@@ -4851,7 +4864,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement,
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,
@@ -4931,7 +4944,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement,
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,
@@ -4999,7 +5012,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement,
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,
@@ -5012,7 +5025,7 @@ connections:
             .expect("noop rollout should succeed");
 
         assert_eq!(status.action, "noop");
-        assert_eq!(status.state, "succeeded");
+        assert_eq!(status.state, ApiPipelineRolloutState::Succeeded);
         assert_eq!(status.target_generation, 0);
         assert!(status.cores.is_empty());
 
@@ -5027,7 +5040,7 @@ connections:
         let rollout = runtime
             .rollout_status_snapshot(&status.rollout_id)
             .expect("completed rollout should remain queryable");
-        assert_eq!(rollout.state, "succeeded");
+        assert_eq!(rollout.state, ApiPipelineRolloutState::Succeeded);
     }
 
     #[test]
@@ -5083,7 +5096,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement,
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,
@@ -5171,7 +5184,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement,
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,
@@ -5237,7 +5250,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement.clone(),
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,
@@ -5252,7 +5265,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement,
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,
@@ -5313,7 +5326,7 @@ connections:
             .prepare_rollout_plan(
                 "g1",
                 "p1",
-                &ReplacePipelineRequest {
+                &ReconfigureRequest {
                     pipeline: replacement.clone(),
                     step_timeout_secs: 60,
                     drain_timeout_secs: 60,

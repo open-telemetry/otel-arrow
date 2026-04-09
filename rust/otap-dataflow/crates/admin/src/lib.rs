@@ -12,9 +12,12 @@ mod pipeline_group;
 mod telemetry;
 
 use axum::Router;
-use otap_df_config::{PipelineGroupId, PipelineId, pipeline::PipelineConfig};
-use otap_df_state::pipeline_status::PipelineRolloutSummary;
-use serde::{Deserialize, Serialize};
+use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
+pub use otap_df_admin_types::pipelines::{
+    PipelineDetails, PipelineRolloutState, PipelineRolloutStatus, PipelineRolloutSummary,
+    PipelineShutdownStatus, ReconfigureRequest, RolloutCoreStatus, ShutdownCoreStatus,
+};
+use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -39,7 +42,7 @@ pub enum ControlPlaneError {
     PipelineNotFound,
     /// Another rollout is already active for this logical pipeline.
     RolloutConflict,
-    /// Submitted pipeline configuration failed validation or violated a v1 boundary.
+    /// Submitted pipeline configuration failed validation or violated a runtime boundary.
     InvalidRequest {
         /// Human-readable validation failure detail.
         message: String,
@@ -55,127 +58,25 @@ pub enum ControlPlaneError {
     },
 }
 
-/// Body for `PUT /api/v1/groups/{group}/pipelines/{id}`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReplacePipelineRequest {
-    /// Candidate pipeline configuration to create or roll out.
-    pub pipeline: PipelineConfig,
-    /// Per-core admission/ready timeout in seconds.
-    #[serde(default = "default_rollout_timeout_secs")]
-    pub step_timeout_secs: u64,
-    /// Graceful drain timeout in seconds when shutting down the old generation.
-    #[serde(default = "default_rollout_timeout_secs")]
-    pub drain_timeout_secs: u64,
-}
-
-/// Detailed per-core rollout progress.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RolloutCoreStatus {
-    /// Target core for this step.
-    pub core_id: usize,
-    /// Previously serving generation on this core, if any.
-    pub previous_generation: Option<u64>,
-    /// Candidate generation being launched for this core.
-    pub target_generation: u64,
-    /// Current lifecycle state for this core step.
-    pub state: String,
-    /// RFC3339 timestamp for the latest step transition.
-    pub updated_at: String,
-    /// Optional human-readable detail for failures or waits.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-/// Detailed rollout status returned by rollout endpoints.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PipelineRolloutStatus {
-    /// Controller-assigned rollout identifier.
-    pub rollout_id: String,
-    /// Logical target pipeline group id.
-    pub pipeline_group_id: PipelineGroupId,
-    /// Logical target pipeline id.
-    pub pipeline_id: PipelineId,
-    /// `create`, `noop`, `replace`, or `resize`.
-    pub action: String,
-    /// Current rollout lifecycle state.
-    pub state: String,
-    /// Candidate generation targeted by this rollout.
-    pub target_generation: u64,
-    /// Previously committed generation, if any.
-    pub previous_generation: Option<u64>,
-    /// RFC3339 timestamp for rollout creation.
-    pub started_at: String,
-    /// RFC3339 timestamp for the latest rollout transition.
-    pub updated_at: String,
-    /// Optional failure or rollback reason.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure_reason: Option<String>,
-    /// Per-core rollout progress entries.
-    pub cores: Vec<RolloutCoreStatus>,
-}
-
-/// Detailed per-core shutdown progress.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ShutdownCoreStatus {
-    /// Target core being drained.
-    pub core_id: usize,
-    /// Deployment generation targeted for shutdown on this core.
-    pub deployment_generation: u64,
-    /// Current lifecycle state for this core shutdown step.
-    pub state: String,
-    /// RFC3339 timestamp for the latest step transition.
-    pub updated_at: String,
-    /// Optional human-readable detail for failures or waits.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-/// Detailed shutdown status returned by shutdown endpoints.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PipelineShutdownStatus {
-    /// Controller-assigned shutdown identifier.
-    pub shutdown_id: String,
-    /// Logical target pipeline group id.
-    pub pipeline_group_id: PipelineGroupId,
-    /// Logical target pipeline id.
-    pub pipeline_id: PipelineId,
-    /// Current shutdown lifecycle state.
-    pub state: String,
-    /// RFC3339 timestamp for shutdown creation.
-    pub started_at: String,
-    /// RFC3339 timestamp for the latest shutdown transition.
-    pub updated_at: String,
-    /// Optional failure reason when shutdown does not complete cleanly.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure_reason: Option<String>,
-    /// Per-core shutdown progress entries.
-    pub cores: Vec<ShutdownCoreStatus>,
-}
-
-/// Live logical pipeline view returned by `GET /api/v1/groups/{group}/pipelines/{id}`.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PipelineDetails {
-    /// Logical pipeline group id.
-    pub pipeline_group_id: PipelineGroupId,
-    /// Logical pipeline id.
-    pub pipeline_id: PipelineId,
-    /// Last committed active generation, if known.
-    pub active_generation: Option<u64>,
-    /// Current live pipeline configuration.
-    pub pipeline: PipelineConfig,
-    /// Optional rollout summary mirrored into `/status`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rollout: Option<PipelineRolloutSummary>,
-}
-
-const fn default_rollout_timeout_secs() -> u64 {
-    60
+impl ControlPlaneError {
+    /// Converts a control-plane error into the public operation rejection model.
+    #[must_use]
+    pub fn as_operation_error(&self) -> OperationError {
+        match self {
+            Self::GroupNotFound => OperationError::new(OperationErrorKind::GroupNotFound),
+            Self::PipelineNotFound => OperationError::new(OperationErrorKind::PipelineNotFound),
+            Self::RolloutConflict => OperationError::new(OperationErrorKind::Conflict),
+            Self::InvalidRequest { message } => {
+                OperationError::new(OperationErrorKind::InvalidRequest)
+                    .with_message(message.clone())
+            }
+            Self::RolloutNotFound => OperationError::new(OperationErrorKind::RolloutNotFound),
+            Self::ShutdownNotFound => OperationError::new(OperationErrorKind::ShutdownNotFound),
+            Self::Internal { message } => {
+                OperationError::new(OperationErrorKind::Internal).with_message(message.clone())
+            }
+        }
+    }
 }
 
 /// Control-plane interface implemented by the controller runtime.
@@ -191,12 +92,12 @@ pub trait ControlPlane: Send + Sync {
         timeout_secs: u64,
     ) -> Result<PipelineShutdownStatus, ControlPlaneError>;
 
-    /// Creates or replaces a logical pipeline and returns the rollout job snapshot.
-    fn replace_pipeline(
+    /// Reconfigures a logical pipeline and returns the rollout job snapshot.
+    fn reconfigure_pipeline(
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
-        request: ReplacePipelineRequest,
+        request: ReconfigureRequest,
     ) -> Result<PipelineRolloutStatus, ControlPlaneError>;
 
     /// Returns the live active config for a logical pipeline.

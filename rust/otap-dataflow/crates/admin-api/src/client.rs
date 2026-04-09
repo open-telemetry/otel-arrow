@@ -5,7 +5,7 @@
 
 use crate::endpoint::{AdminAuth, AdminEndpoint};
 use crate::http_backend::HttpBackend;
-use crate::{Error, engine, operations, pipeline_groups, pipelines, telemetry};
+use crate::{Error, engine, groups, operations, pipelines, telemetry};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -172,10 +172,10 @@ impl AdminClient {
         }
     }
 
-    /// Returns the pipeline-group-scoped resource client.
+    /// Returns the group-scoped resource client.
     #[must_use]
-    pub fn pipeline_groups(&self) -> PipelineGroupsClient<'_> {
-        PipelineGroupsClient {
+    pub fn groups(&self) -> GroupsClient<'_> {
+        GroupsClient {
             backend: self.backend.as_ref(),
         }
     }
@@ -220,24 +220,24 @@ impl EngineClient<'_> {
     }
 }
 
-/// Pipeline-group-scoped admin client.
+/// Group-scoped admin client.
 #[derive(Clone, Copy)]
-pub struct PipelineGroupsClient<'a> {
+pub struct GroupsClient<'a> {
     backend: &'a dyn AdminBackend,
 }
 
-impl PipelineGroupsClient<'_> {
-    /// Returns pipeline-group status.
-    pub async fn status(&self) -> Result<pipeline_groups::Status, Error> {
-        self.backend.pipeline_groups_status().await
+impl GroupsClient<'_> {
+    /// Returns group status.
+    pub async fn status(&self) -> Result<groups::Status, Error> {
+        self.backend.groups_status().await
     }
 
     /// Requests shutdown for all pipelines.
     pub async fn shutdown(
         &self,
         options: &operations::OperationOptions,
-    ) -> Result<pipeline_groups::ShutdownResponse, Error> {
-        self.backend.pipeline_groups_shutdown(options).await
+    ) -> Result<groups::ShutdownResponse, Error> {
+        self.backend.groups_shutdown(options).await
     }
 }
 
@@ -248,6 +248,42 @@ pub struct PipelinesClient<'a> {
 }
 
 impl PipelinesClient<'_> {
+    /// Returns the live committed configuration for one logical pipeline.
+    pub async fn details(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+    ) -> Result<Option<pipelines::PipelineDetails>, Error> {
+        self.backend
+            .pipeline_details(pipeline_group_id, pipeline_id)
+            .await
+    }
+
+    /// Requests live reconfiguration for one logical pipeline.
+    pub async fn reconfigure(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        request: &pipelines::ReconfigureRequest,
+        options: &operations::OperationOptions,
+    ) -> Result<pipelines::ReconfigureOutcome, Error> {
+        self.backend
+            .pipeline_reconfigure(pipeline_group_id, pipeline_id, request, options)
+            .await
+    }
+
+    /// Returns detailed rollout status for one logical pipeline.
+    pub async fn rollout_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        rollout_id: &str,
+    ) -> Result<Option<pipelines::PipelineRolloutStatus>, Error> {
+        self.backend
+            .pipeline_rollout_status(pipeline_group_id, pipeline_id, rollout_id)
+            .await
+    }
+
     /// Returns status for one pipeline.
     pub async fn status(
         &self,
@@ -256,6 +292,30 @@ impl PipelinesClient<'_> {
     ) -> Result<Option<pipelines::Status>, Error> {
         self.backend
             .pipeline_status(pipeline_group_id, pipeline_id)
+            .await
+    }
+
+    /// Requests shutdown for one logical pipeline.
+    pub async fn shutdown(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        options: &operations::OperationOptions,
+    ) -> Result<pipelines::ShutdownOutcome, Error> {
+        self.backend
+            .pipeline_shutdown(pipeline_group_id, pipeline_id, options)
+            .await
+    }
+
+    /// Returns detailed shutdown status for one logical pipeline.
+    pub async fn shutdown_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        shutdown_id: &str,
+    ) -> Result<Option<pipelines::PipelineShutdownStatus>, Error> {
+        self.backend
+            .pipeline_shutdown_status(pipeline_group_id, pipeline_id, shutdown_id)
             .await
     }
 
@@ -320,17 +380,35 @@ pub(crate) trait AdminBackend: Send + Sync {
     async fn engine_livez(&self) -> Result<engine::ProbeResponse, Error>;
     async fn engine_readyz(&self) -> Result<engine::ProbeResponse, Error>;
 
-    async fn pipeline_groups_status(&self) -> Result<pipeline_groups::Status, Error>;
-    async fn pipeline_groups_shutdown(
+    async fn groups_status(&self) -> Result<groups::Status, Error>;
+    async fn groups_shutdown(
         &self,
         options: &operations::OperationOptions,
-    ) -> Result<pipeline_groups::ShutdownResponse, Error>;
+    ) -> Result<groups::ShutdownResponse, Error>;
 
     async fn pipeline_status(
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
     ) -> Result<Option<pipelines::Status>, Error>;
+    async fn pipeline_details(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+    ) -> Result<Option<pipelines::PipelineDetails>, Error>;
+    async fn pipeline_reconfigure(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        request: &pipelines::ReconfigureRequest,
+        options: &operations::OperationOptions,
+    ) -> Result<pipelines::ReconfigureOutcome, Error>;
+    async fn pipeline_rollout_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        rollout_id: &str,
+    ) -> Result<Option<pipelines::PipelineRolloutStatus>, Error>;
     async fn pipeline_livez(
         &self,
         pipeline_group_id: &str,
@@ -341,6 +419,18 @@ pub(crate) trait AdminBackend: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
     ) -> Result<pipelines::ProbeResult, Error>;
+    async fn pipeline_shutdown(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        options: &operations::OperationOptions,
+    ) -> Result<pipelines::ShutdownOutcome, Error>;
+    async fn pipeline_shutdown_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        shutdown_id: &str,
+    ) -> Result<Option<pipelines::PipelineShutdownStatus>, Error>;
 
     async fn telemetry_logs(
         &self,

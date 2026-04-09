@@ -39,3 +39,72 @@ impl OperationOptions {
         ]
     }
 }
+
+/// Typed request rejection for live admin operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationError {
+    /// Machine-readable rejection kind.
+    pub kind: OperationErrorKind,
+    /// Optional human-readable detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl OperationError {
+    /// Creates an error with no message.
+    #[must_use]
+    pub const fn new(kind: OperationErrorKind) -> Self {
+        Self {
+            kind,
+            message: None,
+        }
+    }
+
+    /// Attaches a human-readable message.
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+}
+
+/// Machine-readable rejection kinds for live admin operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationErrorKind {
+    /// The requested pipeline group does not exist.
+    GroupNotFound,
+    /// The requested pipeline does not exist.
+    PipelineNotFound,
+    /// The requested rollout does not exist.
+    RolloutNotFound,
+    /// The requested shutdown does not exist.
+    ShutdownNotFound,
+    /// Another rollout or shutdown is already active for this logical pipeline.
+    Conflict,
+    /// The request was rejected as invalid.
+    InvalidRequest,
+    /// The server failed while processing the request.
+    Internal,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn operation_error_roundtrips() {
+        let value = json!({
+            "kind": "invalid_request",
+            "message": "core allocation change is not supported"
+        });
+        let parsed: OperationError =
+            serde_json::from_value(value.clone()).expect("fixture should deserialize");
+        assert_eq!(
+            serde_json::to_value(parsed).expect("model should serialize"),
+            value
+        );
+    }
+}

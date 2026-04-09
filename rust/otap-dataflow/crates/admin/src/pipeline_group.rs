@@ -37,8 +37,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use otap_df_admin_types::{
+    groups::{ShutdownResponse, ShutdownStatus, Status as GroupsStatus},
     operations::OperationOptions,
-    pipeline_groups::{ShutdownResponse, ShutdownStatus, Status as PipelineGroupsStatus},
 };
 use otap_df_telemetry::otel_info;
 use std::time::{Duration, Instant};
@@ -53,10 +53,8 @@ pub(crate) fn routes() -> Router<AppState> {
     // ToDo Global liveness and readiness probes.
 }
 
-pub async fn show_status(
-    State(state): State<AppState>,
-) -> Result<Json<PipelineGroupsStatus>, StatusCode> {
-    Ok(Json(PipelineGroupsStatus {
+pub async fn show_status(State(state): State<AppState>) -> Result<Json<GroupsStatus>, StatusCode> {
+    Ok(Json(GroupsStatus {
         generated_at: Utc::now().to_rfc3339(),
         pipelines: json_shape(&state.observed_state_store.snapshot()),
     }))

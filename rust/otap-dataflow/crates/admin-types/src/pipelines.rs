@@ -3,9 +3,63 @@
 
 //! Shared pipeline-scoped admin models.
 
+use otap_df_config::{PipelineGroupId, PipelineId, pipeline::PipelineConfig};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+const fn default_rollout_timeout_secs() -> u64 {
+    60
+}
+
+/// Rollout state summary exposed on pipeline status snapshots and rollout resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineRolloutState {
+    /// Rollout has been accepted but work has not started yet.
+    Pending,
+    /// Rollout is actively applying changes.
+    Running,
+    /// Rollout completed successfully and the target generation is serving.
+    Succeeded,
+    /// Rollout failed before completion.
+    Failed,
+    /// Automatic rollback is in progress.
+    RollingBack,
+    /// Rollback could not restore a fully healthy serving set.
+    RollbackFailed,
+}
+
+/// Lightweight rollout summary embedded into pipeline status payloads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRolloutSummary {
+    /// Controller-assigned rollout identifier.
+    pub rollout_id: String,
+    /// Current rollout lifecycle state.
+    pub state: PipelineRolloutState,
+    /// Candidate generation being rolled out.
+    pub target_generation: u64,
+    /// RFC3339 timestamp for rollout creation.
+    pub started_at: String,
+    /// RFC3339 timestamp for the latest rollout state transition.
+    pub updated_at: String,
+    /// Human-readable failure or rollback reason when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+}
+
+/// Per-instance runtime status entry for generation-aware pipeline status payloads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeInstanceStatus {
+    /// CPU core hosting this runtime instance.
+    pub core_id: usize,
+    /// Deployment generation for this runtime instance.
+    pub deployment_generation: u64,
+    /// Runtime status for this instance.
+    pub status: CoreStatus,
+}
 
 /// Pipeline status across all cores.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -19,6 +73,166 @@ pub struct Status {
     pub running_cores: usize,
     /// Per-core details.
     pub cores: BTreeMap<usize, CoreStatus>,
+    /// Per-instance details when overlapping generations are present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instances: Option<Vec<RuntimeInstanceStatus>>,
+    /// Last committed active generation, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_generation: Option<u64>,
+    /// Serving generation selected per core by the controller during rollout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serving_generations: Option<BTreeMap<usize, u64>>,
+    /// Optional rollout summary mirrored into `/status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout: Option<PipelineRolloutSummary>,
+}
+
+/// Live logical pipeline view returned by the pipeline details endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineDetails {
+    /// Logical pipeline group id.
+    pub pipeline_group_id: PipelineGroupId,
+    /// Logical pipeline id.
+    pub pipeline_id: PipelineId,
+    /// Last committed active generation, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_generation: Option<u64>,
+    /// Current live pipeline configuration.
+    pub pipeline: PipelineConfig,
+    /// Optional rollout summary mirrored into `/status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout: Option<PipelineRolloutSummary>,
+}
+
+/// Request body for live pipeline reconfiguration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconfigureRequest {
+    /// Candidate pipeline configuration to create or roll out.
+    pub pipeline: PipelineConfig,
+    /// Per-core admission/ready timeout in seconds.
+    #[serde(default = "default_rollout_timeout_secs")]
+    pub step_timeout_secs: u64,
+    /// Graceful drain timeout in seconds when shutting down the old generation.
+    #[serde(default = "default_rollout_timeout_secs")]
+    pub drain_timeout_secs: u64,
+}
+
+/// Detailed per-core rollout progress.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutCoreStatus {
+    /// Target core for this step.
+    pub core_id: usize,
+    /// Previously serving generation on this core, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_generation: Option<u64>,
+    /// Candidate generation being launched for this core.
+    pub target_generation: u64,
+    /// Current lifecycle state for this core step.
+    pub state: String,
+    /// RFC3339 timestamp for the latest step transition.
+    pub updated_at: String,
+    /// Optional human-readable detail for failures or waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Detailed rollout status returned by rollout endpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRolloutStatus {
+    /// Controller-assigned rollout identifier.
+    pub rollout_id: String,
+    /// Logical target pipeline group id.
+    pub pipeline_group_id: PipelineGroupId,
+    /// Logical target pipeline id.
+    pub pipeline_id: PipelineId,
+    /// `create`, `noop`, `replace`, or `resize`.
+    pub action: String,
+    /// Current rollout lifecycle state.
+    pub state: PipelineRolloutState,
+    /// Candidate generation targeted by this rollout.
+    pub target_generation: u64,
+    /// Previously committed generation, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_generation: Option<u64>,
+    /// RFC3339 timestamp for rollout creation.
+    pub started_at: String,
+    /// RFC3339 timestamp for the latest rollout transition.
+    pub updated_at: String,
+    /// Optional failure or rollback reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    /// Per-core rollout progress entries.
+    pub cores: Vec<RolloutCoreStatus>,
+}
+
+/// Detailed per-core shutdown progress.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShutdownCoreStatus {
+    /// Target core being drained.
+    pub core_id: usize,
+    /// Deployment generation targeted for shutdown on this core.
+    pub deployment_generation: u64,
+    /// Current lifecycle state for this core shutdown step.
+    pub state: String,
+    /// RFC3339 timestamp for the latest step transition.
+    pub updated_at: String,
+    /// Optional human-readable detail for failures or waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Detailed shutdown status returned by shutdown endpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineShutdownStatus {
+    /// Controller-assigned shutdown identifier.
+    pub shutdown_id: String,
+    /// Logical target pipeline group id.
+    pub pipeline_group_id: PipelineGroupId,
+    /// Logical target pipeline id.
+    pub pipeline_id: PipelineId,
+    /// Current shutdown lifecycle state.
+    pub state: String,
+    /// RFC3339 timestamp for shutdown creation.
+    pub started_at: String,
+    /// RFC3339 timestamp for the latest shutdown transition.
+    pub updated_at: String,
+    /// Optional failure reason when shutdown does not complete cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    /// Per-core shutdown progress entries.
+    pub cores: Vec<ShutdownCoreStatus>,
+}
+
+/// Transport-agnostic outcome for a reconfigure request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReconfigureOutcome {
+    /// The request was accepted and continues asynchronously.
+    Accepted(PipelineRolloutStatus),
+    /// The operation completed successfully.
+    Completed(PipelineRolloutStatus),
+    /// The waited operation completed with a failed terminal rollout state.
+    Failed(PipelineRolloutStatus),
+    /// The waited operation did not complete within the requested timeout.
+    TimedOut(PipelineRolloutStatus),
+}
+
+/// Transport-agnostic outcome for a pipeline shutdown request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShutdownOutcome {
+    /// The request was accepted and continues asynchronously.
+    Accepted(PipelineShutdownStatus),
+    /// The operation completed successfully.
+    Completed(PipelineShutdownStatus),
+    /// The waited operation completed with a failed terminal shutdown state.
+    Failed(PipelineShutdownStatus),
+    /// The waited operation did not complete within the requested timeout.
+    TimedOut(PipelineShutdownStatus),
 }
 
 /// Per-core pipeline status.
@@ -573,6 +787,149 @@ mod tests {
                         }
                     ]
                 }
+            },
+            "instances": [
+                {
+                    "coreId": 0,
+                    "deploymentGeneration": 7,
+                    "status": {
+                        "phase": "running",
+                        "lastHeartbeatTime": "2026-01-01T00:00:00Z",
+                        "conditions": [],
+                        "deletePending": false
+                    }
+                }
+            ],
+            "activeGeneration": 7,
+            "servingGenerations": {
+                "0": 7
+            },
+            "rollout": {
+                "rolloutId": "rollout-7",
+                "state": "running",
+                "targetGeneration": 7,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:01Z"
+            }
+        }));
+    }
+
+    #[test]
+    fn reconfigure_request_roundtrips_current_wire_shape() {
+        assert_roundtrip::<ReconfigureRequest>(json!({
+            "pipeline": {
+                "type": "otap",
+                "nodes": {
+                    "recv": {
+                        "type": "urn:otel:receiver:fake",
+                        "config": {}
+                    }
+                }
+            },
+            "stepTimeoutSecs": 45,
+            "drainTimeoutSecs": 30
+        }));
+    }
+
+    #[test]
+    fn pipeline_details_roundtrips_current_wire_shape() {
+        assert_roundtrip::<PipelineDetails>(json!({
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "activeGeneration": 2,
+            "pipeline": {
+                "type": "otap",
+                "nodes": {
+                    "recv": {
+                        "type": "urn:otel:receiver:fake",
+                        "config": {}
+                    }
+                }
+            },
+            "rollout": {
+                "rolloutId": "rollout-2",
+                "state": "succeeded",
+                "targetGeneration": 2,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:05Z"
+            }
+        }));
+    }
+
+    #[test]
+    fn pipeline_rollout_status_roundtrips_current_wire_shape() {
+        assert_roundtrip::<PipelineRolloutStatus>(json!({
+            "rolloutId": "rollout-2",
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "action": "replace",
+            "state": "rolling_back",
+            "targetGeneration": 2,
+            "previousGeneration": 1,
+            "startedAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:05Z",
+            "failureReason": "candidate failed admission",
+            "cores": [
+                {
+                    "coreId": 0,
+                    "previousGeneration": 1,
+                    "targetGeneration": 2,
+                    "state": "waiting_ready",
+                    "updatedAt": "2026-01-01T00:00:03Z"
+                }
+            ]
+        }));
+    }
+
+    #[test]
+    fn pipeline_shutdown_status_roundtrips_current_wire_shape() {
+        assert_roundtrip::<PipelineShutdownStatus>(json!({
+            "shutdownId": "shutdown-1",
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "state": "failed",
+            "startedAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:05Z",
+            "failureReason": "drain deadline exceeded",
+            "cores": [
+                {
+                    "coreId": 0,
+                    "deploymentGeneration": 2,
+                    "state": "draining",
+                    "updatedAt": "2026-01-01T00:00:05Z"
+                }
+            ]
+        }));
+    }
+
+    #[test]
+    fn reconfigure_outcome_roundtrips() {
+        assert_roundtrip::<ReconfigureOutcome>(json!({
+            "Completed": {
+                "rolloutId": "rollout-2",
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "action": "noop",
+                "state": "succeeded",
+                "targetGeneration": 2,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z",
+                "cores": []
+            }
+        }));
+    }
+
+    #[test]
+    fn shutdown_outcome_roundtrips() {
+        assert_roundtrip::<ShutdownOutcome>(json!({
+            "TimedOut": {
+                "shutdownId": "shutdown-1",
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "state": "running",
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:05Z",
+                "cores": []
             }
         }));
     }

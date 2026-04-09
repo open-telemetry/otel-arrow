@@ -1274,7 +1274,7 @@ mod tests {
     use super::*;
     use crate::{
         ControlPlane, ControlPlaneError, PipelineDetails, PipelineRolloutStatus,
-        PipelineShutdownStatus, ReplacePipelineRequest,
+        PipelineShutdownStatus, ReconfigureRequest,
     };
     use axum::body::to_bytes;
     use otap_df_config::observed_state::ObservedStateSettings;
@@ -1303,11 +1303,11 @@ mod tests {
             })
         }
 
-        fn replace_pipeline(
+        fn reconfigure_pipeline(
             &self,
             _pipeline_group_id: &str,
             _pipeline_id: &str,
-            _request: ReplacePipelineRequest,
+            _request: ReconfigureRequest,
         ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
             Err(ControlPlaneError::Internal {
                 message: "not used in telemetry tests".to_string(),

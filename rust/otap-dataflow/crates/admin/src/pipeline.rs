@@ -33,10 +33,10 @@ use crate::AppState;
 use crate::convert::json_shape;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use otap_df_admin_types::pipelines::Status as ApiPipelineStatus;
+use otap_df_admin_types::pipelines::{PipelineRolloutState, Status as ApiPipelineStatus};
 use otap_df_config::PipelineKey;
 use otap_df_telemetry::otel_info;
 use serde::Deserialize;
@@ -89,12 +89,21 @@ const fn default_timeout_secs() -> u64 {
     60
 }
 
-fn rollout_is_terminal(state: &str) -> bool {
-    matches!(state, "succeeded" | "failed" | "rollback_failed")
+fn operation_error_response(status: StatusCode, error: crate::ControlPlaneError) -> Response {
+    (status, Json(error.as_operation_error())).into_response()
 }
 
-fn rollout_is_success(state: &str) -> bool {
-    state == "succeeded"
+fn rollout_is_terminal(state: PipelineRolloutState) -> bool {
+    matches!(
+        state,
+        PipelineRolloutState::Succeeded
+            | PipelineRolloutState::Failed
+            | PipelineRolloutState::RollbackFailed
+    )
+}
+
+fn rollout_is_success(state: PipelineRolloutState) -> bool {
+    state == PipelineRolloutState::Succeeded
 }
 
 fn shutdown_is_terminal(state: &str) -> bool {
@@ -126,28 +135,40 @@ pub async fn put_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     Query(params): Query<WaitParams>,
     State(state): State<AppState>,
-    Json(request): Json<crate::ReplacePipelineRequest>,
+    Json(request): Json<crate::ReconfigureRequest>,
 ) -> impl IntoResponse {
-    let rollout = match state
-        .controller
-        .replace_pipeline(&pipeline_group_id, &pipeline_id, request)
-    {
-        Ok(rollout) => rollout,
-        Err(crate::ControlPlaneError::GroupNotFound) => {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        Err(crate::ControlPlaneError::RolloutConflict) => {
-            return StatusCode::CONFLICT.into_response();
-        }
-        Err(crate::ControlPlaneError::InvalidRequest { message }) => {
-            return (StatusCode::UNPROCESSABLE_ENTITY, Json(message)).into_response();
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let rollout =
+        match state
+            .controller
+            .reconfigure_pipeline(&pipeline_group_id, &pipeline_id, request)
+        {
+            Ok(rollout) => rollout,
+            Err(crate::ControlPlaneError::GroupNotFound) => {
+                return operation_error_response(
+                    StatusCode::NOT_FOUND,
+                    crate::ControlPlaneError::GroupNotFound,
+                );
+            }
+            Err(crate::ControlPlaneError::RolloutConflict) => {
+                return operation_error_response(
+                    StatusCode::CONFLICT,
+                    crate::ControlPlaneError::RolloutConflict,
+                );
+            }
+            Err(crate::ControlPlaneError::InvalidRequest { message }) => {
+                return operation_error_response(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    crate::ControlPlaneError::InvalidRequest { message },
+                );
+            }
+            Err(other) => {
+                return operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other);
+            }
+        };
 
     if !params.wait {
-        let status = if rollout_is_terminal(&rollout.state) {
-            if rollout_is_success(&rollout.state) {
+        let status = if rollout_is_terminal(rollout.state) {
+            if rollout_is_success(rollout.state) {
                 StatusCode::OK
             } else {
                 StatusCode::CONFLICT
@@ -159,28 +180,49 @@ pub async fn put_pipeline(
     }
 
     let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
+    let mut last_status = Some(rollout);
     loop {
+        let rollout_id = last_status
+            .as_ref()
+            .expect("initial rollout status should be present")
+            .rollout_id
+            .clone();
         match state
             .controller
-            .rollout_status(&pipeline_group_id, &pipeline_id, &rollout.rollout_id)
+            .rollout_status(&pipeline_group_id, &pipeline_id, &rollout_id)
         {
-            Ok(Some(current)) if rollout_is_terminal(&current.state) => {
-                let status = if rollout_is_success(&current.state) {
+            Ok(Some(current)) if rollout_is_terminal(current.state) => {
+                let status = if rollout_is_success(current.state) {
                     StatusCode::OK
                 } else {
                     StatusCode::CONFLICT
                 };
                 return (status, Json(current)).into_response();
             }
-            Ok(Some(_)) => {}
-            Ok(None) | Err(crate::ControlPlaneError::RolloutNotFound) => {
-                return StatusCode::NOT_FOUND.into_response();
+            Ok(Some(current)) => {
+                last_status = Some(current);
             }
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Ok(None) | Err(crate::ControlPlaneError::RolloutNotFound) => {
+                return operation_error_response(
+                    StatusCode::NOT_FOUND,
+                    crate::ControlPlaneError::RolloutNotFound,
+                );
+            }
+            Err(other) => {
+                return operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other);
+            }
         }
 
         if Instant::now() >= deadline {
-            return StatusCode::GATEWAY_TIMEOUT.into_response();
+            return match last_status {
+                Some(status) => (StatusCode::GATEWAY_TIMEOUT, Json(status)).into_response(),
+                None => operation_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    crate::ControlPlaneError::Internal {
+                        message: "rollout status disappeared before timeout response".to_string(),
+                    },
+                ),
+            };
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -263,9 +305,14 @@ pub async fn shutdown_pipeline(
                         last_status = Some(current);
                     }
                     Ok(None) | Err(crate::ControlPlaneError::ShutdownNotFound) => {
-                        return StatusCode::NOT_FOUND.into_response();
+                        return operation_error_response(
+                            StatusCode::NOT_FOUND,
+                            crate::ControlPlaneError::ShutdownNotFound,
+                        );
                     }
-                    Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                    Err(other) => {
+                        return operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other);
+                    }
                 }
 
                 if Instant::now() >= deadline {
@@ -278,14 +325,19 @@ pub async fn shutdown_pipeline(
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
-        Err(
-            crate::ControlPlaneError::GroupNotFound | crate::ControlPlaneError::PipelineNotFound,
-        ) => StatusCode::NOT_FOUND.into_response(),
-        Err(crate::ControlPlaneError::RolloutConflict) => StatusCode::CONFLICT.into_response(),
-        Err(crate::ControlPlaneError::InvalidRequest { message }) => {
-            (StatusCode::BAD_REQUEST, Json(message)).into_response()
+        Err(error @ crate::ControlPlaneError::GroupNotFound)
+        | Err(error @ crate::ControlPlaneError::PipelineNotFound) => {
+            operation_error_response(StatusCode::NOT_FOUND, error)
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(crate::ControlPlaneError::RolloutConflict) => operation_error_response(
+            StatusCode::CONFLICT,
+            crate::ControlPlaneError::RolloutConflict,
+        ),
+        Err(crate::ControlPlaneError::InvalidRequest { message }) => operation_error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            crate::ControlPlaneError::InvalidRequest { message },
+        ),
+        Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
     }
 }
 
@@ -340,5 +392,256 @@ async fn readiness(
         (StatusCode::OK, "OK")
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "NOT OK")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ControlPlane, ControlPlaneError, PipelineDetails, PipelineRolloutStatus,
+        PipelineShutdownStatus,
+    };
+    use axum::body::to_bytes;
+    use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
+    use otap_df_config::observed_state::ObservedStateSettings;
+    use otap_df_engine::memory_limiter::MemoryPressureState;
+    use otap_df_state::store::ObservedStateStore;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[derive(Clone)]
+    struct StubControlPlane {
+        replace_result: Result<PipelineRolloutStatus, ControlPlaneError>,
+        rollout_status_result: Result<Option<PipelineRolloutStatus>, ControlPlaneError>,
+        shutdown_result: Result<PipelineShutdownStatus, ControlPlaneError>,
+        shutdown_status_result: Result<Option<PipelineShutdownStatus>, ControlPlaneError>,
+    }
+
+    impl ControlPlane for StubControlPlane {
+        fn shutdown_all(&self, _timeout_secs: u64) -> Result<(), ControlPlaneError> {
+            Ok(())
+        }
+
+        fn shutdown_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _timeout_secs: u64,
+        ) -> Result<PipelineShutdownStatus, ControlPlaneError> {
+            self.shutdown_result.clone()
+        }
+
+        fn reconfigure_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _request: crate::ReconfigureRequest,
+        ) -> Result<PipelineRolloutStatus, ControlPlaneError> {
+            self.replace_result.clone()
+        }
+
+        fn pipeline_details(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+        ) -> Result<Option<PipelineDetails>, ControlPlaneError> {
+            Ok(None)
+        }
+
+        fn rollout_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _rollout_id: &str,
+        ) -> Result<Option<PipelineRolloutStatus>, ControlPlaneError> {
+            self.rollout_status_result.clone()
+        }
+
+        fn shutdown_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _shutdown_id: &str,
+        ) -> Result<Option<PipelineShutdownStatus>, ControlPlaneError> {
+            self.shutdown_status_result.clone()
+        }
+    }
+
+    fn test_app_state(controller: Arc<dyn ControlPlane>) -> AppState {
+        let metrics_registry = TelemetryRegistryHandle::new();
+        let observed_state_store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), metrics_registry.clone());
+
+        AppState {
+            observed_state_store: observed_state_store.handle(),
+            metrics_registry,
+            controller,
+            log_tap: None,
+            memory_pressure_state: MemoryPressureState::default(),
+        }
+    }
+
+    fn request() -> crate::ReconfigureRequest {
+        crate::ReconfigureRequest {
+            pipeline: serde_json::from_value(json!({
+                "type": "otap",
+                "nodes": {
+                    "recv": {
+                        "type": "receiver:fake",
+                        "config": {}
+                    }
+                }
+            }))
+            .expect("fixture pipeline should deserialize"),
+            step_timeout_secs: 60,
+            drain_timeout_secs: 60,
+        }
+    }
+
+    fn rollout_status(state: PipelineRolloutState) -> PipelineRolloutStatus {
+        serde_json::from_value(json!({
+            "rolloutId": "rollout-1",
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "action": "replace",
+            "state": state,
+            "targetGeneration": 1,
+            "previousGeneration": 0,
+            "startedAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:01Z",
+            "cores": []
+        }))
+        .expect("fixture rollout status should deserialize")
+    }
+
+    fn shutdown_status(state: &str) -> PipelineShutdownStatus {
+        serde_json::from_value(json!({
+            "shutdownId": "shutdown-1",
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "state": state,
+            "startedAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:01Z",
+            "cores": []
+        }))
+        .expect("fixture shutdown status should deserialize")
+    }
+
+    #[tokio::test]
+    async fn put_pipeline_returns_operation_error_body_on_invalid_request() {
+        let response = put_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            Query(WaitParams {
+                wait: false,
+                timeout_secs: 60,
+            }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Err(ControlPlaneError::InvalidRequest {
+                    message: "invalid candidate".to_string(),
+                }),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+            }))),
+            Json(request()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::InvalidRequest);
+        assert_eq!(error.message.as_deref(), Some("invalid candidate"));
+    }
+
+    #[tokio::test]
+    async fn put_pipeline_timeout_returns_latest_rollout_status_snapshot() {
+        let response = put_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            Query(WaitParams {
+                wait: true,
+                timeout_secs: 0,
+            }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Running)),
+                rollout_status_result: Ok(Some(rollout_status(PipelineRolloutState::Running))),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+            }))),
+            Json(request()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let status: PipelineRolloutStatus =
+            serde_json::from_slice(&body).expect("timeout body should deserialize");
+        assert_eq!(status.rollout_id, "rollout-1");
+        assert_eq!(status.state, PipelineRolloutState::Running);
+    }
+
+    #[tokio::test]
+    async fn shutdown_pipeline_returns_operation_error_body_on_conflict() {
+        let response = shutdown_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            Query(WaitParams {
+                wait: false,
+                timeout_secs: 60,
+            }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Err(ControlPlaneError::RolloutConflict),
+                shutdown_status_result: Ok(None),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::Conflict);
+        assert_eq!(error.message, None);
+    }
+
+    #[tokio::test]
+    async fn shutdown_pipeline_timeout_returns_latest_status_snapshot() {
+        let response = shutdown_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            Query(WaitParams {
+                wait: true,
+                timeout_secs: 0,
+            }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("running")),
+                shutdown_status_result: Ok(Some(shutdown_status("running"))),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let status: PipelineShutdownStatus =
+            serde_json::from_slice(&body).expect("timeout body should deserialize");
+        assert_eq!(status.shutdown_id, "shutdown-1");
+        assert_eq!(status.state, "running");
     }
 }
