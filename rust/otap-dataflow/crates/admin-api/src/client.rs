@@ -164,7 +164,7 @@ impl AdminClient {
         AdminClientBuilder::new()
     }
 
-    /// Returns the engine-scoped resource client.
+    /// Returns the engine-scoped resource client for engine-wide status and probes.
     #[must_use]
     pub fn engine(&self) -> EngineClient<'_> {
         EngineClient {
@@ -172,7 +172,7 @@ impl AdminClient {
         }
     }
 
-    /// Returns the group-scoped resource client.
+    /// Returns the group-scoped resource client for fleet-style status and shutdown operations.
     #[must_use]
     pub fn groups(&self) -> GroupsClient<'_> {
         GroupsClient {
@@ -180,7 +180,7 @@ impl AdminClient {
         }
     }
 
-    /// Returns the pipeline-scoped resource client.
+    /// Returns the pipeline-scoped resource client for per-pipeline status and live control.
     #[must_use]
     pub fn pipelines(&self) -> PipelinesClient<'_> {
         PipelinesClient {
@@ -227,12 +227,16 @@ pub struct GroupsClient<'a> {
 }
 
 impl GroupsClient<'_> {
-    /// Returns group status.
+    /// Returns a group-wide status snapshot across logical pipelines.
     pub async fn status(&self) -> Result<groups::Status, Error> {
         self.backend.groups_status().await
     }
 
-    /// Requests shutdown for all pipelines.
+    /// Requests coordinated shutdown for all running logical pipelines.
+    ///
+    /// Use `options.wait` to choose whether the call should return immediately
+    /// with the server's current shutdown response or wait up to
+    /// `options.timeout_secs` for a terminal shutdown result.
     pub async fn shutdown(
         &self,
         options: &operations::OperationOptions,
@@ -248,7 +252,13 @@ pub struct PipelinesClient<'a> {
 }
 
 impl PipelinesClient<'_> {
-    /// Returns the live committed configuration for one logical pipeline.
+    /// Returns the committed live configuration for one logical pipeline.
+    ///
+    /// Use this when you need the configuration that the controller currently
+    /// treats as active. This does not include per-core runtime progress or
+    /// overlapping-instance state; use [`Self::status`] for runtime status.
+    ///
+    /// Returns `Ok(None)` when the logical pipeline is not found.
     pub async fn details(
         &self,
         pipeline_group_id: &str,
@@ -259,7 +269,25 @@ impl PipelinesClient<'_> {
             .await
     }
 
-    /// Requests live reconfiguration for one logical pipeline.
+    /// Submits a live reconfiguration request for one logical pipeline.
+    ///
+    /// The controller may treat the request as a create, resize, replace, or
+    /// no-op depending on how the submitted configuration differs from the
+    /// current committed pipeline.
+    ///
+    /// With `options.wait = false`, this returns as soon as the request has
+    /// either been accepted for background execution or already completed,
+    /// yielding [`pipelines::ReconfigureOutcome::Accepted`] or
+    /// [`pipelines::ReconfigureOutcome::Completed`].
+    ///
+    /// With `options.wait = true`, this waits up to `options.timeout_secs` for
+    /// a terminal result and returns the latest rollout snapshot as
+    /// [`pipelines::ReconfigureOutcome::Completed`],
+    /// [`pipelines::ReconfigureOutcome::Failed`], or
+    /// [`pipelines::ReconfigureOutcome::TimedOut`].
+    ///
+    /// If the server rejects the request before a rollout starts, this returns
+    /// [`Error::AdminOperation`].
     pub async fn reconfigure(
         &self,
         pipeline_group_id: &str,
@@ -272,7 +300,14 @@ impl PipelinesClient<'_> {
             .await
     }
 
-    /// Returns detailed rollout status for one logical pipeline.
+    /// Returns the latest known status for one previously created rollout.
+    ///
+    /// Use the `rollout_id` returned from [`Self::reconfigure`] to poll an
+    /// asynchronous reconfiguration operation after an
+    /// [`pipelines::ReconfigureOutcome::Accepted`] result.
+    ///
+    /// Returns `Ok(None)` when the requested rollout status resource is not
+    /// found.
     pub async fn rollout_status(
         &self,
         pipeline_group_id: &str,
@@ -284,7 +319,13 @@ impl PipelinesClient<'_> {
             .await
     }
 
-    /// Returns status for one pipeline.
+    /// Returns the current runtime status for one logical pipeline.
+    ///
+    /// Use this when you need per-core phase, overlapping-instance state,
+    /// rollout summaries, or other runtime progress. Use [`Self::details`] when
+    /// you need the committed live configuration instead.
+    ///
+    /// Returns `Ok(None)` when the logical pipeline is not found.
     pub async fn status(
         &self,
         pipeline_group_id: &str,
@@ -295,7 +336,21 @@ impl PipelinesClient<'_> {
             .await
     }
 
-    /// Requests shutdown for one logical pipeline.
+    /// Requests shutdown of the currently running instances for one logical pipeline.
+    ///
+    /// With `options.wait = false`, this returns as soon as the shutdown has
+    /// either been accepted for background execution or already completed,
+    /// yielding [`pipelines::ShutdownOutcome::Accepted`] or
+    /// [`pipelines::ShutdownOutcome::Completed`].
+    ///
+    /// With `options.wait = true`, this waits up to `options.timeout_secs` for
+    /// a terminal result and returns the latest shutdown snapshot as
+    /// [`pipelines::ShutdownOutcome::Completed`],
+    /// [`pipelines::ShutdownOutcome::Failed`], or
+    /// [`pipelines::ShutdownOutcome::TimedOut`].
+    ///
+    /// If the server rejects the request before shutdown work starts, this
+    /// returns [`Error::AdminOperation`].
     pub async fn shutdown(
         &self,
         pipeline_group_id: &str,
@@ -307,7 +362,14 @@ impl PipelinesClient<'_> {
             .await
     }
 
-    /// Returns detailed shutdown status for one logical pipeline.
+    /// Returns the latest known status for one previously created shutdown operation.
+    ///
+    /// Use the `shutdown_id` returned from [`Self::shutdown`] to poll an
+    /// asynchronous shutdown after an
+    /// [`pipelines::ShutdownOutcome::Accepted`] result.
+    ///
+    /// Returns `Ok(None)` when the requested shutdown status resource is not
+    /// found.
     pub async fn shutdown_status(
         &self,
         pipeline_group_id: &str,

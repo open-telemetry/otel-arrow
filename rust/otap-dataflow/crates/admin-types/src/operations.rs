@@ -5,13 +5,17 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Generic options for long-running admin operations.
+/// Wait behavior for long-running admin operations such as reconfigure and shutdown.
+///
+/// By default operations are asynchronous: the SDK returns as soon as the
+/// request has been accepted for background execution or has already completed.
+/// Set `wait = true` to wait up to `timeout_secs` for a terminal result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationOptions {
-    /// Whether to wait for completion.
+    /// Whether the SDK should wait for the operation to reach a terminal result.
     #[serde(default)]
     pub wait: bool,
-    /// Wait timeout in seconds.
+    /// Maximum number of seconds to wait when `wait` is `true`.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 }
@@ -41,6 +45,10 @@ impl OperationOptions {
 }
 
 /// Typed request rejection for live admin operations.
+///
+/// This is returned when the server refuses to start the requested operation at
+/// all. It is different from an accepted operation that later reports
+/// `Failed(...)` or `TimedOut(...)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationError {
