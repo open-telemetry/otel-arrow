@@ -170,6 +170,212 @@ mod tests {
             .expect("filter processor validation failed");
     }
 
+    /// Validates the log sampling processor with a ratio policy (emit 1 out of
+    /// 10). Static log signals are generated and passed through the sampler,
+    /// which should drop approximately 90% of log records.
+    #[test]
+    fn validation_log_sampling_ratio_pipeline() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::SignalDrop {
+                            min_drop_ratio: Some(0.80),
+                            max_drop_ratio: Some(0.99),
+                        },
+                        ValidationInstructions::AttributeNoDuplicate,
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("log sampling ratio validation failed");
+    }
+
+    /// Validates the transform processor with a KQL filter query that keeps
+    /// only ERROR-severity logs. Static log signals have ~5% ERROR, ~15% WARN,
+    /// and ~80% INFO, so the vast majority should be dropped.
+    #[test]
+    fn validation_transform_processor_filter_pipeline() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::SignalDrop {
+                            min_drop_ratio: Some(0.80),
+                            max_drop_ratio: Some(0.99),
+                        },
+                        ValidationInstructions::AttributeNoDuplicate,
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor filter validation failed");
+    }
+
+    /// Validates the log sampling processor with a zip policy (max 50 items per
+    /// 60-second window). All 500 static log signals arrive well within the
+    /// window, so at most 50 are kept and the rest are dropped.
+    #[test]
+    fn validation_log_sampling_zip_pipeline() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/log-sampling-zip-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::SignalDrop {
+                            min_drop_ratio: Some(0.85),
+                            max_drop_ratio: Some(0.99),
+                        },
+                        ValidationInstructions::AttributeNoDuplicate,
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("log sampling zip validation failed");
+    }
+
+    /// Validates that the log sampling processor passes non-log signals through
+    /// unchanged. Sends trace signals through a ratio sampler and asserts
+    /// semantic equivalence -- the sampler should not alter traces at all.
+    #[test]
+    fn validation_log_sampling_passthrough_traces() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::traces()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("log sampling passthrough traces validation failed");
+    }
+
+    /// Validates the transform processor with a negated KQL filter that drops
+    /// INFO-severity logs and keeps WARN + ERROR. Static log signals have ~80%
+    /// INFO so roughly 80% should be dropped.
+    #[test]
+    fn validation_transform_processor_not_filter_pipeline() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/transform-not-filter-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::SignalDrop {
+                            min_drop_ratio: Some(0.70),
+                            max_drop_ratio: Some(0.90),
+                        },
+                        ValidationInstructions::AttributeNoDuplicate,
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor not-filter validation failed");
+    }
+
+    /// Validates the transform processor with an OPL set query that adds a new
+    /// attribute to every log record. All logs should pass through (no
+    /// filtering) and the new attribute key must be present on every record.
+    #[test]
+    fn validation_transform_processor_attribute_set_pipeline() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/transform-set-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::AttributeRequireKey {
+                        domains: vec![AttributeDomain::Signal],
+                        keys: vec!["processed_by".into()],
+                    }])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor attribute set validation failed");
+    }
+
     #[test]
     fn validation_multiple_input_output() {
         Scenario::new()
