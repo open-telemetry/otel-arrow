@@ -182,11 +182,14 @@ pub async fn put_pipeline(
     let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
     let mut last_status = Some(rollout);
     loop {
-        let rollout_id = last_status
-            .as_ref()
-            .expect("initial rollout status should be present")
-            .rollout_id
-            .clone();
+        let Some(rollout_id) = last_status.as_ref().map(|status| status.rollout_id.clone()) else {
+            return operation_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::ControlPlaneError::Internal {
+                    message: "initial rollout status disappeared while waiting".to_string(),
+                },
+            );
+        };
         match state
             .controller
             .rollout_status(&pipeline_group_id, &pipeline_id, &rollout_id)
@@ -283,11 +286,18 @@ pub async fn shutdown_pipeline(
             let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
             let mut last_status = Some(shutdown);
             loop {
-                let shutdown_id = last_status
+                let Some(shutdown_id) = last_status
                     .as_ref()
-                    .expect("initial shutdown status should be present")
-                    .shutdown_id
-                    .clone();
+                    .map(|status| status.shutdown_id.clone())
+                else {
+                    return operation_error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        crate::ControlPlaneError::Internal {
+                            message: "initial shutdown status disappeared while waiting"
+                                .to_string(),
+                        },
+                    );
+                };
                 match state.controller.shutdown_status(
                     &pipeline_group_id,
                     &pipeline_id,
@@ -318,7 +328,13 @@ pub async fn shutdown_pipeline(
                 if Instant::now() >= deadline {
                     return match last_status {
                         Some(status) => (StatusCode::GATEWAY_TIMEOUT, Json(status)).into_response(),
-                        None => StatusCode::GATEWAY_TIMEOUT.into_response(),
+                        None => operation_error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            crate::ControlPlaneError::Internal {
+                                message: "shutdown status disappeared before timeout response"
+                                    .to_string(),
+                            },
+                        ),
                     };
                 }
 

@@ -823,14 +823,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 message: err.to_string(),
             })?;
         let (inferred_modes, _) =
-            Controller::<PData>::infer_topic_modes(config, &global_names, &group_names);
+            Controller::<PData>::infer_topic_modes(config, &global_names, &group_names).map_err(
+                |err| ControlPlaneError::InvalidRequest {
+                    message: err.to_string(),
+                },
+            )?;
         let default_selection_policy = config.engine.topics.impl_selection;
 
         let mut profiles = HashMap::new();
         for (topic_name, spec) in &config.topics {
             let declared_name = global_names
                 .get(topic_name)
-                .expect("global topic declaration must resolve")
+                .ok_or_else(|| ControlPlaneError::Internal {
+                    message: format!(
+                        "missing declared topic name for global topic `{}` while building runtime profiles",
+                        topic_name.as_ref()
+                    ),
+                })?
                 .clone();
             let topology_mode = inferred_modes
                 .get(&declared_name)
@@ -855,7 +864,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             for (topic_name, spec) in &group_cfg.topics {
                 let declared_name = group_names
                     .get(&(group_id.clone(), topic_name.clone()))
-                    .expect("group topic declaration must resolve")
+                    .ok_or_else(|| ControlPlaneError::Internal {
+                        message: format!(
+                            "missing declared topic name for group `{}` topic `{}` while building runtime profiles",
+                            group_id.as_ref(),
+                            topic_name.as_ref()
+                        ),
+                    })?
                     .clone();
                 let topology_mode = inferred_modes
                     .get(&declared_name)
@@ -925,7 +940,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let group_cfg = candidate_config
             .groups
             .get_mut(&pipeline_group_id)
-            .expect("group existence checked above");
+            .ok_or_else(|| ControlPlaneError::Internal {
+                message: format!(
+                    "group `{}` disappeared while preparing rollout plan",
+                    pipeline_group_id.as_ref()
+                ),
+            })?;
         _ = group_cfg
             .pipelines
             .insert(pipeline_id.clone(), candidate_pipeline.clone());
@@ -1051,8 +1071,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             let rollout_id = format!("rollout-{}", state.next_rollout_id);
             state.next_rollout_id += 1;
             let target_generation = match action {
-                RolloutAction::NoOp | RolloutAction::Resize => previous_generation
-                    .expect("noop and resize rollouts always have a current generation"),
+                RolloutAction::NoOp | RolloutAction::Resize => {
+                    previous_generation.ok_or_else(|| ControlPlaneError::Internal {
+                        message: format!(
+                            "rollout planner produced {:?} for {}:{} without a current generation",
+                            action,
+                            pipeline_key.pipeline_group_id().as_ref(),
+                            pipeline_key.pipeline_id().as_ref()
+                        ),
+                    })?
+                }
                 RolloutAction::Create | RolloutAction::Replace => {
                     let generation_counter = state
                         .generation_counters
@@ -1722,11 +1750,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
     ) -> Result<(), RolloutExecutionError> {
-        let active_generation = plan
-            .current_record
-            .as_ref()
-            .expect("resize rollouts always have a current record")
-            .active_generation;
+        let Some(current_record) = plan.current_record.as_ref() else {
+            return Err(RolloutExecutionError::Failed(
+                "internal error: resize rollout missing current record".to_owned(),
+            ));
+        };
+        let active_generation = current_record.active_generation;
         let mut started_cores = Vec::new();
         let mut retired_cores = Vec::new();
 
@@ -1808,10 +1837,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
     ) -> Result<(), RolloutExecutionError> {
-        let previous = plan
-            .current_record
-            .as_ref()
-            .expect("replace rollouts always have a current record");
+        let Some(previous) = plan.current_record.as_ref() else {
+            return Err(RolloutExecutionError::Failed(
+                "internal error: replace rollout missing current record".to_owned(),
+            ));
+        };
         let previous_generation = previous.active_generation;
         for core_id in &plan.current_assigned_cores {
             self.observed_state_store.set_pipeline_serving_generation(
@@ -2001,10 +2031,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             rollout.state = RolloutLifecycleState::RollingBack;
             rollout.failure_reason = Some(failure_reason.clone());
         });
-        let previous = plan
-            .current_record
-            .as_ref()
-            .expect("resize rollouts always have a current record");
+        let Some(previous) = plan.current_record.as_ref() else {
+            return Err(RolloutExecutionError::RollbackFailed(
+                "internal error: resize rollback missing current record".to_owned(),
+            ));
+        };
         let previous_generation = previous.active_generation;
 
         for core_id in retired_cores.iter().rev() {
@@ -2079,10 +2110,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             rollout.state = RolloutLifecycleState::RollingBack;
             rollout.failure_reason = Some(failure_reason.clone());
         });
-        let previous = plan
-            .current_record
-            .as_ref()
-            .expect("replace rollouts always have a current record");
+        let Some(previous) = plan.current_record.as_ref() else {
+            return Err(RolloutExecutionError::RollbackFailed(
+                "internal error: replace rollback missing current record".to_owned(),
+            ));
+        };
         let previous_generation = previous.active_generation;
 
         for core_id in retired_removed_cores.iter().rev() {
@@ -2927,10 +2959,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         config: &OtelDataflowSpec,
         global_names: &HashMap<TopicName, TopicName>,
         group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
-    ) -> (
-        HashMap<TopicName, InferredTopicMode>,
-        Vec<InferredTopicModeReport>,
-    ) {
+    ) -> Result<
+        (
+            HashMap<TopicName, InferredTopicMode>,
+            Vec<InferredTopicModeReport>,
+        ),
+        Error,
+    > {
         let mut usage_by_declared_topic = HashMap::<TopicName, TopicUsageSummary>::new();
         for declared_name in global_names.values().chain(group_names.values()) {
             _ = usage_by_declared_topic.insert(declared_name.clone(), TopicUsageSummary::default());
@@ -2997,16 +3032,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             }
         }
 
-        let mut inferred_modes = HashMap::with_capacity(usage_by_declared_topic.len());
-        let mut inferred_mode_reports = Vec::with_capacity(usage_by_declared_topic.len());
-        let mut declared_topics: Vec<_> = usage_by_declared_topic.keys().cloned().collect();
-        declared_topics.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        let mut declared_topics: Vec<_> = usage_by_declared_topic.into_iter().collect();
+        declared_topics.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
 
-        for declared_topic in declared_topics {
-            let summary = usage_by_declared_topic
-                .get(&declared_topic)
-                .expect("declared topic must have a usage summary");
-            let topology_mode = Self::infer_topic_mode(summary);
+        let mut inferred_modes = HashMap::with_capacity(declared_topics.len());
+        let mut inferred_mode_reports = Vec::with_capacity(declared_topics.len());
+        for (declared_topic, summary) in declared_topics {
+            let topology_mode = Self::infer_topic_mode(&summary);
             inferred_mode_reports.push(InferredTopicModeReport {
                 topic: declared_topic.clone(),
                 topology_mode,
@@ -3021,7 +3053,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             _ = inferred_modes.insert(declared_topic, topology_mode);
         }
 
-        (inferred_modes, inferred_mode_reports)
+        Ok((inferred_modes, inferred_mode_reports))
     }
 
     fn add_topic_wiring_edge(
@@ -3162,21 +3194,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let mut group_ids = config.groups.keys().cloned().collect::<Vec<_>>();
         group_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
         for group_id in group_ids {
-            let group_cfg = config
-                .groups
-                .get(&group_id)
-                .expect("group collected from config must still exist");
-            let mut pipeline_ids = group_cfg.pipelines.keys().cloned().collect::<Vec<_>>();
-            pipeline_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
-            for pipeline_id in pipeline_ids {
-                let pipeline_cfg = group_cfg
-                    .pipelines
-                    .get(&pipeline_id)
-                    .expect("pipeline collected from config must still exist");
+            let Some(group_cfg) = config.groups.get(&group_id) else {
+                return Err(Error::PipelineRuntimeError {
+                    source: Box::new(EngineError::InternalError {
+                        message: format!(
+                            "group `{}` disappeared while validating topic wiring",
+                            group_id.as_ref()
+                        ),
+                    }),
+                });
+            };
+            let mut pipelines = group_cfg.pipelines.iter().collect::<Vec<_>>();
+            pipelines.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+            for (pipeline_id, pipeline_cfg) in pipelines {
                 Self::collect_topic_wiring_edges_for_pipeline(
                     &mut adjacency,
                     &group_id,
-                    &pipeline_id,
+                    pipeline_id,
                     pipeline_cfg,
                     global_names,
                     group_names,
@@ -3366,13 +3400,20 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let (global_names, group_names) = Self::build_declared_topic_name_maps(config)?;
         Self::validate_topic_wiring_acyclic(config, &global_names, &group_names)?;
         let (inferred_modes, mut inferred_mode_reports) =
-            Self::infer_topic_modes(config, &global_names, &group_names);
+            Self::infer_topic_modes(config, &global_names, &group_names)?;
         let default_selection_policy = config.engine.topics.impl_selection;
 
         for (topic_name, spec) in &config.topics {
             let declared_name = global_names
                 .get(topic_name)
-                .expect("global topic declaration must resolve to a declared topic name")
+                .ok_or_else(|| Error::PipelineRuntimeError {
+                    source: Box::new(EngineError::InternalError {
+                        message: format!(
+                            "missing declared topic name for global topic `{}` during topic declaration",
+                            topic_name.as_ref()
+                        ),
+                    }),
+                })?
                 .clone();
             let topology_mode = inferred_modes
                 .get(&declared_name)
@@ -3394,7 +3435,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             for (topic_name, spec) in &group_cfg.topics {
                 let declared_name = group_names
                     .get(&(group_id.clone(), topic_name.clone()))
-                    .expect("group topic declaration must resolve to a declared topic name")
+                    .ok_or_else(|| Error::PipelineRuntimeError {
+                        source: Box::new(EngineError::InternalError {
+                            message: format!(
+                                "missing declared topic name for group `{}` topic `{}` during topic declaration",
+                                group_id.as_ref(),
+                                topic_name.as_ref()
+                            ),
+                        }),
+                    })?
                     .clone();
                 let topology_mode = inferred_modes
                     .get(&declared_name)
@@ -3662,7 +3711,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
         let all_cores =
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
-        let its_core = *all_cores.first().expect("a cpu core");
+        let its_core = *all_cores
+            .first()
+            .ok_or_else(|| Error::CoreDetectionUnavailable)?;
         let its_key = Self::internal_pipeline_key(its_core);
         if let Some(pipeline) = observability_pipeline.as_ref() {
             obs_state_store.register_pipeline_health_policy(
