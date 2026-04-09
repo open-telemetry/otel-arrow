@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, StringArray,
-    StringArrayType, StringBuilder, as_dictionary_array, make_array,
+    StringBuilder, make_array,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::datatypes::{
@@ -15,10 +15,8 @@ use arrow::datatypes::{
 };
 use arrow::util::bit_util;
 use datafusion::common::exec_err;
-use datafusion::common::types::{
-    LogicalUnionFields, NativeType, logical_int64, logical_string, logical_uint16,
-};
-use datafusion::error::Result;
+use datafusion::common::types::NativeType;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::functions::regex::compile_regex;
 use datafusion::logical_expr::{
     Coercion, ColumnarValue, Documentation, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl,
@@ -38,6 +36,8 @@ const FUNC_NAME: &str = "regexp_capture";
 ///
 /// Capture group 0 represents the full regex. For example if passed
 /// `regexp_capture("hello world", ".*hello (.*).*", 1)`, this would return "hello world".
+///
+/// If capture group < 0, this always returns null.
 ///
 /// # Type information:
 ///
@@ -92,16 +92,21 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
         &self.signature
     }
 
-    // TODO - not supposed to call this .... there's another one where we can figure out the
-    // return type from the args
-    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        // TODO - return an error because this shouldn't be called
-        todo!()
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        // datafusion won't call this since we implement return_field_from_args
+        return Err(DataFusionError::Internal(format!(
+            "return_type should not be called on {}",
+            FUNC_NAME
+        )));
     }
 
-    fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef> {
-        // TODO len check on args & scalar arguments
-        // TODO comment on why this is like this
+    fn return_field_from_args(&self, args: ReturnFieldArgs<'_>) -> Result<FieldRef> {
+        if args.arg_fields.len() != 3 || args.scalar_arguments.len() != 3 {
+            return exec_err!(
+                "{} `return_field_from_args` called with invalid number of args. expected 3",
+                FUNC_NAME
+            );
+        }
         let return_type =
             if args.scalar_arguments[1].is_some() && args.scalar_arguments[2].is_some() {
                 args.arg_fields[0].data_type().clone()
@@ -114,7 +119,11 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         if args.args.len() != 3 {
-            todo!("return error")
+            return exec_err!(
+                "{} `return_field_from_args` called with invalid number of args. expected 3. got {}",
+                FUNC_NAME,
+                args.args.len()
+            );
         }
 
         let sources = &args.args[0];
@@ -286,6 +295,68 @@ where
     }
 }
 
+macro_rules! dispatch_dict_groups {
+    ($values:expr, $regexes:expr, $groups:expr, $key_dt:expr, $val_dt:expr) => {
+        paste::paste! {
+            match $key_dt {
+                DataType::Int8 => dispatch_dict_groups!(@val $values, $regexes, $groups, Int8Type, $val_dt),
+                DataType::Int16 => dispatch_dict_groups!(@val $values, $regexes, $groups, Int16Type, $val_dt),
+                DataType::Int32 => dispatch_dict_groups!(@val $values, $regexes, $groups, Int32Type, $val_dt),
+                DataType::Int64 => dispatch_dict_groups!(@val $values, $regexes, $groups, Int64Type, $val_dt),
+                DataType::UInt8 => dispatch_dict_groups!(@val $values, $regexes, $groups, UInt8Type, $val_dt),
+                DataType::UInt16 => dispatch_dict_groups!(@val $values, $regexes, $groups, UInt16Type, $val_dt),
+                DataType::UInt32 => dispatch_dict_groups!(@val $values, $regexes, $groups, UInt32Type, $val_dt),
+                DataType::UInt64 => dispatch_dict_groups!(@val $values, $regexes, $groups, UInt64Type, $val_dt),
+                other => exec_err!("Unsupported dictionary key type for groups: {other:?}"),
+            }
+        }
+    };
+    (@val $values:expr, $regexes:expr, $groups:expr, $ktyp:ty, $val_dt:expr) => {
+        match $val_dt {
+            DataType::Int8 => regex_capture_with_group_dict_arr::<_, _, $ktyp, Int8Type>($values, $regexes, $groups),
+            DataType::Int16 => regex_capture_with_group_dict_arr::<_, _, $ktyp, Int16Type>($values, $regexes, $groups),
+            DataType::Int32 => regex_capture_with_group_dict_arr::<_, _, $ktyp, Int32Type>($values, $regexes, $groups),
+            DataType::Int64 => regex_capture_with_group_dict_arr::<_, _, $ktyp, Int64Type>($values, $regexes, $groups),
+            DataType::UInt8 => regex_capture_with_group_dict_arr::<_, _, $ktyp, UInt8Type>($values, $regexes, $groups),
+            DataType::UInt16 => regex_capture_with_group_dict_arr::<_, _, $ktyp, UInt16Type>($values, $regexes, $groups),
+            DataType::UInt32 => regex_capture_with_group_dict_arr::<_, _, $ktyp, UInt32Type>($values, $regexes, $groups),
+            DataType::UInt64 => regex_capture_with_group_dict_arr::<_, _, $ktyp, UInt64Type>($values, $regexes, $groups),
+            other => exec_err!("Unsupported dictionary value type for groups: {other:?}"),
+        }
+    };
+}
+
+fn regex_capture_with_group_dict_arr<'a, 'b, I1, I2, K, V>(
+    values: I1,
+    regexes: I2,
+    groups: &ArrayRef,
+) -> Result<ArrayRef>
+where
+    I1: Iterator<Item = Option<&'a str>>,
+    I2: Iterator<Item = Option<&'b str>>,
+    K: ArrowDictionaryKeyType,
+    V: ArrowPrimitiveType,
+{
+    let dict = groups.as_dictionary::<K>();
+    let dict_values = dict.values().as_primitive::<V>();
+    let zero = V::Native::default();
+    regex_capture_with_group_iter(
+        values,
+        regexes,
+        dict.keys().iter().map(|key| {
+            key.and_then(|k| {
+                let idx = k.as_usize();
+                if dict_values.is_null(idx) {
+                    None
+                } else {
+                    let v = dict_values.value(idx);
+                    (v >= zero).then_some(v.as_usize())
+                }
+            })
+        }),
+    )
+}
+
 fn regex_capture_with_regex_iter<'a, 'b, I1, I2>(
     values: I1,
     regexes: I2,
@@ -321,16 +392,31 @@ where
             DataType::UInt64 => {
                 regex_capture_with_group_primitive_arr::<_, _, UInt64Type>(values, regexes, arr)
             }
-            _ => {
-                todo!()
+            DataType::Dictionary(k, v) => {
+                dispatch_dict_groups!(values, regexes, arr, k.as_ref(), v.as_ref())
+            }
+            other => {
+                exec_err!(
+                    "Unsupported data type for groups array {other:?} in function `{}`",
+                    FUNC_NAME
+                )
             }
         },
         ColumnarValue::Scalar(scalar) => {
-            let unsigned_scalar = scalar.cast_to(&DataType::UInt32)?;
-            let ScalarValue::UInt32(group) = unsigned_scalar else {
-                unreachable!("we've casted this to UInt32")
+            let group = match scalar.cast_to(&DataType::UInt64) {
+                Ok(unsigned_scalar) => {
+                    let ScalarValue::UInt64(group) = unsigned_scalar else {
+                        unreachable!("we've casted this to UInt64")
+                    };
+                    group.map(|i| i as usize)
+                }
+
+                // if we couldn't cast, it means we had a negative integer scalar
+                // so always treat the group as null, meaning the result for all
+                // the rows will be null.
+                _ => None,
             };
-            let group = group.map(|i| i as usize);
+
             regex_capture_with_group_iter(values, regexes, std::iter::repeat(group))
         }
     }
@@ -399,11 +485,14 @@ where
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        Array, ArrayRef, BinaryArray, DictionaryArray, Int8Array, Int16Array, Int32Array,
-        Int64Array, LargeStringArray, RecordBatch, StringArray, StringViewArray, UInt8Array,
-        UInt16Array, UInt32Array, UInt64Array,
+        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, DictionaryArray, Int8Array, Int16Array,
+        Int32Array, Int64Array, LargeStringArray, PrimitiveArray, RecordBatch, StringArray,
+        StringViewArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     };
-    use arrow::datatypes::{Field, Schema};
+    use arrow::datatypes::{
+        ArrowDictionaryKeyType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema,
+        UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    };
     use datafusion::common::DFSchema;
     use datafusion::logical_expr::ColumnarValue;
     use datafusion::logical_expr::{Expr, col, expr::ScalarFunction, lit};
@@ -413,10 +502,17 @@ mod test {
     use crate::pipeline::Pipeline;
     use crate::pipeline::functions::regexp_capture;
 
-    // TODO test cases:
-    // - negative group
-    // - zero group
-    // - uncoercable data types
+    fn make_dict_array<K: ArrowDictionaryKeyType, V: ArrowPrimitiveType>(
+        keys: &[K::Native],
+        values: &[V::Native],
+    ) -> ArrayRef {
+        Arc::new(DictionaryArray::new(
+            PrimitiveArray::<K>::from_iter_values(keys.iter().copied()),
+            Arc::new(PrimitiveArray::<V>::from_iter_values(
+                values.iter().copied(),
+            )),
+        ))
+    }
 
     #[tokio::test]
     async fn test_utf8_arr_values_scalar_pattern_scalar_group() {
@@ -974,13 +1070,175 @@ mod test {
                 create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
                     .unwrap();
 
-            let error = physical_expr.evaluate(&input).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("Can't cast value -1 to type UInt"),
-                "unexpected error message {error}"
-            );
+            let result = physical_expr.evaluate(&input).unwrap();
+            let expected: ArrayRef = Arc::new(StringArray::new_null(3));
+            match result {
+                ColumnarValue::Array(arr) => {
+                    assert_eq!(&arr, &expected)
+                }
+                s => {
+                    panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dict_encoded_group_arrays() {
+        let session_context = Pipeline::create_session_context();
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), lit("hello (.*)"), col("group_col")],
+        ));
+
+        // Each dict array maps all 3 rows to a single value of 1.
+        // Tests a sample of key/value type combinations.
+        let group_cols: Vec<ArrayRef> = vec![
+            make_dict_array::<UInt8Type, Int32Type>(&[0, 0, 0], &[1]),
+            make_dict_array::<Int16Type, UInt64Type>(&[0, 0, 0], &[1]),
+            make_dict_array::<Int32Type, Int8Type>(&[0, 0, 0], &[1]),
+            make_dict_array::<UInt64Type, UInt16Type>(&[0, 0, 0], &[1]),
+            make_dict_array::<Int8Type, Int64Type>(&[0, 0, 0], &[1]),
+        ];
+
+        for group_col in group_cols {
+            let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
+            let input = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("test_col", input_col.data_type().clone(), true),
+                    Field::new("group_col", group_col.data_type().clone(), true),
+                ])),
+                vec![Arc::new(input_col), Arc::new(group_col.clone())],
+            )
+            .unwrap();
+
+            let df_schema = DFSchema::from_unqualified_fields(
+                input.schema().fields.clone(),
+                Default::default(),
+            )
+            .unwrap();
+
+            let physical_expr =
+                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                    .unwrap();
+
+            let result = physical_expr.evaluate(&input).unwrap();
+
+            let expected: ArrayRef =
+                Arc::new(StringArray::from_iter([Some("world"), Some("otap"), None]));
+            match result {
+                ColumnarValue::Array(arr) => {
+                    assert_eq!(
+                        &arr,
+                        &expected,
+                        "failed for group_col type {:?}",
+                        group_col.data_type()
+                    )
+                }
+                s => {
+                    panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dict_encoded_group_arrays_with_negative_vals() {
+        let session_context = Pipeline::create_session_context();
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), lit("hello (.*)"), col("group_col")],
+        ));
+
+        let group_cols: Vec<ArrayRef> = vec![
+            make_dict_array::<UInt8Type, Int8Type>(&[0], &[-1]),
+            make_dict_array::<UInt8Type, Int16Type>(&[0], &[-1]),
+            make_dict_array::<UInt8Type, Int32Type>(&[0], &[-1]),
+            make_dict_array::<UInt8Type, Int64Type>(&[0], &[-1]),
+        ];
+
+        for group_col in group_cols {
+            let input_col = StringArray::from_iter_values(["hello world"]);
+            let input = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("test_col", input_col.data_type().clone(), true),
+                    Field::new("group_col", group_col.data_type().clone(), true),
+                ])),
+                vec![Arc::new(input_col), Arc::new(group_col.clone())],
+            )
+            .unwrap();
+
+            let df_schema = DFSchema::from_unqualified_fields(
+                input.schema().fields.clone(),
+                Default::default(),
+            )
+            .unwrap();
+
+            let physical_expr =
+                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                    .unwrap();
+
+            let result = physical_expr.evaluate(&input).unwrap();
+
+            let expected: ArrayRef = Arc::new(StringArray::new_null(1));
+            match result {
+                ColumnarValue::Array(arr) => {
+                    assert_eq!(
+                        &arr,
+                        &expected,
+                        "failed for group_col type {:?}",
+                        group_col.data_type()
+                    )
+                }
+                s => {
+                    panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dict_encoded_group_arrays_with_null_keys() {
+        let session_context = Pipeline::create_session_context();
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), lit("hello (.*)"), col("group_col")],
+        ));
+
+        // Key index 0 -> value 1, but second row has a null key
+        let group_col: ArrayRef = Arc::new(DictionaryArray::new(
+            PrimitiveArray::<UInt8Type>::from_iter([Some(0), None, Some(0)]),
+            Arc::new(PrimitiveArray::<Int32Type>::from_iter_values([1])),
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("test_col", input_col.data_type().clone(), true),
+                Field::new("group_col", group_col.data_type().clone(), true),
+            ])),
+            vec![Arc::new(input_col), Arc::new(group_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([Some("world"), None, None]));
+        match result {
+            ColumnarValue::Array(arr) => {
+                assert_eq!(&arr, &expected)
+            }
+            s => {
+                panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+            }
         }
     }
 }
