@@ -14,7 +14,14 @@ permissions:
   contents: read
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  merge_group:
+  # workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,7 +70,7 @@ jobs:
       - name: Build the test collector
         run: make otelarrowcol
 
-      - name: Run validation tests (sequential)
+      - name: Run validation tests
         env:
           RUSTFLAGS: "--cfg validation_tests"
         run: >
@@ -71,6 +78,5 @@ jobs:
           --workspace
           --all-features
           --test-threads 1
-          --run-ignored all
           -E 'test(/::validation_[^:]+$/)'
         working-directory: ./rust/otap-dataflow
