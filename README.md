@@ -41,11 +41,11 @@ aggregation. We have a **durable buffer** processor, based on the
 introducing disk-based storage into pipelines for reliable delivery,
 and there are others such as a Syslog receiver and a Console exporter.
 
-Our transform procsesor is built using [Apache
+Our transform processor is built using [Apache
 Datafusion](https://datafusion.apache.org/), the industry-leading
 embedded query engine, itself based on [Apache
 Arrow](https://arrow.apache.org/), and our Parquet exporter for OTAP
-makes OpenTelemetry data directly accessible to wide range of tools,
+makes OpenTelemetry data directly accessible to a wide range of tools,
 thanks to the [Apache Parquet](https://parquet.apache.org/) ecosystem.
 
 We're [self-instrumenting
@@ -58,7 +58,7 @@ Our Golang Collector components [`otelarrowreceiver`][RECEIVER] and
 OpenTelemetry Collector-Contrib distribution since [the July 2024
 release of v0.104.0][ARROW-RELEASED].
 
-Our project has 55+ contributors and 1500+ pull requests merged.
+Our project has many contributors and over 1500 pull requests merged.
 **[Join us in `#otel-arrow` on the CNCF
 Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
 
@@ -66,7 +66,7 @@ Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
 
 The [Apache Arrow](https://arrow.apache.org/) is a major open-source
 project for in-memory and on-wire data exchange using a
-columnn-oriented representation. For OpenTelemetry readers, Apache
+column-oriented representation. For OpenTelemetry readers, Apache
 Arrow is a lot like us, as the project encompasses a data format, a
 set of libraries, and an ecosystem.
 
@@ -140,8 +140,8 @@ cargo build --bin df_engine --no-default-features
 
 A [directory of example configurations][EXAMPLE-CONFIGS] provides a
 number of examples (e.g.,
-[syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to print
-to receive syslog messages on port 5140 and then print them to console:
+[syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to receive
+syslog messages on port 5140 and print them to the console:
 
 > [!NOTE]
 > This is insecure! See the [Syslog/CEF Receiver
@@ -180,10 +180,10 @@ and proved that a column-oriented representation for OpenTelemetry is
 good for compression performance.
 
 We are currently completing Phase 2, delivering the OTAP Dataflow
-engine. Phase 2 has demonstrated that a column-oriented, Arrow- based
+engine. Phase 2 has demonstrated that a column-oriented, Arrow-based
 pipeline delivers new levels of performance for OpenTelemetry. See our
-[live continuous benchmarks](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/),
-[nightly benchmark suite](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/).
+[live continuous benchmarks](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)
+and [nightly benchmark suite](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/).
 
 As a community, we are planning phase 3, see the links below to join us.
 
@@ -193,17 +193,13 @@ We meet weekly, alternating between Tuesday at 4:00 PM PT and Thursday
 at 8:00 AM PT. Check the [OpenTelemetry community calendar][OTELCAL]
 for dates and Zoom links.
 
-The meeting is open to everyone, regardless of experience level. We'd
-love to have you!
+Whether you're a seasoned OpenTelemetry developer, just starting your
+journey, or simply curious about the work we do, you're more than
+welcome to participate!
 
 - [Contribution guidelines](CONTRIBUTING.md)
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
 - [CNCF Slack `#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF)
-
-The meeting is open for all to join. We invite everyone to join our meeting,
-regardless of your experience level. Whether you're a seasoned OpenTelemetry
-developer, just starting your journey, or simply curious about the work we do,
-you're more than welcome to participate!
 
 ### Maintainers
 
@@ -245,7 +241,7 @@ contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-ar
 ## Documentation
 
 Here are some of our important documents. You can find more
-work-in-progress [design documentation for the OTAP Datflow
+work-in-progress [design documentation for the OTAP Dataflow
 Engine](./rust/otap-dataflow/docs).
 
 | Document | Description |
@@ -257,6 +253,7 @@ Engine](./rust/otap-dataflow/docs).
 | [Phase 2 Design](docs/phase2-design.md) | End-to-end pipeline architecture |
 | [Engine Design](rust/otap-dataflow/crates/engine/README.md) | Engine architecture |
 | [Benchmarks](docs/benchmarks.md) | Current performance results |
+| [Validation Process](docs/validation_process.md) | Encoding/decoding validation process |
 | [Dataflow Engine](rust/otap-dataflow/README.md) | Rust crate architecture and component reference |
 
 ## References

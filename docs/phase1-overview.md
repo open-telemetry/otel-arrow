@@ -50,7 +50,7 @@ guidelines](https://github.com/open-telemetry/opentelemetry-collector#beta).
 We do not plan to make breaking changes in this protocol without first
 engineering an approach that ensures forwards and backwards-compatibility for
 existing and new users. We believe it is safe to begin using these components
-for production data, non-critical workloads.
+for production workloads that are not mission-critical.
 
 - [OpenTelemetry Protocol with Apache Arrow Receiver][RECEIVER]
 - [OpenTelemetry Protocol with Apache Arrow Exporter][EXPORTER]
@@ -92,18 +92,21 @@ connection durations (expressed as the number of batches per stream), the
 additional percentage of compression gain between this new protocol and OTLP,
 both compressed with ZSTD. The data used here comes from a traffic of spans
 captured in a production environment. The gains are substantial in most cases.
-It is even interesting to note that these gains compared to OTLP+ZSTD are more
-significant for moderate-sized batches (e.g., 100 and 1000 spans per batch),
-which makes this protocol also interesting for scenarios where the additional
-latency introduced by batching must be minimized. There is hardly any scenario
-where micro-batches (e.g., 10 spans per batch) make the overhead of the Arrow
-schema prohibitive, and the advantage of a columnar representation becomes
-negligible. In other cases, this initial overhead is very quickly offset after
-just the first few batches. The columnar organization also lends itself better
-to compression. For very large batch sizes, ZSTD does an excellent job as long
-as the compression window is sufficiently large, but even in this case, the new
-protocol remains superior. As previously mentioned, these compression gains can
-be higher for traffic predominantly containing multivariate metrics.
+
+Notably, these gains compared to OTLP+ZSTD are more significant for
+moderate-sized batches (e.g., 100 and 1000 spans per batch), which makes this
+protocol also interesting for scenarios where the additional latency introduced
+by batching must be minimized. There is hardly any scenario where micro-batches
+(e.g., 10 spans per batch) make the overhead of the Arrow schema prohibitive,
+and the advantage of a columnar representation becomes negligible. In other
+cases, this initial overhead is very quickly offset after just the first few
+batches.
+
+The columnar organization also lends itself better to compression. For very
+large batch sizes, ZSTD does an excellent job as long as the compression window
+is sufficiently large, but even in this case, the new protocol remains superior.
+As previously mentioned, these compression gains can be higher for traffic
+predominantly containing multivariate metrics.
 
 ![Avg % of compressed size improvement of OTAP over OTLP
 (zstd compression)](img/average_improvement_heatmap.png)
