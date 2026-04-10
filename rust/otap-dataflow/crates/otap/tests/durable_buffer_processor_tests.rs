@@ -640,9 +640,7 @@ fn is_acceptable_shutdown_result(
 ) -> bool {
     match run_result {
         Ok(_) => true,
-        Err(otap_df_engine::error::Error::ChannelSendError { error }) => {
-            error.contains("closed")
-        }
+        Err(otap_df_engine::error::Error::ChannelSendError { error }) => error.contains("closed"),
         Err(_) => false,
     }
 }
