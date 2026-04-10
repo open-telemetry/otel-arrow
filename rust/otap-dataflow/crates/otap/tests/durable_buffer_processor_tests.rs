@@ -632,13 +632,19 @@ where
 
 /// Return true when pipeline shutdown completed cleanly or hit an expected
 /// shutdown-time channel close race.
+///
+/// Only the closed-channel case is accepted; other `ChannelSendError`
+/// reasons (e.g. "full") would indicate a real bug.
 fn is_acceptable_shutdown_result(
     run_result: &Result<Vec<()>, otap_df_engine::error::Error>,
 ) -> bool {
-    matches!(
-        run_result,
-        Ok(_) | Err(otap_df_engine::error::Error::ChannelSendError { .. })
-    )
+    match run_result {
+        Ok(_) => true,
+        Err(otap_df_engine::error::Error::ChannelSendError { error }) => {
+            error.contains("closed")
+        }
+        Err(_) => false,
+    }
 }
 
 /// Wait for a condition to become true, with timeout.
