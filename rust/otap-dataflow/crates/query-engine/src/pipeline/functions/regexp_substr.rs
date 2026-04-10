@@ -88,17 +88,30 @@ fn coercible_for_arity(n: usize) -> TypeSignature {
 /// All parameter names (truncated to match the arity at construction).
 const PARAM_NAMES: &[&str] = &["str", "pattern", "start", "occurrence", "flags", "group"];
 
+/// Build a arity-6 variant where the group param (6th) is a string (named group).
+fn coercible_for_arity_6_named_group() -> TypeSignature {
+    TypeSignature::Coercible(vec![
+        Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
+        Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
+        Coercion::new_exact(TypeSignatureClass::Integer),
+        Coercion::new_exact(TypeSignatureClass::Integer),
+        Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
+        Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
+    ])
+}
+
 impl RegexpSubstrFunc {
     pub fn new() -> Self {
+        let mut variants: Vec<TypeSignature> = (2..=6).map(coercible_for_arity).collect();
+        // Add a second arity-6 variant where the group param is a string (named group).
+        variants.push(coercible_for_arity_6_named_group());
+
         Self {
-            signature: Signature::one_of(
-                (2..=6).map(coercible_for_arity).collect(),
-                Volatility::Immutable,
-            )
-            .with_parameter_names(PARAM_NAMES.iter().map(|s| s.to_string()).collect())
-            // safety: these parameter names are valid because they cover the max arity of the
-            // signature and there are no duplicates, so it is safe to expect here
-            .expect("valid parameter names"),
+            signature: Signature::one_of(variants, Volatility::Immutable)
+                .with_parameter_names(PARAM_NAMES.iter().map(|s| s.to_string()).collect())
+                // safety: these parameter names are valid because they cover the max arity
+                // of the signature and there are no duplicates, so it is safe to expect here
+                .expect("valid parameter names"),
         }
     }
 }
@@ -615,43 +628,64 @@ where
 {
     match groups {
         ColumnarValue::Array(arr) => {
-            let casted = cast_int_array_to_int64(arr)?;
-            let int_arr = casted.as_primitive::<Int64Type>();
-            println!("{:?}", int_arr);
-            regex_substr_core(
-                values,
-                patterns,
-                flags,
-                starts,
-                occurrences,
-                int_arr
-                    .iter()
-                    .map(|i| i.and_then(|i| (i >= 0).then_some(i as usize))),
-            )
+            if arr.data_type().is_integer()
+                || matches!(arr.data_type(), DataType::Dictionary(_, v) if v.is_integer())
+            {
+                // Integer group array — capture group by index
+                let casted = cast_int_array_to_int64(arr)?;
+                let int_arr = casted.as_primitive::<Int64Type>();
+                regex_substr_core(
+                    values,
+                    patterns,
+                    flags,
+                    starts,
+                    occurrences,
+                    int_arr.iter().map(|i| {
+                        i.and_then(|i| (i >= 0).then_some(CaptureGroupRef::Index(i as usize)))
+                    }),
+                )
+            } else {
+                // String group array — capture group by name
+                let casted = cast_str_array_to_utf8(arr)?;
+                let str_arr = casted.as_string::<i32>();
+                regex_substr_core(
+                    values,
+                    patterns,
+                    flags,
+                    starts,
+                    occurrences,
+                    str_arr.iter().map(|s| s.map(CaptureGroupRef::Name)),
+                )
+            }
         }
-        ColumnarValue::Scalar(scalar) => {
-            let group = match scalar.cast_to(&DataType::UInt64) {
-                Ok(unsigned_scalar) => {
-                    let ScalarValue::UInt64(group) = unsigned_scalar else {
-                        unreachable!("we've casted this to UInt64")
-                    };
-                    group.map(|i| i as usize)
-                }
-                // if we couldn't cast, it means we had a negative integer scalar
-                // so always treat the group as null, meaning the result for all
-                // the rows will be null.
-                _ => None,
-            };
+        ColumnarValue::Scalar(scalar) => match scalar {
+            // String scalar — capture group by name
+            ScalarValue::Utf8(name) => {
+                let group = name.as_deref().map(CaptureGroupRef::Name);
+                regex_substr_core(
+                    values, patterns, flags, starts, occurrences, std::iter::repeat(group),
+                )
+            }
+            // Integer scalar — capture group by index
+            _ => {
+                let group = match scalar.cast_to(&DataType::UInt64) {
+                    Ok(unsigned_scalar) => {
+                        let ScalarValue::UInt64(group) = unsigned_scalar else {
+                            unreachable!("we've casted this to UInt64")
+                        };
+                        group.map(|i| CaptureGroupRef::Index(i as usize))
+                    }
+                    // if we couldn't cast, it means we had a negative integer scalar
+                    // so always treat the group as null, meaning the result for all
+                    // the rows will be null.
+                    _ => None,
+                };
 
-            regex_substr_core(
-                values,
-                patterns,
-                flags,
-                starts,
-                occurrences,
-                std::iter::repeat(group),
-            )
-        }
+                regex_substr_core(
+                    values, patterns, flags, starts, occurrences, std::iter::repeat(group),
+                )
+            }
+        },
     }
 }
 
@@ -676,6 +710,13 @@ fn columnar_int_scalar_to_usize(scalar: &ScalarValue) -> Result<Option<usize>> {
     }
 }
 
+/// A reference to a capture group, either by numeric index or by name.
+#[derive(Clone, Copy)]
+enum CaptureGroupRef<'a> {
+    Index(usize),
+    Name(&'a str),
+}
+
 /// The innermost matching function. All six parameter iterators have been fully
 /// resolved by this point.
 ///
@@ -684,7 +725,7 @@ fn columnar_int_scalar_to_usize(scalar: &ScalarValue) -> Result<Option<usize>> {
 /// 2. Compiles the regex with the given flags.
 /// 3. Finds the `occurrence`-th match (1-based).
 /// 4. Extracts the specified capture `group`.
-fn regex_substr_core<'a, 'b, 'c, I1, I2, I3, I4, I5, I6>(
+fn regex_substr_core<'a, 'b, 'c, 'd, I1, I2, I3, I4, I5, I6>(
     values: I1,
     patterns: I2,
     flags: I3,
@@ -698,7 +739,7 @@ where
     I3: Iterator<Item = Option<&'c str>>,
     I4: Iterator<Item = Option<usize>>,
     I5: Iterator<Item = Option<usize>>,
-    I6: Iterator<Item = Option<usize>>,
+    I6: Iterator<Item = Option<CaptureGroupRef<'d>>>,
 {
     let mut regex_cache = HashMap::new();
     let mut result_builder = StringBuilder::new();
@@ -739,7 +780,11 @@ where
                 };
 
                 if let Some(captures) = matched {
-                    if let Some(capture) = captures.get(group) {
+                    let capture = match group {
+                        CaptureGroupRef::Index(i) => captures.get(i),
+                        CaptureGroupRef::Name(n) => captures.name(n),
+                    };
+                    if let Some(capture) = capture {
                         if null_run > 0 {
                             result_builder.append_nulls(null_run);
                         }
@@ -2041,6 +2086,175 @@ mod test {
         match result {
             ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
             s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Named capture group tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_named_group_scalar() {
+        let session_context = Pipeline::create_session_context();
+
+        // regexp_substr(source, "hello (?P<rest>.*)", 1, 1, NULL, "rest")
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![
+                col("test_col"),
+                lit("hello (?P<rest>.*)"),
+                lit(1i64),
+                lit(1i64),
+                lit(ScalarValue::Utf8(None)),
+                lit("rest"),
+            ],
+        ));
+
+        let input_col =
+            StringArray::from_iter_values(["hello world", "otap", "hello otap", "arrow"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([
+            Some("world"),
+            None,
+            Some("otap"),
+            None,
+        ]));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_named_group_not_in_regex_returns_null() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![
+                col("test_col"),
+                lit("hello (.*)"),
+                lit(1i64),
+                lit(1i64),
+                lit(ScalarValue::Utf8(None)),
+                lit("nonexistent"),
+            ],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world", "hello otap"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        let expected: ArrayRef = Arc::new(StringArray::new_null(2));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_named_group_string_array() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![
+                col("test_col"),
+                lit("(?P<first>\\w+) (?P<second>\\w+)"),
+                lit(1i64),
+                lit(1i64),
+                lit(ScalarValue::Utf8(None)),
+                col("group_col"),
+            ],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world", "foo bar", "one two"]);
+        let group_col = StringArray::from_iter_values(["first", "second", "first"]);
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("test_col", input_col.data_type().clone(), true),
+                Field::new("group_col", group_col.data_type().clone(), true),
+            ])),
+            vec![Arc::new(input_col), Arc::new(group_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        let expected: ArrayRef =
+            Arc::new(StringArray::from_iter_values(["hello", "bar", "one"]));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_named_group_all_scalar() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![
+                lit("hello world"),
+                lit("hello (?P<rest>.*)"),
+                lit(1i64),
+                lit(1i64),
+                lit(ScalarValue::Utf8(None)),
+                lit("rest"),
+            ],
+        ));
+
+        let input = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        let df_schema = DFSchema::empty();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        match result {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, "world"),
+            other => panic!("expected Scalar(Utf8(Some(\"world\"))), got {other:?}"),
         }
     }
 }
