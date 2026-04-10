@@ -52,19 +52,6 @@ compile_error!(
 // When all features are enabled (e.g. --all-features), crypto.rs uses a
 // priority order (ring > aws-lc > openssl) so the binary still works.
 #[cfg(all(
-    not(any(
-        feature = "crypto-ring",
-        feature = "crypto-aws-lc",
-        feature = "crypto-openssl"
-    )),
-    not(any(test, doc)),
-    not(clippy)
-))]
-compile_error!(
-    "One crypto provider feature must be enabled. \
-     Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-openssl."
-);
-#[cfg(all(
     feature = "crypto-ring",
     feature = "crypto-aws-lc",
     not(any(test, doc)),
