@@ -3,8 +3,8 @@
 ## Overview
 
 The OTAP-direct Metrics SDK described here will replace the
-OpenTelemetry-Rust metrics SDK metrics using pieces of the OTAP
-dataflow engine as an internal telemetry pipeline for itself. This
+OpenTelemetry-Rust Metrics SDK, using pieces of the OTAP dataflow
+engine as its own internal telemetry pipeline. This
 document explains how the internal metrics SDK will be redesigned, in
 a four-phase implementation plan. See the corresponding document
 describing the [internal logs SDK](./internal-logs-sdk.md) which
@@ -12,9 +12,9 @@ followed a similar course, however note that the logs SDK forms OTLP
 bytes payloads directly, whereas the metrics SDK forms OTAP records
 directly.
 
-This is a functionally complete Metric SDK, tailored for efficiency in
+This is a functionally complete Metrics SDK, tailored for efficiency in
 the OTAP dataflow engine environment. It may be considered as a
-general purpose OpenTelemetry Metric SDK for Rust, with several caveats.
+general purpose OpenTelemetry Metrics SDK for Rust, with several caveats.
 
 - Multivariate design for future
   [OTAP-multivariate](../../../docs/multivariate-design.md) uses
@@ -23,8 +23,8 @@ general purpose OpenTelemetry Metric SDK for Rust, with several caveats.
 - Instruments are fully "bound"; there are no dynamic attributes.
 - OTel-Weaver semantic convention registry with code generation tools
   support type-safe interfaces, schema migration
-- Compile-time View configuration supports three levels Basic, Normal,
-  and Detailed selected at runtime; there are no dynamic views
+- Compile-time View configuration supports three levels—Basic, Normal,
+  and Detailed—selected at runtime; there are no dynamic views
 - Schema-driven versioning includes a migration path from initial
   `#[metric_set]` to generated code using a schema registry with
   runtime-configurable output schemas.
@@ -68,7 +68,7 @@ There are four phases in this design plan:
 ### Transition from `#[metric_set]` to Metric Registry
 
 Prior to this design, metric instrumentation is fully expanded into
-individual counters. In the before case, for example, we might see
+individual counters. Previously, for example, we might see
 three counters corresponding to three outcome variants:
 
 ```rust
@@ -237,7 +237,7 @@ low-risk code path for exporting to the console or Prometheus. The
 same Prometheus export path is also supported in the ITS mode.
 
 Internal events are received representing a partial OTAP payload. For
-the current OTAP specification, we may generate any of the follow
+the current OTAP specification, we may generate any of the following
 tables:
 
 - UnivariateMetrics: the top-level table, listing metric type, name,
@@ -260,7 +260,7 @@ configuration is preserved for use at runtime, limited to scoped
 renaming of instruments and descriptions. This is meant to assist with
 the initial stages of this transition; the limited Views functionality
 will become deprecated when the OpenTelemetry SDK is removed, and it
-will be fully eliminated after phase 3, meaning after users are able
+will be fully eliminated during Phase 3, meaning after users are able
 to achieve the same by modifying schema definitions.
 
 ## Phase 2: Schema-driven code generation
@@ -406,11 +406,11 @@ point, we will have first removed all the `#[metric_set]` definitions,
 replaced by metric schema definitions and one or more schema versions
 for each metric set. Users will have access to the built-in support
 (e.g., Prometheus), and we will have demonstrated that the built-in
-processors (batch, retry, OTAP and OTLP exporters) are suitable
+processors (batch, retry, OTAP and OTLP exporters) are a suitable
 replacement.
 
 At this stage we deprecate support for OpenTelemetry Metrics Views,
-meaning the minimal level of support for scoped renaming that meant to
+meaning the minimal level of support for scoped renaming that was meant to
 assist OpenTelemetry users. In order to retain modified Views without
 the deprecated feature going forward, users will either: (1) build the
 code with custom telemetry schemas, or (2) use a transform processor
@@ -429,7 +429,7 @@ As an alternative to `Mmsc`, we will introduce `HistogramNN` for
 non-negative measurements and `HistogramPN` for arbitrary
 measurements.  The implementation uses a variable-width
 representation, with SIMD-within-a-register ("SWAR") techniques for
-widening and merging buckets in place. There are seven widths B1, B2,
+widening and merging buckets in place. There are seven widths: B1, B2,
 B4, U8, U16, U32, and U64.
 
 The histogram parameters are:
@@ -455,7 +455,7 @@ detailed level.
 
 ## Appendix: Migration workflow
 
-For the example ConsumerMetrics `#[metric_set]`, a user that has
+For the example ConsumerMetrics `#[metric_set]`, a user who has
 developed existing monitoring and dashboards based on the original
 dataflow engine metrics will:
 
@@ -496,8 +496,8 @@ engine:
         - schema_url: otap-dataflow/consumer@v1
 ```
 
-After twelve months, OTel-Arrow will be eager to deprecate the `v0`
-schema, we expect that users will have migrated to `v1` by then. Now,
+After twelve months, the OTel-Arrow project will deprecate the `v0`
+schema; we expect that users will have migrated to `v1` by then. Now,
 we are free to remove the `v0` schema definition.
 
 Now, re-run `cargo xtask generate-metrics` and recompile. `v1` metrics
