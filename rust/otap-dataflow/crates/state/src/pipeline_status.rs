@@ -477,6 +477,22 @@ impl PipelineStatus {
             .collect()
     }
 
+    /// Builds the retained per-instance view exposed for overlap-aware status
+    /// debugging.
+    fn retained_instance_views(&self) -> Vec<RuntimeInstanceStatusView<'_>> {
+        let mut instances = self
+            .instances
+            .iter()
+            .map(|(key, status)| RuntimeInstanceStatusView {
+                core_id: key.core_id,
+                deployment_generation: key.deployment_generation,
+                status,
+            })
+            .collect::<Vec<_>>();
+        instances.sort_by_key(|instance| (instance.core_id, instance.deployment_generation));
+        instances
+    }
+
     /// Counts how many selected runtimes satisfy a quorum predicate.
     fn count_quorum_from<F>(
         &self,
@@ -556,22 +572,14 @@ impl Serialize for PipelineStatus {
         S: serde::Serializer,
     {
         let selected_cores = self.selected_core_map();
-        let selected_instances = self
-            .selected_runtimes()
-            .into_iter()
-            .map(|(key, status)| RuntimeInstanceStatusView {
-                core_id: key.core_id,
-                deployment_generation: key.deployment_generation,
-                status,
-            })
-            .collect::<Vec<_>>();
+        let retained_instances = self.retained_instance_views();
 
         let mut state = serializer.serialize_struct("PipelineStatus", 8)?;
         state.serialize_field("conditions", &self.conditions())?;
         state.serialize_field("totalCores", &self.total_cores())?;
         state.serialize_field("runningCores", &self.running_cores())?;
         state.serialize_field("cores", &selected_cores)?;
-        state.serialize_field("instances", &selected_instances)?;
+        state.serialize_field("instances", &retained_instances)?;
         state.serialize_field("activeGeneration", &self.active_generation)?;
         state.serialize_field("servingGenerations", &self.serving_generations)?;
         state.serialize_field("rollout", &self.rollout)?;
@@ -911,5 +919,43 @@ mod tests {
             PipelinePhase::Stopped
         ));
         assert!(status.instance_status(0, 0).is_none());
+    }
+
+    /// Scenario: a rolling cutover overlaps the old and new generations on one
+    /// core while aggregation must still reflect only the selected serving set.
+    /// Guarantees: `/status.instances` preserves both retained generations for
+    /// debugging, while aggregated `cores` and core counts continue to use the
+    /// selected serving generation per core.
+    #[test]
+    fn serialization_preserves_overlap_aware_instances_while_aggregating_selected_cores() {
+        let mut status = new_status(HealthPolicy::default());
+        insert_runtime(&mut status, 0, 0, runtime(PipelinePhase::Stopped));
+        insert_runtime(&mut status, 0, 1, runtime(PipelinePhase::Running));
+        insert_runtime(&mut status, 1, 0, runtime(PipelinePhase::Running));
+        status.set_active_generation(0);
+        status.set_serving_generation(0, 1);
+        status.set_serving_generation(1, 0);
+
+        let json = serde_json::to_value(&status).expect("pipeline status should serialize");
+        let instances = json["instances"]
+            .as_array()
+            .expect("instances should serialize as an array");
+
+        assert_eq!(json["totalCores"], 2);
+        assert_eq!(json["runningCores"], 2);
+        assert_eq!(
+            json["cores"]
+                .as_object()
+                .expect("cores should serialize as an object")
+                .len(),
+            2
+        );
+        assert_eq!(instances.len(), 3);
+        assert_eq!(instances[0]["coreId"], 0);
+        assert_eq!(instances[0]["deploymentGeneration"], 0);
+        assert_eq!(instances[1]["coreId"], 0);
+        assert_eq!(instances[1]["deploymentGeneration"], 1);
+        assert_eq!(instances[2]["coreId"], 1);
+        assert_eq!(instances[2]["deploymentGeneration"], 0);
     }
 }
