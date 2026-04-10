@@ -33,6 +33,13 @@ pub struct TelemetryConfig {
     pub resource: HashMap<String, AttributeValue>,
 }
 
+impl TelemetryConfig {
+    /// Validates the telemetry configuration, including all metric readers.
+    pub fn validate(&self) -> Result<(), crate::error::Error> {
+        self.metrics.validate()
+    }
+}
+
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
@@ -281,7 +288,7 @@ mod tests {
                 readers:
                     - periodic:
                         exporter:
-                            console:
+                            type: console
             "#;
         let config: TelemetryConfig = serde_yaml::from_str(yaml_str).unwrap();
 
