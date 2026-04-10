@@ -2194,7 +2194,10 @@ mod test {
             let err = parse_known_func_with_args("regexp_capture", &args).unwrap_err();
             assert_eq!(
                 err.to_string(),
-                format!("Function 'replace' expects 3 arguments, got {}", args.len())
+                format!(
+                    "Function 'regexp_capture' expects 3 arguments, got {}",
+                    args.len()
+                )
             )
         }
     }
