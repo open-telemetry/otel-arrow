@@ -35,15 +35,15 @@ const FUNC_NAME: &str = "regexp_capture";
 /// return `"world"`. It returns `None` if the regex does not match the source, or if the
 /// capture group is not in the regex.
 ///
-/// Capture group 0 represents the full regex. For example if passed
-/// `regexp_capture("hello world", ".*hello (.*).*", 1)`, this would return "hello world".
+/// Capture group 0 represents the full source text that matched. For example if passed
+/// `regexp_capture("hello world", ".*hello (.*).*", 0)`, this would return "hello world".
 ///
-/// If capture group < 0, this always returns null.
+/// If capture group < 0, this returns null.
 ///
-/// # Type information:
+/// # Return Type:
 ///
 /// If the source is a dictionary, this will try to keep the return type as a dictionary array.
-/// However, if different regexs/capture groups are passed for each row of input, we can't
+/// However, if non-scalar regexs/capture groups are passed for each row of input, we can't
 /// guarantee the dictionary won't overflow. For this reason, if the regex/capture group args
 /// are not scalars, the return type will be the native string array.
 ///
@@ -75,6 +75,8 @@ impl RegexpCaptureFunc {
                 "pattern".to_string(),
                 "capture_group".to_string(),
             ])
+            // safety: these parameter names are valid because they match the arity of the
+            // signature and there are no duplicates, so it is safe to expect here
             .expect("valid parameter names"),
         }
     }
@@ -94,7 +96,7 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
     }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        // datafusion won't call this since we implement return_field_from_args
+        // won't be called this since we implement return_field_from_args
         Err(DataFusionError::Internal(format!(
             "return_type should not be called on {}",
             FUNC_NAME
@@ -108,6 +110,8 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
                 FUNC_NAME
             );
         }
+
+        // see note in type documentation for reasoning about the return type
         let return_type =
             if args.scalar_arguments[1].is_some() && args.scalar_arguments[2].is_some() {
                 args.arg_fields[0].data_type().clone()
