@@ -27,12 +27,19 @@ pub(crate) enum InsertOutcome {
 /// Entries are `(K, P)` pairs.  The heap is ordered by `P` where the
 /// *smallest* priority sits at the root.  Keys must be unique — inserting
 /// a key that already exists replaces its priority in place.
+///
+/// # Key cloning
+///
+/// Keys are cloned during insert, swap, pop, and removal operations.
+/// Callers should prefer cheap-to-clone key types (e.g. integers).
+//  Using an expensive-to-clone key will add overhead proportional to
+//  tree depth on every heap operation.
 pub(crate) struct IndexedMinHeap<K, P> {
     entries: Vec<Entry<K, P>>,
     indices: HashMap<K, usize>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Entry<K, P> {
     key: K,
     priority: P,
@@ -40,7 +47,7 @@ struct Entry<K, P> {
 
 impl<K, P> IndexedMinHeap<K, P>
 where
-    K: Eq + Hash + Copy + std::fmt::Debug,
+    K: Eq + Hash + Clone + std::fmt::Debug,
     P: Ord,
 {
     /// Creates an empty heap.
@@ -88,7 +95,7 @@ where
             InsertOutcome::Replaced
         } else {
             let index = self.entries.len();
-            self.entries.push(Entry { key, priority });
+            self.entries.push(Entry { key: key.clone(), priority });
             assert!(
                 self.indices.insert(key, index).is_none(),
                 "new key should not already exist in index map"
@@ -104,7 +111,7 @@ where
         if self.entries.is_empty() {
             return None;
         }
-        let root_key = self.entries[0].key;
+        let root_key = self.entries[0].key.clone();
         let removed = self
             .indices
             .remove(&root_key)
@@ -136,8 +143,8 @@ where
             return;
         }
         self.entries.swap(a, b);
-        let key_a = self.entries[a].key;
-        let key_b = self.entries[b].key;
+        let key_a = self.entries[a].key.clone();
+        let key_b = self.entries[b].key.clone();
         let _ = self
             .indices
             .insert(key_a, a)
@@ -208,7 +215,7 @@ where
         let removed = self.entries.pop().expect("removed entry should exist");
 
         // Update the index of the entry that was moved into `index`.
-        let moved_key = self.entries[index].key;
+        let moved_key = self.entries[index].key.clone();
         let _ = self
             .indices
             .insert(moved_key, index)
@@ -243,7 +250,7 @@ where
 
 impl<K, P> Default for IndexedMinHeap<K, P>
 where
-    K: Eq + Hash + Copy + std::fmt::Debug,
+    K: Eq + Hash + Clone + std::fmt::Debug,
     P: Ord,
 {
     fn default() -> Self {
