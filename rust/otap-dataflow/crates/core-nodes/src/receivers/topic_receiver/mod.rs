@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_channel::error::SendError;
 use otap_df_config::TopicName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -24,7 +25,6 @@ use otap_df_engine::topic::{RecvItem, SubscriberOptions, Subscription, Subscript
 use otap_df_engine::{
     Interests, MessageSourceLocalEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otap_df_channel::error::SendError;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
@@ -1111,8 +1111,7 @@ mod tests {
             )
             .expect("topic receiver should be created");
 
-            let (receiver_output_tx, _receiver_output_rx) =
-                create_not_send_channel::<OtapPdata>(1);
+            let (receiver_output_tx, _receiver_output_rx) = create_not_send_channel::<OtapPdata>(1);
             receiver
                 .set_pdata_sender(
                     receiver_node.clone(),
