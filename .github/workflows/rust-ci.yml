@@ -469,7 +469,7 @@ jobs:
           retention-days: 1
 
   # Required test partitions: download pre-built archive and run 1/3 of tests each.
-  test_and_coverage_required:
+  test_required:
     needs: build_required
     strategy:
       fail-fast: false
@@ -698,7 +698,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
-      - test_and_coverage_required
+      - test_required
       - fmt_required
       - clippy_required
       - deny_required
@@ -709,8 +709,8 @@ jobs:
     steps:
       - name: Check if all required jobs succeeded
         run: |
-          if [[ "${{ needs.test_and_coverage_required.result }}" != "success" ]]; then
-            echo "test_and_coverage_required failed or was cancelled"
+          if [[ "${{ needs.test_required.result }}" != "success" ]]; then
+            echo "test_required failed or was cancelled"
             exit 1
           fi
           if [[ "${{ needs.fmt_required.result }}" != "success" ]]; then
