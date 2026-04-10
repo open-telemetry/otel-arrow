@@ -23,7 +23,7 @@ jobs:
   # Non-required test matrix.
   # - experimental folders run unpartitioned on all OSes (they are small).
   # - otap-dataflow runs on ARM and macOS, split into 3 partitions.
-  test_and_coverage:
+  experimental_tests:
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +96,7 @@ jobs:
 
   # otap-dataflow on ARM and macOS (non-required): build once per OS, fan out tests.
   # Uses default features only -- full feature coverage is handled by the required x86/Windows jobs.
-  build_extra:
+  build_nonrequired:
     strategy:
       fail-fast: false
       matrix:
@@ -136,8 +136,8 @@ jobs:
           path: ./rust/${{ matrix.folder }}/nextest-archive.tar.zst
           retention-days: 1
 
-  test_extra:
-    needs: build_extra
+  test_nonrequired:
+    needs: build_nonrequired
     strategy:
       fail-fast: false
       matrix:
