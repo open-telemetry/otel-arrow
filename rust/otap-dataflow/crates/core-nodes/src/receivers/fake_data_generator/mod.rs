@@ -546,6 +546,7 @@ async fn send_generated_pdata(
         );
     }
     effect_handler.send_message_with_source_node(pdata).await?;
+    tokio::task::consume_budget().await;
     Ok(())
 }
 
@@ -1427,6 +1428,65 @@ mod tests {
                     ctx.send_control_msg(NodeControlMsg::DrainIngress {
                         deadline,
                         reason: "test drain".to_owned(),
+                    })
+                    .await
+                    .expect("Failed to send DrainIngress");
+                })
+            };
+
+        let drain_validation =
+            |_ctx: NotSendValidateContext<OtapPdata>| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async {})
+            };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(drain_scenario)
+            .run_validation(drain_validation);
+    }
+
+    /// Scenario: receiver-first shutdown reaches the pre-generated hot path
+    /// while it is sending many batches in one iteration.
+    /// Guarantees: the generated send loop yields often enough for the outer
+    /// control select to observe `DrainIngress` promptly instead of timing out
+    /// behind a long uncapped send burst.
+    #[test]
+    fn test_drain_ingress_exits_promptly_during_high_throughput_send_loop() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(Some(1000), None, 1, 0, 0, 1);
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::PreGenerated);
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_hot_drain"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let drain_scenario =
+            move |ctx: TestContext<OtapPdata>| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async move {
+                    sleep(Duration::from_millis(200)).await;
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    ctx.send_control_msg(NodeControlMsg::DrainIngress {
+                        deadline,
+                        reason: "test hot drain".to_owned(),
                     })
                     .await
                     .expect("Failed to send DrainIngress");
