@@ -178,6 +178,38 @@ Prometheus-compatible endpoint without using a full telemetry
 pipeline. The `OpenTelemetry` setting preserves existing
 functionality, and `ITS` enables our new standard functionality.
 
+```mermaid
+flowchart TB
+    subgraph Sources["Metric Sources"]
+        direction LR
+        MS1["#[metric_set]"] ~~~ AS1["#[attribute_set]"]
+    end
+
+    MD["MetricsDispatcher"]
+
+    Sources --> |"MPSC channel of<br>{EntityKey,Metrics,Timestamp}"| MD
+
+    MD --> |"Builtin"| BUILTIN["Admin"]
+    MD --> |"OpenTelemetry"| OTEL["OpenTelemetry SDK"]
+    MD --> |"ITS"| ITS["Internal Telemetry Receiver"]
+
+    subgraph ITS_Detail["ITS"]
+        ITS --> |"OTAP"| BATCH["Batch Processor"]
+        ITS --> |"Original Data"| ITSPROM["/metrics"]
+        BATCH --> |"OTAP"| ENGINEEXPORT["OTLP Exporter"]
+        BATCH --> |"OTAP"| ENGINECONSOLE["Console"]
+    end
+
+    subgraph BUILTIN_Detail["Builtin behavior"]
+        BUILTIN --> PROMEXPORT["/metrics"]
+    end
+
+    subgraph OTEL_Detail["OpenTelemetry SDK"]
+        OTEL --> |"Collect()"|OTLP["Periodic Reader"]
+        OTLP --> |"Export()"|SDKEXPORT["OTLP Exporter"]
+    end
+```
+
 ### Internal telemetry system
 
 In the internal telemetry system mode, Metrics SDK events are sent to
