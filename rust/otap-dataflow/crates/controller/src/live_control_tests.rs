@@ -1035,6 +1035,85 @@ connections:
     );
 }
 
+/// Scenario: a detached rollout worker panics before it reaches the normal
+/// terminal-state bookkeeping path.
+/// Guarantees: the rollout is forced into a failed terminal state and the
+/// logical pipeline no longer stays blocked by a stale active-rollout entry.
+#[test]
+fn rollout_worker_panic_marks_failed_and_clears_conflict() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement.clone(),
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("rollout plan should be accepted");
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollout should register");
+
+    runtime.handle_rollout_worker_panic(
+        &plan.pipeline_key,
+        &plan.rollout.rollout_id,
+        Box::new("boom"),
+    );
+
+    let status = runtime
+        .rollout_status_snapshot(&plan.rollout.rollout_id)
+        .expect("rollout should remain queryable");
+    assert_eq!(status.state, ApiPipelineRolloutState::Failed);
+    assert!(
+        status
+            .failure_reason
+            .as_deref()
+            .is_some_and(|message| message.contains("rollout worker panicked: boom"))
+    );
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!state.active_rollouts.contains_key(&plan.pipeline_key));
+    drop(state);
+
+    let _next_plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("rollout conflict should be cleared after panic cleanup");
+}
+
 /// Scenario: a shutdown request targets a group id that does not exist in
 /// the controller's committed config.
 /// Guarantees: per-pipeline shutdown fails fast with `GroupNotFound`
@@ -1091,6 +1170,54 @@ fn request_shutdown_pipeline_rejects_missing_pipeline() {
         .expect_err("missing pipeline should be rejected");
 
     assert_eq!(err, ControlPlaneError::PipelineNotFound);
+}
+
+/// Scenario: a detached shutdown worker panics before it reaches the normal
+/// terminal-state bookkeeping path.
+/// Guarantees: the shutdown is forced into a failed terminal state and the
+/// logical pipeline no longer stays blocked by a stale active-shutdown entry.
+#[test]
+fn shutdown_worker_panic_marks_failed_and_clears_conflict() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let plan = runtime
+        .prepare_shutdown_plan("g1", "p1", 5)
+        .expect("shutdown plan should be accepted");
+    runtime
+        .insert_shutdown(&plan.pipeline_key, plan.shutdown.clone())
+        .expect("shutdown should register");
+
+    runtime.handle_shutdown_worker_panic(
+        &plan.pipeline_key,
+        &plan.shutdown.shutdown_id,
+        Box::new("boom"),
+    );
+
+    let status = runtime
+        .shutdown_status_snapshot(&plan.shutdown.shutdown_id)
+        .expect("shutdown should remain queryable");
+    assert_eq!(status.state, "failed");
+    assert!(
+        status
+            .failure_reason
+            .as_deref()
+            .is_some_and(|message| message.contains("shutdown worker panicked: boom"))
+    );
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!state.active_shutdowns.contains_key(&plan.pipeline_key));
+    drop(state);
+
+    let _next_plan = runtime
+        .prepare_shutdown_plan("g1", "p1", 5)
+        .expect("shutdown conflict should be cleared after panic cleanup");
 }
 
 /// Scenario: a shutdown request arrives while the same logical pipeline is
