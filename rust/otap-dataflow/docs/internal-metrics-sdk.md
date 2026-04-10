@@ -288,12 +288,23 @@ engine:
 ### Code generation
 
 A `cargo xtask generate-metrics` command will read the set of schema
-definitions and generate:
+definitions and the schema registry and generate:
 
-- Level-aware instrument enums
-- Metric set structs and impls
+- Three-level instrument enums
+- Metric set structs
 - OTAP encoder logic for the associated tables
-- Documentation that generates an up-to-date `telemetry.md` from the schema registry.
+- Crate-level metric documentation.
+
+```mermaid
+flowchart LR
+    SCHEMA["Metric Schema Definitions"] --> XTASK["cargo xtask<br/>generate-metrics"]
+    REGISTRY["Semantic Conventions Registry"] --> XTASK
+
+    XTASK --> ENUMS["Instrument enums"]
+    XTASK --> STRUCTS["MetricSet structs"]
+    XTASK --> ENCODER["OTAP encoding impls"]
+    XTASK --> DOCS["Documentation"]
+```
 
 ### OTAP encoding details
 
@@ -414,7 +425,7 @@ The histogram parameters are:
 
 The implementation has a compiled-in exact table lookup of size
 `2^table_scale` for a particular table scale, determined by
-cargo.
+cargo features.
 
 After introducing the new data structure, we will add support in the
 code generation tooling to introduce for example `HistogramNN<10>` for
