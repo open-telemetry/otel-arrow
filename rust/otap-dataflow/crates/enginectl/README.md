@@ -11,6 +11,7 @@ agent workflows.
 - supports the current public admin SDK surface
 - works against local or remote engines
 - exposes human-readable output by default
+- adds ANSI color and emphasis automatically for human terminal output
 - supports `json`, `yaml`, and `ndjson` machine-oriented output modes
 - supports long-running `watch` commands for logs, metrics, rollouts, and
   shutdown tracking
@@ -30,6 +31,7 @@ Remote engine behind a gateway:
 dfctl --url https://admin.example.com/engine-a engine readyz
 dfctl --url https://admin.example.com/engine-a \
   telemetry metrics get --shape full --output json
+dfctl --color always telemetry logs watch --tail 50
 ```
 
 Pipeline reconfigure from a YAML file:
@@ -87,3 +89,17 @@ Long-running `watch` commands support:
 
 Mutation commands support `human`, `json`, `yaml`, and `ndjson`. Use
 `--output ndjson` together with `--watch`.
+
+## Terminal Styling
+
+Human-readable output supports:
+
+- `--color auto`
+- `--color always`
+- `--color never`
+
+`--color auto` is the default. It enables ANSI styling only when stdout is a
+terminal and `NO_COLOR` is not set.
+
+Machine-readable outputs never include ANSI escapes, even when `--color always`
+is selected.

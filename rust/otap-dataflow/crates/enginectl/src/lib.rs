@@ -7,6 +7,7 @@ mod args;
 mod config;
 mod error;
 mod render;
+mod style;
 
 pub use args::Cli;
 
@@ -23,6 +24,7 @@ use crate::render::{
     render_pipeline_probe, render_pipeline_status, render_rollout_status, render_shutdown_status,
     write_human, write_log_event, write_mutation_output, write_read_output, write_stream_snapshot,
 };
+use crate::style::HumanStyle;
 use otap_df_admin_api::config::pipeline::PipelineConfig;
 use otap_df_admin_api::operations::OperationOptions;
 use otap_df_admin_api::telemetry::{LogsQuery, MetricsOptions};
@@ -36,7 +38,17 @@ use std::time::Duration;
 
 /// Executes a parsed `dfctl` command and writes command output to `stdout`.
 pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError> {
+    run_with_terminal(cli, stdout, false).await
+}
+
+/// Executes a parsed `dfctl` command and styles human output based on terminal detection.
+pub async fn run_with_terminal(
+    cli: ParsedCli,
+    stdout: &mut dyn Write,
+    stdout_is_terminal: bool,
+) -> Result<(), CliError> {
     ensure_crypto_provider()?;
+    let human_style = HumanStyle::resolve(cli.color, stdout_is_terminal);
     let resolved = resolve_connection(&cli.connection)?;
     let client = AdminClient::builder().http(resolved.settings).build()?;
 
@@ -45,19 +57,19 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
             EngineCommand::Status(output) => {
                 let status = client.engine().status().await?;
                 emit_read(stdout, output.output, &status, || {
-                    Ok(render_engine_status(&status))
+                    Ok(render_engine_status(&human_style, &status))
                 })
             }
             EngineCommand::Livez(output) => {
                 let probe = client.engine().livez().await?;
                 emit_read(stdout, output.output, &probe, || {
-                    Ok(render_engine_probe(&probe))
+                    Ok(render_engine_probe(&human_style, &probe))
                 })
             }
             EngineCommand::Readyz(output) => {
                 let probe = client.engine().readyz().await?;
                 emit_read(stdout, output.output, &probe, || {
-                    Ok(render_engine_probe(&probe))
+                    Ok(render_engine_probe(&human_style, &probe))
                 })
             }
         },
@@ -65,7 +77,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
             GroupsCommand::Status(output) => {
                 let status = client.groups().status().await?;
                 emit_read(stdout, output.output, &status, || {
-                    Ok(render_groups_status(&status))
+                    Ok(render_groups_status(&human_style, &status))
                 })
             }
             GroupsCommand::Shutdown(args) => {
@@ -74,7 +86,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     .shutdown(&operation_options(args.wait, args.wait_timeout))
                     .await?;
                 emit_read(stdout, args.output.output, &response, || {
-                    Ok(render_groups_shutdown(&response))
+                    Ok(render_groups_shutdown(&human_style, &response))
                 })?;
                 match response.status {
                     otap_df_admin_api::groups::ShutdownStatus::Accepted
@@ -102,7 +114,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     )));
                 };
                 emit_read(stdout, args.output.output, &details, || {
-                    render_pipeline_details(&details)
+                    render_pipeline_details(&human_style, &details)
                 })
             }
             PipelinesCommand::Status(args) => {
@@ -117,7 +129,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     )));
                 };
                 emit_read(stdout, args.output.output, &status, || {
-                    Ok(render_pipeline_status(&status))
+                    Ok(render_pipeline_status(&human_style, &status))
                 })
             }
             PipelinesCommand::Livez(args) => {
@@ -126,7 +138,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     .livez(&args.target.pipeline_group_id, &args.target.pipeline_id)
                     .await?;
                 emit_read(stdout, args.output.output, &probe, || {
-                    Ok(render_pipeline_probe(&probe))
+                    Ok(render_pipeline_probe(&human_style, &probe))
                 })
             }
             PipelinesCommand::Readyz(args) => {
@@ -135,7 +147,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     .readyz(&args.target.pipeline_group_id, &args.target.pipeline_id)
                     .await?;
                 emit_read(stdout, args.output.output, &probe, || {
-                    Ok(render_pipeline_probe(&probe))
+                    Ok(render_pipeline_probe(&human_style, &probe))
                 })
             }
             PipelinesCommand::Reconfigure(args) => {
@@ -163,13 +175,14 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                 match outcome {
                     otap_df_admin_api::pipelines::ReconfigureOutcome::Accepted(status) => {
                         emit_mutation(stdout, args.output, "accepted", &status, || {
-                            Ok(render_rollout_status(&status))
+                            Ok(render_rollout_status(&human_style, &status))
                         })?;
                         if args.watch {
                             let rollout_id = status.rollout_id.clone();
                             watch_rollout(
                                 &client,
                                 stdout,
+                                human_style,
                                 &args.target.pipeline_group_id,
                                 &args.target.pipeline_id,
                                 &rollout_id,
@@ -184,12 +197,12 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     }
                     otap_df_admin_api::pipelines::ReconfigureOutcome::Completed(status) => {
                         emit_mutation(stdout, args.output, "completed", &status, || {
-                            Ok(render_rollout_status(&status))
+                            Ok(render_rollout_status(&human_style, &status))
                         })
                     }
                     otap_df_admin_api::pipelines::ReconfigureOutcome::Failed(status) => {
                         emit_mutation(stdout, args.output, "failed", &status, || {
-                            Ok(render_rollout_status(&status))
+                            Ok(render_rollout_status(&human_style, &status))
                         })?;
                         Err(CliError::outcome_failure(format!(
                             "pipeline rollout '{}' failed",
@@ -198,7 +211,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     }
                     otap_df_admin_api::pipelines::ReconfigureOutcome::TimedOut(status) => {
                         emit_mutation(stdout, args.output, "timed_out", &status, || {
-                            Ok(render_rollout_status(&status))
+                            Ok(render_rollout_status(&human_style, &status))
                         })?;
                         Err(CliError::outcome_failure(format!(
                             "pipeline rollout '{}' timed out",
@@ -221,13 +234,14 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                 match outcome {
                     otap_df_admin_api::pipelines::ShutdownOutcome::Accepted(status) => {
                         emit_mutation(stdout, args.output, "accepted", &status, || {
-                            Ok(render_shutdown_status(&status))
+                            Ok(render_shutdown_status(&human_style, &status))
                         })?;
                         if args.watch {
                             let shutdown_id = status.shutdown_id.clone();
                             watch_shutdown(
                                 &client,
                                 stdout,
+                                human_style,
                                 &args.target.pipeline_group_id,
                                 &args.target.pipeline_id,
                                 &shutdown_id,
@@ -242,12 +256,12 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     }
                     otap_df_admin_api::pipelines::ShutdownOutcome::Completed(status) => {
                         emit_mutation(stdout, args.output, "completed", &status, || {
-                            Ok(render_shutdown_status(&status))
+                            Ok(render_shutdown_status(&human_style, &status))
                         })
                     }
                     otap_df_admin_api::pipelines::ShutdownOutcome::Failed(status) => {
                         emit_mutation(stdout, args.output, "failed", &status, || {
-                            Ok(render_shutdown_status(&status))
+                            Ok(render_shutdown_status(&human_style, &status))
                         })?;
                         Err(CliError::outcome_failure(format!(
                             "pipeline shutdown '{}' failed",
@@ -256,7 +270,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     }
                     otap_df_admin_api::pipelines::ShutdownOutcome::TimedOut(status) => {
                         emit_mutation(stdout, args.output, "timed_out", &status, || {
-                            Ok(render_shutdown_status(&status))
+                            Ok(render_shutdown_status(&human_style, &status))
                         })?;
                         Err(CliError::outcome_failure(format!(
                             "pipeline shutdown '{}' timed out",
@@ -270,6 +284,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     get_rollout(
                         &client,
                         stdout,
+                        human_style,
                         &args.target.pipeline_group_id,
                         &args.target.pipeline_id,
                         &args.target.rollout_id,
@@ -281,6 +296,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     watch_rollout(
                         &client,
                         stdout,
+                        human_style,
                         &args.target.pipeline_group_id,
                         &args.target.pipeline_id,
                         &args.target.rollout_id,
@@ -295,6 +311,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                 get_rollout(
                     &client,
                     stdout,
+                    human_style,
                     &args.target.pipeline_group_id,
                     &args.target.pipeline_id,
                     &args.target.rollout_id,
@@ -307,6 +324,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     get_shutdown(
                         &client,
                         stdout,
+                        human_style,
                         &args.target.pipeline_group_id,
                         &args.target.pipeline_id,
                         &args.target.shutdown_id,
@@ -318,6 +336,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     watch_shutdown(
                         &client,
                         stdout,
+                        human_style,
                         &args.target.pipeline_group_id,
                         &args.target.pipeline_id,
                         &args.target.shutdown_id,
@@ -332,6 +351,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                 get_shutdown(
                     &client,
                     stdout,
+                    human_style,
                     &args.target.pipeline_group_id,
                     &args.target.pipeline_id,
                     &args.target.shutdown_id,
@@ -355,12 +375,15 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                             "retained admin logs are not available on this engine",
                         ));
                     };
-                    emit_read(stdout, args.output.output, &logs, || Ok(render_logs(&logs)))
+                    emit_read(stdout, args.output.output, &logs, || {
+                        Ok(render_logs(&human_style, &logs))
+                    })
                 }
                 LogsCommand::Watch(args) => {
                     watch_logs(
                         &client,
                         stdout,
+                        human_style,
                         args.after,
                         args.tail,
                         args.limit,
@@ -380,13 +403,13 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                         MetricsShape::Compact => {
                             let metrics = client.telemetry().metrics_compact(&options).await?;
                             emit_read(stdout, args.output.output, &metrics, || {
-                                Ok(render_metrics_compact(&metrics))
+                                Ok(render_metrics_compact(&human_style, &metrics))
                             })
                         }
                         MetricsShape::Full => {
                             let metrics = client.telemetry().metrics(&options).await?;
                             emit_read(stdout, args.output.output, &metrics, || {
-                                Ok(render_metrics_full(&metrics))
+                                Ok(render_metrics_full(&human_style, &metrics))
                             })
                         }
                     }
@@ -395,6 +418,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
                     watch_metrics(
                         &client,
                         stdout,
+                        human_style,
                         args.shape,
                         MetricsOptions {
                             reset: args.reset,
@@ -413,6 +437,7 @@ pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError>
 async fn get_rollout(
     client: &AdminClient,
     stdout: &mut dyn Write,
+    human_style: HumanStyle,
     pipeline_group_id: &str,
     pipeline_id: &str,
     rollout_id: &str,
@@ -429,13 +454,14 @@ async fn get_rollout(
         )));
     };
     emit_read(stdout, output, &status, || {
-        Ok(render_rollout_status(&status))
+        Ok(render_rollout_status(&human_style, &status))
     })
 }
 
 async fn get_shutdown(
     client: &AdminClient,
     stdout: &mut dyn Write,
+    human_style: HumanStyle,
     pipeline_group_id: &str,
     pipeline_id: &str,
     shutdown_id: &str,
@@ -452,13 +478,14 @@ async fn get_shutdown(
         )));
     };
     emit_read(stdout, output, &status, || {
-        Ok(render_shutdown_status(&status))
+        Ok(render_shutdown_status(&human_style, &status))
     })
 }
 
 async fn watch_rollout(
     client: &AdminClient,
     stdout: &mut dyn Write,
+    human_style: HumanStyle,
     pipeline_group_id: &str,
     pipeline_id: &str,
     rollout_id: &str,
@@ -488,8 +515,9 @@ async fn watch_rollout(
                 stdout,
                 output,
                 "pipeline_rollout",
-                || Ok(render_rollout_status(&current)),
+                || Ok(render_rollout_status(&human_style, &current)),
                 &current,
+                human_style,
             )?;
             last_updated = Some(current.updated_at.clone());
         }
@@ -527,6 +555,7 @@ async fn watch_rollout(
 async fn watch_shutdown(
     client: &AdminClient,
     stdout: &mut dyn Write,
+    human_style: HumanStyle,
     pipeline_group_id: &str,
     pipeline_id: &str,
     shutdown_id: &str,
@@ -556,8 +585,9 @@ async fn watch_shutdown(
                 stdout,
                 output,
                 "pipeline_shutdown",
-                || Ok(render_shutdown_status(&current)),
+                || Ok(render_shutdown_status(&human_style, &current)),
                 &current,
+                human_style,
             )?;
             last_updated = Some(current.updated_at.clone());
         }
@@ -594,6 +624,7 @@ async fn watch_shutdown(
 async fn watch_logs(
     client: &AdminClient,
     stdout: &mut dyn Write,
+    human_style: HumanStyle,
     after: Option<u64>,
     tail: Option<usize>,
     limit: Option<usize>,
@@ -614,7 +645,7 @@ async fn watch_logs(
                 .ok_or_else(|| {
                     CliError::not_found("retained admin logs are not available on this engine")
                 })?;
-            emit_logs(stdout, output, &response.logs)?;
+            emit_logs(stdout, human_style, output, &response.logs)?;
             cursor = Some(response.next_seq);
         } else {
             let response = client
@@ -642,7 +673,7 @@ async fn watch_logs(
             .ok_or_else(|| {
                 CliError::not_found("retained admin logs are not available on this engine")
             })?;
-        emit_logs(stdout, output, &response.logs)?;
+        emit_logs(stdout, human_style, output, &response.logs)?;
         cursor = Some(response.next_seq);
 
         tokio::select! {
@@ -655,6 +686,7 @@ async fn watch_logs(
 async fn watch_metrics(
     client: &AdminClient,
     stdout: &mut dyn Write,
+    human_style: HumanStyle,
     shape: MetricsShape,
     options: MetricsOptions,
     interval: Duration,
@@ -668,8 +700,9 @@ async fn watch_metrics(
                     stdout,
                     output,
                     "telemetry_metrics",
-                    || Ok(render_metrics_compact(&metrics)),
+                    || Ok(render_metrics_compact(&human_style, &metrics)),
                     &metrics,
+                    human_style,
                 )?;
             }
             MetricsShape::Full => {
@@ -678,8 +711,9 @@ async fn watch_metrics(
                     stdout,
                     output,
                     "telemetry_metrics",
-                    || Ok(render_metrics_full(&metrics)),
+                    || Ok(render_metrics_full(&human_style, &metrics)),
                     &metrics,
+                    human_style,
                 )?;
             }
         }
@@ -693,18 +727,15 @@ async fn watch_metrics(
 
 fn emit_logs(
     stdout: &mut dyn Write,
+    human_style: HumanStyle,
     output: StreamOutput,
     logs: &[telemetry::LogEntry],
 ) -> Result<(), CliError> {
     for entry in logs {
         match output {
-            StreamOutput::Human => write_human(
-                stdout,
-                &format!(
-                    "{} [{}] {} {}",
-                    entry.timestamp, entry.level, entry.target, entry.rendered
-                ),
-            )?,
+            StreamOutput::Human => {
+                write_human(stdout, &render::render_log_line(&human_style, entry))?
+            }
             StreamOutput::Ndjson => write_log_event(stdout, entry)?,
         }
     }
@@ -882,6 +913,8 @@ fn ensure_crypto_provider() -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::ColorChoice;
+    use crate::style::HumanStyle;
     use clap::Parser;
     use otap_df_admin_api::config::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
@@ -988,6 +1021,177 @@ mod tests {
 
         let mut stdout = Vec::new();
         run(cli, &mut stdout).await.expect("run");
+    }
+
+    #[tokio::test]
+    async fn logs_get_human_color_always_emits_ansi() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/telemetry/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "oldest_seq": 1,
+                "newest_seq": 1,
+                "next_seq": 2,
+                "truncated_before_seq": null,
+                "dropped_on_ingest": 0,
+                "dropped_on_retention": 0,
+                "retained_bytes": 10,
+                "logs": [
+                    {
+                        "seq": 1,
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "level": "INFO",
+                        "target": "test.target",
+                        "event_name": "log.1",
+                        "file": null,
+                        "line": null,
+                        "rendered": "hello world",
+                        "contexts": []
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let cli = Cli::try_parse_from([
+            "dfctl",
+            "--url",
+            &server.uri(),
+            "--color",
+            "always",
+            "telemetry",
+            "logs",
+            "get",
+            "--limit",
+            "1",
+        ])
+        .expect("parse");
+
+        let mut stdout = Vec::new();
+        run(cli, &mut stdout).await.expect("run");
+
+        let output = String::from_utf8(stdout).expect("utf8");
+        assert!(output.contains("\u{1b}["));
+        assert!(output.contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn metrics_get_human_auto_stays_plain_off_terminal() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/telemetry/metrics"))
+            .and(query_param("format", "json_compact"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "timestamp": "2026-01-01T00:00:00Z",
+                "metric_sets": [
+                    {
+                        "name": "engine.runtime",
+                        "attributes": {},
+                        "metrics": {
+                            "pipelines": 3
+                        }
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let cli = Cli::try_parse_from([
+            "dfctl",
+            "--url",
+            &server.uri(),
+            "telemetry",
+            "metrics",
+            "get",
+        ])
+        .expect("parse");
+
+        let mut stdout = Vec::new();
+        run(cli, &mut stdout).await.expect("run");
+
+        let output = String::from_utf8(stdout).expect("utf8");
+        assert!(!output.contains("\u{1b}["));
+        assert!(output.contains("metric_set: engine.runtime"));
+    }
+
+    #[tokio::test]
+    async fn metrics_get_human_color_always_emits_ansi_on_terminal() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/telemetry/metrics"))
+            .and(query_param("format", "json_compact"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "timestamp": "2026-01-01T00:00:00Z",
+                "metric_sets": [
+                    {
+                        "name": "engine.runtime",
+                        "attributes": {},
+                        "metrics": {
+                            "pipelines": 3
+                        }
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let cli = Cli::try_parse_from([
+            "dfctl",
+            "--url",
+            &server.uri(),
+            "--color",
+            "always",
+            "telemetry",
+            "metrics",
+            "get",
+        ])
+        .expect("parse");
+
+        let mut stdout = Vec::new();
+        run_with_terminal(cli, &mut stdout, true)
+            .await
+            .expect("run_with_terminal");
+
+        let output = String::from_utf8(stdout).expect("utf8");
+        assert!(output.contains("\u{1b}["));
+        assert!(output.contains("engine.runtime"));
+    }
+
+    #[tokio::test]
+    async fn metrics_json_output_ignores_color_setting() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/telemetry/metrics"))
+            .and(query_param("format", "json_compact"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "timestamp": "2026-01-01T00:00:00Z",
+                "metric_sets": []
+            })))
+            .mount(&server)
+            .await;
+
+        let cli = Cli::try_parse_from([
+            "dfctl",
+            "--url",
+            &server.uri(),
+            "--color",
+            "always",
+            "telemetry",
+            "metrics",
+            "get",
+            "--output",
+            "json",
+        ])
+        .expect("parse");
+
+        let mut stdout = Vec::new();
+        run_with_terminal(cli, &mut stdout, true)
+            .await
+            .expect("run_with_terminal");
+
+        let output = String::from_utf8(stdout).expect("utf8");
+        assert!(!output.contains("\u{1b}["));
+        assert!(output.contains("\"timestamp\""));
     }
 
     #[tokio::test]
@@ -1209,6 +1413,7 @@ mod tests {
             watch_logs(
                 &client,
                 &mut stdout,
+                HumanStyle::resolve(ColorChoice::Never, false),
                 None,
                 Some(2),
                 None,
@@ -1227,6 +1432,59 @@ mod tests {
         );
         assert!(output.contains("\"seq\":49"));
         assert!(output.contains("\"seq\":50"));
+    }
+
+    #[tokio::test]
+    async fn metrics_watch_human_color_always_styles_stream_header() {
+        ensure_crypto_provider().expect("crypto provider");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/telemetry/metrics"))
+            .and(query_param("format", "json_compact"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "timestamp": "2026-01-01T00:00:00Z",
+                "metric_sets": [
+                    {
+                        "name": "engine.runtime",
+                        "attributes": {},
+                        "metrics": {
+                            "pipelines": 3
+                        }
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = AdminClient::builder()
+            .http(otap_df_admin_api::HttpAdminClientSettings::new(
+                otap_df_admin_api::AdminEndpoint::from_url(&server.uri()).expect("endpoint"),
+            ))
+            .build()
+            .expect("client");
+
+        let mut stdout = Vec::new();
+        let result = tokio::time::timeout(
+            Duration::from_millis(10),
+            watch_metrics(
+                &client,
+                &mut stdout,
+                HumanStyle::resolve(ColorChoice::Always, false),
+                MetricsShape::Compact,
+                MetricsOptions {
+                    reset: false,
+                    keep_all_zeroes: false,
+                },
+                Duration::from_millis(1),
+                StreamOutput::Human,
+            ),
+        )
+        .await;
+
+        assert!(result.is_err(), "watch should still be polling");
+        let output = String::from_utf8(stdout).expect("utf8");
+        assert!(output.contains("\u{1b}["));
+        assert!(output.contains("[telemetry_metrics]"));
     }
 
     #[test]

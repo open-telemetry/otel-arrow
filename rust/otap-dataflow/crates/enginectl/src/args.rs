@@ -17,6 +17,10 @@ pub struct Cli {
     #[command(flatten)]
     pub connection: ConnectionArgs,
 
+    /// Terminal color policy for human-readable output.
+    #[arg(long, global = true, value_enum, default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
+
     /// Top-level command to execute.
     #[command(subcommand)]
     pub command: Command,
@@ -472,6 +476,13 @@ pub enum MetricsShape {
     Full,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
 pub fn parse_duration_arg(raw: &str) -> Result<Duration, String> {
     humantime::parse_duration(raw).map_err(|err| err.to_string())
 }
@@ -494,5 +505,13 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn color_flag_parses() {
+        let cli = Cli::try_parse_from(["dfctl", "--color", "always", "engine", "status"])
+            .expect("color flag should parse");
+
+        assert_eq!(cli.color, ColorChoice::Always);
     }
 }

@@ -3,6 +3,7 @@
 
 use crate::args::{MutationOutput, ReadOutput, StreamOutput};
 use crate::error::CliError;
+use crate::style::HumanStyle;
 use otap_df_admin_api::{engine, groups, pipelines, telemetry};
 use serde::Serialize;
 use serde_json::json;
@@ -98,135 +99,160 @@ pub fn write_log_event(
     Ok(())
 }
 
-pub fn render_engine_status(status: &engine::Status) -> String {
+pub fn render_engine_status(style: &HumanStyle, status: &engine::Status) -> String {
     let mut lines = vec![
-        format!("generated_at: {}", status.generated_at),
-        format!("pipelines: {}", status.pipelines.len()),
+        field(style, "generated_at", status.generated_at.to_string()),
+        field(style, "pipelines", status.pipelines.len().to_string()),
     ];
     for (name, pipeline) in &status.pipelines {
-        lines.push(pipeline_summary_line(name, pipeline));
+        lines.push(pipeline_summary_line(style, name, pipeline));
     }
     lines.join("\n")
 }
 
-pub fn render_groups_status(status: &groups::Status) -> String {
+pub fn render_groups_status(style: &HumanStyle, status: &groups::Status) -> String {
     let mut lines = vec![
-        format!("generated_at: {}", status.generated_at),
-        format!("pipelines: {}", status.pipelines.len()),
+        field(style, "generated_at", status.generated_at.to_string()),
+        field(style, "pipelines", status.pipelines.len().to_string()),
     ];
     for (name, pipeline) in &status.pipelines {
-        lines.push(pipeline_summary_line(name, pipeline));
+        lines.push(pipeline_summary_line(style, name, pipeline));
     }
     lines.join("\n")
 }
 
-pub fn render_engine_probe(probe: &engine::ProbeResponse) -> String {
+pub fn render_engine_probe(style: &HumanStyle, probe: &engine::ProbeResponse) -> String {
     let mut lines = vec![
-        format!("probe: {:?}", probe.probe),
-        format!("status: {:?}", probe.status),
-        format!("generated_at: {}", probe.generated_at),
+        field(style, "probe", format!("{:?}", probe.probe)),
+        state_field(style, "status", format!("{:?}", probe.status)),
+        field(style, "generated_at", probe.generated_at.to_string()),
     ];
     if let Some(message) = &probe.message {
-        lines.push(format!("message: {message}"));
+        lines.push(field(style, "message", message));
     }
     for failure in &probe.failing {
         lines.push(format!(
-            "failing_pipeline: {} kind={:?} status={:?}",
-            failure.pipeline, failure.condition.kind, failure.condition.status
+            "{} {} kind={} status={}",
+            style.label("failing_pipeline:"),
+            failure.pipeline,
+            style.state(format!("{:?}", failure.condition.kind)),
+            style.state(format!("{:?}", failure.condition.status))
         ));
     }
     lines.join("\n")
 }
 
-pub fn render_pipeline_probe(probe: &pipelines::ProbeResult) -> String {
-    let mut lines = vec![format!("status: {:?}", probe.status)];
+pub fn render_pipeline_probe(style: &HumanStyle, probe: &pipelines::ProbeResult) -> String {
+    let mut lines = vec![state_field(style, "status", format!("{:?}", probe.status))];
     if let Some(message) = &probe.message {
-        lines.push(format!("message: {message}"));
+        lines.push(field(style, "message", message));
     }
     lines.join("\n")
 }
 
-pub fn render_pipeline_details(details: &pipelines::PipelineDetails) -> Result<String, CliError> {
+pub fn render_pipeline_details(
+    style: &HumanStyle,
+    details: &pipelines::PipelineDetails,
+) -> Result<String, CliError> {
     let mut lines = vec![
-        format!("pipeline_group_id: {}", details.pipeline_group_id),
-        format!("pipeline_id: {}", details.pipeline_id),
-        format!(
-            "active_generation: {}",
+        field(style, "pipeline_group_id", &details.pipeline_group_id),
+        field(style, "pipeline_id", &details.pipeline_id),
+        field(
+            style,
+            "active_generation",
             details
                 .active_generation
                 .map(|value| value.to_string())
-                .unwrap_or_else(|| "none".to_string())
+                .unwrap_or_else(|| "none".to_string()),
         ),
     ];
     if let Some(rollout) = &details.rollout {
         lines.push(format!(
-            "rollout: id={} state={:?} target_generation={}",
-            rollout.rollout_id, rollout.state, rollout.target_generation
+            "{} id={} state={} target_generation={}",
+            style.label("rollout:"),
+            rollout.rollout_id,
+            style.state(format!("{:?}", rollout.state)),
+            rollout.target_generation
         ));
     }
-    lines.push("pipeline:".to_string());
+    lines.push(style.header("pipeline:"));
     lines.push(serde_yaml::to_string(&details.pipeline).map_err(io_serialize_error)?);
     Ok(lines.join("\n"))
 }
 
-pub fn render_pipeline_status(status: &pipelines::Status) -> String {
+pub fn render_pipeline_status(style: &HumanStyle, status: &pipelines::Status) -> String {
     let mut lines = vec![
-        format!(
-            "running_cores: {}/{}",
-            status.running_cores, status.total_cores
+        field(
+            style,
+            "running_cores",
+            format!("{}/{}", status.running_cores, status.total_cores),
         ),
-        format!(
-            "active_generation: {}",
+        field(
+            style,
+            "active_generation",
             status
                 .active_generation
                 .map(|value| value.to_string())
-                .unwrap_or_else(|| "none".to_string())
+                .unwrap_or_else(|| "none".to_string()),
         ),
     ];
     if let Some(rollout) = &status.rollout {
         lines.push(format!(
-            "rollout: id={} state={:?} target_generation={}",
-            rollout.rollout_id, rollout.state, rollout.target_generation
+            "{} id={} state={} target_generation={}",
+            style.label("rollout:"),
+            rollout.rollout_id,
+            style.state(format!("{:?}", rollout.state)),
+            rollout.target_generation
         ));
     }
     for condition in &status.conditions {
-        lines.push(condition_line(condition));
+        lines.push(condition_line(style, condition));
     }
     for (core_id, core) in &status.cores {
         lines.push(format!(
-            "core={} phase={:?} delete_pending={} last_heartbeat_time={}",
-            core_id, core.phase, core.delete_pending, core.last_heartbeat_time
+            "{} {} phase={:?} delete_pending={} last_heartbeat_time={}",
+            style.label("core:"),
+            core_id,
+            core.phase,
+            core.delete_pending,
+            core.last_heartbeat_time
         ));
     }
     lines.join("\n")
 }
 
-pub fn render_rollout_status(status: &pipelines::RolloutStatus) -> String {
+pub fn render_rollout_status(style: &HumanStyle, status: &pipelines::RolloutStatus) -> String {
     let mut lines = vec![
-        format!("rollout_id: {}", status.rollout_id),
-        format!("pipeline_group_id: {}", status.pipeline_group_id),
-        format!("pipeline_id: {}", status.pipeline_id),
-        format!("action: {}", status.action),
-        format!("state: {:?}", status.state),
-        format!("target_generation: {}", status.target_generation),
-        format!(
-            "previous_generation: {}",
+        field(style, "rollout_id", &status.rollout_id),
+        field(style, "pipeline_group_id", &status.pipeline_group_id),
+        field(style, "pipeline_id", &status.pipeline_id),
+        field(style, "action", &status.action),
+        state_field(style, "state", format!("{:?}", status.state)),
+        field(
+            style,
+            "target_generation",
+            status.target_generation.to_string(),
+        ),
+        field(
+            style,
+            "previous_generation",
             status
                 .previous_generation
                 .map(|value| value.to_string())
-                .unwrap_or_else(|| "none".to_string())
+                .unwrap_or_else(|| "none".to_string()),
         ),
-        format!("started_at: {}", status.started_at),
-        format!("updated_at: {}", status.updated_at),
+        field(style, "started_at", status.started_at.to_string()),
+        field(style, "updated_at", status.updated_at.to_string()),
     ];
     if let Some(reason) = &status.failure_reason {
-        lines.push(format!("failure_reason: {reason}"));
+        lines.push(field(style, "failure_reason", reason));
     }
     for core in &status.cores {
         lines.push(format!(
-            "core={} state={} target_generation={} previous_generation={} updated_at={}",
+            "{} {} state={} target_generation={} previous_generation={} updated_at={}",
+            style.label("core:"),
             core.core_id,
-            core.state,
+            style.state(&core.state),
             core.target_generation,
             core.previous_generation
                 .map(|value| value.to_string())
@@ -237,81 +263,98 @@ pub fn render_rollout_status(status: &pipelines::RolloutStatus) -> String {
     lines.join("\n")
 }
 
-pub fn render_shutdown_status(status: &pipelines::ShutdownStatus) -> String {
+pub fn render_shutdown_status(style: &HumanStyle, status: &pipelines::ShutdownStatus) -> String {
     let mut lines = vec![
-        format!("shutdown_id: {}", status.shutdown_id),
-        format!("pipeline_group_id: {}", status.pipeline_group_id),
-        format!("pipeline_id: {}", status.pipeline_id),
-        format!("state: {}", status.state),
-        format!("started_at: {}", status.started_at),
-        format!("updated_at: {}", status.updated_at),
+        field(style, "shutdown_id", &status.shutdown_id),
+        field(style, "pipeline_group_id", &status.pipeline_group_id),
+        field(style, "pipeline_id", &status.pipeline_id),
+        state_field(style, "state", &status.state),
+        field(style, "started_at", status.started_at.to_string()),
+        field(style, "updated_at", status.updated_at.to_string()),
     ];
     if let Some(reason) = &status.failure_reason {
-        lines.push(format!("failure_reason: {reason}"));
+        lines.push(field(style, "failure_reason", reason));
     }
     for core in &status.cores {
         lines.push(format!(
-            "core={} state={} deployment_generation={} updated_at={}",
-            core.core_id, core.state, core.deployment_generation, core.updated_at
+            "{} {} state={} deployment_generation={} updated_at={}",
+            style.label("core:"),
+            core.core_id,
+            style.state(&core.state),
+            core.deployment_generation,
+            core.updated_at
         ));
     }
     lines.join("\n")
 }
 
-pub fn render_groups_shutdown(response: &groups::ShutdownResponse) -> String {
-    let mut lines = vec![format!("status: {:?}", response.status)];
+pub fn render_groups_shutdown(style: &HumanStyle, response: &groups::ShutdownResponse) -> String {
+    let mut lines = vec![state_field(
+        style,
+        "status",
+        format!("{:?}", response.status),
+    )];
     if let Some(duration_ms) = response.duration_ms {
-        lines.push(format!("duration_ms: {duration_ms}"));
+        lines.push(field(style, "duration_ms", duration_ms.to_string()));
     }
     if let Some(errors) = &response.errors {
         for error in errors {
-            lines.push(format!("error: {error}"));
+            lines.push(field(style, "error", error));
         }
     }
     lines.join("\n")
 }
 
-pub fn render_logs(response: &telemetry::LogsResponse) -> String {
+pub fn render_logs(style: &HumanStyle, response: &telemetry::LogsResponse) -> String {
     let mut lines = vec![
-        format!("oldest_seq: {:?}", response.oldest_seq),
-        format!("newest_seq: {:?}", response.newest_seq),
-        format!("next_seq: {}", response.next_seq),
-        format!("retained_bytes: {}", response.retained_bytes),
-        format!("log_count: {}", response.logs.len()),
+        field(style, "oldest_seq", format!("{:?}", response.oldest_seq)),
+        field(style, "newest_seq", format!("{:?}", response.newest_seq)),
+        field(style, "next_seq", response.next_seq.to_string()),
+        field(style, "retained_bytes", response.retained_bytes.to_string()),
+        field(style, "log_count", response.logs.len().to_string()),
     ];
     for entry in &response.logs {
-        lines.push(render_log_line(entry));
+        lines.push(render_log_line(style, entry));
     }
     lines.join("\n")
 }
 
-pub fn render_metrics_compact(response: &telemetry::CompactMetricsResponse) -> String {
+pub fn render_metrics_compact(
+    style: &HumanStyle,
+    response: &telemetry::CompactMetricsResponse,
+) -> String {
     let mut lines = vec![
-        format!("timestamp: {}", response.timestamp),
-        format!("metric_sets: {}", response.metric_sets.len()),
+        field(style, "timestamp", response.timestamp.to_string()),
+        field(style, "metric_sets", response.metric_sets.len().to_string()),
     ];
     for metric_set in &response.metric_sets {
         lines.push(format!(
-            "metric_set: {} attributes={} metrics={}",
+            "{} {} attributes={} metrics={}",
+            style.header("metric_set:"),
             metric_set.name,
             metric_set.attributes.len(),
             metric_set.metrics.len()
         ));
         for (name, value) in &metric_set.metrics {
-            lines.push(format!("  {name}={}", metric_value_string(value)));
+            lines.push(format!(
+                "  {}={}",
+                style.label(name),
+                metric_value_string(value)
+            ));
         }
     }
     lines.join("\n")
 }
 
-pub fn render_metrics_full(response: &telemetry::MetricsResponse) -> String {
+pub fn render_metrics_full(style: &HumanStyle, response: &telemetry::MetricsResponse) -> String {
     let mut lines = vec![
-        format!("timestamp: {}", response.timestamp),
-        format!("metric_sets: {}", response.metric_sets.len()),
+        field(style, "timestamp", response.timestamp.to_string()),
+        field(style, "metric_sets", response.metric_sets.len().to_string()),
     ];
     for metric_set in &response.metric_sets {
         lines.push(format!(
-            "metric_set: {} attributes={} metrics={}",
+            "{} {} attributes={} metrics={}",
+            style.header("metric_set:"),
             metric_set.name,
             metric_set.attributes.len(),
             metric_set.metrics.len()
@@ -319,8 +362,8 @@ pub fn render_metrics_full(response: &telemetry::MetricsResponse) -> String {
         for point in &metric_set.metrics {
             lines.push(format!(
                 "  {} [{}] ({:?}) = {}",
-                point.metadata.name,
-                point.metadata.unit,
+                style.label(&point.metadata.name),
+                style.dim(&point.metadata.unit),
                 point.metadata.instrument,
                 metric_value_string(&point.value)
             ));
@@ -339,8 +382,9 @@ pub fn write_stream_human(
     writer: &mut dyn Write,
     resource: &str,
     content: &str,
+    style: HumanStyle,
 ) -> Result<(), CliError> {
-    writeln!(writer, "[{resource}]")?;
+    writeln!(writer, "{}", style.header(format!("[{resource}]")))?;
     writeln!(writer, "{content}")?;
     writeln!(writer)?;
     writer.flush()?;
@@ -353,22 +397,25 @@ pub fn write_stream_snapshot<T: Serialize>(
     resource: &str,
     human: impl FnOnce() -> Result<String, CliError>,
     value: &T,
+    style: HumanStyle,
 ) -> Result<(), CliError> {
     match output {
-        StreamOutput::Human => write_stream_human(writer, resource, &human()?),
+        StreamOutput::Human => write_stream_human(writer, resource, &human()?, style),
         StreamOutput::Ndjson => write_snapshot_event(writer, resource, value),
     }
 }
 
-fn pipeline_summary_line(name: &str, status: &pipelines::Status) -> String {
+fn pipeline_summary_line(style: &HumanStyle, name: &str, status: &pipelines::Status) -> String {
     let rollout = status
         .rollout
         .as_ref()
-        .map(|value| format!("{:?}", value.state))
+        .map(|value| style.state(format!("{:?}", value.state)))
         .unwrap_or_else(|| "none".to_string());
     format!(
-        "{name}: running={}/{} active_generation={} rollout={}",
-        status.running_cores,
+        "{} {} running={}/{} active_generation={} rollout={}",
+        style.header("pipeline:"),
+        name,
+        style.state(status.running_cores.to_string()),
         status.total_cores,
         status
             .active_generation
@@ -378,11 +425,12 @@ fn pipeline_summary_line(name: &str, status: &pipelines::Status) -> String {
     )
 }
 
-fn condition_line(condition: &pipelines::Condition) -> String {
+fn condition_line(style: &HumanStyle, condition: &pipelines::Condition) -> String {
     format!(
-        "condition: kind={:?} status={:?} reason={} message={}",
-        condition.kind,
-        condition.status,
+        "{} kind={} status={} reason={} message={}",
+        style.label("condition:"),
+        style.state(format!("{:?}", condition.kind)),
+        style.state(format!("{:?}", condition.status)),
         condition
             .reason
             .as_ref()
@@ -395,10 +443,13 @@ fn condition_line(condition: &pipelines::Condition) -> String {
     )
 }
 
-fn render_log_line(entry: &telemetry::LogEntry) -> String {
+pub fn render_log_line(style: &HumanStyle, entry: &telemetry::LogEntry) -> String {
     format!(
         "{} [{}] {} {}",
-        entry.timestamp, entry.level, entry.target, entry.rendered
+        style.dim(&entry.timestamp),
+        style.log_level(&entry.level),
+        style.target(&entry.target),
+        entry.rendered
     )
 }
 
@@ -415,4 +466,16 @@ fn metric_value_string(value: &telemetry::MetricValue) -> String {
 
 fn io_serialize_error(error: impl std::fmt::Display) -> CliError {
     CliError::config(format!("failed to serialize output: {error}"))
+}
+
+fn field(style: &HumanStyle, label: &str, value: impl std::fmt::Display) -> String {
+    format!("{} {}", style.label(format!("{label}:")), value)
+}
+
+fn state_field(style: &HumanStyle, label: &str, value: impl AsRef<str>) -> String {
+    format!(
+        "{} {}",
+        style.label(format!("{label}:")),
+        style.state(value.as_ref())
+    )
 }

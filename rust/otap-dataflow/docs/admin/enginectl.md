@@ -64,6 +64,20 @@ Long-running `watch` commands support:
 Mutation commands also support `--output ndjson` when used together with
 `--watch`.
 
+## Color Policy
+
+Human-readable output supports:
+
+- `--color auto`
+- `--color always`
+- `--color never`
+
+`--color auto` is the default. It enables ANSI styling only when stdout is a
+terminal and `NO_COLOR` is not set.
+
+`json`, `yaml`, and `ndjson` outputs stay unstyled regardless of the color
+setting.
+
 ## Examples
 
 Read engine status from the default local target:
@@ -99,6 +113,12 @@ Watch retained logs:
 
 ```bash
 dfctl telemetry logs watch --tail 50
+```
+
+Force terminal styling for a human watch session:
+
+```bash
+dfctl --color always telemetry logs watch --tail 50
 ```
 
 Watch compact metrics snapshots:
