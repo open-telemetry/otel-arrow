@@ -155,6 +155,10 @@ pub struct GroupsArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum GroupsCommand {
+    Describe(ReadOutputArgs),
+    Events(GroupEventsArgs),
+    Diagnose(GroupDiagnoseArgs),
+    Bundle(GroupBundleArgs),
     Status(ReadOutputArgs),
     Shutdown(GroupShutdownArgs),
 }
@@ -169,6 +173,10 @@ pub struct PipelinesArgs {
 pub enum PipelinesCommand {
     #[command(alias = "details")]
     Get(PipelineReadArgs),
+    Describe(PipelineReadArgs),
+    Events(PipelineEventsArgs),
+    Diagnose(PipelineDiagnoseArgs),
+    Bundle(PipelineBundleArgs),
     Status(PipelineReadArgs),
     Livez(PipelineReadArgs),
     Readyz(PipelineReadArgs),
@@ -241,6 +249,53 @@ pub enum MetricsCommand {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct GroupEventsArgs {
+    #[command(subcommand)]
+    pub command: GroupEventsCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum GroupEventsCommand {
+    Get(GroupEventsGetArgs),
+    Watch(GroupEventsWatchArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PipelineEventsArgs {
+    #[command(subcommand)]
+    pub command: PipelineEventsCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PipelineEventsCommand {
+    Get(PipelineEventsGetArgs),
+    Watch(PipelineEventsWatchArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GroupDiagnoseArgs {
+    #[command(subcommand)]
+    pub command: GroupDiagnoseCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum GroupDiagnoseCommand {
+    Shutdown(GroupDiagnoseShutdownArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PipelineDiagnoseArgs {
+    #[command(subcommand)]
+    pub command: PipelineDiagnoseCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PipelineDiagnoseCommand {
+    Rollout(PipelineDiagnoseRolloutArgs),
+    Shutdown(PipelineDiagnoseShutdownArgs),
+}
+
+#[derive(Args, Debug, Clone)]
 pub struct PipelineTargetArgs {
     pub pipeline_group_id: String,
     pub pipeline_id: String,
@@ -258,6 +313,87 @@ pub struct ShutdownTargetArgs {
     pub pipeline_group_id: String,
     pub pipeline_id: String,
     pub shutdown_id: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GroupEventsFilterArgs {
+    #[arg(long = "kind", value_enum)]
+    pub kinds: Vec<EventKind>,
+
+    #[arg(long = "group")]
+    pub pipeline_group_id: Option<String>,
+
+    #[arg(long = "pipeline")]
+    pub pipeline_id: Option<String>,
+
+    #[arg(long = "node")]
+    pub node_id: Option<String>,
+
+    #[arg(long)]
+    pub contains: Option<String>,
+
+    #[arg(long)]
+    pub tail: Option<usize>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PipelineEventsFilterArgs {
+    #[arg(long = "kind", value_enum)]
+    pub kinds: Vec<EventKind>,
+
+    #[arg(long = "node")]
+    pub node_id: Option<String>,
+
+    #[arg(long)]
+    pub contains: Option<String>,
+
+    #[arg(long)]
+    pub tail: Option<usize>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct LogsFilterArgs {
+    #[arg(long)]
+    pub level: Option<String>,
+
+    #[arg(long)]
+    pub target: Option<String>,
+
+    #[arg(long)]
+    pub event: Option<String>,
+
+    #[arg(long = "group")]
+    pub pipeline_group_id: Option<String>,
+
+    #[arg(long = "pipeline")]
+    pub pipeline_id: Option<String>,
+
+    #[arg(long = "node")]
+    pub node_id: Option<String>,
+
+    #[arg(long)]
+    pub contains: Option<String>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct MetricsFilterArgs {
+    #[arg(long = "metric-set")]
+    pub metric_sets: Vec<String>,
+
+    #[arg(long = "metric-name")]
+    pub metric_names: Vec<String>,
+
+    #[arg(long = "group")]
+    pub pipeline_group_id: Option<String>,
+
+    #[arg(long = "pipeline")]
+    pub pipeline_id: Option<String>,
+
+    #[arg(long = "core")]
+    pub core_id: Option<usize>,
+
+    #[arg(long = "node")]
+    pub node_id: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -289,14 +425,20 @@ pub struct ShutdownLookupArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct GroupShutdownArgs {
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, conflicts_with = "watch")]
     pub wait: bool,
 
     #[arg(long, value_parser = parse_duration_arg, default_value = "60s")]
     pub wait_timeout: Duration,
 
-    #[command(flatten)]
-    pub output: ReadOutputArgs,
+    #[arg(long, default_value_t = false, conflicts_with = "wait")]
+    pub watch: bool,
+
+    #[arg(long = "watch-interval", value_parser = parse_duration_arg, default_value = "2s")]
+    pub watch_interval: Duration,
+
+    #[arg(long, value_enum, default_value_t = GroupShutdownOutput::Human)]
+    pub output: GroupShutdownOutput,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -375,12 +517,141 @@ pub struct ShutdownWatchArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct GroupEventsGetArgs {
+    #[command(flatten)]
+    pub filters: GroupEventsFilterArgs,
+
+    #[command(flatten)]
+    pub output: ReadOutputArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GroupEventsWatchArgs {
+    #[command(flatten)]
+    pub filters: GroupEventsFilterArgs,
+
+    #[arg(long = "watch-interval", value_parser = parse_duration_arg, default_value = "2s")]
+    pub interval: Duration,
+
+    #[command(flatten)]
+    pub output: StreamOutputArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PipelineEventsGetArgs {
+    #[command(flatten)]
+    pub target: PipelineTargetArgs,
+
+    #[command(flatten)]
+    pub filters: PipelineEventsFilterArgs,
+
+    #[command(flatten)]
+    pub output: ReadOutputArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PipelineEventsWatchArgs {
+    #[command(flatten)]
+    pub target: PipelineTargetArgs,
+
+    #[command(flatten)]
+    pub filters: PipelineEventsFilterArgs,
+
+    #[arg(long = "watch-interval", value_parser = parse_duration_arg, default_value = "2s")]
+    pub interval: Duration,
+
+    #[command(flatten)]
+    pub output: StreamOutputArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GroupDiagnoseShutdownArgs {
+    #[arg(long, default_value_t = 200)]
+    pub logs_limit: usize,
+
+    #[command(flatten)]
+    pub output: ReadOutputArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PipelineDiagnoseRolloutArgs {
+    #[command(flatten)]
+    pub target: PipelineTargetArgs,
+
+    #[arg(long)]
+    pub rollout_id: Option<String>,
+
+    #[arg(long, default_value_t = 200)]
+    pub logs_limit: usize,
+
+    #[command(flatten)]
+    pub output: ReadOutputArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PipelineDiagnoseShutdownArgs {
+    #[command(flatten)]
+    pub target: PipelineTargetArgs,
+
+    #[arg(long)]
+    pub shutdown_id: Option<String>,
+
+    #[arg(long, default_value_t = 200)]
+    pub logs_limit: usize,
+
+    #[command(flatten)]
+    pub output: ReadOutputArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GroupBundleArgs {
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<PathBuf>,
+
+    #[arg(long, default_value_t = 200)]
+    pub logs_limit: usize,
+
+    #[arg(long, value_enum, default_value_t = MetricsShape::Compact)]
+    pub metrics_shape: MetricsShape,
+
+    #[arg(long, value_enum, default_value_t = BundleOutput::Json)]
+    pub output: BundleOutput,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PipelineBundleArgs {
+    #[command(flatten)]
+    pub target: PipelineTargetArgs,
+
+    #[arg(long)]
+    pub rollout_id: Option<String>,
+
+    #[arg(long)]
+    pub shutdown_id: Option<String>,
+
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<PathBuf>,
+
+    #[arg(long, default_value_t = 200)]
+    pub logs_limit: usize,
+
+    #[arg(long, value_enum, default_value_t = MetricsShape::Compact)]
+    pub metrics_shape: MetricsShape,
+
+    #[arg(long, value_enum, default_value_t = BundleOutput::Json)]
+    pub output: BundleOutput,
+}
+
+#[derive(Args, Debug, Clone)]
 pub struct LogsGetArgs {
     #[arg(long)]
     pub after: Option<u64>,
 
     #[arg(long)]
     pub limit: Option<usize>,
+
+    #[command(flatten)]
+    pub filters: LogsFilterArgs,
 
     #[command(flatten)]
     pub output: ReadOutputArgs,
@@ -401,6 +672,9 @@ pub struct LogsWatchArgs {
     pub interval: Duration,
 
     #[command(flatten)]
+    pub filters: LogsFilterArgs,
+
+    #[command(flatten)]
     pub output: StreamOutputArgs,
 }
 
@@ -414,6 +688,9 @@ pub struct MetricsGetArgs {
 
     #[arg(long, default_value_t = false)]
     pub keep_all_zeroes: bool,
+
+    #[command(flatten)]
+    pub filters: MetricsFilterArgs,
 
     #[command(flatten)]
     pub output: ReadOutputArgs,
@@ -432,6 +709,9 @@ pub struct MetricsWatchArgs {
 
     #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
     pub interval: Duration,
+
+    #[command(flatten)]
+    pub filters: MetricsFilterArgs,
 
     #[command(flatten)]
     pub output: StreamOutputArgs,
@@ -471,9 +751,31 @@ pub enum MutationOutput {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum GroupShutdownOutput {
+    Human,
+    Json,
+    Yaml,
+    Ndjson,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum BundleOutput {
+    Json,
+    Yaml,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum MetricsShape {
     Compact,
     Full,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum EventKind {
+    Request,
+    Success,
+    Error,
+    Log,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -513,5 +815,96 @@ mod tests {
             .expect("color flag should parse");
 
         assert_eq!(cli.color, ColorChoice::Always);
+    }
+
+    #[test]
+    fn groups_shutdown_watch_conflicts_with_wait() {
+        let result = Cli::try_parse_from(["dfctl", "groups", "shutdown", "--wait", "--watch"]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pipeline_events_watch_parses_filters() {
+        let cli = Cli::try_parse_from([
+            "dfctl",
+            "pipelines",
+            "events",
+            "watch",
+            "tenant-a",
+            "ingest",
+            "--kind",
+            "error",
+            "--node",
+            "receiver",
+            "--contains",
+            "deadline",
+            "--tail",
+            "5",
+            "--watch-interval",
+            "3s",
+            "--output",
+            "ndjson",
+        ])
+        .expect("pipeline events watch should parse");
+
+        match cli.command {
+            Command::Pipelines(PipelinesArgs {
+                command:
+                    PipelinesCommand::Events(PipelineEventsArgs {
+                        command: PipelineEventsCommand::Watch(args),
+                    }),
+            }) => {
+                assert_eq!(args.target.pipeline_group_id, "tenant-a");
+                assert_eq!(args.target.pipeline_id, "ingest");
+                assert_eq!(args.filters.kinds, vec![EventKind::Error]);
+                assert_eq!(args.filters.node_id.as_deref(), Some("receiver"));
+                assert_eq!(args.filters.contains.as_deref(), Some("deadline"));
+                assert_eq!(args.filters.tail, Some(5));
+                assert_eq!(args.interval, Duration::from_secs(3));
+                assert_eq!(args.output.output, StreamOutput::Ndjson);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn telemetry_filters_parse() {
+        let cli = Cli::try_parse_from([
+            "dfctl",
+            "telemetry",
+            "metrics",
+            "get",
+            "--metric-set",
+            "engine.pipeline",
+            "--metric-name",
+            "pending.sends",
+            "--group",
+            "tenant-a",
+            "--pipeline",
+            "ingest",
+            "--node",
+            "receiver",
+            "--core",
+            "2",
+        ])
+        .expect("telemetry metric filters should parse");
+
+        match cli.command {
+            Command::Telemetry(TelemetryArgs {
+                command:
+                    TelemetryCommand::Metrics(MetricsArgs {
+                        command: MetricsCommand::Get(args),
+                    }),
+            }) => {
+                assert_eq!(args.filters.metric_sets, vec!["engine.pipeline"]);
+                assert_eq!(args.filters.metric_names, vec!["pending.sends"]);
+                assert_eq!(args.filters.pipeline_group_id.as_deref(), Some("tenant-a"));
+                assert_eq!(args.filters.pipeline_id.as_deref(), Some("ingest"));
+                assert_eq!(args.filters.node_id.as_deref(), Some("receiver"));
+                assert_eq!(args.filters.core_id, Some(2));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 }

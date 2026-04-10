@@ -13,8 +13,14 @@ It is intended to be:
 
 ```text
 dfctl engine status|livez|readyz
-dfctl groups status|shutdown
-dfctl pipelines get|status|livez|readyz|reconfigure|shutdown
+dfctl groups describe|status|shutdown
+dfctl groups events get|watch
+dfctl groups diagnose shutdown
+dfctl groups bundle
+dfctl pipelines get|describe|status|livez|readyz|reconfigure|shutdown
+dfctl pipelines events get|watch
+dfctl pipelines diagnose rollout|shutdown
+dfctl pipelines bundle
 dfctl pipelines rollouts get|watch
 dfctl pipelines shutdowns get|watch
 dfctl telemetry logs get|watch
@@ -63,6 +69,8 @@ Long-running `watch` commands support:
 
 Mutation commands also support `--output ndjson` when used together with
 `--watch`.
+
+Bundle commands support `--output json` and `--output yaml`.
 
 ## Color Policy
 
@@ -115,6 +123,16 @@ Watch retained logs:
 dfctl telemetry logs watch --tail 50
 ```
 
+Watch retained logs for one pipeline only:
+
+```bash
+dfctl telemetry logs watch \
+  --tail 100 \
+  --group tenant-a \
+  --pipeline ingest \
+  --node receiver
+```
+
 Force terminal styling for a human watch session:
 
 ```bash
@@ -126,3 +144,38 @@ Watch compact metrics snapshots:
 ```bash
 dfctl telemetry metrics watch --shape compact --output ndjson
 ```
+
+Describe one pipeline with status, probes, and recent events:
+
+```bash
+dfctl pipelines describe tenant-a ingest
+```
+
+Watch recent pipeline events:
+
+```bash
+dfctl pipelines events watch tenant-a ingest --kind error --tail 20
+```
+
+Diagnose a stuck shutdown:
+
+```bash
+dfctl pipelines diagnose shutdown tenant-a ingest --shutdown-id shutdown-3
+```
+
+Export a support bundle:
+
+```bash
+dfctl pipelines bundle tenant-a ingest --file pipeline-bundle.json
+```
+
+Watch coordinated group shutdown progress:
+
+```bash
+dfctl groups shutdown --watch
+```
+
+`groups shutdown --watch` is currently a CLI-side heuristic built from repeated
+`groups status` polling. A future improvement should replace this with a
+first-class server-side group shutdown operation resource and matching SDK
+support.

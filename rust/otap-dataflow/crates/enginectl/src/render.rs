@@ -1,9 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::args::{MutationOutput, ReadOutput, StreamOutput};
+use crate::args::{BundleOutput, MutationOutput, ReadOutput, StreamOutput};
 use crate::error::CliError;
 use crate::style::HumanStyle;
+use crate::troubleshoot::{
+    DiagnosisFinding, DiagnosisReport, GroupShutdownWatchSnapshot, GroupsDescribeReport,
+    NormalizedEvent, PipelineDescribeReport,
+};
 use otap_df_admin_api::{engine, groups, pipelines, telemetry};
 use serde::Serialize;
 use serde_json::json;
@@ -69,6 +73,28 @@ pub fn write_mutation_output<T: Serialize>(
     Ok(())
 }
 
+pub fn write_bundle_output<T: Serialize>(
+    writer: &mut dyn Write,
+    output: BundleOutput,
+    value: &T,
+) -> Result<(), CliError> {
+    match output {
+        BundleOutput::Json => {
+            serde_json::to_writer_pretty(&mut *writer, value).map_err(io_serialize_error)?;
+            writeln!(writer)?;
+        }
+        BundleOutput::Yaml => {
+            write!(
+                writer,
+                "{}",
+                serde_yaml::to_string(value).map_err(io_serialize_error)?
+            )?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
 pub fn write_snapshot_event<T: Serialize>(
     writer: &mut dyn Write,
     resource: &str,
@@ -99,6 +125,24 @@ pub fn write_log_event(
     Ok(())
 }
 
+pub fn write_event_output<T: Serialize>(
+    writer: &mut dyn Write,
+    resource: &str,
+    value: &T,
+) -> Result<(), CliError> {
+    serde_json::to_writer(
+        &mut *writer,
+        &json!({
+            "event": resource,
+            "data": value
+        }),
+    )
+    .map_err(io_serialize_error)?;
+    writeln!(writer)?;
+    writer.flush()?;
+    Ok(())
+}
+
 pub fn render_engine_status(style: &HumanStyle, status: &engine::Status) -> String {
     let mut lines = vec![
         field(style, "generated_at", status.generated_at.to_string()),
@@ -117,6 +161,44 @@ pub fn render_groups_status(style: &HumanStyle, status: &groups::Status) -> Stri
     ];
     for (name, pipeline) in &status.pipelines {
         lines.push(pipeline_summary_line(style, name, pipeline));
+    }
+    lines.join("\n")
+}
+
+pub fn render_groups_describe(style: &HumanStyle, report: &GroupsDescribeReport) -> String {
+    let mut lines = vec![
+        field(style, "generated_at", &report.status.generated_at),
+        field(style, "total_pipelines", report.summary.total_pipelines),
+        field(style, "running_pipelines", report.summary.running_pipelines),
+        field(style, "ready_pipelines", report.summary.ready_pipelines),
+        field(
+            style,
+            "terminal_pipelines",
+            report.summary.terminal_pipelines,
+        ),
+    ];
+    if !report.summary.non_ready_pipelines.is_empty() {
+        lines.push(field(
+            style,
+            "non_ready",
+            report.summary.non_ready_pipelines.join(", "),
+        ));
+    }
+    if !report.summary.non_terminal_pipelines.is_empty() {
+        lines.push(field(
+            style,
+            "non_terminal",
+            report.summary.non_terminal_pipelines.join(", "),
+        ));
+    }
+    for (name, pipeline) in &report.status.pipelines {
+        lines.push(pipeline_summary_line(style, name, pipeline));
+    }
+    if !report.recent_events.is_empty() {
+        lines.push(field(style, "recent_events", report.recent_events.len()));
+        for event in report.recent_events.iter().take(8) {
+            lines.push(render_event_line(style, event));
+        }
     }
     lines.join("\n")
 }
@@ -146,6 +228,71 @@ pub fn render_pipeline_probe(style: &HumanStyle, probe: &pipelines::ProbeResult)
     let mut lines = vec![state_field(style, "status", format!("{:?}", probe.status))];
     if let Some(message) = &probe.message {
         lines.push(field(style, "message", message));
+    }
+    lines.join("\n")
+}
+
+pub fn render_pipeline_describe(style: &HumanStyle, report: &PipelineDescribeReport) -> String {
+    let mut lines = vec![
+        field(
+            style,
+            "pipeline_group_id",
+            &report.details.pipeline_group_id,
+        ),
+        field(style, "pipeline_id", &report.details.pipeline_id),
+        field(
+            style,
+            "active_generation",
+            report
+                .details
+                .active_generation
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        ),
+        state_field(style, "livez", format!("{:?}", report.livez.status)),
+        state_field(style, "readyz", format!("{:?}", report.readyz.status)),
+        field(
+            style,
+            "running_cores",
+            format!(
+                "{}/{}",
+                report.status.running_cores, report.status.total_cores
+            ),
+        ),
+    ];
+    if let Some(message) = &report.livez.message {
+        lines.push(field(style, "livez_message", message));
+    }
+    if let Some(message) = &report.readyz.message {
+        lines.push(field(style, "readyz_message", message));
+    }
+    if let Some(rollout) = &report.status.rollout {
+        lines.push(format!(
+            "{} id={} state={} target_generation={}",
+            style.label("rollout:"),
+            rollout.rollout_id,
+            style.state(format!("{:?}", rollout.state)),
+            rollout.target_generation
+        ));
+    }
+    for condition in &report.status.conditions {
+        lines.push(condition_line(style, condition));
+    }
+    for (core_id, core) in &report.status.cores {
+        lines.push(format!(
+            "{} {} phase={:?} delete_pending={} last_heartbeat_time={}",
+            style.label("core:"),
+            core_id,
+            core.phase,
+            core.delete_pending,
+            core.last_heartbeat_time
+        ));
+    }
+    if !report.recent_events.is_empty() {
+        lines.push(field(style, "recent_events", report.recent_events.len()));
+        for event in report.recent_events.iter().take(8) {
+            lines.push(render_event_line(style, event));
+        }
     }
     lines.join("\n")
 }
@@ -372,6 +519,105 @@ pub fn render_metrics_full(style: &HumanStyle, response: &telemetry::MetricsResp
     lines.join("\n")
 }
 
+pub fn render_events(style: &HumanStyle, events: &[NormalizedEvent]) -> String {
+    let mut lines = vec![field(style, "event_count", events.len())];
+    for event in events {
+        lines.push(render_event_line(style, event));
+    }
+    lines.join("\n")
+}
+
+pub fn render_event_line(style: &HumanStyle, event: &NormalizedEvent) -> String {
+    let target = format!("{}:{}", event.pipeline_group_id, event.pipeline_id);
+    let extra = match (&event.message, &event.detail) {
+        (Some(message), Some(detail)) => format!(" message={message} detail={detail}"),
+        (Some(message), None) => format!(" message={message}"),
+        (None, Some(detail)) => format!(" detail={detail}"),
+        (None, None) => String::new(),
+    };
+    let node = event
+        .node_id
+        .as_ref()
+        .map(|value| format!(" node={value}"))
+        .unwrap_or_default();
+    let generation = event
+        .deployment_generation
+        .map(|value| format!(" generation={value}"))
+        .unwrap_or_default();
+    format!(
+        "{} {} core={} kind={} name={}{}{}{}",
+        style.dim(&event.time),
+        style.target(target),
+        event.core_id,
+        style.state(format!("{:?}", event.kind)),
+        style.label(&event.name),
+        generation,
+        node,
+        extra
+    )
+}
+
+pub fn render_diagnosis(style: &HumanStyle, report: &DiagnosisReport) -> String {
+    let mut lines = vec![
+        field(style, "scope", &report.scope),
+        state_field(style, "status", format!("{:?}", report.status)),
+        field(style, "summary", &report.summary),
+        field(style, "findings", report.findings.len()),
+    ];
+    for finding in &report.findings {
+        lines.push(render_finding_line(style, finding));
+        for evidence in &finding.evidence {
+            lines.push(format!(
+                "  {} {} {}",
+                style.label("evidence:"),
+                evidence
+                    .time
+                    .as_ref()
+                    .map(|value| style.dim(value))
+                    .unwrap_or_default(),
+                evidence.message
+            ));
+        }
+    }
+    for step in &report.recommended_next_steps {
+        lines.push(format!("{} {}", style.label("next_step:"), step));
+    }
+    lines.join("\n")
+}
+
+pub fn render_group_shutdown_watch(
+    style: &HumanStyle,
+    snapshot: &GroupShutdownWatchSnapshot,
+) -> String {
+    let mut lines = vec![
+        field(style, "started_at", &snapshot.started_at),
+        field(style, "generated_at", &snapshot.generated_at),
+        state_field(style, "request_status", &snapshot.request_status),
+        field(style, "elapsed_ms", snapshot.elapsed_ms),
+        field(
+            style,
+            "terminal_pipelines",
+            format!(
+                "{}/{}",
+                snapshot.terminal_pipelines, snapshot.total_pipelines
+            ),
+        ),
+        state_field(style, "all_terminal", snapshot.all_terminal.to_string()),
+    ];
+    for pipeline in &snapshot.pipelines {
+        lines.push(format!(
+            "{} {} running={}/{} terminal={} phases={}",
+            style.header("pipeline:"),
+            pipeline.pipeline,
+            pipeline.running_cores,
+            pipeline.total_cores,
+            style.state(pipeline.terminal.to_string()),
+            pipeline.phases.join(",")
+        ));
+    }
+    lines.join("\n")
+}
+
 pub fn write_human(writer: &mut dyn Write, content: &str) -> Result<(), CliError> {
     writeln!(writer, "{content}")?;
     writer.flush()?;
@@ -422,6 +668,16 @@ fn pipeline_summary_line(style: &HumanStyle, name: &str, status: &pipelines::Sta
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_string()),
         rollout
+    )
+}
+
+fn render_finding_line(style: &HumanStyle, finding: &DiagnosisFinding) -> String {
+    format!(
+        "{} code={} severity={} summary={}",
+        style.label("finding:"),
+        finding.code,
+        style.state(format!("{:?}", finding.severity)),
+        finding.summary
     )
 }
 

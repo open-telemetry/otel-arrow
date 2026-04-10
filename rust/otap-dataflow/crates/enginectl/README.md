@@ -63,6 +63,7 @@ dfctl groups status
 export GROUP=tenant-a
 export PIPE=ingest
 
+dfctl pipelines describe "$GROUP" "$PIPE"
 dfctl pipelines get "$GROUP" "$PIPE"
 dfctl pipelines status "$GROUP" "$PIPE"
 dfctl pipelines livez "$GROUP" "$PIPE"
@@ -82,6 +83,22 @@ Human-friendly watch sessions:
 ```bash
 dfctl telemetry logs watch --tail 50
 dfctl telemetry metrics watch --shape compact
+```
+
+Scope the output when you are debugging one pipeline:
+
+```bash
+dfctl telemetry logs watch \
+  --tail 100 \
+  --group "$GROUP" \
+  --pipeline "$PIPE" \
+  --node receiver
+
+dfctl telemetry metrics get \
+  --shape compact \
+  --group "$GROUP" \
+  --pipeline "$PIPE" \
+  --metric-name pending.sends
 ```
 
 Machine-friendly watch sessions:
@@ -127,6 +144,50 @@ dfctl pipelines shutdown "$GROUP" "$PIPE" --watch
 dfctl pipelines shutdowns get "$GROUP" "$PIPE" shutdown-1
 dfctl pipelines shutdowns watch "$GROUP" "$PIPE" shutdown-1
 ```
+
+### Troubleshoot a stuck rollout or shutdown
+
+Use the composite views first:
+
+```bash
+dfctl groups describe
+dfctl pipelines describe "$GROUP" "$PIPE"
+```
+
+Inspect recent controller events:
+
+```bash
+dfctl groups events get --tail 20
+dfctl groups events watch --kind error --tail 20
+
+dfctl pipelines events get "$GROUP" "$PIPE" --tail 20
+dfctl pipelines events watch "$GROUP" "$PIPE" --kind error --tail 20
+```
+
+Generate a diagnosis report from the current status, retained logs, and metrics:
+
+```bash
+dfctl groups diagnose shutdown
+dfctl pipelines diagnose rollout "$GROUP" "$PIPE"
+dfctl pipelines diagnose shutdown "$GROUP" "$PIPE" --shutdown-id shutdown-1
+```
+
+Export a support bundle for humans or other agents:
+
+```bash
+dfctl groups bundle --file shutdown-bundle.json
+dfctl pipelines bundle "$GROUP" "$PIPE" --output yaml > pipeline-bundle.yaml
+```
+
+Watch coordinated shutdown progress client-side:
+
+```bash
+dfctl groups shutdown --watch
+```
+
+`groups shutdown --watch` is a CLI-side heuristic built from repeated
+`groups status` snapshots. It is useful for troubleshooting, but it is not yet
+an authoritative server-side group shutdown resource.
 
 ### Connect to a remote engine with TLS
 
@@ -218,6 +279,11 @@ $CTL pipelines status "$GROUP" "$PIPE" --output json \
 One-shot commands support:
 
 - `--output human`
+- `--output json`
+- `--output yaml`
+
+Bundle commands support:
+
 - `--output json`
 - `--output yaml`
 
