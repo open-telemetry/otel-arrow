@@ -95,7 +95,7 @@ jobs:
           fail_ci_if_error: true
 
   # otap-dataflow on ARM and macOS (non-required): build once per OS, fan out tests.
-  # Uses default features only — full feature coverage is handled by the required x86/Windows jobs.
+  # Uses default features only -- full feature coverage is handled by the required x86/Windows jobs.
   build_extra:
     strategy:
       fail-fast: false
