@@ -1,0 +1,82 @@
+# Dedicated workflow for validation scenario tests that require sequential execution.
+#
+# These tests spin up full pipelines with Docker containers and compete for
+# system resources when run in parallel. They are gated behind the custom
+# `validation_tests` cfg flag and excluded from the main Rust-CI workflow.
+#
+# Tests must be prefixed with `validation_` to be selected by the nextest
+# filter expression.
+#
+# Trigger manually from the GitHub Actions UI.
+name: Rust Validation Tests
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  merge_group:
+  # workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validation_tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      - name: Free disk space
+        run: |
+          echo "disk usage before"
+          df -h
+
+          sudo rm -rf /usr/lib/jvm
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia*
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google
+          sudo rm -rf /opt/az
+          sudo rm -rf /usr/local/share/powershell
+
+          echo "disk usage after"
+          df -h
+
+      - name: Install nextest
+        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        with:
+          tool: cargo-nextest
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.1"
+      - name: Build the test collector
+        run: make otelarrowcol
+
+      - name: Run validation tests
+        env:
+          RUSTFLAGS: "--cfg validation_tests"
+        run: >
+          cargo nextest run
+          --workspace
+          --all-features
+          --test-threads 1
+          -E 'test(/::validation_[^:]+$/)'
+        working-directory: ./rust/otap-dataflow

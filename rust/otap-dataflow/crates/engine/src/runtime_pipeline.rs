@@ -17,6 +17,7 @@ use crate::control::{
 };
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
+use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::{
     NodeMetricHandles, PipelineCompletionMsgDispatcher, RuntimeCtrlMsgManager,
@@ -35,6 +36,7 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::runtime::Builder;
+use tokio::sync::watch;
 use tokio::task::LocalSet;
 
 /// Build produced-request metric sets indexed by sorted output port name,
@@ -180,6 +182,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         control_plane_metrics_flush_interval: Duration,
+        memory_pressure_rx: watch::Receiver<MemoryPressureChanged>,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         runtime_ctrl_msg_rx: RuntimeCtrlMsgReceiver<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
@@ -398,6 +401,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         let manager_pipeline_context = pipeline_context.clone();
         let manager_metrics_reporter = metrics_reporter.clone();
         let manager_telemetry_policy = telemetry_policy.clone();
+        let manager_memory_pressure_rx = memory_pressure_rx;
         let dispatcher_pipeline_context = pipeline_context.clone();
         let dispatcher_metrics_reporter = metrics_reporter.clone();
         let dispatcher_telemetry_policy = telemetry_policy.clone();
@@ -406,6 +410,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 pipeline_key,
                 manager_pipeline_context,
                 runtime_ctrl_msg_rx,
+                manager_memory_pressure_rx,
                 control_senders,
                 event_reporter,
                 manager_metrics_reporter,

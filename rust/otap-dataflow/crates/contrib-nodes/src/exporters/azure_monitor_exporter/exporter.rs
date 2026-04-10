@@ -207,6 +207,13 @@ impl AzureMonitorExporter {
             None => return Ok(()), // No pending batch - nothing to do
         };
 
+        self.metrics
+            .borrow_mut()
+            .add_batch_uncompressed_size(pending_batch.uncompressed_size as f64);
+        self.metrics
+            .borrow_mut()
+            .add_batch_size(pending_batch.compressed_data.len() as f64);
+
         let client = self.client_pool.take();
         if let Some(completed_export) = self
             .in_flight_exports

@@ -18,6 +18,11 @@ use otap_df_controller::startup;
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
+/// Project license text (Apache-2.0), embedded at compile time.
+const LICENSE_TEXT: &str = include_str!("../LICENSE");
+
+/// Third-party notices, embedded at compile time from the repository root.
+const THIRD_PARTY_NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.txt");
 
 fn memory_allocator_name() -> &'static str {
     if cfg!(feature = "mimalloc") {
@@ -131,6 +136,10 @@ struct Args {
     /// - Component-specific config validation (when supported by the component)
     #[arg(long)]
     validate_and_exit: bool,
+
+    /// Print the project license (Apache-2.0) and third-party notices, then exit.
+    #[arg(long)]
+    license: bool,
 }
 
 fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
@@ -138,9 +147,8 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
     //  S -> digit | CoreRange | S,",",S
     //  CoreRange -> digit,"..",digit | digit,"..=",digit | digit,"-",digit
     //  digit -> [0-9]+
-    Ok(CoreAllocation::CoreSet {
-        set: s
-            .split(',')
+    Ok(CoreAllocation::core_set(
+        s.split(',')
             .map(|part| {
                 part.trim()
                     .parse::<usize>()
@@ -149,14 +157,14 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
                     .or_else(|_| parse_core_id_range(part))
             })
             .collect::<Result<Vec<CoreRange>, String>>()?,
-    })
+    ))
 }
 
 fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
     // Accept formats: "a..=b", "a..b", "a-b"
     let normalized = s.replace("..=", "-").replace("..", "-");
-    let mut parts = normalized.split('-');
-    let start = parts
+    let mut parts: std::str::Split<'_, char> = normalized.split('-');
+    let start: usize = parts
         .next()
         .ok_or_else(|| "missing start of core id range".to_string())?
         .trim()
@@ -186,7 +194,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         core_id_range,
         http_admin_bind,
         validate_and_exit,
+        license,
     } = Args::parse();
+
+    if license {
+        println!("{LICENSE_TEXT}");
+        println!("\n--- Third-Party Notices ---\n");
+        println!("{THIRD_PARTY_NOTICES}");
+        std::process::exit(0);
+    }
 
     println!(
         "{}",
@@ -245,19 +261,18 @@ mod tests {
     fn parse_core_allocation_ok() {
         assert_eq!(
             parse_core_id_allocation("0..=4,5,6-7"),
-            Ok(CoreAllocation::CoreSet {
-                set: vec![
-                    CoreRange { start: 0, end: 4 },
-                    CoreRange { start: 5, end: 5 },
-                    CoreRange { start: 6, end: 7 }
-                ]
-            })
+            Ok(CoreAllocation::core_set(vec![
+                CoreRange { start: 0, end: 4 },
+                CoreRange { start: 5, end: 5 },
+                CoreRange { start: 6, end: 7 },
+            ]))
         );
         assert_eq!(
             parse_core_id_allocation("0..4"),
-            Ok(CoreAllocation::CoreSet {
-                set: vec![CoreRange { start: 0, end: 4 }]
-            })
+            Ok(CoreAllocation::core_set(vec![CoreRange {
+                start: 0,
+                end: 4,
+            }]))
         );
     }
 
@@ -343,6 +358,40 @@ connections:
     }
 
     #[test]
+    fn parse_license_flag() {
+        let args = Args::parse_from(["df_engine", "--license"]);
+        assert!(args.license);
+    }
+
+    #[test]
+    fn license_flag_is_false_by_default() {
+        let args = Args::parse_from(["df_engine", "--validate-and-exit"]);
+        assert!(!args.license);
+    }
+
+    #[test]
+    #[allow(clippy::const_is_empty)]
+    fn license_text_is_embedded() {
+        assert!(
+            !LICENSE_TEXT.is_empty(),
+            "LICENSE should be embedded at compile time"
+        );
+        assert!(
+            LICENSE_TEXT.contains("Apache License"),
+            "LICENSE should contain Apache License text"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::const_is_empty)]
+    fn third_party_notices_are_embedded() {
+        assert!(
+            !THIRD_PARTY_NOTICES.is_empty(),
+            "THIRD_PARTY_NOTICES should be embedded at compile time"
+        );
+    }
+
+    #[test]
     fn args_reject_conflicting_core_allocation_flags() {
         let err = Args::try_parse_from([
             "df_engine",
@@ -388,12 +437,10 @@ connections:
         .expect("args should parse");
         assert_eq!(
             args.core_id_range,
-            Some(CoreAllocation::CoreSet {
-                set: vec![
-                    CoreRange { start: 1, end: 3 },
-                    CoreRange { start: 7, end: 7 }
-                ]
-            })
+            Some(CoreAllocation::core_set(vec![
+                CoreRange { start: 1, end: 3 },
+                CoreRange { start: 7, end: 7 },
+            ]))
         );
         assert_eq!(args.num_cores, None);
     }

@@ -1,0 +1,47 @@
+name: Docker Build Check
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'rust/otap-dataflow/Dockerfile'
+      - 'rust/otap-dataflow/cross-arch-build.sh'
+      - 'rust/otap-dataflow/Cargo.toml'
+      - 'rust/otap-dataflow/Cargo.lock'
+      - 'rust/otap-dataflow/src/**'
+      - 'rust/otap-dataflow/crates/**'
+      - 'THIRD_PARTY_NOTICES.txt'
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build Docker image
+        run: |
+          cd rust/otap-dataflow
+          docker buildx build \
+            --build-context otel-arrow=../../ \
+            -f Dockerfile \
+            -t df_engine:check \
+            --load \
+            .

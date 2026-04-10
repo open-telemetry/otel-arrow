@@ -432,6 +432,16 @@ impl SegmentStore {
         Ok(())
     }
 
+    /// Schedules deferred cleanup of an orphaned segment file.
+    ///
+    /// This is used to clean up partially-written or uncompleted segment files
+    /// that exist on disk but are not tracked in the segment store's in-memory registry.
+    /// The file is not charged against the disk budget (since it was never successfully
+    /// registered), but will be retried periodically via the deferred delete mechanism.
+    pub fn defer_orphaned_segment_cleanup(&self, seq: SegmentSeq) {
+        self.defer_delete(seq, 0);
+    }
+
     /// Checks if an I/O error is a sharing violation (Windows-specific).
     ///
     /// On Windows, this occurs when trying to delete a file that's still open
@@ -1539,5 +1549,65 @@ mod tests {
         );
         assert!(path.exists(), "file should still exist");
         assert_eq!(budget.used(), tracked_size, "budget should remain charged");
+    }
+
+    #[test]
+    fn defer_orphaned_segment_cleanup_schedules_without_budget() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        let budget = Arc::new(DiskBudget::new(
+            10_000_000,
+            1_000_000,
+            RetentionPolicy::Backpressure,
+        ));
+        let store =
+            SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+
+        // Create an orphaned segment file (not registered in the store).
+        // This simulates a partially-written segment from a failed flush.
+        let seq = SegmentSeq::new(999);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        std::fs::write(&path, vec![0u8; 5000]).unwrap();
+        assert!(path.exists(), "orphaned file should exist on disk");
+
+        // Verify the file is NOT in the segment registry (orphaned).
+        {
+            let segments = store.segments.read();
+            assert!(
+                !segments.contains_key(&seq),
+                "orphaned file should not be registered"
+            );
+        }
+
+        // Budget should be empty since the file was never registered.
+        assert_eq!(budget.used(), 0, "budget should not track orphaned files");
+
+        // Schedule deferred cleanup of the orphaned file.
+        store.defer_orphaned_segment_cleanup(seq);
+
+        // Verify the file is scheduled in pending_deletes with file_size = 0.
+        assert_eq!(
+            store.pending_delete_count(),
+            1,
+            "orphaned file should be scheduled for cleanup"
+        );
+
+        // Budget should remain 0 (orphaned files don't contribute to budget).
+        assert_eq!(
+            budget.used(),
+            0,
+            "budget should remain 0 for orphaned cleanup"
+        );
+
+        // Retry the pending delete — the orphaned file should be cleaned up.
+        let cleared = store.retry_pending_deletes();
+        assert_eq!(cleared, 1, "orphaned file should be successfully deleted");
+        assert_eq!(store.pending_delete_count(), 0);
+        assert!(!path.exists(), "orphaned file should be removed from disk");
+
+        // Budget should remain 0 throughout (no budget impact).
+        assert_eq!(budget.used(), 0, "budget should remain 0 after cleanup");
     }
 }
