@@ -84,7 +84,7 @@ use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::functions::{regexp_capture, substring};
+use crate::pipeline::functions::{regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -709,7 +709,7 @@ impl ExprLogicalPlanner {
             other => Cow::Borrowed(other),
         };
 
-        let (df_udf_args, source_scope, requires_dict_downcast) = self.plan_function_args(
+        let (mut df_udf_args, source_scope, requires_dict_downcast) = self.plan_function_args(
             [
                 capture_text_expr.get_haystack(),
                 &capture_scalar_expr,
@@ -721,8 +721,15 @@ impl ExprLogicalPlanner {
 
         Ok(ScopedLogicalExpr {
             logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
-                regexp_capture(),
-                df_udf_args,
+                regexp_substr(),
+                vec![
+                    df_udf_args.remove(0), // source
+                    df_udf_args.remove(0), // pattern
+                    lit(1),                // start
+                    lit(1),                // occurrence
+                    Expr::default(),       // flags = literal Null
+                    df_udf_args.remove(0), // group
+                ],
             )),
             expr_type: ExprLogicalType::String,
             source: source_scope,

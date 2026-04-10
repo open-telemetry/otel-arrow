@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, StringArray,
-    StringBuilder, make_array,
+    Array, ArrayRef, AsArray, DictionaryArray, PrimitiveArray, StringArray, StringBuilder,
+    make_array,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::datatypes::{
@@ -25,64 +25,85 @@ use datafusion::logical_expr::{
 };
 use datafusion::scalar::ScalarValue;
 
-const FUNC_NAME: &str = "regexp_capture";
+const FUNC_NAME: &str = "regexp_substr";
 
-/// This scalar UDF implementation takes three arguments: source (string), regex (string) and
-/// capture group (int) and returns the portion of the text from the source that is matched by
-/// the capture group.
+/// This scalar UDF implements the SQL Server `REGEXP_SUBSTR` function signature:
 ///
-/// For example, if passed: `regexp_capture("hello world", ".*hello (.*).*", 1)`, it would
-/// return `"world"`. It returns `None` if the regex does not match the source, or if the
-/// capture group is not in the regex.
+/// ```text
+/// regexp_substr(string_expression, pattern [, start [, occurrence [, flags [, group]]]])
+/// ```
 ///
-/// Capture group 0 represents the full source text that matched. For example if passed
-/// `regexp_capture("hello world", ".*hello (.*).*", 0)`, this would return "hello world".
+/// It returns the portion of `string_expression` that matches the `pattern` (or a capture
+/// group within it). Returns `NULL` if no match is found.
 ///
-/// If capture group < 0, this returns null.
+/// # Parameters
 ///
-/// # Return Type:
+/// - `string_expression` (string): The source text to search.
+/// - `pattern` (string): The regular expression pattern.
+/// - `start` (integer, optional, default `1`): 1-based character position to begin searching.
+///   Must be >= 1. If greater than the string length, returns NULL.
+/// - `occurrence` (integer, optional, default `1`): Which occurrence of the pattern to return.
+///   Must be >= 1.
+/// - `flags` (string, optional): Regex modifier flags passed to the regex engine. Supported:
+///   `i` (case-insensitive), `m` (multi-line), `s` (dot-all), `c` (case-sensitive, default).
+/// - `group` (integer, optional, default `0`): Which capture group to return. `0` returns the
+///   full match. If the group is not present in the pattern, returns NULL. Negative → NULL.
 ///
-/// If the source is a dictionary, this will try to keep the return type as a dictionary array.
-/// However, if non-scalar regexs/capture groups are passed for each row of input, we can't
-/// guarantee the dictionary won't overflow. For this reason, if the regex/capture group args
-/// are not scalars, the return type will be the native string array.
+/// # Return Type
 ///
-///
+/// If the source is a dictionary and all other arguments are scalars (or absent), the return
+/// type preserves the dictionary encoding. Otherwise the return type is `Utf8`.
 #[derive(Debug, PartialEq, Eq, Hash)]
-pub struct RegexpCaptureFunc {
+pub struct RegexpSubstrFunc {
     signature: Signature,
 }
 
-impl Default for RegexpCaptureFunc {
+impl Default for RegexpSubstrFunc {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RegexpCaptureFunc {
+/// Build a `Coercible` type signature for a given arity (2..=6).
+///
+/// Parameter types in order:
+///   0: String  (source)
+///   1: String  (pattern)
+///   2: Integer (start)
+///   3: Integer (occurrence)
+///   4: String  (flags)
+///   5: Integer (group)
+fn coercible_for_arity(n: usize) -> TypeSignature {
+    let all_types: [Coercion; 6] = [
+        Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
+        Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
+        Coercion::new_exact(TypeSignatureClass::Integer),
+        Coercion::new_exact(TypeSignatureClass::Integer),
+        Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
+        Coercion::new_exact(TypeSignatureClass::Integer),
+    ];
+    TypeSignature::Coercible(all_types.into_iter().take(n).collect())
+}
+
+/// All parameter names (truncated to match the arity at construction).
+const PARAM_NAMES: &[&str] = &["str", "pattern", "start", "occurrence", "flags", "group"];
+
+impl RegexpSubstrFunc {
     pub fn new() -> Self {
         Self {
             signature: Signature::one_of(
-                vec![TypeSignature::Coercible(vec![
-                    Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
-                    Coercion::new_exact(TypeSignatureClass::Native(Arc::new(NativeType::String))),
-                    Coercion::new_exact(TypeSignatureClass::Integer),
-                ])],
+                (2..=6).map(coercible_for_arity).collect(),
                 Volatility::Immutable,
             )
-            .with_parameter_names(vec![
-                "str".to_string(),
-                "pattern".to_string(),
-                "capture_group".to_string(),
-            ])
-            // safety: these parameter names are valid because they match the arity of the
+            .with_parameter_names(PARAM_NAMES.iter().map(|s| s.to_string()).collect())
+            // safety: these parameter names are valid because they cover the max arity of the
             // signature and there are no duplicates, so it is safe to expect here
             .expect("valid parameter names"),
         }
     }
 }
 
-impl ScalarUDFImpl for RegexpCaptureFunc {
+impl ScalarUDFImpl for RegexpSubstrFunc {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -104,36 +125,60 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
     }
 
     fn return_field_from_args(&self, args: ReturnFieldArgs<'_>) -> Result<FieldRef> {
-        if args.arg_fields.len() != 3 || args.scalar_arguments.len() != 3 {
+        let n = args.arg_fields.len();
+        if !(2..=6).contains(&n) || args.scalar_arguments.len() != n {
             return exec_err!(
-                "{} `return_field_from_args` called with invalid number of args. expected 3",
+                "{} `return_field_from_args` called with invalid number of args. expected 2-6",
                 FUNC_NAME
             );
         }
 
-        // see note in type documentation for reasoning about the return type
-        let return_type =
-            if args.scalar_arguments[1].is_some() && args.scalar_arguments[2].is_some() {
-                args.arg_fields[0].data_type().clone()
-            } else {
-                DataType::Utf8
-            };
+        // Preserve the source data type (e.g. dictionary encoding) only when every
+        // non-source argument is a scalar. If any is a non-scalar array we fall back
+        // to Utf8.
+        let all_extra_scalar = args.scalar_arguments[1..].iter().all(|s| s.is_some());
+        let return_type = if all_extra_scalar {
+            args.arg_fields[0].data_type().clone()
+        } else {
+            DataType::Utf8
+        };
 
         Ok(Arc::new(Field::new(self.name(), return_type, true)))
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        if args.args.len() != 3 {
+        let n = args.args.len();
+        if !(2..=6).contains(&n) {
             return exec_err!(
-                "{} `return_field_from_args` called with invalid number of args. expected 3. got {}",
+                "{} called with invalid number of args. expected 2-6. got {}",
                 FUNC_NAME,
-                args.args.len()
+                n
             );
         }
 
         let sources = &args.args[0];
-        let regexes = &args.args[1];
-        let groups = &args.args[2];
+        let patterns = &args.args[1];
+        let starts = if n >= 3 {
+            args.args[2].clone()
+        } else {
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(1)))
+        };
+        let occurrences = if n >= 4 {
+            args.args[3].clone()
+        } else {
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(1)))
+        };
+        let flags = if n >= 5 {
+            args.args[4].clone()
+        } else {
+            ColumnarValue::Scalar(ScalarValue::Utf8(None))
+        };
+        let groups = if n >= 6 {
+            args.args[5].clone()
+        } else {
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(0)))
+        };
+
         let len = match sources {
             ColumnarValue::Array(arr) => arr.len(),
             ColumnarValue::Scalar(_) => 1,
@@ -143,7 +188,14 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
         let result = match source_arr.data_type() {
             DataType::Utf8 => {
                 let str_arr = source_arr.as_string::<i32>();
-                regex_capture(str_arr.iter(), regexes, groups)
+                regex_substr(
+                    str_arr.iter(),
+                    patterns,
+                    &starts,
+                    &occurrences,
+                    &flags,
+                    &groups,
+                )
             }
             DataType::Dictionary(k, v) => {
                 if !matches!(v.as_ref(), &DataType::Utf8) {
@@ -155,30 +207,70 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
                 }
 
                 match k.as_ref() {
-                    DataType::Int8 => {
-                        invoke_for_dict_source::<Int8Type>(&source_arr, regexes, groups)
-                    }
-                    DataType::Int16 => {
-                        invoke_for_dict_source::<Int16Type>(&source_arr, regexes, groups)
-                    }
-                    DataType::Int32 => {
-                        invoke_for_dict_source::<Int32Type>(&source_arr, regexes, groups)
-                    }
-                    DataType::Int64 => {
-                        invoke_for_dict_source::<Int64Type>(&source_arr, regexes, groups)
-                    }
-                    DataType::UInt8 => {
-                        invoke_for_dict_source::<UInt8Type>(&source_arr, regexes, groups)
-                    }
-                    DataType::UInt16 => {
-                        invoke_for_dict_source::<UInt16Type>(&source_arr, regexes, groups)
-                    }
-                    DataType::UInt32 => {
-                        invoke_for_dict_source::<UInt32Type>(&source_arr, regexes, groups)
-                    }
-                    DataType::UInt64 => {
-                        invoke_for_dict_source::<UInt64Type>(&source_arr, regexes, groups)
-                    }
+                    DataType::Int8 => invoke_for_dict_source::<Int8Type>(
+                        &source_arr,
+                        patterns,
+                        &starts,
+                        &occurrences,
+                        &flags,
+                        &groups,
+                    ),
+                    DataType::Int16 => invoke_for_dict_source::<Int16Type>(
+                        &source_arr,
+                        patterns,
+                        &starts,
+                        &occurrences,
+                        &flags,
+                        &groups,
+                    ),
+                    DataType::Int32 => invoke_for_dict_source::<Int32Type>(
+                        &source_arr,
+                        patterns,
+                        &starts,
+                        &occurrences,
+                        &flags,
+                        &groups,
+                    ),
+                    DataType::Int64 => invoke_for_dict_source::<Int64Type>(
+                        &source_arr,
+                        patterns,
+                        &starts,
+                        &occurrences,
+                        &flags,
+                        &groups,
+                    ),
+                    DataType::UInt8 => invoke_for_dict_source::<UInt8Type>(
+                        &source_arr,
+                        patterns,
+                        &starts,
+                        &occurrences,
+                        &flags,
+                        &groups,
+                    ),
+                    DataType::UInt16 => invoke_for_dict_source::<UInt16Type>(
+                        &source_arr,
+                        patterns,
+                        &starts,
+                        &occurrences,
+                        &flags,
+                        &groups,
+                    ),
+                    DataType::UInt32 => invoke_for_dict_source::<UInt32Type>(
+                        &source_arr,
+                        patterns,
+                        &starts,
+                        &occurrences,
+                        &flags,
+                        &groups,
+                    ),
+                    DataType::UInt64 => invoke_for_dict_source::<UInt64Type>(
+                        &source_arr,
+                        patterns,
+                        &starts,
+                        &occurrences,
+                        &flags,
+                        &groups,
+                    ),
                     other => exec_err!("Invalid dictionary key {other:?}"),
                 }
             }
@@ -190,9 +282,10 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
             }
         }?;
 
-        let all_scalar = matches!(sources, ColumnarValue::Scalar(_))
-            && matches!(regexes, ColumnarValue::Scalar(_))
-            && matches!(groups, ColumnarValue::Scalar(_));
+        let all_scalar = args
+            .args
+            .iter()
+            .all(|a| matches!(a, ColumnarValue::Scalar(_)));
 
         if all_scalar {
             let scalar = ScalarValue::try_from_array(&result, 0)?;
@@ -209,25 +302,46 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
 
 fn invoke_for_dict_source<K: ArrowDictionaryKeyType>(
     source_arr: &ArrayRef,
-    regexes: &ColumnarValue,
+    patterns: &ColumnarValue,
+    starts: &ColumnarValue,
+    occurrences: &ColumnarValue,
+    flags: &ColumnarValue,
     groups: &ColumnarValue,
 ) -> Result<ArrayRef> {
     let dict_arr = source_arr.as_dictionary::<K>();
     let dict_vals = dict_arr.values();
-    match (regexes, groups) {
-        (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_)) => {
-            // fast path, can just match the regexes against the dicts values and
-            // convert them to matched patterns
-            let dict_vals_str = dict_vals.as_string::<i32>();
-            let new_vals = regex_capture(dict_vals_str.iter(), regexes, groups)?;
-            replace_dict_values(dict_arr, new_vals)
-        }
-        _ => {
-            let typed_str_dict = dict_arr
-                .downcast_dict::<StringArray>()
-                .expect("dict vals are strings");
-            regex_capture(typed_str_dict.into_iter(), regexes, groups)
-        }
+
+    let all_extra_scalar = matches!(patterns, ColumnarValue::Scalar(_))
+        && matches!(starts, ColumnarValue::Scalar(_))
+        && matches!(occurrences, ColumnarValue::Scalar(_))
+        && matches!(flags, ColumnarValue::Scalar(_))
+        && matches!(groups, ColumnarValue::Scalar(_));
+
+    if all_extra_scalar {
+        // Fast path: match against dictionary values only, then remap keys.
+        let dict_vals_str = dict_vals.as_string::<i32>();
+        let new_vals = regex_substr(
+            dict_vals_str.iter(),
+            patterns,
+            starts,
+            occurrences,
+            flags,
+            groups,
+        )?;
+        replace_dict_values(dict_arr, new_vals)
+    } else {
+        // Slow path: expand dictionary to per-row strings.
+        let typed_str_dict = dict_arr
+            .downcast_dict::<StringArray>()
+            .expect("dict vals are strings");
+        regex_substr(
+            typed_str_dict.into_iter(),
+            patterns,
+            starts,
+            occurrences,
+            flags,
+            groups,
+        )
     }
 }
 
@@ -277,204 +391,244 @@ fn replace_dict_values<K: ArrowDictionaryKeyType>(
     }
 }
 
-fn regex_capture<'a, I>(
+fn regex_substr<'a, I>(
     values: I,
-    regexes: &ColumnarValue,
+    patterns: &ColumnarValue,
+    starts: &ColumnarValue,
+    occurrences: &ColumnarValue,
+    flags: &ColumnarValue,
     groups: &ColumnarValue,
 ) -> Result<ArrayRef>
 where
     I: Iterator<Item = Option<&'a str>>,
 {
-    match regexes {
-        ColumnarValue::Array(regex_arr) => match regex_arr.data_type() {
-            DataType::Utf8 => {
-                let regex_arr_str = regex_arr.as_string::<i32>();
-                regex_capture_with_regex_iter(values, regex_arr_str.iter(), groups)
-            }
-            DataType::Dictionary(k, v) => {
-                if !matches!(v.as_ref(), &DataType::Utf8) {
-                    return exec_err!(
-                        "Unsupported dictionary values type for regexes array {:?} in function `{}`",
-                        k.as_ref(),
-                        FUNC_NAME
-                    );
-                }
-
-                match k.as_ref() {
-                    DataType::Int8 => {
-                        invoke_for_dict_regex::<_, Int8Type>(values, regex_arr, groups)
-                    }
-                    DataType::Int16 => {
-                        invoke_for_dict_regex::<_, Int16Type>(values, regex_arr, groups)
-                    }
-                    DataType::Int32 => {
-                        invoke_for_dict_regex::<_, Int32Type>(values, regex_arr, groups)
-                    }
-                    DataType::Int64 => {
-                        invoke_for_dict_regex::<_, Int64Type>(values, regex_arr, groups)
-                    }
-                    DataType::UInt8 => {
-                        invoke_for_dict_regex::<_, UInt8Type>(values, regex_arr, groups)
-                    }
-                    DataType::UInt16 => {
-                        invoke_for_dict_regex::<_, UInt16Type>(values, regex_arr, groups)
-                    }
-                    DataType::UInt32 => {
-                        invoke_for_dict_regex::<_, UInt32Type>(values, regex_arr, groups)
-                    }
-                    DataType::UInt64 => {
-                        invoke_for_dict_regex::<_, UInt64Type>(values, regex_arr, groups)
-                    }
-                    other => {
-                        exec_err!(
-                            "Unsupported dictionary key type for regexes array {other:?} in function `{}`",
-                            FUNC_NAME
-                        )
-                    }
-                }
-            }
-            other => {
-                exec_err!(
-                    "Unsupported data type for regexes array {other:?} in function `{}`",
-                    FUNC_NAME
-                )
-            }
-        },
+    match patterns {
+        ColumnarValue::Array(pattern_arr) => {
+            let casted = cast_str_array_to_utf8(pattern_arr)?;
+            let str_arr = casted.as_string::<i32>();
+            regex_substr_with_pattern_iter(
+                values,
+                str_arr.iter(),
+                starts,
+                occurrences,
+                flags,
+                groups,
+            )
+        }
         ColumnarValue::Scalar(regex_scalar) => {
             let regex_scalar_str = regex_scalar.cast_to(&DataType::Utf8)?;
             let ScalarValue::Utf8(str_regex) = regex_scalar_str else {
                 unreachable!("we've casted this to Utf8")
             };
-            regex_capture_with_regex_iter(values, std::iter::repeat(str_regex.as_deref()), groups)
+            regex_substr_with_pattern_iter(
+                values,
+                std::iter::repeat(str_regex.as_deref()),
+                starts,
+                occurrences,
+                flags,
+                groups,
+            )
         }
     }
 }
 
-/// Invoke the UDF for the case that the regex is a dictionary encoded array.
-///
-/// This expects that the type has already been verified to be `DataType::<K, Utf8>`
-fn invoke_for_dict_regex<'a, I, K: ArrowDictionaryKeyType>(
-    values: I,
-    regex_dict_arr: &ArrayRef,
-    groups: &ColumnarValue,
-) -> Result<ArrayRef>
-where
-    I: Iterator<Item = Option<&'a str>>,
-{
-    let dict_arr = regex_dict_arr.as_dictionary::<K>();
-    let typed_regex_dict = dict_arr
-        .downcast_dict::<StringArray>()
-        .expect("dict values are strings");
-    regex_capture_with_regex_iter(values, typed_regex_dict.into_iter(), groups)
-}
+// ---------------------------------------------------------------------------
+// Resolve the flags ColumnarValue into an iterator
+// ---------------------------------------------------------------------------
 
-macro_rules! dispatch_dict_groups {
-    ($values:expr, $regexes:expr, $groups:expr, $key_dt:expr, $val_dt:expr) => {
-        paste::paste! {
-            match $key_dt {
-                DataType::Int8 => dispatch_dict_groups!(@val $values, $regexes, $groups, Int8Type, $val_dt),
-                DataType::Int16 => dispatch_dict_groups!(@val $values, $regexes, $groups, Int16Type, $val_dt),
-                DataType::Int32 => dispatch_dict_groups!(@val $values, $regexes, $groups, Int32Type, $val_dt),
-                DataType::Int64 => dispatch_dict_groups!(@val $values, $regexes, $groups, Int64Type, $val_dt),
-                DataType::UInt8 => dispatch_dict_groups!(@val $values, $regexes, $groups, UInt8Type, $val_dt),
-                DataType::UInt16 => dispatch_dict_groups!(@val $values, $regexes, $groups, UInt16Type, $val_dt),
-                DataType::UInt32 => dispatch_dict_groups!(@val $values, $regexes, $groups, UInt32Type, $val_dt),
-                DataType::UInt64 => dispatch_dict_groups!(@val $values, $regexes, $groups, UInt64Type, $val_dt),
-                other => exec_err!("Unsupported dictionary key type for groups: {other:?}"),
-            }
-        }
-    };
-    (@val $values:expr, $regexes:expr, $groups:expr, $ktyp:ty, $val_dt:expr) => {
-        match $val_dt {
-            DataType::Int8 => regex_capture_with_group_dict_arr::<_, _, $ktyp, Int8Type>($values, $regexes, $groups),
-            DataType::Int16 => regex_capture_with_group_dict_arr::<_, _, $ktyp, Int16Type>($values, $regexes, $groups),
-            DataType::Int32 => regex_capture_with_group_dict_arr::<_, _, $ktyp, Int32Type>($values, $regexes, $groups),
-            DataType::Int64 => regex_capture_with_group_dict_arr::<_, _, $ktyp, Int64Type>($values, $regexes, $groups),
-            DataType::UInt8 => regex_capture_with_group_dict_arr::<_, _, $ktyp, UInt8Type>($values, $regexes, $groups),
-            DataType::UInt16 => regex_capture_with_group_dict_arr::<_, _, $ktyp, UInt16Type>($values, $regexes, $groups),
-            DataType::UInt32 => regex_capture_with_group_dict_arr::<_, _, $ktyp, UInt32Type>($values, $regexes, $groups),
-            DataType::UInt64 => regex_capture_with_group_dict_arr::<_, _, $ktyp, UInt64Type>($values, $regexes, $groups),
-            other => exec_err!("Unsupported dictionary value type for groups: {other:?}"),
-        }
-    };
-}
-
-fn regex_capture_with_group_dict_arr<'a, 'b, I1, I2, K, V>(
+fn regex_substr_with_pattern_iter<'a, 'b, I1, I2>(
     values: I1,
-    regexes: I2,
-    groups: &ArrayRef,
+    patterns: I2,
+    starts: &ColumnarValue,
+    occurrences: &ColumnarValue,
+    flags: &ColumnarValue,
+    groups: &ColumnarValue,
 ) -> Result<ArrayRef>
 where
     I1: Iterator<Item = Option<&'a str>>,
     I2: Iterator<Item = Option<&'b str>>,
-    K: ArrowDictionaryKeyType,
-    V: ArrowPrimitiveType,
 {
-    let dict = groups.as_dictionary::<K>();
-    let dict_values = dict.values().as_primitive::<V>();
-    let zero = V::Native::default();
-    regex_capture_with_group_iter(
-        values,
-        regexes,
-        dict.keys().iter().map(|key| {
-            key.and_then(|k| {
-                let idx = k.as_usize();
-                if dict_values.is_null(idx) {
-                    None
-                } else {
-                    let v = dict_values.value(idx);
-                    (v >= zero).then_some(v.as_usize())
+    match flags {
+        ColumnarValue::Array(flags_arr) => {
+            let casted = cast_str_array_to_utf8(flags_arr)?;
+            let str_arr = casted.as_string::<i32>();
+            regex_substr_with_flags_iter(
+                values,
+                patterns,
+                str_arr.iter(),
+                starts,
+                occurrences,
+                groups,
+            )
+        }
+        ColumnarValue::Scalar(flags_scalar) => {
+            let flags_opt = match flags_scalar {
+                ScalarValue::Utf8(s) => s.clone(),
+                ScalarValue::Null => None,
+                other => {
+                    let casted = other.cast_to(&DataType::Utf8)?;
+                    let ScalarValue::Utf8(s) = casted else {
+                        unreachable!("we've casted this to Utf8")
+                    };
+                    s
                 }
-            })
-        }),
-    )
+            };
+            regex_substr_with_flags_iter(
+                values,
+                patterns,
+                std::iter::repeat(flags_opt.as_deref()),
+                starts,
+                occurrences,
+                groups,
+            )
+        }
+    }
 }
 
-fn regex_capture_with_regex_iter<'a, 'b, I1, I2>(
+// ---------------------------------------------------------------------------
+// Resolve the `start` ColumnarValue into an iterator
+// ---------------------------------------------------------------------------
+
+/// Cast any integer array (including dictionary-encoded) to `Int64Array`.
+///
+/// This avoids the combinatorial monomorphization explosion that would result
+/// from dispatching on every possible (key, value) type pair for dictionary
+/// integer arrays.
+fn cast_int_array_to_int64(arr: &ArrayRef) -> Result<ArrayRef> {
+    arrow::compute::cast(arr, &DataType::Int64)
+        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+}
+
+/// Cast any string array (including dictionary-encoded) to `StringArray` (Utf8).
+fn cast_str_array_to_utf8(arr: &ArrayRef) -> Result<ArrayRef> {
+    arrow::compute::cast(arr, &DataType::Utf8)
+        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+}
+
+fn regex_substr_with_flags_iter<'a, 'b, 'c, I1, I2, I3>(
     values: I1,
-    regexes: I2,
+    patterns: I2,
+    flags: I3,
+    starts: &ColumnarValue,
+    occurrences: &ColumnarValue,
     groups: &ColumnarValue,
 ) -> Result<ArrayRef>
 where
     I1: Iterator<Item = Option<&'a str>>,
     I2: Iterator<Item = Option<&'b str>>,
+    I3: Iterator<Item = Option<&'c str>>,
+{
+    match starts {
+        ColumnarValue::Array(arr) => {
+            let casted = cast_int_array_to_int64(arr)?;
+            let int_arr = casted.as_primitive::<Int64Type>();
+            regex_substr_with_start_iter(
+                values,
+                patterns,
+                flags,
+                int_arr
+                    .iter()
+                    .map(|i| i.and_then(|i| (i >= 1).then_some(i as usize))),
+                occurrences,
+                groups,
+            )
+        }
+        ColumnarValue::Scalar(scalar) => {
+            let start_val = columnar_int_scalar_to_usize(scalar)?;
+            regex_substr_with_start_iter(
+                values,
+                patterns,
+                flags,
+                std::iter::repeat(start_val),
+                occurrences,
+                groups,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resolve the `occurrence` ColumnarValue into an iterator
+// ---------------------------------------------------------------------------
+
+fn regex_substr_with_start_iter<'a, 'b, 'c, I1, I2, I3, I4>(
+    values: I1,
+    patterns: I2,
+    flags: I3,
+    starts: I4,
+    occurrences: &ColumnarValue,
+    groups: &ColumnarValue,
+) -> Result<ArrayRef>
+where
+    I1: Iterator<Item = Option<&'a str>>,
+    I2: Iterator<Item = Option<&'b str>>,
+    I3: Iterator<Item = Option<&'c str>>,
+    I4: Iterator<Item = Option<usize>>,
+{
+    match occurrences {
+        ColumnarValue::Array(arr) => {
+            let casted = cast_int_array_to_int64(arr)?;
+            let int_arr = casted.as_primitive::<Int64Type>();
+            regex_substr_with_occ_iter(
+                values,
+                patterns,
+                flags,
+                starts,
+                int_arr
+                    .iter()
+                    .map(|i| i.and_then(|i| (i >= 1).then_some(i as usize))),
+                groups,
+            )
+        }
+        ColumnarValue::Scalar(scalar) => {
+            let occ_val = columnar_int_scalar_to_usize(scalar)?;
+            regex_substr_with_occ_iter(
+                values,
+                patterns,
+                flags,
+                starts,
+                std::iter::repeat(occ_val),
+                groups,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resolve the `group` ColumnarValue into an iterator
+// ---------------------------------------------------------------------------
+
+fn regex_substr_with_occ_iter<'a, 'b, 'c, I1, I2, I3, I4, I5>(
+    values: I1,
+    patterns: I2,
+    flags: I3,
+    starts: I4,
+    occurrences: I5,
+    groups: &ColumnarValue,
+) -> Result<ArrayRef>
+where
+    I1: Iterator<Item = Option<&'a str>>,
+    I2: Iterator<Item = Option<&'b str>>,
+    I3: Iterator<Item = Option<&'c str>>,
+    I4: Iterator<Item = Option<usize>>,
+    I5: Iterator<Item = Option<usize>>,
 {
     match groups {
-        ColumnarValue::Array(arr) => match arr.data_type() {
-            DataType::Int8 => {
-                regex_capture_with_group_primitive_arr::<_, _, Int8Type>(values, regexes, arr)
-            }
-            DataType::Int16 => {
-                regex_capture_with_group_primitive_arr::<_, _, Int16Type>(values, regexes, arr)
-            }
-            DataType::Int32 => {
-                regex_capture_with_group_primitive_arr::<_, _, Int32Type>(values, regexes, arr)
-            }
-            DataType::Int64 => {
-                regex_capture_with_group_primitive_arr::<_, _, Int64Type>(values, regexes, arr)
-            }
-            DataType::UInt8 => {
-                regex_capture_with_group_primitive_arr::<_, _, UInt8Type>(values, regexes, arr)
-            }
-            DataType::UInt16 => {
-                regex_capture_with_group_primitive_arr::<_, _, UInt16Type>(values, regexes, arr)
-            }
-            DataType::UInt32 => {
-                regex_capture_with_group_primitive_arr::<_, _, UInt32Type>(values, regexes, arr)
-            }
-            DataType::UInt64 => {
-                regex_capture_with_group_primitive_arr::<_, _, UInt64Type>(values, regexes, arr)
-            }
-            DataType::Dictionary(k, v) => {
-                dispatch_dict_groups!(values, regexes, arr, k.as_ref(), v.as_ref())
-            }
-            other => {
-                exec_err!(
-                    "Unsupported data type for groups array {other:?} in function `{}`",
-                    FUNC_NAME
-                )
-            }
-        },
+        ColumnarValue::Array(arr) => {
+            let casted = cast_int_array_to_int64(arr)?;
+            let int_arr = casted.as_primitive::<Int64Type>();
+            println!("{:?}", int_arr);
+            regex_substr_core(
+                values,
+                patterns,
+                flags,
+                starts,
+                occurrences,
+                int_arr
+                    .iter()
+                    .map(|i| i.and_then(|i| (i >= 0).then_some(i as usize))),
+            )
+        }
         ColumnarValue::Scalar(scalar) => {
             let group = match scalar.cast_to(&DataType::UInt64) {
                 Ok(unsigned_scalar) => {
@@ -483,65 +637,119 @@ where
                     };
                     group.map(|i| i as usize)
                 }
-
                 // if we couldn't cast, it means we had a negative integer scalar
                 // so always treat the group as null, meaning the result for all
                 // the rows will be null.
                 _ => None,
             };
 
-            regex_capture_with_group_iter(values, regexes, std::iter::repeat(group))
+            regex_substr_core(
+                values,
+                patterns,
+                flags,
+                starts,
+                occurrences,
+                std::iter::repeat(group),
+            )
         }
     }
 }
 
-fn regex_capture_with_group_primitive_arr<'a, 'b, I1, I2, T: ArrowPrimitiveType>(
-    values: I1,
-    regexes: I2,
-    groups: &ArrayRef,
-) -> Result<ArrayRef>
-where
-    I1: Iterator<Item = Option<&'a str>>,
-    I2: Iterator<Item = Option<&'b str>>,
-{
-    let zero = T::Native::default();
-    regex_capture_with_group_iter(
-        values,
-        regexes,
-        groups
-            .as_primitive::<T>()
-            .iter()
-            .map(|i| i.and_then(|i| (i >= zero).then_some(i.as_usize()))),
-    )
+// ---------------------------------------------------------------------------
+// Helpers & core matching logic
+// ---------------------------------------------------------------------------
+
+/// Convert a scalar integer ColumnarValue to `Option<usize>`.
+///
+/// Returns `Some(n)` for a positive integer, `None` for null or values that
+/// cannot be represented as a non-negative usize (e.g. negative integers).
+fn columnar_int_scalar_to_usize(scalar: &ScalarValue) -> Result<Option<usize>> {
+    match scalar.cast_to(&DataType::UInt64) {
+        Ok(unsigned_scalar) => {
+            let ScalarValue::UInt64(val) = unsigned_scalar else {
+                unreachable!("we've casted this to UInt64")
+            };
+            Ok(val.map(|i| i as usize))
+        }
+        // negative integer → treat as null
+        _ => Ok(None),
+    }
 }
 
-fn regex_capture_with_group_iter<'a, 'b, I1, I2, I3>(
+/// The innermost matching function. All six parameter iterators have been fully
+/// resolved by this point.
+///
+/// For each row this function:
+/// 1. Applies the `start` offset (1-based character position) to the source.
+/// 2. Compiles the regex with the given flags.
+/// 3. Finds the `occurrence`-th match (1-based).
+/// 4. Extracts the specified capture `group`.
+fn regex_substr_core<'a, 'b, 'c, I1, I2, I3, I4, I5, I6>(
     values: I1,
-    regexes: I2,
-    groups: I3,
+    patterns: I2,
+    flags: I3,
+    starts: I4,
+    occurrences: I5,
+    groups: I6,
 ) -> Result<ArrayRef>
 where
     I1: Iterator<Item = Option<&'a str>>,
     I2: Iterator<Item = Option<&'b str>>,
-    I3: Iterator<Item = Option<usize>>,
+    I3: Iterator<Item = Option<&'c str>>,
+    I4: Iterator<Item = Option<usize>>,
+    I5: Iterator<Item = Option<usize>>,
+    I6: Iterator<Item = Option<usize>>,
 {
     let mut regex_cache = HashMap::new();
     let mut result_builder = StringBuilder::new();
     let mut null_run = 0;
 
-    for ((value, regex), group) in values.zip(regexes).zip(groups) {
-        match (value, regex, group) {
-            (Some(value), Some(regex), Some(group)) => {
-                let regex = compile_and_cache_regex(regex, None, &mut regex_cache)?;
-                if let Some(capture) = regex.captures(value).and_then(|c| c.get(group)) {
-                    if null_run > 0 {
-                        result_builder.append_nulls(null_run);
-                    }
+    let iter = values
+        .zip(patterns)
+        .zip(flags)
+        .zip(starts)
+        .zip(occurrences)
+        .zip(groups);
 
-                    result_builder.append_value(&value[capture.start()..capture.end()]);
-                    null_run = 0;
+    for (((((value, pattern), flag), start), occurrence), group) in iter {
+        match (value, pattern, start, occurrence, group) {
+            (Some(value), Some(pattern), Some(start), Some(occurrence), Some(group)) => {
+                // Apply the start offset (1-based char position → byte offset).
+                let byte_offset = if start <= 1 {
+                    0
                 } else {
-                    null_run += 1
+                    match value.char_indices().nth(start - 1) {
+                        Some((byte_idx, _)) => byte_idx,
+                        // start is beyond the string length → null
+                        None => {
+                            null_run += 1;
+                            continue;
+                        }
+                    }
+                };
+                let search_str = &value[byte_offset..];
+
+                let regex = compile_and_cache_regex(pattern, flag, &mut regex_cache)?;
+
+                // Find the occurrence-th match (1-based).
+                let matched = if occurrence <= 1 {
+                    regex.captures(search_str)
+                } else {
+                    regex.captures_iter(search_str).nth(occurrence - 1)
+                };
+
+                if let Some(captures) = matched {
+                    if let Some(capture) = captures.get(group) {
+                        if null_run > 0 {
+                            result_builder.append_nulls(null_run);
+                        }
+                        result_builder.append_value(&search_str[capture.start()..capture.end()]);
+                        null_run = 0;
+                    } else {
+                        null_run += 1;
+                    }
+                } else {
+                    null_run += 1;
                 }
             }
             _ => {
@@ -575,7 +783,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::pipeline::Pipeline;
-    use crate::pipeline::functions::regexp_capture;
+    use crate::pipeline::functions::regexp_substr;
 
     fn make_dict_array<K: ArrowDictionaryKeyType, V: ArrowPrimitiveType>(
         keys: &[K::Native],
@@ -589,13 +797,26 @@ mod test {
         ))
     }
 
+    /// Helper: build 6-arg form equivalent to old `regexp_capture(source, pattern, group)`.
+    /// Fills in start=1, occurrence=1, flags=NULL.
+    fn capture_args(source: Expr, pattern: Expr, group: Expr) -> Vec<Expr> {
+        vec![
+            source,
+            pattern,
+            lit(1i64),                    // start
+            lit(1i64),                    // occurrence
+            lit(ScalarValue::Utf8(None)), // flags
+            group,                        // group
+        ]
+    }
+
     #[tokio::test]
     async fn test_utf8_arr_values_scalar_pattern_scalar_group() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), lit(1u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), lit(1u16)),
         ));
 
         let input_col =
@@ -643,8 +864,8 @@ mod test {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), lit(1u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), lit(1u16)),
         ));
 
         let input_col = DictionaryArray::new(
@@ -709,8 +930,8 @@ mod test {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), lit(1u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), lit(1u16)),
         ));
 
         let input_col = DictionaryArray::new(
@@ -757,8 +978,8 @@ mod test {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), col("regexp_col"), lit(1u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), col("regexp_col"), lit(1u16)),
         ));
 
         let input_col = DictionaryArray::new(
@@ -802,8 +1023,8 @@ mod test {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), col("regexp_col"), lit(1u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), col("regexp_col"), lit(1u16)),
         ));
 
         let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
@@ -844,8 +1065,8 @@ mod test {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), col("regexp_col"), lit(1u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), col("regexp_col"), lit(1u16)),
         ));
 
         let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
@@ -908,8 +1129,8 @@ mod test {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), lit(2u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), lit(2u16)),
         ));
 
         let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
@@ -950,8 +1171,8 @@ mod test {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), lit(0u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), lit(0u16)),
         ));
 
         let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
@@ -1004,8 +1225,8 @@ mod test {
 
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), lit(0u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), lit(0u16)),
         ));
 
         for input_col in inputs {
@@ -1039,53 +1260,10 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_invalid_but_coercible_regex_input_arrays_are_rejected() {
+    async fn test_coercible_regex_input_arrays_are_cast_to_utf8() {
         let inputs: Vec<ArrayRef> = vec![
             Arc::new(LargeStringArray::from_iter_values([".*(.).*"])),
             Arc::new(StringViewArray::from_iter_values([".*(.).*"])),
-        ];
-
-        let session_context = Pipeline::create_session_context();
-        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), col("regex_col"), lit(0u16)],
-        ));
-
-        for regex_col in inputs {
-            let input_col = StringArray::from_iter_values(["hello"]);
-            let input = RecordBatch::try_new(
-                Arc::new(Schema::new(vec![
-                    Field::new("test_col", input_col.data_type().clone(), true),
-                    Field::new("regex_col", regex_col.data_type().clone(), true),
-                ])),
-                vec![Arc::new(input_col.clone()), Arc::new(regex_col.clone())],
-            )
-            .unwrap();
-
-            let df_schema = DFSchema::from_unqualified_fields(
-                input.schema().fields.clone(),
-                Default::default(),
-            )
-            .unwrap();
-
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
-
-            let error = physical_expr.evaluate(&input).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("Unsupported data type for regexes array"),
-                "unexpected error: `{}`",
-                error
-            )
-        }
-    }
-
-    #[tokio::test]
-    async fn test_invalid_but_coercible_dict_regex_input_arrays_are_rejected() {
-        let inputs: Vec<ArrayRef> = vec![
             Arc::new(DictionaryArray::new(
                 UInt8Array::from_iter_values([0]),
                 Arc::new(LargeStringArray::from_iter_values([".*(.).*"])),
@@ -1098,8 +1276,8 @@ mod test {
 
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), col("regex_col"), lit(0u16)],
+            regexp_substr(),
+            capture_args(col("test_col"), col("regex_col"), lit(0u16)),
         ));
 
         for regex_col in inputs {
@@ -1123,14 +1301,16 @@ mod test {
                 create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
                     .unwrap();
 
-            let error = physical_expr.evaluate(&input).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("Unsupported dictionary values type for regexes array"),
-                "unexpected error: `{}`",
-                error
-            )
+            let result = physical_expr.evaluate(&input).unwrap();
+            let expected: ArrayRef = Arc::new(StringArray::from_iter_values(["hello"]));
+            match result {
+                ColumnarValue::Array(arr) => {
+                    assert_eq!(&arr, &expected)
+                }
+                s => {
+                    panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+                }
+            }
         }
     }
 
@@ -1149,8 +1329,8 @@ mod test {
             lit(1i64),
         ] {
             let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-                regexp_capture(),
-                vec![col("test_col"), lit("hello (.*)"), group_expr],
+                regexp_substr(),
+                capture_args(col("test_col"), lit("hello (.*)"), group_expr),
             ));
 
             let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
@@ -1194,8 +1374,8 @@ mod test {
     async fn test_coercing_scalar_array_types() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), col("group_col")],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), col("group_col")),
         ));
 
         let group_cols: Vec<ArrayRef> = vec![
@@ -1249,8 +1429,8 @@ mod test {
     async fn test_coercing_scalar_array_types_with_negative_vals() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), col("group_col")],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), col("group_col")),
         ));
 
         let group_cols: Vec<ArrayRef> = vec![
@@ -1301,8 +1481,8 @@ mod test {
 
         for group_expr in [lit(-1i8), lit(-1i16), lit(-1i32), lit(-1i64)] {
             let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-                regexp_capture(),
-                vec![col("test_col"), lit("hello (.*)"), group_expr],
+                regexp_substr(),
+                capture_args(col("test_col"), lit("hello (.*)"), group_expr),
             ));
 
             let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
@@ -1344,8 +1524,8 @@ mod test {
     async fn test_dict_encoded_group_arrays() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), col("group_col")],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), col("group_col")),
         ));
 
         // Each dict array maps all 3 rows to a single value of 1.
@@ -1403,8 +1583,8 @@ mod test {
     async fn test_dict_encoded_group_arrays_with_negative_vals() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), col("group_col")],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), col("group_col")),
         ));
 
         let group_cols: Vec<ArrayRef> = vec![
@@ -1458,8 +1638,8 @@ mod test {
     async fn test_dict_encoded_group_arrays_with_null_keys() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![col("test_col"), lit("hello (.*)"), col("group_col")],
+            regexp_substr(),
+            capture_args(col("test_col"), lit("hello (.*)"), col("group_col")),
         ));
 
         // Key index 0 -> value 1, but second row has a null key
@@ -1505,8 +1685,8 @@ mod test {
 
         // matching case
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![lit("hello world"), lit("hello (.*)"), lit(1u16)],
+            regexp_substr(),
+            capture_args(lit("hello world"), lit("hello (.*)"), lit(1u16)),
         ));
 
         let input = RecordBatch::new_empty(Arc::new(Schema::empty()));
@@ -1524,8 +1704,8 @@ mod test {
 
         // non-matching case
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
-            regexp_capture(),
-            vec![lit("arrow"), lit("hello (.*)"), lit(1u16)],
+            regexp_substr(),
+            capture_args(lit("arrow"), lit("hello (.*)"), lit(1u16)),
         ));
 
         let physical_expr =
