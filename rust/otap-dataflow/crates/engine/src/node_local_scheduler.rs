@@ -333,10 +333,7 @@ mod tests {
 
         assert!(scheduler.heap.contains_key(&WakeupSlot(3)));
         // Verify that slot 1 (earliest deadline) should still be at the root.
-        assert_eq!(
-            scheduler.heap.peek().map(|(k, _)| *k),
-            Some(WakeupSlot(1))
-        );
+        assert_eq!(scheduler.heap.peek().map(|(k, _)| *k), Some(WakeupSlot(1)));
 
         assert!(scheduler.cancel_wakeup(WakeupSlot(3)));
         assert_heap_bound(&scheduler);

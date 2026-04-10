@@ -95,7 +95,10 @@ where
             InsertOutcome::Replaced
         } else {
             let index = self.entries.len();
-            self.entries.push(Entry { key: key.clone(), priority });
+            self.entries.push(Entry {
+                key: key.clone(),
+                priority,
+            });
             assert!(
                 self.indices.insert(key, index).is_none(),
                 "new key should not already exist in index map"
