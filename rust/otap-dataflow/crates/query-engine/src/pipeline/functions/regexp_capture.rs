@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -17,7 +18,7 @@ use arrow::util::bit_util;
 use datafusion::common::exec_err;
 use datafusion::common::types::NativeType;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::functions::regex::compile_regex;
+use datafusion::functions::regex::compile_and_cache_regex;
 use datafusion::logical_expr::{
     Coercion, ColumnarValue, Documentation, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl,
     Signature, TypeSignature, TypeSignatureClass, Volatility,
@@ -520,13 +521,14 @@ where
     I2: Iterator<Item = Option<&'b str>>,
     I3: Iterator<Item = Option<usize>>,
 {
+    let mut regex_cache = HashMap::new();
     let mut result_builder = StringBuilder::new();
     let mut null_run = 0;
 
     for ((value, regex), group) in values.zip(regexes).zip(groups) {
         match (value, regex, group) {
             (Some(value), Some(regex), Some(group)) => {
-                let regex = compile_regex(regex, None)?;
+                let regex = compile_and_cache_regex(regex, None, &mut regex_cache)?;
                 if let Some(capture) = regex.captures(value).map(|c| c.get(group)).flatten() {
                     if null_run > 0 {
                         result_builder.append_nulls(null_run);
