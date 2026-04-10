@@ -1799,11 +1799,11 @@ async fn try_publish_balanced_only_reports_drop_on_full() {
     );
 }
 
-// On mixed topics, broadcast delivery stays non-blocking even when balanced
-// queues are full: try_publish can return DroppedOnFull while broadcast
-// subscribers still receive the message.
+// On mixed topics, try_publish is all-or-nothing across balanced and
+// broadcast delivery. A balanced drop-on-full result must not leak a message
+// to broadcast subscribers.
 #[tokio::test]
-async fn try_publish_mixed_keeps_broadcast_non_blocking() {
+async fn try_publish_mixed_rejects_broadcast_when_balanced_is_full() {
     let broker = TopicBroker::<u64>::new();
     let topic = broker
         .create_topic(
@@ -1846,7 +1846,7 @@ async fn try_publish_mixed_keeps_broadcast_non_blocking() {
             received.push(*env.payload);
         }
     }
-    assert_eq!(received, vec![10, 20]);
+    assert_eq!(received, vec![10]);
 }
 
 // =========================================================================

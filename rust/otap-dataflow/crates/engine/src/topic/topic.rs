@@ -750,13 +750,12 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
 
         let id = self.next_message_id();
-        self.broadcast_ring.publish(Envelope {
-            id,
-            tracked: false,
-            payload: Arc::clone(&msg),
-        });
-
         if !self.has_balanced_groups.load(Ordering::Acquire) {
+            self.broadcast_ring.publish(Envelope {
+                id,
+                tracked: false,
+                payload: Arc::clone(&msg),
+            });
             return Ok((PublishOutcome::Published, id));
         }
 
@@ -784,6 +783,11 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             for (group, permit) in groups.as_ref().iter().zip(permits.into_iter()) {
                 send_queued_envelope(&group.tx, envelope.clone(), permit)?;
             }
+            self.broadcast_ring.publish(Envelope {
+                id,
+                tracked: false,
+                payload: Arc::clone(&msg),
+            });
             Ok((PublishOutcome::Published, id))
         }
     }
