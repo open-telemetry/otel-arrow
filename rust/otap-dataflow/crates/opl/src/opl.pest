@@ -55,7 +55,7 @@ attribute_selection_expression = {
     identifier_expression ~ ("." ~ member_expression)+
 }
 
-argument_list = { expression ~ ("," ~ expression)* }
+argument_list = { expression? ~ ("," ~ expression)* }
 
 function_call = { identifier_expression ~ "(" ~ argument_list ~ ")" }
 
@@ -68,7 +68,7 @@ member_expression = {
 }
 
 integer_literal = @{
-    ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+    (("0" | ASCII_NONZERO_DIGIT) ~ ASCII_DIGIT*)
 }
 
 exponent_literal =  { ^"e" ~ ("+" | "-")? ~ integer_literal }

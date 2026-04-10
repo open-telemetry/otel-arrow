@@ -66,9 +66,13 @@ pub fn apply_cli_overrides(
     http_admin_bind: Option<String>,
 ) {
     if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
-        engine_cfg
+        let mut resources = engine_cfg
             .policies
-            .set_resources(ResourcesPolicy { core_allocation });
+            .resources()
+            .cloned()
+            .unwrap_or_else(ResourcesPolicy::default);
+        resources.core_allocation = core_allocation;
+        engine_cfg.policies.set_resources(resources);
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
         engine_cfg.engine.http_admin = Some(http_admin);
@@ -111,6 +115,13 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                 .get_exporter_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
+            NodeKind::Extension => {
+                // Extensions are not yet validated here because PipelineFactory
+                // does not have an extension factory registry. Once one is added,
+                // this should look up and validate extension configs similarly to
+                // receivers/processors/exporters.
+                continue;
+            }
         };
 
         match validate_config_fn {
@@ -119,6 +130,7 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                     NodeKind::Receiver => "receiver",
                     NodeKind::Processor | NodeKind::ProcessorChain => "processor",
                     NodeKind::Exporter => "exporter",
+                    NodeKind::Extension => unreachable!("handled above"),
                 };
                 return Err(std::io::Error::other(format!(
                     "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",

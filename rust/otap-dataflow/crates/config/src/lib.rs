@@ -78,6 +78,9 @@ pub type PipelineId = Cow<'static, str>;
 /// The id of a node in the pipeline.
 pub type NodeId = Cow<'static, str>;
 
+/// The id of a capability binding (e.g., "bearer_token_provider").
+pub type CapabilityId = Cow<'static, str>;
+
 /// The URN of a node type.
 pub use node_urn::NodeUrn;
 

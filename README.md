@@ -200,7 +200,44 @@ love to have you!
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
 - [CNCF Slack `#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF)
 
-Thanks to all contributors.
+The meeting is open for all to join. We invite everyone to join our meeting,
+regardless of your experience level. Whether you're a seasoned OpenTelemetry
+developer, just starting your journey, or simply curious about the work we do,
+you're more than welcome to participate!
+
+### Maintainers
+
+- [Albert Lockett](https://github.com/albertlockett), F5
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+
+For more information about the maintainer role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
+
+### Approvers
+
+- [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
+- [Lei Huang](https://github.com/v0y4g3r), Greptime
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
+
+For more information about the approver role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
+
+### Triagers
+
+- [Tom Tan](https://github.com/ThomsonTan), Microsoft
+
+For more information about the approver role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
+
+### Emeritus
+
+- [Alex Boten](https://github.com/codeboten), Approver
+- [Moh Osman](https://github.com/moh-osman3), Approver
+
+### Thanks to all of our contributors
 
 [![OpenTelemetry-Arrow
 contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)

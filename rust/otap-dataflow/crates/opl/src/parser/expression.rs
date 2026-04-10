@@ -5,13 +5,14 @@ use std::sync::LazyLock;
 
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-    ContainsLogicalExpression, DoubleScalarExpression, DoubleValue, EqualToLogicalExpression,
-    Expression, GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-    IntegerScalarExpression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
-    LogicalExpression, MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression,
-    NullScalarExpression, OrLogicalExpression, QueryLocation, ScalarExpression,
-    SliceScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-    ValueAccessor,
+    CollectionScalarExpression, CombineScalarExpression, ContainsLogicalExpression,
+    DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
+    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
+    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+    NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
+    ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression, SourceScalarExpression,
+    StaticScalarExpression, StringScalarExpression, TextScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -749,6 +750,37 @@ fn parse_function_call(
             ))
             .into())
         }
+        "concat" => Ok(ScalarExpression::Text(TextScalarExpression::Concat(
+            CombineScalarExpression::new(
+                query_location.clone(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(query_location, args),
+                )),
+            ),
+        ))
+        .into()),
+        "join" | "concat_ws" => {
+            if args.is_empty() {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects at least 1 argument, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let delimiter = args.remove(0);
+            Ok(
+                ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                    query_location.clone(),
+                    delimiter,
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(query_location, args),
+                    )),
+                )))
+                .into(),
+            )
+        }
         "matches" => {
             if args.len() != 2 {
                 return Err(ParserError::SyntaxError(
@@ -765,6 +797,31 @@ fn parse_function_call(
                 query_location,
                 haystack,
                 rhs,
+            ))
+            .into())
+        }
+        "replace" => {
+            if args.len() != 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
+            let source = args.remove(0);
+            let substr = args.remove(0);
+            let replacement = args.remove(0);
+            Ok(ScalarExpression::Text(TextScalarExpression::Replace(
+                ReplaceTextScalarExpression::new(
+                    query_location,
+                    source,
+                    substr,
+                    replacement,
+                    false, // case_insensitive = set to false for OPL
+                ),
             ))
             .into())
         }
@@ -832,15 +889,17 @@ mod test {
 
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-        ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
-        EqualToLogicalExpression, GreaterThanLogicalExpression,
-        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
+        CollectionScalarExpression, CombineScalarExpression, ContainsLogicalExpression,
+        DateTimeScalarExpression, DoubleScalarExpression, EqualToLogicalExpression,
+        GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
+        IntegerScalarExpression, JoinTextScalarExpression, ListScalarExpression, LogicalExpression,
         MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
         OrLogicalExpression, PipelineFunction, PipelineFunctionParameter,
-        PipelineFunctionParameterType, QueryLocation, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        PipelineFunctionParameterType, QueryLocation, ReplaceTextScalarExpression,
+        ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TextScalarExpression, ValueAccessor,
     };
-    use data_engine_parser_abstractions::{ParserFunction, ParserState};
+    use data_engine_parser_abstractions::{ParserError, ParserFunction, ParserState};
     use pest::Parser;
     use pretty_assertions::assert_eq;
 
@@ -914,6 +973,13 @@ mod test {
                 StaticScalarExpression::Double(DoubleScalarExpression::new(
                     QueryLocation::new_fake(),
                     1.23,
+                )),
+            ),
+            (
+                "5.06",
+                StaticScalarExpression::Double(DoubleScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    5.06,
                 )),
             ),
             (
@@ -1896,5 +1962,178 @@ mod test {
             err.to_string()
                 .contains("Function 'myfunc' expects 2 arguments, got 1")
         )
+    }
+
+    #[test]
+    fn test_parse_concat_function_call() {
+        let input = "concat(\"event happened: \", event_name)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected =
+            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "event happened: ",
+                                ),
+                            )),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "event_name",
+                                    )),
+                                )]),
+                            )),
+                        ],
+                    ),
+                )),
+            )));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_concat_with_delimiter_function_call() {
+        // "join" is alias for "concat_ws"
+        for fn_name in ["concat_ws", "join"] {
+            let input = format!("{fn_name}(\" \", severity_text, \"event happened:\", event_name)");
+            let mut rules = OplPestParser::parse(Rule::member_expression, &input).unwrap();
+            assert_eq!(rules.len(), 1);
+
+            let result: ScalarExpression =
+                parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                    .unwrap()
+                    .into();
+
+            let expected =
+                ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), " "),
+                    )),
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "severity_text",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "event happened:",
+                                    ),
+                                )),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "event_name",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                            ],
+                        ),
+                    )),
+                )));
+
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_replace_with_delimiter_function_call() {
+        let input = "replace(severity_text, \"N\", \"M\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = ScalarExpression::Text(TextScalarExpression::Replace(
+            ReplaceTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "severity_text",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "N"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "M"),
+                )),
+                false,
+            ),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    fn parse_known_func_with_args(
+        fn_name: &str,
+        args: &[&str],
+    ) -> Result<LogicalOrScalarExpr, ParserError> {
+        let input = format!("{}({})", fn_name, args.join(", "));
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
+        let mut rules = OplPestParser::parse(Rule::member_expression, &input).unwrap();
+        parse_member_expression(rules.next().unwrap(), &pipeline_builder)
+    }
+
+    #[test]
+    fn parse_replace_function_call_with_wrong_arity() {
+        for args in [
+            vec![],
+            vec!["one"],
+            vec!["one", "two"],
+            vec!["one", "two", "three", "four"],
+        ] {
+            let err = parse_known_func_with_args("replace", &args).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("Function 'replace' expects 3 arguments, got {}", args.len())
+            )
+        }
+    }
+
+    #[test]
+    fn parse_contains_ws_function_call_with_wrong_arity() {
+        let err = parse_known_func_with_args("concat_ws", &[]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Function 'concat_ws' expects at least 1 argument, got 0".to_string(),
+        );
     }
 }

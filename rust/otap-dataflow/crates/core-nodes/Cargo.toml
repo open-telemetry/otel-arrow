@@ -90,3 +90,9 @@ pretty_assertions.workspace = true
 tempfile.workspace = true
 portpicker.workspace = true
 otap-test-tls-certs.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "temporal_reaggregation_processor"
+harness = false
+path = "benches/temporal_reaggregation_processor/main.rs"

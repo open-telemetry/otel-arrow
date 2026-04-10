@@ -139,8 +139,10 @@ async fn consume_current_local(
             NodeControlMsg::CollectTelemetry { .. } => observed.telemetry_ticks += 1,
             NodeControlMsg::Config { .. } => observed.configs += 1,
             NodeControlMsg::DrainIngress { .. }
+            | NodeControlMsg::MemoryPressureChanged { .. }
             | NodeControlMsg::Shutdown { .. }
-            | NodeControlMsg::DelayedData { .. } => {
+            | NodeControlMsg::DelayedData { .. }
+            | NodeControlMsg::Wakeup { .. } => {
                 panic!("unexpected message in benchmark current local receiver");
             }
         }
@@ -202,8 +204,10 @@ async fn consume_current_shared(
             NodeControlMsg::CollectTelemetry { .. } => observed.telemetry_ticks += 1,
             NodeControlMsg::Config { .. } => observed.configs += 1,
             NodeControlMsg::DrainIngress { .. }
+            | NodeControlMsg::MemoryPressureChanged { .. }
             | NodeControlMsg::Shutdown { .. }
-            | NodeControlMsg::DelayedData { .. } => {
+            | NodeControlMsg::DelayedData { .. }
+            | NodeControlMsg::Wakeup { .. } => {
                 panic!("unexpected message in benchmark current shared receiver");
             }
         }

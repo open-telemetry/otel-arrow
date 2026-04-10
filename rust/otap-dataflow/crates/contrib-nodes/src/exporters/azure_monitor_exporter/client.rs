@@ -193,8 +193,6 @@ impl LogsIngestionClient {
     /// * `Ok(Duration)` - Total time spent (including retries) if successful
     /// * `Err(String)` - Error message if all retries exhausted or non-retryable error
     pub async fn export(&mut self, body: Bytes) -> Result<Duration, Error> {
-        self.metrics.borrow_mut().add_batch_size(body.len() as f64);
-
         let mut attempt = 0u32;
         let mut rng = SmallRng::seed_from_u64(
             std::time::SystemTime::now()

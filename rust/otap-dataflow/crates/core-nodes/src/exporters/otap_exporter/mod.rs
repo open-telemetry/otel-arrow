@@ -1280,11 +1280,13 @@ mod tests {
 
         let (batch_received_tx, mut batch_received_rx) = tokio::sync::mpsc::channel(1);
         let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
+        let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
 
         // Start gRPC server that returns errors
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let server_handle = tokio_rt.spawn(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = server_ready_tx.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
             let error_service = ArrowLogsServiceServer::new(ArrowLogsServiceGrpcErrorMock {
                 sender: batch_received_tx,
@@ -1316,6 +1318,10 @@ mod tests {
             });
 
             tokio::join!(local_set, async {
+                server_ready_rx
+                    .await
+                    .expect("server should bind before exporter traffic starts");
+
                 // Send a batch with ACK/NACK subscription
                 let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
                 let pdata = OtapPdata::new_default(log_message.into()).test_subscribe_to(
