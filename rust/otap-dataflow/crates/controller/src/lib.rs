@@ -1311,9 +1311,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 pipeline.policies.health.clone(),
             );
         }
-        let available_core_ids = all_cores;
         let planned_core_assignments =
-            Self::preflight_pipeline_core_allocations(&pipelines, &available_core_ids)?;
+            Self::preflight_pipeline_core_allocations(&pipelines, &all_cores)?;
 
         let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
             its_key.clone(),
@@ -1438,7 +1437,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             engine_evt_reporter.clone(),
             metrics_reporter.clone(),
             declared_topics,
-            available_core_ids.clone(),
+            all_cores.clone(),
             telemetry_system.engine_tracing_setup(),
             telemetry_reporting_interval,
             memory_pressure_tx.clone(),
@@ -2065,7 +2064,66 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
+    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
+
+    fn available_core_ids() -> Vec<CoreId> {
+        vec![
+            CoreId { id: 0 },
+            CoreId { id: 1 },
+            CoreId { id: 2 },
+            CoreId { id: 3 },
+            CoreId { id: 4 },
+            CoreId { id: 5 },
+            CoreId { id: 6 },
+            CoreId { id: 7 },
+        ]
+    }
+
+    fn to_ids(v: &[CoreId]) -> Vec<usize> {
+        v.iter().map(|c| c.id).collect()
+    }
+
+    fn minimal_pipeline_config() -> PipelineConfig {
+        PipelineConfig::from_yaml(
+            "g".into(),
+            "p".into(),
+            r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("minimal test pipeline config should parse")
+    }
+
+    fn resolved_pipeline_with_core_allocation(
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        core_allocation: CoreAllocation,
+    ) -> ResolvedPipelineConfig {
+        ResolvedPipelineConfig {
+            pipeline_group_id: pipeline_group_id.to_string().into(),
+            pipeline_id: pipeline_id.to_string().into(),
+            pipeline: minimal_pipeline_config(),
+            policies: ResolvedPolicies {
+                resources: ResourcesPolicy {
+                    core_allocation,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            role: ResolvedPipelineRole::Regular,
+        }
+    }
 
     fn global_topic_handle(
         declared: &DeclaredTopics<()>,
@@ -2098,6 +2156,324 @@ mod tests {
             .broker
             .get_topic_required(declared_name)
             .expect("declared topic must exist in broker")
+    }
+
+    #[test]
+    fn select_all_cores_by_default() {
+        let core_allocation = CoreAllocation::AllCores;
+        let available_core_ids = available_core_ids();
+        let expected_core_ids = available_core_ids.clone();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
+        assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
+    }
+
+    #[test]
+    fn select_limited_by_num_cores() {
+        let core_allocation = CoreAllocation::CoreCount { count: 4 };
+        let available_core_ids = available_core_ids();
+        let result = Controller::<()>::select_cores_for_allocation(
+            available_core_ids.clone(),
+            &core_allocation,
+        )
+        .unwrap();
+        assert_eq!(result.len(), 4);
+        let expected_ids: Vec<usize> = available_core_ids
+            .into_iter()
+            .take(4)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(to_ids(&result), expected_ids);
+    }
+
+    #[test]
+    fn select_with_valid_single_core_range() {
+        let available_core_ids = available_core_ids();
+        let first_id = available_core_ids[0].id;
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange {
+                start: first_id,
+                end: first_id,
+            }],
+        };
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
+        assert_eq!(to_ids(&result), vec![first_id]);
+    }
+
+    #[test]
+    fn select_with_valid_multi_core_range() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 5 },
+                CoreRange { start: 6, end: 6 },
+            ],
+        };
+        let available_core_ids = available_core_ids();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
+        assert_eq!(to_ids(&result), vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn select_with_inverted_range_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange { start: 2, end: 1 }],
+        };
+        let available_core_ids = available_core_ids();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, .. } => {
+                assert_eq!(alloc, core_allocation);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_out_of_bounds_range_errors() {
+        let start = 100;
+        let end = 110;
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange { start, end }],
+        };
+        let available_core_ids = available_core_ids();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, .. } => {
+                assert_eq!(alloc, core_allocation);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_zero_count_uses_all_cores() {
+        let core_allocation = CoreAllocation::CoreCount { count: 0 };
+        let available_core_ids = available_core_ids();
+        let expected_core_ids = available_core_ids.clone();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
+        assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
+    }
+
+    #[test]
+    fn select_with_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 5 },
+                CoreRange { start: 4, end: 7 },
+            ],
+        };
+        let available_core_ids = available_core_ids();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_fully_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 6 },
+                CoreRange { start: 3, end: 5 },
+            ],
+        };
+        let available_core_ids = available_core_ids();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_identical_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 3, end: 5 },
+                CoreRange { start: 3, end: 5 },
+            ],
+        };
+        let available_core_ids = available_core_ids();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_adjacent_ranges_succeeds() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 3 },
+                CoreRange { start: 4, end: 5 },
+            ],
+        };
+        let available_core_ids = available_core_ids();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
+        assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn select_with_multiple_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 1, end: 3 },
+                CoreRange { start: 2, end: 4 },
+                CoreRange { start: 5, end: 6 },
+            ],
+        };
+        let available_core_ids = available_core_ids();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_fails_fast_when_later_pipeline_allocation_is_invalid() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::CoreCount { count: 2 },
+            ),
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p2",
+                CoreAllocation::CoreSet {
+                    set: vec![CoreRange {
+                        start: 999,
+                        end: 999,
+                    }],
+                },
+            ),
+        ];
+
+        let err = Controller::<()>::preflight_pipeline_core_allocations(
+            &pipelines,
+            &available_core_ids(),
+        )
+        .expect_err("preflight should fail");
+        match err {
+            Error::InvalidCoreAllocation { .. } => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_succeeds_and_allows_cross_pipeline_core_overlap() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::CoreSet {
+                    set: vec![CoreRange { start: 1, end: 2 }],
+                },
+            ),
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p2",
+                CoreAllocation::CoreSet {
+                    set: vec![CoreRange { start: 2, end: 3 }],
+                },
+            ),
+        ];
+
+        let assignments = Controller::<()>::preflight_pipeline_core_allocations(
+            &pipelines,
+            &available_core_ids(),
+        )
+        .expect("preflight should succeed");
+
+        assert_eq!(assignments.len(), 2);
+        assert_eq!(to_ids(&assignments[0]), vec![1, 2]);
+        assert_eq!(to_ids(&assignments[1]), vec![2, 3]);
+    }
+
+    #[test]
+    fn declare_topics_accepts_default_and_explicit_in_memory_backend() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  global_default: {}
+  global_mem:
+    backend: in_memory
+groups:
+  g1:
+    topics:
+      local_default: {}
+      local_mem:
+        backend: in_memory
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+
+        assert_eq!(declared.broker.topic_names().len(), 4);
     }
 
     #[test]
