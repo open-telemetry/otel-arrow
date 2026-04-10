@@ -170,7 +170,7 @@ implementation, we will define how to generate either the `v1` or the
 In this phase we will insert alternatives for configuring internal
 metrics, similar to how internal logging uses `logs::ProviderMode`,
 with values including `None`, `Builtin`, `OpenTelemetry`, and `ITS`.
-The OpenTelemetry mode will be suppported through Phase 3, at which
+The OpenTelemetry mode will be supported through Phase 3, at which
 point we will have only two real options.
 
 We will not change the manner of reporting multivariate metric structs
@@ -237,7 +237,7 @@ low-risk code path for exporting to the console or Prometheus. The
 same Prometheus export path is also supported in the ITS mode.
 
 Internal events are received representing a partial OTAP payload. For
-the current OTAP specification, we will may generate any of the follow
+the current OTAP specification, we may generate any of the follow
 tables:
 
 - UnivariateMetrics: the top-level table, listing metric type, name,
@@ -291,7 +291,7 @@ engine:
     scopes:
       metrics:
         metrics.otap.consumer:
-          schema_url: otap-dataflow/consumer@v2
+          schema_url: otap-dataflow/consumer@v1
 ```
 
 ### Code generation
@@ -438,24 +438,25 @@ The histogram parameters are:
 - `min_width` the initial width of buckets
 - `max_scale` the initial maximum scale
 
-The implementation has a compiled-in exact table lookup of size
-`2^table_scale` for a particular table scale, determined by
-cargo features.
+The implementation has a compiled-in lookup table of size
+`2^table_scale`. The default table scale is 8, configurable through a
+cargo feature.
+
+The histogram is allocation-free and `#[no_std]`. As an example, the
+non-negative histogram uses six words of space for the independent
+min, max, sum, and count fields, and the bucket scale, width, size,
+and offset fields. Therefore `HistogramNN<10>` is 128 bytes and
+`HistogramNN<26>` is 256 bytes, costing as much as 16 or 32 ordinary
+counters.
 
 After introducing the new data structure, we will add support in the
-code generation tooling to introduce for example `HistogramNN<10>` for
-a 128-byte histogram or `HistogramNN<26>` for a 256-byte histogram.
-
-Each histogram has 6 words of additional space for the
-Min/Max/Sum/Count plus bucket scale, width, size, and offset. This
-implementation is allocation free, so we can think `HistogramNN<10>`
-and `HistogramNN<26>` as taking the same amount of space and
-communication equivalent to 16 or 32 Counters.
+code generation tooling to introduce histogram options, usually at
+detailed level.
 
 ## Appendix: Migration workflow
 
 For the example ConsumerMetrics `#[metric_set]`, a user that has
-developed existing monitoring and dashsboards based on the original
+developed existing monitoring and dashboards based on the original
 dataflow engine metrics will:
 
 In phase 1, there are no changes.
@@ -478,8 +479,8 @@ engine:
     scopes:
       metrics:
         metrics.otap.consumer:
+        - schema_url: otap-dataflow/consumer@v0
         - schema_url: otap-dataflow/consumer@v1
-        - schema_url: otap-dataflow/consumer@v2
 ```
 
 After deploying this new configuration, the user is free to redeploy
@@ -492,7 +493,7 @@ engine:
     scopes:
       metrics:
         metrics.otap.consumer:
-        - schema_url: otap-dataflow/consumer@v2
+        - schema_url: otap-dataflow/consumer@v1
 ```
 
 After twelve months, OTel-Arrow will be eager to deprecate the `v0`
