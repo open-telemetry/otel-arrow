@@ -69,6 +69,7 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub mod indexed_min_heap;
 pub mod local;
 pub mod memory_limiter;
 pub mod node;
