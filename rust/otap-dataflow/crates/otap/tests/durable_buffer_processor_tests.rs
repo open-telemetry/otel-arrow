@@ -638,11 +638,10 @@ where
 fn is_acceptable_shutdown_result(
     run_result: &Result<Vec<()>, otap_df_engine::error::Error>,
 ) -> bool {
-    match run_result {
-        Ok(_) => true,
-        Err(otap_df_engine::error::Error::ChannelSendError { error }) => error.contains("closed"),
-        Err(_) => false,
-    }
+    matches!(
+        run_result,
+        Ok(_) | Err(otap_df_engine::error::Error::ChannelSendError { closed: true, .. })
+    )
 }
 
 /// Wait for a condition to become true, with timeout.
