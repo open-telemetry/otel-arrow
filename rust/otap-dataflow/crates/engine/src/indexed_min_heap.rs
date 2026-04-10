@@ -14,7 +14,7 @@ use std::hash::Hash;
 
 /// Outcome of an [`IndexedMinHeap::insert`] call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InsertOutcome {
+pub(crate) enum InsertOutcome {
     /// A new entry was added to the heap.
     Inserted,
     /// An existing entry's priority was replaced.
@@ -27,7 +27,7 @@ pub enum InsertOutcome {
 /// Entries are `(K, P)` pairs.  The heap is ordered by `P` where the
 /// *smallest* priority sits at the root.  Keys must be unique — inserting
 /// a key that already exists replaces its priority in place.
-pub struct IndexedMinHeap<K, P> {
+pub(crate) struct IndexedMinHeap<K, P> {
     entries: Vec<Entry<K, P>>,
     indices: HashMap<K, usize>,
 }
