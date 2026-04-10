@@ -1,272 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775759014554,
+  "lastUpdate": 1775863452918,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "29139614+renovate[bot]@users.noreply.github.com",
-            "name": "renovate[bot]",
-            "username": "renovate[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "3ef2d5b2b55dabc4a4a0996ea18b8be7750f6c07",
-          "message": "fix(deps): update module github.com/apache/arrow-go/v18 to v18.5.2 (#2196)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n|\n[github.com/apache/arrow-go/v18](https://redirect.github.com/apache/arrow-go)\n| `v18.5.1` → `v18.5.2` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2fapache%2farrow-go%2fv18/v18.5.2?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2fapache%2farrow-go%2fv18/v18.5.1/v18.5.2?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>apache/arrow-go (github.com/apache/arrow-go/v18)</summary>\n\n###\n[`v18.5.2`](https://redirect.github.com/apache/arrow-go/releases/tag/v18.5.2)\n\n[Compare\nSource](https://redirect.github.com/apache/arrow-go/compare/v18.5.1...v18.5.2)\n\n#### What's Changed\n\n- chore: bump parquet-testing submodule by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;633](https://redirect.github.com/apache/arrow-go/pull/633)\n- fix(arrow/array): handle empty binary values correctly in\nBinaryBuilder by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;634](https://redirect.github.com/apache/arrow-go/pull/634)\n- test(arrow/array): add test to binary builder by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;636](https://redirect.github.com/apache/arrow-go/pull/636)\n- chore: Bump modernc.org/sqlite from 1.29.6 to 1.44.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;627](https://redirect.github.com/apache/arrow-go/pull/627)\n- chore: Bump gonum.org/v1/gonum from 0.16.0 to 0.17.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;643](https://redirect.github.com/apache/arrow-go/pull/643)\n- chore: Bump github.com/hamba/avro/v2 from 2.30.0 to 2.31.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;641](https://redirect.github.com/apache/arrow-go/pull/641)\n- chore: Bump github.com/pierrec/lz4/v4 from 4.1.23 to 4.1.25 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;639](https://redirect.github.com/apache/arrow-go/pull/639)\n- chore: Bump actions/setup-go from 6.1.0 to 6.2.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;638](https://redirect.github.com/apache/arrow-go/pull/638)\n- chore: Bump github.com/klauspost/compress from 1.18.2 to 1.18.3 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;640](https://redirect.github.com/apache/arrow-go/pull/640)\n- chore: Bump modernc.org/sqlite from 1.44.1 to 1.44.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;642](https://redirect.github.com/apache/arrow-go/pull/642)\n- fix(parquet): decryption of V2 data pages by\n[@&#8203;daniel-adam-tfs](https://redirect.github.com/daniel-adam-tfs)\nin [#&#8203;596](https://redirect.github.com/apache/arrow-go/pull/596)\n- chore: Bump github.com/substrait-io/substrait-protobuf/go from 0.78.1\nto 0.79.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;651](https://redirect.github.com/apache/arrow-go/pull/651)\n- chore: Bump github.com/zeebo/xxh3 from 1.0.2 to 1.1.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;649](https://redirect.github.com/apache/arrow-go/pull/649)\n- chore: Bump actions/setup-python from 6.1.0 to 6.2.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;650](https://redirect.github.com/apache/arrow-go/pull/650)\n- chore: Bump actions/checkout from 6.0.1 to 6.0.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;648](https://redirect.github.com/apache/arrow-go/pull/648)\n- perf(arrow): Reduce the amount of allocated objects by\n[@&#8203;spiridonov](https://redirect.github.com/spiridonov) in\n[#&#8203;645](https://redirect.github.com/apache/arrow-go/pull/645)\n- fix(parquet/file): regression with decompressing data by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;652](https://redirect.github.com/apache/arrow-go/pull/652)\n- fix(arrow/compute): take on record/array with nested struct by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;653](https://redirect.github.com/apache/arrow-go/pull/653)\n- fix(parquet/file): write large string values by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;655](https://redirect.github.com/apache/arrow-go/pull/655)\n- chore: Bump github.com/substrait-io/substrait-go/v7 from 7.2.2 to\n7.3.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;656](https://redirect.github.com/apache/arrow-go/pull/656)\n- chore: Bump golang.org/x/sys from 0.40.0 to 0.41.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;659](https://redirect.github.com/apache/arrow-go/pull/659)\n- ci: ensure extra GC cycle for flaky tests by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;661](https://redirect.github.com/apache/arrow-go/pull/661)\n- chore: Bump github.com/klauspost/compress from 1.18.3 to 1.18.4 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;660](https://redirect.github.com/apache/arrow-go/pull/660)\n- chore: Bump modernc.org/sqlite from 1.44.3 to 1.45.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;658](https://redirect.github.com/apache/arrow-go/pull/658)\n- chore: Bump golang.org/x/tools from 0.41.0 to 0.42.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;657](https://redirect.github.com/apache/arrow-go/pull/657)\n- fix(arrow/array): handle exponent notation for unmarshal int by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;662](https://redirect.github.com/apache/arrow-go/pull/662)\n- fix(flight/flightsql/driver): fix `time.Time` params by\n[@&#8203;etodd](https://redirect.github.com/etodd) in\n[#&#8203;666](https://redirect.github.com/apache/arrow-go/pull/666)\n- chore: Bump github.com/substrait-io/substrait-protobuf/go from 0.79.0\nto 0.80.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;664](https://redirect.github.com/apache/arrow-go/pull/664)\n- chore: Bump google.golang.org/grpc from 1.78.0 to 1.79.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;665](https://redirect.github.com/apache/arrow-go/pull/665)\n- fix(parquet): bss encoding and tests on big endian systems by\n[@&#8203;daniel-adam-tfs](https://redirect.github.com/daniel-adam-tfs)\nin [#&#8203;663](https://redirect.github.com/apache/arrow-go/pull/663)\n- fix(parquet/pqarrow): selective column reading of complex map column\nby [@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;668](https://redirect.github.com/apache/arrow-go/pull/668)\n- feat(arrow/ipc): support custom\\_metadata on RecordBatch messages by\n[@&#8203;rustyconover](https://redirect.github.com/rustyconover) in\n[#&#8203;669](https://redirect.github.com/apache/arrow-go/pull/669)\n- chore: Bump github.com/substrait-io/substrait-protobuf/go from 0.80.0\nto 0.81.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;671](https://redirect.github.com/apache/arrow-go/pull/671)\n- chore: Bump modernc.org/sqlite from 1.45.0 to 1.46.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;670](https://redirect.github.com/apache/arrow-go/pull/670)\n- chore: Bump github.com/substrait-io/substrait-go/v7 from 7.3.0 to\n7.4.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;672](https://redirect.github.com/apache/arrow-go/pull/672)\n- feat: Support setting IPC options in FlightSQL call options by\n[@&#8203;peasee](https://redirect.github.com/peasee) in\n[#&#8203;674](https://redirect.github.com/apache/arrow-go/pull/674)\n- chore(dev/release): embed hash of source tarball into email by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;675](https://redirect.github.com/apache/arrow-go/pull/675)\n- chore(arrow): bump PkgVersion to 18.5.2 by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;676](https://redirect.github.com/apache/arrow-go/pull/676)\n\n#### New Contributors\n\n- [@&#8203;spiridonov](https://redirect.github.com/spiridonov) made\ntheir first contribution in\n[#&#8203;645](https://redirect.github.com/apache/arrow-go/pull/645)\n- [@&#8203;etodd](https://redirect.github.com/etodd) made their first\ncontribution in\n[#&#8203;666](https://redirect.github.com/apache/arrow-go/pull/666)\n- [@&#8203;rustyconover](https://redirect.github.com/rustyconover) made\ntheir first contribution in\n[#&#8203;669](https://redirect.github.com/apache/arrow-go/pull/669)\n- [@&#8203;peasee](https://redirect.github.com/peasee) made their first\ncontribution in\n[#&#8203;674](https://redirect.github.com/apache/arrow-go/pull/674)\n\n**Full Changelog**:\n<https://github.com/apache/arrow-go/compare/v18.5.1...v18.5.2>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am every weekday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My40OC4xIiwidXBkYXRlZEluVmVyIjoiNDMuNDguMSIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\n---------\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: otelbot <197425009+otelbot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
-          "timestamp": "2026-03-06T18:43:05Z",
-          "tree_id": "8d077f1c3649fd2abea03353ddcfc49fc918ba80",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/3ef2d5b2b55dabc4a4a0996ea18b8be7750f6c07"
-        },
-        "date": 1772826445608,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -4.1666669845581055,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 16.050748175190137,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 16.508280114684233,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 49.346484375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 50.5,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 119996.0701287033,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 124995.90638406594,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.000655,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 572077.7735554543,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 538978.37617135,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -4.545454502105713,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 28.812001557591525,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 29.101764255385334,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 41.459375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 42.33203125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 109996.37011978605,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 114996.20512523087,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.00066,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 578846.1287162055,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2180892.64403369,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -4.1666669845581055,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 36.08079472533214,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 36.42582811979006,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 57.15625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 58,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 119993.85031517135,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 124993.59407830349,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001025,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2476649.0331053482,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 545548.7875991428,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -4.1666669845581055,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 44.497753055505704,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 44.690154916015175,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 46.866015625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 54.80859375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 119995.40417602006,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 124995.21268335424,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.000766,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2644510.0268454878,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2220787.7707569436,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -28080,6 +27816,390 @@ window.BENCHMARK_DATA = {
             "value": 532729.9438202167,
             "unit": "bytes/sec",
             "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "8164192+clhain@users.noreply.github.com",
+            "name": "clhain",
+            "username": "clhain"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fdc0cfc8ab414af51656daca330695a70c7cbbdb",
+          "message": "Refactor config structs from internally-tagged enums to flat `type` + `config` for Kubernetes CRD compatibility (#2594)\n\n# Change Summary\n\n&#128680;**This PR Includes Breaking Config API Changes**&#128680;\n\nThis branch replaces three internally-tagged/adjacently-tagged enum\nconfig types with flat structs using explicit `type` discriminator\nfields, making them representable as Kubernetes CRD structural schemas.\n\n**What changed:**\n\n- **Metrics exporter configs** (`MetricsPeriodicExporterConfig`,\n`MetricsPullExporterConfig`): Converted from custom `Deserialize`\nvisitor-based enums (where the exporter name was a map key like\n`console:` or `otlp: { ... }`) to flat structs with `type` (enum\ndiscriminator) + `config` (`serde_json::Value` free-form blob).\nExporter-specific configuration is now extracted and validated at\nruntime via `from_config()` helpers. This mirrors the node specification\n/ configuration logic in the pipeline configs\n\n- **`CoreAllocation`**: Converted from a `#[serde(tag = \"type\")]` enum\nwith variants like `AllCores`, `CoreCount { count }`, `CoreSet { set }`\nto a flat struct with a `strategy` enum field plus optional `count` and\n`set` fields. Convenience constructors (`all_cores()`, `core_count(n)`,\n`core_set(ranges)`) replace direct enum variant construction.\n\n- **`PropagationSelector`**: Converted from a `#[serde(rename_all)]`\nenum with variants `AllCaptured`, `None`, `Named(Vec<String>)` to a flat\nstruct with `selector_type` enum + optional `named` list. Includes a new\n`validate()` method that rejects invalid combinations (e.g., `type:\nnamed` without a `named` list).\n\n\n## What issue does this PR close?\n\n* Closes #2592\n\n## How are these changes tested?\n\nValidation tests added for post-deserialization handling, updated\nexisting tests to new structs.\n\n## Are there any user-facing changes?\n\n**Config file format changes** (YAML, breaking):\n\n```yaml\n# Before                          # After\nexporter:                         exporter:\n  otlp:                             type: otlp\n    endpoint: \"...\"                 config:\n                                      endpoint: \"...\"\n\nselector: all_captured            selector:\n                                    type: all_captured\n\nselector: !named                  selector:\n  - tenant_id                       type: named\n  - x-request-id                    named:\n                                      - tenant_id\n                                      - x-request-id  \n\n\ncore_allocation:                  core_allocation:\n  type: core_count                  type: core_count # Non-breaking alias to new `strategy` field.\n  count: 4                          count: 4\n```",
+          "timestamp": "2026-04-10T20:39:24Z",
+          "tree_id": "c728603e54d29f5849d9b56e2be8077484d790b4",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/fdc0cfc8ab414af51656daca330695a70c7cbbdb"
+        },
+        "date": 1775863446794,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 29.98887399041109,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 30.526749379652607,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.046484375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.046875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 119986.4655266886,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 119986.4655266886,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002256,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 583272.1876642363,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2441195.070364152,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 16.994221505125594,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 17.61767053364269,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 22.878125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 23.46875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 119986.5555064555,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 119986.5555064555,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002241,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 577304.7800143498,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 536036.3059208599,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 37.069746363357865,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 38.04755783263468,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 28.103515625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 28.83203125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 119986.66948102065,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 119986.66948102065,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002222,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2551971.5032273782,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 538324.4866560574,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -475,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 11.922051295068345,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 12.585174137003152,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.55625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.11328125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 4998.68584549122,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 28742.443611574516,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.005258,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 501905.286458813,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 483400.0723749632,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 14.163872333425198,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 14.61833255993813,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 32.791796875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 33.50390625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 119985.93164951411,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 119985.93164951411,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002345,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 146136.27198300394,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 531340.7353310795,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 43.90114763089805,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 44.205021645021645,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 20.522265625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 21.77734375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 119985.45176397363,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 119985.45176397363,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002425,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2621312.6771511063,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2450974.266689167,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
           }
         ]
       }
