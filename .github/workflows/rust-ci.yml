@@ -72,19 +72,19 @@ jobs:
         run: make otelarrowcol
       - name: Run tests with coverage (Linux x86_64)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo llvm-cov nextest --profile ci --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Linux ARM64)
         if: matrix.os == 'ubuntu-24.04-arm'
-        run: cargo nextest run --profile ci --all-features --workspace
+        run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo nextest run --profile ci --all-features --workspace
+        run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (macOS)
         if: runner.os == 'macOS'
-        run: cargo nextest run --profile ci --all-features --workspace
+        run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload to codecov.io
         if: matrix.os == 'ubuntu-latest'
