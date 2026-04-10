@@ -23,8 +23,8 @@ general purpose OpenTelemetry Metrics SDK for Rust, with several caveats.
 - Instruments are fully "bound"; there are no dynamic attributes.
 - OTel-Weaver semantic convention registry with code generation tools
   support type-safe interfaces, schema migration
-- Compile-time View configuration supports three levels—Basic, Normal,
-  and Detailed—selected at runtime; there are no dynamic views
+- View configuration defines three levels at compile time: Basic, Normal,
+  and Detailed, which are selected at runtime; there are no dynamic views
 - Schema-driven versioning includes a migration path from initial
   `#[metric_set]` to generated code using a schema registry with
   runtime-configurable output schemas.
@@ -259,8 +259,9 @@ In this phase, minimum support for OpenTelemetry Metric View
 configuration is preserved for use at runtime, limited to scoped
 renaming of instruments and descriptions. This is meant to assist with
 the initial stages of this transition; the limited Views functionality
-will become deprecated when the OpenTelemetry SDK is removed, and it
-will be fully eliminated during Phase 3, meaning after users are able
+will become deprecated during Phase 2, once schema-driven code
+generation provides an alternative, and it will be fully eliminated
+in Phase 3 when the OpenTelemetry SDK is removed and users are able
 to achieve the same by modifying schema definitions.
 
 ## Phase 2: Schema-driven code generation
@@ -409,12 +410,13 @@ for each metric set. Users will have access to the built-in support
 processors (batch, retry, OTAP and OTLP exporters) are a suitable
 replacement.
 
-At this stage we deprecate support for OpenTelemetry Metrics Views,
-meaning the minimal level of support for scoped renaming that was meant to
-assist OpenTelemetry users. In order to retain modified Views without
-the deprecated feature going forward, users will either: (1) build the
-code with custom telemetry schemas, or (2) use a transform processor
-to modify their metrics using our default schemas.
+At this stage we eliminate support for OpenTelemetry Metrics Views,
+which was deprecated in Phase 2. This removes the minimal level of
+scoped renaming support that was meant to assist OpenTelemetry users.
+In order to retain modified Views without this feature going forward,
+users will either: (1) build the code with custom telemetry schemas,
+or (2) use a transform processor to modify their metrics using our
+default schemas.
 
 ## Phase 4: Exponential Histogram support
 
