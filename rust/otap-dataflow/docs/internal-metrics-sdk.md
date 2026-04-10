@@ -5,22 +5,23 @@
 The OTAP-direct Metrics SDK described here will replace the
 OpenTelemetry-Rust Metrics SDK, using pieces of the OTAP dataflow
 engine as its own internal telemetry pipeline. This
-document explains how the internal metrics SDK will be redesigned, in
-a four-phase implementation plan. See the corresponding document
-describing the [internal logs SDK](./internal-logs-sdk.md) which
-followed a similar course, however note that the logs SDK forms OTLP
+document explains how the internal metrics SDK will be redesigned
+through a four-phase implementation plan. See the corresponding document
+describing the [internal logs SDK](./internal-logs-sdk.md), which
+followed a similar course; however, note that the logs SDK forms OTLP
 bytes payloads directly, whereas the metrics SDK forms OTAP records
 directly.
 
 This is a functionally complete Metrics SDK, tailored for efficiency in
 the OTAP dataflow engine environment. It may be considered as a
-general purpose OpenTelemetry Metrics SDK for Rust, with several caveats.
+general purpose OpenTelemetry Metrics SDK for Rust, with the following
+design constraints:
 
 - Multivariate design for future
   [OTAP-multivariate](../../../docs/multivariate-design.md) uses
 - A thread-per-core architecture with push-oriented collection supports
   synchronous and asynchronous instrument patterns
-- Instruments are fully "bound"; there are no dynamic attributes.
+- Instruments are fully "bound"; there are no dynamic attributes
 - OTel-Weaver semantic convention registry with code generation tools
   supports type-safe interfaces and schema migration
 - View configuration defines three levels at compile time: Basic, Normal,
@@ -38,8 +39,8 @@ internal metrics pipeline.
 
 There are four phases in this design plan:
 
-1. **Drop-in replacement**. The existing `#[metric_set]` and the
-   Counter, UpDownCounter, Gauge, and Mmsc instruments reporting paths
+1. **Drop-in replacement**. The existing `#[metric_set]` macro and the
+   reporting paths for Counter, UpDownCounter, Gauge, and Mmsc instruments
    are unchanged. The current dispatcher is extended with the option
    to select the OpenTelemetry SDK, a no-op SDK, the bare-bones Admin
    behavior, or the new ITS mode. As this phase progresses, we will
@@ -65,7 +66,7 @@ There are four phases in this design plan:
    structure supports reporting both coarse and fine-level detail
    about metric distributions in the OTAP dataflow engine.
 
-### Transition from `#[metric_set]` to Metric Registry
+### Transition from `#[metric_set]` to schema-driven metrics
 
 Prior to this design, metric instrumentation was fully expanded into
 individual counters. For example, we might see
@@ -91,13 +92,15 @@ pub struct ConsumerMetrics {
 
 This is logically a single set of metrics using a flat namespace
 instead of metric-level attributes. As we use this example, we will
-consider how to add signal information (i.e. count logs, traces, and
+consider how to add signal information (i.e., counting logs, traces, and
 metrics requests separately). If we continued using a flat namespace,
 we would have 9 Counters; however, a more idiomatic representation
 would use metric attributes. For this example, we are considering a
-metric that usually has 1 or 2 dimensions having three variants
-each. We have three outcomes and three signals, making 3 or 9
-timeseries.
+metric with 1 or 2 dimensions having three variants each. We have
+three outcomes and three signals, making 3 or 9 timeseries. The
+metric is disabled at Basic level because a zero-dimension counter
+(i.e., total items consumed regardless of outcome) is better served
+by a different metric, such as a channel receive count.
 
 After the transition, we will have a schema definition listing the
 metric groups, their dimensions, and the default configuration by
@@ -118,9 +121,9 @@ groups:
         requirement_level: optional
     x-otap-levels:
       basic:
-        dimensions: [outcome]
+        disabled: true
       normal:
-        dimensions: [outcome, signal]
+        dimensions: [outcome]
       detailed:
         dimensions: [outcome, signal]
 
@@ -143,27 +146,31 @@ pub struct ConsumerMetrics {
 
 #[derive(Debug, Default, Clone)]
 pub enum ConsumedItemsByOutcomeAndSignal {
-    Basic([Counter; 3]), // 1 dimension: outcome
-    Normal([Counter; 3]), // 1 dimension: outcome
-    Detailed([Counter; 9]), // 2 dimensions: outcome x signal
+    #[default]
+    Basic,                       // disabled
+    Normal(Box<[Counter; 3]>),   // 1 dimension: outcome
+    Detailed(Box<[Counter; 9]>), // 2 dimensions: outcome x signal
 }
 
 impl ConsumedItemsByOutcomeAndSignal {
     /// Add a number of items by outcome and signal.
     pub fn add(&mut self, items: u64, outcome: Outcomes, signal: SignalType) {
        match self {
-         Basic(cnts) => cnts[outcome.ordinal()].increment(items),
-         Normal(cnts) => cnts[outcome.ordinal()].increment(items),
-         Detailed(cnts) => cnts[outcome.ordinal() * 3 + signal.ordinal()].increment(items),
+         Self::Basic => {},  // disabled: no-op
+         Self::Normal(cnts) => cnts[outcome.ordinal()].increment(items),
+         Self::Detailed(cnts) => cnts[outcome.ordinal() * 3 + signal.ordinal()].increment(items),
        }
     }
 }
 ```
 
+Note the use of `Box<_>` in the enum variant ensures that metric level
+actually controls how much memory is used by instrumentation.
+
 In another file, we will define the translation from the `v1` to `v0`
-schema, which we eventually deprecate.  In another part of the
-implementation, we will define how to generate either the `v1` or the
-`v0` schema from the current instrumentation.
+schema, which we will eventually deprecate. Separately, we will
+define how to generate either the `v1` or the `v0` schema from the
+current instrumentation.
 
 ## Phase 1: Drop-in replacement
 
@@ -273,13 +280,14 @@ the `v0` semantic convention while streamlining the instrumentation.
 In the example above, where `ConsumerMetrics` initially consists of
 three Counters (e.g., `consumed_success`), the instrumentation will
 transition to a single Counter field. The generated `add` method
-method for this instrument requires passing the `Outcome` and
+for this instrument requires passing the `Outcome` and
 `SignalType` types at every call site.
 
 At the end of this phase, each metric set will have at least a `v0`
 schema. For many (not all), we will also define a `v1` schema with
 streamlined instrumentation and a runtime choice between versions.
-The two schemas may be configured as:
+The two schemas may be configured as (using a scalar value for a
+single schema selection):
 
 ```yaml
 engine:
@@ -333,10 +341,11 @@ uses of OTAP.
 #### Scope attributes, flat metrics
 
 In this encoding, a set of metrics corresponds with a scope defined by
-its attributes, and repetition of the metric and not metric-level
+its attributes, with repetition of metric names but without metric-level
 attributes. This yields the following tables, where the scope has K
-attributes defined by an `#[attribute_set]` and there are M metrics in
-the `#[metric_set]`, for one and two dimensions:
+attributes defined by an `#[attribute_set]` (a struct that defines scope-level
+attributes for a metric source) and there are M metrics in the
+`#[metric_set]`, for one and two dimensions:
 
 | Table             | 1 dimension | 2 dimensions |
 |-------------------|-------------|--------------|
@@ -404,7 +413,7 @@ For the same functionality, users will either: (1) build the engine
 with custom telemetry schema definitions, or (2) use the transform
 processor for custom metrics behavior.
 
-## Phase 4: Exponential Histogram support
+## Phase 4: Introduce exponential histograms
 
 We will introduce an OpenTelemetry exponential histogram to our
 codebase based on
@@ -413,18 +422,20 @@ pairs a table-lookup implementation of the mapping function (following
 the DynaTrace and NewRelic algorithms) with an auto-scaling
 ring-buffer of buckets.
 
-As an alternative to `Mmsc`, we will introduce `HistogramNN` for
-non-negative measurements and `HistogramPN` for arbitrary
-measurements.  The implementation uses a variable-width
-representation, with SIMD-within-a-register ("SWAR") techniques for
-widening and merging buckets in place. There are seven widths: B1, B2,
-B4, U8, U16, U32, and U64.
+As an alternative to `Mmsc`, we will introduce `HistogramNN`
+(non-negative) for non-negative measurements and `HistogramPN`
+(positive-and-negative) for arbitrary measurements. The implementation
+uses a variable-width representation, with SIMD-within-a-register
+("SWAR") techniques for widening and merging buckets in place. There
+are seven widths: B1, B2, B4 (bit-packed at 1, 2, and 4 bits per
+bucket), and U8, U16, U32, U64 (unsigned integers at the
+corresponding byte widths).
 
 The histogram parameters are:
 
-- `<const N: usize>` the number of 64-bit words of space available
-- `min_width` the initial width of buckets
-- `max_scale` the initial maximum scale
+- `<const N: usize>`: the number of 64-bit words of space available
+- `min_width`: the initial width of buckets
+- `max_scale`: the initial maximum scale
 
 The implementation has a compiled-in lookup table of size
 `2^table_scale`. The default table scale is 8, configurable through a
@@ -452,7 +463,8 @@ after the `v1` schema is introduced; it will remain compiled-in for
 an additional six months before removal.
 
 Within the first six months, users will deploy an update of the
-dataflow engine and dual metric reporting, for example:
+dataflow engine and dual metric reporting (using a list to select
+multiple schemas simultaneously), for example:
 
 ```yaml
 engine:
@@ -478,8 +490,8 @@ engine:
 ```
 
 After twelve months, the OTel-Arrow project will deprecate the `v0`
-schema; we expect that users will have migrated to `v1` by then. Now,
-we are free to remove the `v0` schema definition.
+schema; we expect that users will have migrated to `v1` by then. At that
+point, we are free to remove the `v0` schema definition.
 
 After removing the `v0` schema definition, re-running
 `cargo xtask generate-metrics` will produce only `v1` metrics.
