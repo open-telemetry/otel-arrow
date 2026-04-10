@@ -12,7 +12,8 @@
 //! # Receive
 //!
 //! `recv()` delegates to `poll_fn(|cx| self.inner.poll_recv_delivery(cx))`.
-//! Zero allocation per call — the `poll_fn` future is stack-allocated.
+//! The future itself is stack-allocated. In-memory delivery leases also avoid
+//! per-message heap allocation on the common path.
 //!
 //! # Ack/Nack
 //!
@@ -22,6 +23,9 @@
 
 use crate::error::Error;
 use crate::topic::backend::SubscriptionBackend;
+use crate::topic::topic::InMemoryDeliveryFinalizer;
+#[cfg(test)]
+use crate::topic::topic::InMemoryDeliveryKind;
 use crate::topic::types::{Envelope, RecvItem};
 use std::sync::Arc;
 
@@ -42,6 +46,10 @@ pub enum RecvDelivery<T: Send + Sync + 'static> {
     },
 }
 
+// Reserved fallback hook for non-in-memory topic backends. The current tree
+// only ships the in-memory backend, so normal builds do not instantiate this
+// path yet.
+#[allow(dead_code)]
 pub(crate) trait DeliveryBackend<T: Send + Sync + 'static> {
     fn envelope(&self) -> &Envelope<T>;
 
@@ -63,21 +71,47 @@ pub(crate) trait DeliveryBackend<T: Send + Sync + 'static> {
 /// resolves the topic-side delivery as a negative outcome so the topic runtime
 /// does not retain it indefinitely.
 pub struct Delivery<T: Send + Sync + 'static> {
-    inner: Option<Box<dyn DeliveryBackend<T>>>,
+    envelope: Envelope<T>,
+    finalizer: DeliveryFinalizer<T>,
+}
+
+enum DeliveryFinalizer<T: Send + Sync + 'static> {
+    InMemory(InMemoryDeliveryFinalizer),
+    // Keep the opaque finalizer path available so a future backend can attach
+    // its own delivery lease implementation without changing the public
+    // subscription API. The in-memory backend no longer uses this variant.
+    #[allow(dead_code)]
+    Opaque(Box<dyn DeliveryBackend<T>>),
+    Finished,
 }
 
 impl<T: Send + Sync + 'static> Delivery<T> {
-    pub(crate) fn new(inner: Box<dyn DeliveryBackend<T>>) -> Self {
-        Self { inner: Some(inner) }
+    pub(crate) fn new_in_memory(
+        envelope: Envelope<T>,
+        finalizer: InMemoryDeliveryFinalizer,
+    ) -> Self {
+        Self {
+            envelope,
+            finalizer: DeliveryFinalizer::InMemory(finalizer),
+        }
+    }
+
+    // Keep this constructor available for future non-in-memory backends. It is
+    // only used by tests today because the in-memory backend now constructs
+    // specialized inline deliveries directly.
+    #[allow(dead_code)]
+    pub(crate) fn new_opaque(inner: Box<dyn DeliveryBackend<T>>) -> Self {
+        let envelope = inner.envelope().clone();
+        Self {
+            envelope,
+            finalizer: DeliveryFinalizer::Opaque(inner),
+        }
     }
 
     /// Inspect the delivered message envelope.
     #[must_use]
     pub fn envelope(&self) -> &Envelope<T> {
-        self.inner
-            .as_ref()
-            .expect("delivery should still be active")
-            .envelope()
+        &self.envelope
     }
 
     /// Topic-assigned message id.
@@ -94,30 +128,52 @@ impl<T: Send + Sync + 'static> Delivery<T> {
 
     /// Finalize the delivery after successful handoff.
     pub fn commit(mut self) {
-        if let Some(inner) = self.inner.as_mut() {
-            inner.commit();
+        match std::mem::replace(&mut self.finalizer, DeliveryFinalizer::Finished) {
+            DeliveryFinalizer::InMemory(mut finalizer) => finalizer.commit(),
+            DeliveryFinalizer::Opaque(mut inner) => inner.commit(),
+            DeliveryFinalizer::Finished => {}
         }
-        _ = self.inner.take();
     }
 
     /// Reject the delivery before successful handoff.
     pub fn abort(mut self, reason: impl Into<Arc<str>>) -> Result<(), Error> {
-        let result = self
-            .inner
-            .as_mut()
-            .expect("delivery should still be active")
-            .abort(reason.into());
-        _ = self.inner.take();
-        result
+        let reason = reason.into();
+        match std::mem::replace(&mut self.finalizer, DeliveryFinalizer::Finished) {
+            DeliveryFinalizer::InMemory(mut finalizer) => finalizer.abort(&self.envelope, reason),
+            DeliveryFinalizer::Opaque(mut inner) => inner.abort(reason),
+            DeliveryFinalizer::Finished => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn storage_kind(&self) -> DeliveryStorageKind {
+        match &self.finalizer {
+            DeliveryFinalizer::InMemory(finalizer) => match finalizer.kind() {
+                InMemoryDeliveryKind::Balanced => DeliveryStorageKind::Balanced,
+                InMemoryDeliveryKind::Broadcast => DeliveryStorageKind::Broadcast,
+            },
+            DeliveryFinalizer::Opaque(_) => DeliveryStorageKind::Opaque,
+            DeliveryFinalizer::Finished => panic!("finished deliveries should not be inspected"),
+        }
     }
 }
 
 impl<T: Send + Sync + 'static> Drop for Delivery<T> {
     fn drop(&mut self) {
-        if let Some(inner) = self.inner.as_mut() {
-            inner.abandon();
+        match std::mem::replace(&mut self.finalizer, DeliveryFinalizer::Finished) {
+            DeliveryFinalizer::InMemory(mut finalizer) => finalizer.abandon(&self.envelope),
+            DeliveryFinalizer::Opaque(mut inner) => inner.abandon(),
+            DeliveryFinalizer::Finished => {}
         }
     }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeliveryStorageKind {
+    Balanced,
+    Broadcast,
+    Opaque,
 }
 
 impl<T: Send + Sync + 'static> Subscription<T> {

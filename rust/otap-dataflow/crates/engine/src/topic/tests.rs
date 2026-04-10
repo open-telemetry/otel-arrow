@@ -24,17 +24,20 @@
 //!   remove-does-not-close, clone-shares-state.
 
 use crate::error::Error;
-use crate::topic::backend::InMemoryBackend;
+use crate::topic::backend::{InMemoryBackend, SubscriptionBackend};
+use crate::topic::subscription::{DeliveryBackend, DeliveryStorageKind};
 use crate::topic::types::{
-    PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
+    Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
     TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishTracker,
     TrackedTryPublishOutcome,
 };
-use crate::topic::{RecvDelivery, TopicBroker, TopicSet};
+use crate::topic::{Delivery, RecvDelivery, Subscription, TopicBroker, TopicSet};
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
@@ -705,6 +708,143 @@ async fn broadcast_delivery_commit_advances_to_next_message() {
     assert_eq!(second.message_id(), 2);
     assert_eq!(*second.envelope().payload, 2);
     second.commit();
+}
+
+// Balanced deliveries from the in-memory backend use the specialized inline
+// finalizer path instead of the opaque fallback.
+#[tokio::test]
+async fn balanced_delivery_uses_specialized_inline_storage() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "balanced-inline-delivery",
+            TopicOptions::default(),
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut sub = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+
+    topic.publish(Arc::new(7u64)).await.unwrap();
+
+    let delivery = match sub.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+    assert_eq!(delivery.storage_kind(), DeliveryStorageKind::Balanced);
+    delivery.commit();
+}
+
+// Broadcast deliveries from the in-memory backend use the specialized inline
+// finalizer path instead of the opaque fallback.
+#[tokio::test]
+async fn broadcast_delivery_uses_specialized_inline_storage() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "broadcast-inline-delivery",
+            TopicOptions::BroadcastOnly {
+                capacity: 16,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut sub = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    topic.publish(Arc::new(11u64)).await.unwrap();
+
+    let delivery = match sub.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+    assert_eq!(delivery.storage_kind(), DeliveryStorageKind::Broadcast);
+    delivery.commit();
+}
+
+// Custom backends still work through the opaque delivery fallback even though
+// the in-memory backend now uses specialized inline storage.
+#[tokio::test]
+async fn opaque_delivery_fallback_still_works() {
+    struct OpaqueDelivery {
+        envelope: Envelope<u64>,
+        aborted: Arc<AtomicBool>,
+    }
+
+    impl DeliveryBackend<u64> for OpaqueDelivery {
+        fn envelope(&self) -> &Envelope<u64> {
+            &self.envelope
+        }
+
+        fn commit(&mut self) {}
+
+        fn abort(&mut self, _reason: Arc<str>) -> Result<(), Error> {
+            self.aborted.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn abandon(&mut self) {}
+    }
+
+    struct OpaqueSubscription {
+        yielded: bool,
+        aborted: Arc<AtomicBool>,
+    }
+
+    impl SubscriptionBackend<u64> for OpaqueSubscription {
+        fn poll_recv_delivery(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<RecvDelivery<u64>, Error>> {
+            if self.yielded {
+                Poll::Ready(Err(Error::SubscriptionClosed))
+            } else {
+                self.yielded = true;
+                Poll::Ready(Ok(RecvDelivery::Message(Delivery::new_opaque(Box::new(
+                    OpaqueDelivery {
+                        envelope: Envelope {
+                            id: 41,
+                            payload: Arc::new(99u64),
+                            tracked: false,
+                        },
+                        aborted: Arc::clone(&self.aborted),
+                    },
+                )))))
+            }
+        }
+
+        fn ack(&self, _id: u64) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn nack(&self, _id: u64, _reason: Arc<str>) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    let aborted = Arc::new(AtomicBool::new(false));
+    let mut subscription = Subscription::new(Box::new(OpaqueSubscription {
+        yielded: false,
+        aborted: Arc::clone(&aborted),
+    }));
+
+    let delivery = match subscription.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+    assert_eq!(delivery.storage_kind(), DeliveryStorageKind::Opaque);
+    delivery.abort("opaque fallback abort").unwrap();
+    assert!(aborted.load(Ordering::SeqCst));
 }
 
 // Aborting an unforwarded tracked delivery must resolve its tracked publish as

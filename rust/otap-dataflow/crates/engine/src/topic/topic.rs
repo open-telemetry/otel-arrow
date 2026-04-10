@@ -15,7 +15,7 @@ use crate::error::Error::{
     SubscribeSingleGroupViolation, SubscriptionClosed, TopicClosed,
 };
 use crate::topic::backend::{PublishFuture, PublishTrackedFuture, SubscriptionBackend, TopicState};
-use crate::topic::subscription::{Delivery, DeliveryBackend, RecvDelivery};
+use crate::topic::subscription::{Delivery, RecvDelivery};
 use crate::topic::types::{
     Envelope, PublishOutcome, SubscriberOptions, TopicOptions, TrackedPublishOutcome,
     TrackedPublishPermit, TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
@@ -25,8 +25,6 @@ use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
-const ABANDONED_DELIVERY_REASON: &str = "topic delivery abandoned before forward";
 
 struct QueuedEnvelope<T> {
     envelope: Envelope<T>,
@@ -915,13 +913,12 @@ pub(crate) struct BalancedSub<T: Send + Sync + 'static> {
 impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BalancedSub<T> {
     fn poll_recv_delivery(&mut self, cx: &mut Context<'_>) -> Poll<Result<RecvDelivery<T>, Error>> {
         match self.rx.as_mut().poll_next(cx) {
-            Poll::Ready(Some(queued)) => Poll::Ready(Ok(RecvDelivery::Message(Delivery::new(
-                Box::new(BalancedDelivery {
-                    envelope: queued.envelope,
-                    ack_state: self.ack_state.clone(),
-                    finished: false,
-                }),
-            )))),
+            Poll::Ready(Some(queued)) => {
+                Poll::Ready(Ok(RecvDelivery::Message(Delivery::new_in_memory(
+                    queued.envelope,
+                    InMemoryDeliveryFinalizer::balanced(self.ack_state.clone()),
+                ))))
+            }
             Poll::Ready(None) => Poll::Ready(Err(SubscriptionClosed)),
             Poll::Pending => Poll::Pending,
         }
@@ -1022,15 +1019,14 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
                 }
                 cursor.leased_seq = Some(read_seq);
                 cursor.spun = false;
-                Some(Ok(RecvDelivery::Message(Delivery::new(Box::new(
-                    BroadcastDelivery {
-                        envelope,
-                        seq: read_seq,
-                        cursor: Arc::clone(&self.cursor),
-                        ack_state: self.ack_state.clone(),
-                        finished: false,
-                    },
-                )))))
+                Some(Ok(RecvDelivery::Message(Delivery::new_in_memory(
+                    envelope,
+                    InMemoryDeliveryFinalizer::broadcast(
+                        read_seq,
+                        Arc::clone(&self.cursor),
+                        self.ack_state.clone(),
+                    ),
+                ))))
             }
             BroadcastReadResult::Lagged {
                 missed,
@@ -1049,7 +1045,7 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
     }
 }
 
-struct BroadcastCursor {
+pub(crate) struct BroadcastCursor {
     read_seq: u64,
     leased_seq: Option<u64>,
     disconnected_on_lag: bool,
@@ -1057,97 +1053,114 @@ struct BroadcastCursor {
     lease_waiters: WakerSet,
 }
 
-struct BalancedDelivery<T: Send + Sync + 'static> {
-    envelope: Envelope<T>,
-    ack_state: AckState,
-    finished: bool,
+fn finish_broadcast_delivery(cursor: &Arc<Mutex<BroadcastCursor>>, seq: u64) {
+    let mut cursor = cursor.lock();
+    if cursor.leased_seq == Some(seq) {
+        cursor.read_seq = seq + 1;
+        cursor.leased_seq = None;
+        cursor.spun = false;
+        cursor.lease_waiters.wake_all();
+    }
 }
 
-impl<T: Send + Sync + 'static> DeliveryBackend<T> for BalancedDelivery<T> {
-    fn envelope(&self) -> &Envelope<T> {
-        &self.envelope
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InMemoryDeliveryKind {
+    Balanced,
+    Broadcast,
+}
+
+pub(crate) enum InMemoryDeliveryFinalizer {
+    Balanced {
+        ack_state: AckState,
+    },
+    Broadcast {
+        seq: u64,
+        cursor: Arc<Mutex<BroadcastCursor>>,
+        ack_state: AckState,
+    },
+}
+
+impl InMemoryDeliveryFinalizer {
+    pub(crate) fn balanced(ack_state: AckState) -> Self {
+        Self::Balanced { ack_state }
     }
 
-    fn commit(&mut self) {
-        self.finished = true;
-    }
-
-    fn abort(&mut self, reason: Arc<str>) -> Result<(), Error> {
-        if !self.finished && self.envelope.tracked {
-            _ = self.ack_state.send_nack(self.envelope.id, reason);
+    pub(crate) fn broadcast(
+        seq: u64,
+        cursor: Arc<Mutex<BroadcastCursor>>,
+        ack_state: AckState,
+    ) -> Self {
+        Self::Broadcast {
+            seq,
+            cursor,
+            ack_state,
         }
-        self.finished = true;
+    }
+
+    pub(crate) fn commit(&mut self) {
+        if let Self::Broadcast { seq, cursor, .. } = self {
+            finish_broadcast_delivery(cursor, *seq);
+        }
+    }
+
+    pub(crate) fn abort<T: Send + Sync + 'static>(
+        &mut self,
+        envelope: &Envelope<T>,
+        reason: Arc<str>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Balanced { ack_state } => {
+                if envelope.tracked {
+                    _ = ack_state.send_nack(envelope.id, reason);
+                }
+            }
+            Self::Broadcast {
+                seq,
+                cursor,
+                ack_state,
+            } => {
+                if envelope.tracked {
+                    _ = ack_state.send_nack(envelope.id, reason);
+                }
+                finish_broadcast_delivery(cursor, *seq);
+            }
+        }
         Ok(())
     }
 
-    fn abandon(&mut self) {
-        if !self.finished && self.envelope.tracked {
-            _ = self.ack_state.send_nack(
-                self.envelope.id,
-                Arc::<str>::from(ABANDONED_DELIVERY_REASON),
-            );
-        }
-        self.finished = true;
-    }
-}
-
-struct BroadcastDelivery<T: Send + Sync + 'static> {
-    envelope: Envelope<T>,
-    seq: u64,
-    cursor: Arc<Mutex<BroadcastCursor>>,
-    ack_state: AckState,
-    finished: bool,
-}
-
-impl<T: Send + Sync + 'static> BroadcastDelivery<T> {
-    fn finish_cursor(&self) {
-        let mut cursor = self.cursor.lock();
-        if cursor.leased_seq == Some(self.seq) {
-            cursor.read_seq = self.seq + 1;
-            cursor.leased_seq = None;
-            cursor.spun = false;
-            cursor.lease_waiters.wake_all();
+    pub(crate) fn abandon<T: Send + Sync + 'static>(&mut self, envelope: &Envelope<T>) {
+        match self {
+            Self::Balanced { ack_state } => {
+                if envelope.tracked {
+                    _ = ack_state.send_nack(
+                        envelope.id,
+                        Arc::<str>::from("topic delivery abandoned before forward"),
+                    );
+                }
+            }
+            Self::Broadcast {
+                seq,
+                cursor,
+                ack_state,
+            } => {
+                if envelope.tracked {
+                    _ = ack_state.send_nack(
+                        envelope.id,
+                        Arc::<str>::from("topic delivery abandoned before forward"),
+                    );
+                }
+                finish_broadcast_delivery(cursor, *seq);
+            }
         }
     }
-}
 
-impl<T: Send + Sync + 'static> DeliveryBackend<T> for BroadcastDelivery<T> {
-    fn envelope(&self) -> &Envelope<T> {
-        &self.envelope
-    }
-
-    fn commit(&mut self) {
-        if self.finished {
-            return;
+    #[cfg(test)]
+    pub(crate) fn kind(&self) -> InMemoryDeliveryKind {
+        match self {
+            Self::Balanced { .. } => InMemoryDeliveryKind::Balanced,
+            Self::Broadcast { .. } => InMemoryDeliveryKind::Broadcast,
         }
-        self.finish_cursor();
-        self.finished = true;
-    }
-
-    fn abort(&mut self, reason: Arc<str>) -> Result<(), Error> {
-        if self.finished {
-            return Ok(());
-        }
-        if self.envelope.tracked {
-            _ = self.ack_state.send_nack(self.envelope.id, reason);
-        }
-        self.finish_cursor();
-        self.finished = true;
-        Ok(())
-    }
-
-    fn abandon(&mut self) {
-        if self.finished {
-            return;
-        }
-        if self.envelope.tracked {
-            _ = self.ack_state.send_nack(
-                self.envelope.id,
-                Arc::<str>::from(ABANDONED_DELIVERY_REASON),
-            );
-        }
-        self.finish_cursor();
-        self.finished = true;
     }
 }
 
