@@ -3,10 +3,13 @@
 
 use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
+use otap_df_admin_api::{
+    AdminClient, AdminEndpoint, HttpAdminClientSettings, engine::ProbeStatus,
+    operations::OperationOptions, pipeline_groups::ShutdownStatus, telemetry::MetricsOptions,
+};
 use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use reqwest::Client;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
@@ -29,25 +32,13 @@ pub(crate) async fn run_pipelines_with_timeout(
 ) -> Result<(), ValidationError> {
     let pipeline_simulator = PipelineSimulator::new(rendered_group.as_str())?;
     let _pipeline_handle = std::thread::spawn(move || pipeline_simulator.run());
-    let admin_client = Client::new();
+    let admin_client = admin_client(&admin_base)?;
 
-    wait_for_ready(
-        &admin_client,
-        &admin_base,
-        ready_max_attempts,
-        ready_backoff,
-    )
-    .await?;
+    wait_for_ready(&admin_client, ready_max_attempts, ready_backoff).await?;
     tokio::time::timeout(timeout, async {
-        wait_for_loadgen(
-            &admin_client,
-            &admin_base,
-            &expected_generator_signals,
-            metrics_poll,
-        )
-        .await?;
-        let result = wait_for_validation_finished(&admin_client, &admin_base, metrics_poll).await;
-        shutdown_pipeline(&admin_client, &admin_base).await?;
+        wait_for_loadgen(&admin_client, &expected_generator_signals, metrics_poll).await?;
+        let result = wait_for_validation_finished(&admin_client, metrics_poll).await;
+        shutdown_pipeline(&admin_client).await?;
         result
     })
     .await
@@ -73,20 +64,19 @@ impl PipelineSimulator {
 }
 
 async fn wait_for_ready(
-    client: &Client,
-    base: &str,
+    client: &AdminClient,
     max_retry: usize,
     retry_cooldown: Duration,
 ) -> Result<(), ValidationError> {
-    let readyz_url = format!("{base}/api/v1/readyz");
     let mut last_error: Option<String> = None;
     for _attempt in 0..max_retry {
-        match client.get(&readyz_url).send().await {
-            Ok(resp) if resp.status().is_success() => return Ok(()),
-            Ok(resp) => match resp.text().await {
-                Ok(body) => last_error = Some(format!("pipeline is not ready: {body}")),
-                Err(err) => last_error = Some(format!("pipeline is not ready: {err}")),
-            },
+        match client.engine().readyz().await {
+            Ok(resp) if resp.status == ProbeStatus::Ok => return Ok(()),
+            Ok(resp) => {
+                let details = serde_json::to_string(&resp)
+                    .unwrap_or_else(|_| format!("probe status={:?}", resp.status));
+                last_error = Some(format!("pipeline is not ready: {details}"));
+            }
             Err(err) => {
                 last_error = Some(format!("pipeline is not ready: {err}"));
             }
@@ -100,35 +90,30 @@ async fn wait_for_ready(
     ))
 }
 
-async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, ValidationError> {
-    client
-        .get(format!("{base}/api/v1/telemetry/metrics"))
-        .query(&[
-            ("reset", "false"),
-            ("keep_all_zeroes", "true"),
-            ("format", "json"),
-        ])
-        .send()
+async fn fetch_metrics(client: &AdminClient) -> Result<MetricsSnapshot, ValidationError> {
+    let response = client
+        .telemetry()
+        .metrics(&MetricsOptions {
+            reset: false,
+            keep_all_zeroes: true,
+        })
         .await
-        .map_err(|_| {
-            ValidationError::Http(format!("No Response from {base}/api/v1/telemetry/metrics"))
-        })?
-        .error_for_status()
-        .map_err(|e| ValidationError::Http(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| ValidationError::Http(e.to_string()))
+        .map_err(admin_error)?;
+
+    serde_json::from_value(
+        serde_json::to_value(response).map_err(|e| ValidationError::Http(e.to_string()))?,
+    )
+    .map_err(|e| ValidationError::Http(e.to_string()))
 }
 
 /// loop until traffic generation is done
 async fn wait_for_loadgen(
-    client: &Client,
-    base: &str,
+    client: &AdminClient,
     expected_generator_signals: &HashMap<String, u64>,
     metrics_poll: Duration,
 ) -> Result<(), ValidationError> {
     loop {
-        let snapshot = fetch_metrics(client, base).await?;
+        let snapshot = fetch_metrics(client).await?;
         if loadgen_reached_limit(&snapshot, expected_generator_signals) {
             return Ok(());
         }
@@ -140,12 +125,11 @@ async fn wait_for_loadgen(
 /// then check the `valid` gauge from the same snapshot. This replaces the
 /// previous fixed propagation-delay sleep followed by a single metrics check.
 async fn wait_for_validation_finished(
-    client: &Client,
-    base: &str,
+    client: &AdminClient,
     metrics_poll: Duration,
 ) -> Result<(), ValidationError> {
     loop {
-        let snapshot = fetch_metrics(client, base).await?;
+        let snapshot = fetch_metrics(client).await?;
         match validation_finished_and_passed(&snapshot) {
             ValidationPollResult::NotFinished => {
                 sleep(metrics_poll).await;
@@ -161,15 +145,32 @@ async fn wait_for_validation_finished(
 }
 
 /// shutdown pipeline after running
-async fn shutdown_pipeline(client: &Client, base: &str) -> Result<(), ValidationError> {
-    let _ = client
-        .post(format!("{base}/api/v1/pipeline-groups/shutdown"))
-        .send()
+async fn shutdown_pipeline(client: &AdminClient) -> Result<(), ValidationError> {
+    let response = client
+        .pipeline_groups()
+        .shutdown(&OperationOptions::default())
         .await
-        .map_err(|e| ValidationError::Http(e.to_string()))?
-        .error_for_status()
-        .map_err(|e| ValidationError::Http(e.to_string()))?;
-    Ok(())
+        .map_err(admin_error)?;
+
+    match response.status {
+        ShutdownStatus::Accepted | ShutdownStatus::Completed => Ok(()),
+        ShutdownStatus::Failed | ShutdownStatus::Timeout => Err(ValidationError::Http(
+            serde_json::to_string(&response).unwrap_or_else(|_| format!("{response:?}")),
+        )),
+    }
+}
+
+fn admin_client(admin_base: &str) -> Result<AdminClient, ValidationError> {
+    let endpoint =
+        AdminEndpoint::from_url(admin_base).map_err(|e| ValidationError::Http(e.to_string()))?;
+    AdminClient::builder()
+        .http(HttpAdminClientSettings::new(endpoint))
+        .build()
+        .map_err(admin_error)
+}
+
+fn admin_error(err: otap_df_admin_api::Error) -> ValidationError {
+    ValidationError::Http(err.to_string())
 }
 
 // get the value from a specific metric given the snapshot
@@ -275,6 +276,8 @@ mod tests {
     use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
     use otap_df_telemetry::metrics::MetricValue;
     use std::collections::HashMap;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn set_with_node(set_name: &str, metric: &str, value: u64, node_id: &str) -> MetricSetSnapshot {
         MetricSetSnapshot {
@@ -357,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_not_finished_keeps_polling() {
+    fn not_finished_keeps_polling() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: validation_set(0, 0, "cap1"),
@@ -369,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_finished_and_passed_returns_ok() {
+    fn finished_and_passed_returns_ok() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: validation_set(1, 1, "cap1"),
@@ -381,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_finished_with_failures_reports_labels() {
+    fn finished_with_failures_reports_labels() {
         let mut sets = validation_set(1, 1, "cap1");
         sets.extend(validation_set(0, 1, "cap2"));
         let snap = MetricsSnapshot {
@@ -397,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_mixed_finished_returns_not_finished() {
+    fn mixed_finished_returns_not_finished() {
         let mut sets = validation_set(1, 1, "cap1");
         sets.extend(validation_set(0, 0, "cap2"));
         let snap = MetricsSnapshot {
@@ -411,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_empty_snapshot_returns_not_finished() {
+    fn empty_snapshot_returns_not_finished() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![],
@@ -423,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_no_matching_metric_sets_returns_not_finished() {
+    fn no_matching_metric_sets_returns_not_finished() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![set_with_node(
@@ -437,5 +440,62 @@ mod tests {
             validation_finished_and_passed(&snap),
             ValidationPollResult::NotFinished
         ));
+    }
+
+    #[tokio::test]
+    async fn admin_client_helpers_follow_existing_validation_flow() {
+        let server = MockServer::start().await;
+        let metrics = MetricsSnapshot {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            metric_sets: vec![set_with_node(
+                LOADGEN_METRIC_SET,
+                LOADGEN_METRIC_NAME_LOGS,
+                7,
+                "genA",
+            )],
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/readyz"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "probe": "readyz",
+                "status": "ok",
+                "generatedAt": "2026-01-01T00:00:00Z",
+                "failing": []
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/telemetry/metrics"))
+            .and(query_param("reset", "false"))
+            .and(query_param("keep_all_zeroes", "true"))
+            .and(query_param("format", "json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&metrics))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/pipeline-groups/shutdown"))
+            .and(query_param("wait", "false"))
+            .and(query_param("timeout_secs", "60"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "status": "accepted"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = admin_client(&server.uri()).expect("client should build");
+        wait_for_ready(&client, 1, Duration::from_millis(1))
+            .await
+            .expect("readyz should pass");
+        let snapshot = fetch_metrics(&client).await.expect("metrics should decode");
+        assert!(loadgen_reached_limit(
+            &snapshot,
+            &HashMap::from([(String::from("genA"), 7)])
+        ));
+        shutdown_pipeline(&client)
+            .await
+            .expect("shutdown should accept");
     }
 }

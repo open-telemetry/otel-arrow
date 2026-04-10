@@ -13,6 +13,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+otap-df-admin-types = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-state = { workspace = true }
 otap-df-telemetry = { workspace = true }
@@ -20,6 +21,7 @@ otap-df-engine = { workspace = true }
 
 thiserror = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
 tokio-util = { workspace = true }
