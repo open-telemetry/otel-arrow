@@ -1,80 +1,219 @@
 # dfctl
 
-`dfctl` is a control CLI for the OTAP Dataflow Engine admin API.
+`dfctl` is the command-line client for the OTAP Dataflow Engine admin API.
 
-It is built on top of the public `otap-df-admin-api` SDK and is intended to
-work well both for humans at a terminal and for automation in shell scripts or
-agent workflows.
+It is built on top of the public Rust SDK `otap-df-admin-api`, but end users
+should think in terms of the installed `dfctl` command. The Rust package name
+for this crate remains `otap-df-enginectl`.
 
-## Highlights
+## Before You Start
 
-- supports the current public admin SDK surface
-- works against local or remote engines
-- exposes human-readable output by default
-- adds ANSI color and emphasis automatically for human terminal output
-- supports `json`, `yaml`, and `ndjson` machine-oriented output modes
-- supports long-running `watch` commands for logs, metrics, rollouts, and
-  shutdown tracking
-
-## Quick Start
-
-Local engine using the default admin address:
+- The default admin target is `http://127.0.0.1:8085`.
+- You can override the target with `--url` or `DFCTL_URL`.
+- In this repo, build the CLI with:
 
 ```bash
-dfctl engine status
-dfctl telemetry logs watch
+cargo build -p otap-df-enginectl --bin dfctl
 ```
 
-Remote engine behind a gateway:
+Common local setup:
+
+```bash
+export CTL=./target/debug/dfctl
+export DFCTL_URL=http://127.0.0.1:8085
+```
+
+## 5-Minute Quick Start
+
+Assuming the engine is already running:
+
+```bash
+$CTL engine livez
+$CTL engine readyz
+$CTL engine status
+
+$CTL groups status
+
+$CTL telemetry logs watch --tail 50
+$CTL telemetry metrics get --shape compact
+```
+
+If you are pointing at a remote engine, replace `DFCTL_URL` or pass `--url`:
 
 ```bash
 dfctl --url https://admin.example.com/engine-a engine readyz
-dfctl --url https://admin.example.com/engine-a \
-  telemetry metrics get --shape full --output json
-dfctl --color always telemetry logs watch --tail 50
 ```
 
-Pipeline reconfigure from a YAML file:
+## Common Tasks
+
+### Check engine and groups
+
+Use these first to confirm the engine is reachable and healthy:
 
 ```bash
-dfctl pipelines reconfigure tenant-a ingest --file pipeline.yaml --wait
+dfctl engine livez
+dfctl engine readyz
+dfctl engine status
+dfctl groups status
 ```
 
-Pipeline reconfigure from stdin:
+### Inspect one pipeline
+
+```bash
+export GROUP=tenant-a
+export PIPE=ingest
+
+dfctl pipelines get "$GROUP" "$PIPE"
+dfctl pipelines status "$GROUP" "$PIPE"
+dfctl pipelines livez "$GROUP" "$PIPE"
+dfctl pipelines readyz "$GROUP" "$PIPE"
+```
+
+Use `--output json` when you want a stable snapshot for tooling:
+
+```bash
+dfctl pipelines status "$GROUP" "$PIPE" --output json | jq .
+```
+
+### Watch logs and metrics
+
+Human-friendly watch sessions:
+
+```bash
+dfctl telemetry logs watch --tail 50
+dfctl telemetry metrics watch --shape compact
+```
+
+Machine-friendly watch sessions:
+
+```bash
+dfctl telemetry logs watch --tail 50 --output ndjson
+dfctl telemetry metrics watch --shape compact --output ndjson
+```
+
+### Reconfigure a pipeline
+
+Apply a pipeline config from a file and wait for completion:
+
+```bash
+dfctl pipelines reconfigure "$GROUP" "$PIPE" --file pipeline.yaml --wait
+```
+
+Apply from stdin instead:
 
 ```bash
 cat pipeline.yaml | \
-  dfctl pipelines reconfigure tenant-a ingest --file - --output json
+  dfctl pipelines reconfigure "$GROUP" "$PIPE" --file - --output json
 ```
 
-## Connection Configuration
+If you want incremental progress instead of a single final result:
 
-By default, `dfctl` targets `http://127.0.0.1:8085`.
-
-You can override connection settings with:
-
-- CLI flags such as `--url`, `--ca-file`, and `--client-cert-file`
-- environment variables using the `DFCTL_` prefix
-- an explicit YAML profile passed with `--profile-file`
-
-Precedence is:
-
-1. CLI flags
-2. environment variables
-3. profile file
-4. default local URL
-
-Example profile:
-
-```yaml
-url: https://admin.example.com/engine-a
-connect_timeout: 3s
-request_timeout: 10s
-ca_file: /etc/otap/admin-ca.pem
-include_system_ca_certs: true
+```bash
+dfctl pipelines reconfigure "$GROUP" "$PIPE" \
+  --file pipeline.yaml \
+  --watch \
+  --output ndjson
 ```
 
-## Output Modes
+### Track rollout and shutdown progress
+
+Watch a known rollout or shutdown operation:
+
+```bash
+dfctl pipelines rollouts get "$GROUP" "$PIPE" rollout-1
+dfctl pipelines rollouts watch "$GROUP" "$PIPE" rollout-1
+
+dfctl pipelines shutdown "$GROUP" "$PIPE" --watch
+dfctl pipelines shutdowns get "$GROUP" "$PIPE" shutdown-1
+dfctl pipelines shutdowns watch "$GROUP" "$PIPE" shutdown-1
+```
+
+### Connect to a remote engine with TLS
+
+HTTPS with a custom CA:
+
+```bash
+dfctl \
+  --url https://admin.example.com/engine-a \
+  --ca-file /etc/otap/admin-ca.pem \
+  --include-system-ca-certs true \
+  engine status
+```
+
+HTTPS with mTLS:
+
+```bash
+dfctl \
+  --url https://admin.example.com/engine-a \
+  --ca-file /etc/otap/admin-ca.pem \
+  --client-cert-file /etc/otap/admin-client.crt \
+  --client-key-file /etc/otap/admin-client.key \
+  engine status
+```
+
+### Use `dfctl` in scripts
+
+Snapshot-style commands work well with `json` or `yaml`:
+
+```bash
+dfctl engine status --output json | jq .
+dfctl pipelines get "$GROUP" "$PIPE" --output yaml
+```
+
+Long-running commands and watched mutations work best with `ndjson`:
+
+```bash
+dfctl telemetry metrics watch --shape compact --output ndjson
+
+dfctl pipelines reconfigure "$GROUP" "$PIPE" \
+  --file pipeline.yaml \
+  --watch \
+  --output ndjson
+```
+
+## Short Local Scenario
+
+For a local repo-backed example, use
+[`configs/engine-conf/topic_multitenant_isolation.yaml`](../../configs/engine-conf/topic_multitenant_isolation.yaml).
+That sample binds the admin API to `127.0.0.1:8085` and includes retained log
+tap support for `dfctl telemetry logs watch`.
+
+Start the engine in one terminal:
+
+```bash
+cargo run --bin df_engine -- \
+  --config configs/engine-conf/topic_multitenant_isolation.yaml
+```
+
+In another terminal:
+
+```bash
+export CTL=./target/debug/dfctl
+export DFCTL_URL=http://127.0.0.1:8085
+export GROUP=topic_multitenant_isolation
+export PIPE=tenant_c_pipeline
+
+$CTL pipelines status "$GROUP" "$PIPE"
+$CTL telemetry logs watch --tail 20
+```
+
+Create a simple scale-up reconfigure request from the live config, apply it,
+then verify the result:
+
+```bash
+$CTL pipelines get "$GROUP" "$PIPE" --output json \
+  | jq '.pipeline | .policies.resources.coreAllocation.count = 2' \
+  > /tmp/tenant_c_pipeline-scale-up.json
+
+$CTL pipelines reconfigure "$GROUP" "$PIPE" \
+  --file /tmp/tenant_c_pipeline-scale-up.json \
+  --watch
+
+$CTL pipelines status "$GROUP" "$PIPE" --output json \
+  | jq '{runningCores, totalCores, activeGeneration, rollout}'
+```
+
+## Output and Color
 
 One-shot commands support:
 
@@ -90,16 +229,19 @@ Long-running `watch` commands support:
 Mutation commands support `human`, `json`, `yaml`, and `ndjson`. Use
 `--output ndjson` together with `--watch`.
 
-## Terminal Styling
-
-Human-readable output supports:
+Human-readable output also supports:
 
 - `--color auto`
 - `--color always`
 - `--color never`
 
 `--color auto` is the default. It enables ANSI styling only when stdout is a
-terminal and `NO_COLOR` is not set.
+terminal and `NO_COLOR` is not set. Machine-readable outputs never include ANSI
+escapes, even when `--color always` is selected.
 
-Machine-readable outputs never include ANSI escapes, even when `--color always`
-is selected.
+## More Details
+
+- CLI reference and command overview:
+  [docs/admin/enginectl.md](../../docs/admin/enginectl.md)
+- Live rollout and shutdown behavior:
+  [docs/admin/live-reconfiguration.md](../../docs/admin/live-reconfiguration.md)
