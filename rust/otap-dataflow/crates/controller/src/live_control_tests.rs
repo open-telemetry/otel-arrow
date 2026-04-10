@@ -1035,6 +1035,47 @@ connections:
     );
 }
 
+/// Scenario: panic diagnostics are captured for a worker panic with explicit
+/// thread metadata.
+/// Guarantees: the short summary stays operator-friendly while the detailed
+/// form includes thread context and a captured backtrace.
+#[test]
+fn panic_report_formats_summary_and_detail() {
+    let report = PanicReport::capture(
+        "rollout worker",
+        Box::new("boom"),
+        Some("rollout-g1-p1".to_owned()),
+        Some(17),
+        Some(3),
+    );
+
+    assert_eq!(report.summary_message(), "rollout worker panicked: boom");
+    let detail = report.detail_message();
+    assert!(detail.contains("rollout worker panicked: boom"));
+    assert!(detail.contains("thread_name=rollout-g1-p1"));
+    assert!(detail.contains("thread_id=17"));
+    assert!(detail.contains("core_id=3"));
+    assert!(detail.contains("backtrace:"));
+}
+
+/// Scenario: a panic is raised with a non-string payload.
+/// Guarantees: the captured panic summary stays readable and avoids the older
+/// generic placeholder text.
+#[test]
+fn panic_report_non_string_payload_has_useful_fallback() {
+    let report = PanicReport::capture("shutdown worker", Box::new(7usize), None, None, None);
+
+    assert_eq!(
+        report.summary_message(),
+        "shutdown worker panicked: non-string panic payload"
+    );
+    assert!(
+        !report
+            .summary_message()
+            .contains("panic payload was not a string")
+    );
+}
+
 /// Scenario: a detached rollout worker panics before it reaches the normal
 /// terminal-state bookkeeping path.
 /// Guarantees: the rollout is forced into a failed terminal state and the
@@ -1080,6 +1121,7 @@ connections:
     runtime.handle_rollout_worker_panic(
         &plan.pipeline_key,
         &plan.rollout.rollout_id,
+        "rollout-g1-p1".to_owned(),
         Box::new("boom"),
     );
 
@@ -1092,6 +1134,12 @@ connections:
             .failure_reason
             .as_deref()
             .is_some_and(|message| message.contains("rollout worker panicked: boom"))
+    );
+    assert!(
+        status
+            .failure_reason
+            .as_deref()
+            .is_some_and(|message| !message.contains("backtrace:"))
     );
 
     let state = runtime
@@ -1194,6 +1242,7 @@ fn shutdown_worker_panic_marks_failed_and_clears_conflict() {
     runtime.handle_shutdown_worker_panic(
         &plan.pipeline_key,
         &plan.shutdown.shutdown_id,
+        "shutdown-g1-p1".to_owned(),
         Box::new("boom"),
     );
 
@@ -1206,6 +1255,12 @@ fn shutdown_worker_panic_marks_failed_and_clears_conflict() {
             .failure_reason
             .as_deref()
             .is_some_and(|message| message.contains("shutdown worker panicked: boom"))
+    );
+    assert!(
+        status
+            .failure_reason
+            .as_deref()
+            .is_some_and(|message| !message.contains("backtrace:"))
     );
 
     let state = runtime
@@ -1938,4 +1993,67 @@ fn note_instance_exit_does_not_compact_observed_state_while_shutdown_is_active()
     });
     assert!(status.instance_status(0, 0).is_some());
     assert!(status.instance_status(0, 1).is_some());
+}
+
+/// Scenario: a watched runtime thread panics after the runtime instance has
+/// already been admitted and marked ready in observed state.
+/// Guarantees: the public runtime error message stays short while the recent
+/// event stores richer panic diagnostics in `ErrorSummary::source`.
+#[test]
+fn runtime_thread_panic_populates_error_source_in_observed_status() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+
+    let deployed_key = deployed_key("g1", "p1", 0, 0);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key.clone());
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let _ = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        matches!(
+            status
+                .instance_status(0, 0)
+                .map(|instance| instance.phase()),
+            Some(PipelinePhase::Running)
+        )
+    });
+
+    runtime.note_instance_exit(
+        deployed_key,
+        RuntimeInstanceExit::Error(RuntimeInstanceError::from_panic(PanicReport::capture(
+            "runtime thread",
+            Box::new("boom"),
+            Some("pipeline-g1-p1-core-0".to_owned()),
+            Some(11),
+            Some(0),
+        ))),
+    );
+
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        matches!(
+            status
+                .instance_status(0, 0)
+                .map(|instance| instance.phase()),
+            Some(PipelinePhase::Failed(_))
+        )
+    });
+    let json = serde_json::to_value(&status).expect("status should serialize");
+    let recent_event = &json["instances"][0]["status"]["recentEvents"][0]["Engine"];
+    let error = &recent_event["type"]["Error"]["RuntimeError"]["Pipeline"];
+    assert_eq!(
+        recent_event["message"],
+        "Pipeline encountered a runtime error."
+    );
+    assert_eq!(error["error_kind"], "panic");
+    assert_eq!(error["message"], "runtime thread panicked: boom");
+    let source = error["source"]
+        .as_str()
+        .expect("runtime panic source should be serialized");
+    assert!(source.contains("thread_name=pipeline-g1-p1-core-0"));
+    assert!(source.contains("thread_id=11"));
+    assert!(source.contains("core_id=0"));
+    assert!(source.contains("backtrace:"));
 }
