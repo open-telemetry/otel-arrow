@@ -265,6 +265,21 @@ impl ObservedStateStore {
         }
     }
 
+    /// Compacts retained observed instances for one logical pipeline to the
+    /// generations currently selected for status aggregation.
+    pub fn compact_pipeline_instances(&self, pipeline_key: &PipelineKey) {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
+            );
+            poisoned.into_inner()
+        });
+        if let Some(status) = pipelines.get_mut(pipeline_key) {
+            status.compact_instances_to_selected();
+        }
+    }
+
     /// Returns a handle that can be used to read the current observed state.
     #[must_use]
     pub fn handle(&self) -> ObservedStateHandle {

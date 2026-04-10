@@ -14,8 +14,11 @@ use otap_df_engine::control::{
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::wiring_contract::WiringContract;
+use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_telemetry::TracingSetup;
+use otap_df_telemetry::event::EngineEvent;
 use otap_df_telemetry::tracing_init::ProviderSetup;
+use tokio_util::sync::CancellationToken;
 
 fn available_core_ids() -> Vec<CoreId> {
     vec![
@@ -111,6 +114,105 @@ fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
         memory_pressure_tx,
         config.clone(),
     ))
+}
+
+struct ObservedStateRunner {
+    cancel: CancellationToken,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl ObservedStateRunner {
+    fn start(runtime: &ControllerRuntime<()>) -> Self {
+        let cancel = CancellationToken::new();
+        let store = runtime.observed_state_store.clone();
+        let cancel_clone = cancel.clone();
+        let join = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("observed-state test runtime should build");
+            runtime
+                .block_on(store.run(cancel_clone))
+                .expect("observed-state consumer should exit cleanly");
+        });
+        Self {
+            cancel,
+            join: Some(join),
+        }
+    }
+}
+
+impl Drop for ObservedStateRunner {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(join) = self.join.take() {
+            join.join()
+                .expect("observed-state consumer thread should join cleanly");
+        }
+    }
+}
+
+fn deployed_key(
+    pipeline_group_id: &str,
+    pipeline_id: &str,
+    core_id: usize,
+    generation: u64,
+) -> DeployedPipelineKey {
+    DeployedPipelineKey {
+        pipeline_group_id: pipeline_group_id.to_owned().into(),
+        pipeline_id: pipeline_id.to_owned().into(),
+        core_id,
+        deployment_generation: generation,
+    }
+}
+
+fn report_ready(runtime: &ControllerRuntime<()>, key: DeployedPipelineKey) {
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::admitted(key.clone(), None));
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::ready(key, None));
+}
+
+fn report_stopped(runtime: &ControllerRuntime<()>, key: DeployedPipelineKey) {
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::admitted(key.clone(), None));
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::ready(key.clone(), None));
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::shutdown_requested(key.clone(), None));
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::drained(key, None));
+}
+
+fn wait_for_observed_status<F>(
+    runtime: &ControllerRuntime<()>,
+    pipeline_key: &PipelineKey,
+    predicate: F,
+) -> PipelineStatus
+where
+    F: Fn(&PipelineStatus) -> bool,
+{
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = runtime.observed_state_handle.pipeline_status(pipeline_key) {
+            if predicate(&status) {
+                return status;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for observed status predicate on {}:{}",
+            pipeline_key.pipeline_group_id(),
+            pipeline_key.pipeline_id()
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn engine_config_with_pipeline(pipeline_yaml: &str) -> OtelDataflowSpec {
@@ -1593,4 +1695,120 @@ fn exited_runtime_instances_without_active_operation_are_pruned_immediately() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(!state.runtime_instances.contains_key(&deployed_key));
+}
+
+/// Scenario: a completed rollout has advanced the committed active generation,
+/// but observed state still contains the older generation for the same core.
+/// Guarantees: controller cleanup compacts observed state to the selected
+/// active generation so retained instance memory no longer grows with rollout
+/// count after completion.
+#[test]
+fn prune_pipeline_runtime_and_history_compacts_observed_state_to_active_generation() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 1));
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.per_instance().len() == 2
+    });
+    assert!(status.instance_status(0, 0).is_some());
+    assert!(status.instance_status(0, 1).is_some());
+
+    runtime
+        .observed_state_store
+        .set_pipeline_active_generation(pipeline_key.clone(), 1);
+    runtime.prune_pipeline_runtime_and_history(&pipeline_key);
+
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.per_instance().len() == 1
+    });
+    assert!(status.instance_status(0, 1).is_some());
+    assert!(status.instance_status(0, 0).is_none());
+}
+
+/// Scenario: a logical pipeline has fully shut down and observed state still
+/// contains an older generation alongside the final stopped generation.
+/// Guarantees: controller cleanup keeps the last stopped generation per core so
+/// `/status` remains useful after shutdown while superseded generations are
+/// released.
+#[test]
+fn prune_pipeline_runtime_and_history_keeps_last_stopped_generation_view() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    report_stopped(&runtime, deployed_key("g1", "p1", 0, 0));
+    report_stopped(&runtime, deployed_key("g1", "p1", 0, 1));
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.per_instance().len() == 2
+    });
+    assert!(status.instance_status(0, 0).is_some());
+    assert!(status.instance_status(0, 1).is_some());
+
+    runtime
+        .observed_state_store
+        .set_pipeline_active_generation(pipeline_key.clone(), 1);
+    runtime.prune_pipeline_runtime_and_history(&pipeline_key);
+
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.per_instance().len() == 1
+    });
+    assert_eq!(status.total_cores(), 1);
+    assert_eq!(status.running_cores(), 0);
+    assert!(matches!(
+        status
+            .instance_status(0, 1)
+            .expect("latest stopped generation should remain")
+            .phase(),
+        PipelinePhase::Stopped
+    ));
+    assert!(status.instance_status(0, 0).is_none());
+}
+
+/// Scenario: a runtime instance exits while a shutdown operation for the same
+/// logical pipeline is still active and observed state contains overlapping
+/// generations.
+/// Guarantees: observed state is not compacted early, so controller wait paths
+/// can continue reading generation-specific status until the shutdown finishes.
+#[test]
+fn note_instance_exit_does_not_compact_observed_state_while_shutdown_is_active() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 1));
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.per_instance().len() == 2
+    });
+    assert!(status.instance_status(0, 0).is_some());
+    assert!(status.instance_status(0, 1).is_some());
+
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = state
+            .active_shutdowns
+            .insert(pipeline_key.clone(), "shutdown-0".to_owned());
+    }
+
+    runtime.note_instance_exit(deployed_key("g1", "p1", 0, 0), RuntimeInstanceExit::Success);
+
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.per_instance().len() == 2
+    });
+    assert!(status.instance_status(0, 0).is_some());
+    assert!(status.instance_status(0, 1).is_some());
 }

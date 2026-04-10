@@ -672,9 +672,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     fn prune_exited_runtime_instances_for_pipeline_locked(
         state: &mut ControllerRuntimeState,
         pipeline_key: &PipelineKey,
-    ) {
+    ) -> bool {
         if Self::pipeline_has_active_operation_locked(state, pipeline_key) {
-            return;
+            return false;
         }
 
         state.runtime_instances.retain(|deployed_key, instance| {
@@ -686,6 +686,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
             matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
         });
+        true
     }
 
     /// Opportunistically trims retained rollout and shutdown history.
@@ -699,13 +700,21 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
     /// Trims exited instances and terminal history for one logical pipeline.
     fn prune_pipeline_runtime_and_history(&self, pipeline_key: &PipelineKey) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::prune_exited_runtime_instances_for_pipeline_locked(&mut state, pipeline_key);
-        Self::prune_terminal_rollout_queue_locked(&mut state, pipeline_key, Instant::now());
-        Self::prune_terminal_shutdown_queue_locked(&mut state, pipeline_key, Instant::now());
+        let should_compact = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let should_compact =
+                Self::prune_exited_runtime_instances_for_pipeline_locked(&mut state, pipeline_key);
+            Self::prune_terminal_rollout_queue_locked(&mut state, pipeline_key, Instant::now());
+            Self::prune_terminal_shutdown_queue_locked(&mut state, pipeline_key, Instant::now());
+            should_compact
+        };
+        if should_compact {
+            self.observed_state_store
+                .compact_pipeline_instances(pipeline_key);
+        }
     }
 
     /// Resolves the concrete core ids selected by a pipeline resource policy.
@@ -2396,24 +2405,37 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             }
         }
 
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(instance) = state.runtime_instances.get_mut(&pipeline_key) {
-            instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
-        }
-        state.active_instances = state.active_instances.saturating_sub(1);
-        if let RuntimeInstanceExit::Error(message) = &exit {
-            if state.first_error.is_none() {
-                state.first_error = Some(message.clone());
+        let should_compact = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(instance) = state.runtime_instances.get_mut(&pipeline_key) {
+                instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
             }
+            state.active_instances = state.active_instances.saturating_sub(1);
+            if let RuntimeInstanceExit::Error(message) = &exit {
+                if state.first_error.is_none() {
+                    state.first_error = Some(message.clone());
+                }
+            }
+            let logical_pipeline_key = PipelineKey::new(
+                pipeline_key.pipeline_group_id.clone(),
+                pipeline_key.pipeline_id.clone(),
+            );
+            Self::prune_exited_runtime_instances_for_pipeline_locked(
+                &mut state,
+                &logical_pipeline_key,
+            )
+        };
+        if should_compact {
+            let logical_pipeline_key = PipelineKey::new(
+                pipeline_key.pipeline_group_id.clone(),
+                pipeline_key.pipeline_id.clone(),
+            );
+            self.observed_state_store
+                .compact_pipeline_instances(&logical_pipeline_key);
         }
-        let logical_pipeline_key = PipelineKey::new(
-            pipeline_key.pipeline_group_id.clone(),
-            pipeline_key.pipeline_id.clone(),
-        );
-        Self::prune_exited_runtime_instances_for_pipeline_locked(&mut state, &logical_pipeline_key);
         self.state_changed.notify_all();
     }
 
