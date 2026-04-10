@@ -2,22 +2,23 @@
 
 ## Overview
 
-The OTAP-direct Metrics SDK described here replaces the
-OpenTelemetry-Rust metrics SDK metrics with pieces of the OTAP
-dataflow engine used for an internal telemetry pipeline. This document
-reflects how the internal metrics SDK is designed, with a four-phase
-implementation plan. See the corresponding document describing the
-[internal logs SDK](./internal-logs-sdk.md), however note that the
-logs SDK forms OTLP bytes directly, whereas the metrics SDK forms OTAP
-batches directly.
+The OTAP-direct Metrics SDK described here will replace the
+OpenTelemetry-Rust metrics SDK metrics using pieces of the OTAP
+dataflow engine as an internal telemetry pipeline for itself. This
+document explains how the internal metrics SDK will be redesigned, in
+a four-phase implementation plan. See the corresponding document
+describing the [internal logs SDK](./internal-logs-sdk.md) which
+followed a similar course, however note that the logs SDK forms OTLP
+bytes payloads directly, whereas the metrics SDK forms OTAP records
+directly.
 
-This is a functionally complete Metric SDK tailored for efficiency in
-the OTAP dataflow operating environment. It may be considered as a
-general purpose OpenTelemetry Metric SDK for Rust with a few caveats.
+This is a functionally complete Metric SDK, tailored for efficiency in
+the OTAP dataflow engine environment. It may be considered as a
+general purpose OpenTelemetry Metric SDK for Rust, with several caveats.
 
 - Multivariate design for future
   [OTAP-multivariate](../../../docs/multivariate-design.md) uses
-- Thread-per-core architecture with push-oriented collection supports 
+- Thread-per-core architecture with push-oriented collection supports
   synchronous and asynchronous instrument patterns
 - Instruments are fully "bound"; there are no dynamic attributes.
 - OTel-Weaver semantic convention registry with code generation tools
@@ -28,12 +29,10 @@ general purpose OpenTelemetry Metric SDK for Rust with a few caveats.
   `#[metric_set]` to generated code using a schema registry with
   runtime-configurable output schemas.
 
-The SDK is specialized for producing OTAP batch payloads, as it
-performs a continuous collection cycle combining individual metric
-sets. The metric SDK includes built-in support for console and
-Prometheus reporting through its `MetricsTap` component, meaning with
-or without a full internal metrics pipeline and the
-`internal_telemetry_receiver`.
+The SDK is specialized for producing OTAP batches. The metric SDK
+includes built-in support for console and Prometheus reporting through
+its `MetricsTap` component, meaning with or without a full internal
+metrics pipeline.
 
 ### Project phases
 
@@ -45,23 +44,22 @@ There are four phases in this design plan:
    to select the OpenTelemetry SDK, a no-op SDK, the bare-bones Admin
    behavior, or the new ITS mode. As this phase progresses, we will
    reach a point where the ITS mode provides a sufficient level of
-   basic functionality.   
-2. **Schema-driven code generation**. New codegen tools will be
-   developed supporting controlled metric schema evolution. One by
-   one, each `#[metric_set]` struct will be replaced by generated
-   code. An initial `v0` schema will be written to match the current
-   output. In some cases, a new "streamlined" `v1` schema with
-   metric-level attributes will follow. Where attributes are added,
-   metric cardinality is limited to a static mapping of attribute
-   dimensions. As this phase progresses, users will be able to control
-   which metric schemas are compiled and which (e.g., old, new, or
-   both) are selected at runtime. Using Rust `enum` variants
-   corresponding with each metric level, users can configure the level
-   of detail and corresponding cost.
-3. Remove the OpenTelemetry SDK. There will be at this point two
-   choices when configuring the Metrics SDK: the built-in basic 
+   basic functionality.
+2. **Schema-driven code generation**. New code generation tooling will
+   be developed to support our own migration between metric
+   schemas. One by one, each `#[metric_set]` struct will be replaced
+   by generated code. An initial `v0` schema will be written to match
+   pre-existing instrumentation. In some cases, a new "streamlined"
+   `v1` schema using metric attributes (as opposed to a flat
+   namespace) will follow. As this phase progresses, users will be
+   able to control which metric schemas are compiled and which are
+   selected at runtime (e.g., old, new, or both). Using Rust `enum`
+   variants corresponding with each metric level, users can configure
+   and choose between basic, normal, and detailed metric reporting.
+3. **Remove the OpenTelemetry SDK.** There will be at this point two
+   choices when configuring the Metrics SDK: the built-in basic
    behavior and the ITS internal pipeline with its variety of nodes.
-4. Introduce exponential histograms. In most cases, existing `Mmsc`
+4. **Introduce exponential histograms.** In most cases, existing `Mmsc`
    instruments are configured at Normal level. At the Detailed metric
    level, we introduce a choice of exponential histogram. This data
    structure supports reporting both coarse and fine-level detail
@@ -74,7 +72,7 @@ individual counters. In the before case, for example, we might see
 three counters corresponding to three outcome variants:
 
 ```rust
-/// Consumed items by outcome after 
+/// Consumed items by outcome after
 #[metric_set(name = "otap.consumer")]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumerMetrics {
@@ -86,13 +84,24 @@ pub struct ConsumerMetrics {
 
     #[metric(unit = "{item}")]
     consumed_refused: Counter<u64>,
-    
+
     // ... and more (e.g., duration)
 }
 ```
 
+This is logically a single set of metrics using a flat namespace
+instead of metric-level attributes. As we use this example, we will
+consider how to add signal information (i.e. count logs, traces, and
+metrics requests separately). If we continued using a flat namespace,
+we would have 9 Counters, however a more idiomatic representation
+would use metric attributes. For this example, we are considering a
+metric that usually has 1 or 2 dimensions having three variants
+each. We have three outcomes and three signals, making 3 or 9
+timeseries.
+
 After the transition, we will have a schema definition listing the
-metric groups, their dimensions and level-specific defaults:
+metric groups, their dimensions, and the default configuration by
+metric-level:
 
 ```yaml
 groups:
@@ -238,13 +247,13 @@ tables:
 - HistogramDataPoint: contains min/max/sum/count, optional buckets,
   timestamps, and flags (used by `Mmsc`)
 - ScopeAttrs: the attributes associated with each `EntityKey`
-- MetricAttrs: the attributes associated with each data point.
+- NumberDPAttrs: the attributes associated with each number data point.
 
 Note that the timestamp column corresponding with the data point
 tables will be identical in all cases, as metric sets are observed as
-individual events. The OTAP MetricAttributes table is not used. In
-phase 4 as we introduce the OpenTelemetry exponential histogram data
-point, we will begin using one new table. Exemplars are not supported.
+individual events. In phase 4 as we introduce the OpenTelemetry
+exponential histogram data point, we will begin using one new table.
+Exemplars are not supported.
 
 In this phase, minimum support for OpenTelemetry Metric View
 configuration is preserved for use at runtime, limited to scoped
@@ -320,7 +329,7 @@ use of scope attributes vs metric attributes, and in a future version
 of OTAP we may consider entity definitions in the resource.
 
 Note that in all cases, the ScopeAttrs, UnivariateMetrics and
-MetricAttrs tables can be precomputed, that only the NumberDataPoint
+NumberDPAttrs tables can be precomputed, that only the NumberDataPoint
 table in this example is computed on the fly. Note that all the
 columns can be dictionary encoded. All of the choices here are
 responsible and valid uses of OTAP.
@@ -357,29 +366,35 @@ metric attributes.
 | NumberDataPoint   | 3M          | 9M           |
 | Total rows        | 3K+6M+3     | 9K+18M+18    |
 
-#### Metric attributes
+#### Data point attributes
 
 The best representation choice may depend on user preferences, and any
 of these choices could perform best depending on the nature of the
-data.  This is in some ways the most direct representation of the OTLP
-protocol, however it repeats the attributes for every metric so this 
-works best when the number of metrics per set is small.
+data. This is the most direct representation of the OTLP protocol
+using the OTAP `NUMBER_DP_ATTRS` table, however it repeats the
+attributes for every data point of every metric, so this works best
+when the number of metrics per set is small.
 
 | Table             | 1 dimension (3 timeseries) | 2 dimensions (9 timeseries) |
 |-------------------|----------------------------|-----------------------------|
 | ScopeAttrs        | K                          | K                           |
 | UnivariateMetrics | M                          | M                           |
 | NumberDataPoint   | 3*M                        | 9*M                         |
-| MetricAttrs       | 3*M                        | 18*M                        |
+| NumberDPAttrs     | 3*M                        | 18*M                        |
 | Total rows        | K+7M                       | K+28M                       |
 
 Note, as well, that these figures will be extended with more
-possibilities when we introduced OpenTelemetry entities defined at the
+possibilities when we introduce OpenTelemetry entities defined at the
 resource level, which reduces the impact of K, thus making the
 scope-attributes-oriented representation more attractive than the
-metric-attributes-oriented approach. Moreoever, this analysis would
-change with the introduction of first-class multivariate metrics in
-OTAP.
+data-point-attributes approach.
+
+Moreover, the preferred long-term direction is the introduction of
+first-class [multivariate metrics](../../../docs/multivariate-design.md)
+in OTAP, which would allow multiple related measurements to share a
+single set of attributes and timestamp, significantly improving
+compression and row efficiency. This remains future work in the OTAP
+specification.
 
 ## Phase 3: Remove OpenTelemetry SDK
 
@@ -420,7 +435,7 @@ B4, U8, U16, U32, and U64.
 The histogram parameters are:
 
 - `<const N: usize>` the number of `u64` words of space available
-- `min_width` the initial width of buckets 
+- `min_width` the initial width of buckets
 - `max_scale` the initial maximum scale
 
 The implementation has a compiled-in exact table lookup of size
