@@ -875,8 +875,12 @@ fn parse_function_call(
                 )
             })?;
 
-            let expected_num_args = function_def.get_parameter_names().len();
-            if args.len() != expected_num_args {
+            // TODO - this is kind of a sketchy way to get the number of required parameters.
+            // In the future, we may want to consider adding a bit more information in the
+            // function signature.
+            let expected_num_args =
+                function_def.get_parameter_names().len() - function_def.get_default_values().len();
+            if args.len() < expected_num_args {
                 return Err(ParserError::SyntaxError(
                     query_location,
                     format!(

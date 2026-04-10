@@ -663,7 +663,12 @@ where
             ScalarValue::Utf8(name) => {
                 let group = name.as_deref().map(CaptureGroupRef::Name);
                 regex_substr_core(
-                    values, patterns, flags, starts, occurrences, std::iter::repeat(group),
+                    values,
+                    patterns,
+                    flags,
+                    starts,
+                    occurrences,
+                    std::iter::repeat(group),
                 )
             }
             // Integer scalar — capture group by index
@@ -682,7 +687,12 @@ where
                 };
 
                 regex_substr_core(
-                    values, patterns, flags, starts, occurrences, std::iter::repeat(group),
+                    values,
+                    patterns,
+                    flags,
+                    starts,
+                    occurrences,
+                    std::iter::repeat(group),
                 )
             }
         },
@@ -1911,8 +1921,7 @@ mod test {
         // "hello world" -> 2nd word match = "world"
         // "one"         -> only 1 match, 2nd doesn't exist = null
         // "a b c"       -> 2nd word match = "b"
-        let expected: ArrayRef =
-            Arc::new(StringArray::from_iter([Some("world"), None, Some("b")]));
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([Some("world"), None, Some("b")]));
         match result {
             ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
             s => panic!("expected Array, got {s:?}"),
@@ -1991,11 +2000,8 @@ mod test {
 
         let result = physical_expr.evaluate(&input).unwrap();
         // Case-insensitive: "HELLO" matches "hello" and "HELLO", not "no match"
-        let expected: ArrayRef = Arc::new(StringArray::from_iter([
-            Some("hello"),
-            Some("HELLO"),
-            None,
-        ]));
+        let expected: ArrayRef =
+            Arc::new(StringArray::from_iter([Some("hello"), Some("HELLO"), None]));
         match result {
             ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
             s => panic!("expected Array, got {s:?}"),
@@ -2220,8 +2226,7 @@ mod test {
                 .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
-        let expected: ArrayRef =
-            Arc::new(StringArray::from_iter_values(["hello", "bar", "one"]));
+        let expected: ArrayRef = Arc::new(StringArray::from_iter_values(["hello", "bar", "one"]));
         match result {
             ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
             s => panic!("expected Array, got {s:?}"),

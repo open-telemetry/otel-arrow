@@ -66,7 +66,6 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
 };
-use datafusion::logical_expr_common::signature::Arity;
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
@@ -78,13 +77,13 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::functions::{regexp_substr, substring};
+use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -538,11 +537,16 @@ impl ExprLogicalPlanner {
         // check that we've been passed the correct number of arguments.
         //
         // TODO: in future we could also do some additional checking here on the types
-        if let Arity::Fixed(num_params) = df_udf.scalar_udf.signature().type_signature.arity() {
-            if num_args != num_params {
+        if let Some(arity_range) = arity_range(&df_udf.scalar_udf.signature().type_signature) {
+            if !arity_range.contains(&num_args) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
-                        "function '{func_name}' expects {num_params} arguments. Received {num_args}"
+                        "function '{func_name}' expects {} arguments. Received {num_args}",
+                        if arity_range.len() > 1 {
+                            format!("{}-{}", arity_range.start, arity_range.end - 1)
+                        } else {
+                            format!("{}", arity_range.start)
+                        }
                     ),
                     query_location: Some(invoke_function_expression.get_query_location().clone()),
                 });
@@ -813,6 +817,9 @@ impl DataFusionFunctionDef {
         // upstream in datafusion_functions)
         Some(match func_name {
             ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            REGEXP_SUBSTR_FUNC_NAME => {
+                Self::new(regexp_substr(), ExprLogicalType::String, false, None)
+            }
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
             _ => return None,
         })

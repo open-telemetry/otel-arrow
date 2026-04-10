@@ -4477,4 +4477,38 @@ mod test {
         )
         .await
     }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_substring_func_call_with_scalars() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query =
+            r#"logs | extend attributes["s1"] = regexp_substr(attributes["attr"], "hell.")"#;
+        let pipeline_expr = OplParser::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello world")),
+                KeyValue::new("s1", AnyValue::new_string("hello")),
+            ]
+        );
+    }
 }
