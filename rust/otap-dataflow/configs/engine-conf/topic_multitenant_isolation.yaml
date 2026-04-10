@@ -27,6 +27,8 @@ engine:
   telemetry:
     logs:
       level: info
+      tap:
+        enabled: true
 
   observability:
     pipeline:
