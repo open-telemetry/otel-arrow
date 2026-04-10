@@ -180,6 +180,8 @@ Status codes:
 `GET /groups/{group}/pipelines/{id}/rollouts/{rolloutId}`
 
 Returns the current `RolloutStatus` snapshot for that operation.
+Terminal rollout ids are retained only within a bounded in-memory window, so
+older ids may return `404 Not Found` after eviction.
 
 ### Read observed pipeline status
 
@@ -206,6 +208,8 @@ overlapping old/new generations stay distinguishable during a rolling cutover.
 
 These are separate from reconfiguration, but they use the same resident
 controller and the same logical-pipeline locking rules.
+Terminal shutdown ids are retained only within a bounded in-memory window, so
+older ids may return `404 Not Found` after eviction.
 
 ## Manual Examples
 

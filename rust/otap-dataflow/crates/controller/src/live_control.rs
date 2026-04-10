@@ -12,9 +12,14 @@ use otap_df_admin::{
 use otap_df_state::conditions::ConditionStatus;
 use otap_df_state::phase::PipelinePhase;
 use otap_df_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
+use std::collections::VecDeque;
 use std::io;
 use std::sync::{Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
+
+const TERMINAL_ROLLOUT_RETENTION_LIMIT: usize = 32;
+const TERMINAL_SHUTDOWN_RETENTION_LIMIT: usize = 32;
+const TERMINAL_OPERATION_RETENTION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RolloutAction {
@@ -67,6 +72,10 @@ impl RolloutLifecycleState {
             Self::RollbackFailed => ApiPipelineRolloutState::RollbackFailed,
         }
     }
+
+    const fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::RollbackFailed)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +94,10 @@ impl ShutdownLifecycleState {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
         }
+    }
+
+    const fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed)
     }
 }
 
@@ -111,9 +124,11 @@ struct RolloutRecord {
     updated_at: String,
     failure_reason: Option<String>,
     cores: Vec<RolloutCoreProgress>,
+    completed_at: Option<Instant>,
 }
 
 impl RolloutRecord {
+    /// Creates the initial in-memory record for a rollout operation.
     fn new(
         rollout_id: String,
         pipeline_group_id: PipelineGroupId,
@@ -136,9 +151,11 @@ impl RolloutRecord {
             updated_at: now,
             failure_reason: None,
             cores,
+            completed_at: None,
         }
     }
 
+    /// Builds the compact rollout summary exposed through observed state.
     fn summary(&self) -> PipelineRolloutSummary {
         PipelineRolloutSummary {
             rollout_id: self.rollout_id.clone(),
@@ -150,6 +167,7 @@ impl RolloutRecord {
         }
     }
 
+    /// Builds the admin-facing rollout summary embedded in pipeline details.
     fn api_summary(&self) -> ApiPipelineRolloutSummary {
         ApiPipelineRolloutSummary {
             rollout_id: self.rollout_id.clone(),
@@ -161,6 +179,7 @@ impl RolloutRecord {
         }
     }
 
+    /// Materializes the full rollout status returned by the control plane.
     fn status(&self) -> RolloutStatus {
         RolloutStatus {
             rollout_id: self.rollout_id.clone(),
@@ -208,9 +227,11 @@ struct ShutdownRecord {
     updated_at: String,
     failure_reason: Option<String>,
     cores: Vec<ShutdownCoreProgress>,
+    completed_at: Option<Instant>,
 }
 
 impl ShutdownRecord {
+    /// Creates the initial in-memory record for a pipeline shutdown operation.
     fn new(
         shutdown_id: String,
         pipeline_group_id: PipelineGroupId,
@@ -227,9 +248,11 @@ impl ShutdownRecord {
             updated_at: now,
             failure_reason: None,
             cores,
+            completed_at: None,
         }
     }
 
+    /// Materializes the full shutdown status returned by the control plane.
     fn status(&self) -> ShutdownStatus {
         ShutdownStatus {
             shutdown_id: self.shutdown_id.clone(),
@@ -292,8 +315,10 @@ struct ControllerRuntimeState {
     runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
     rollouts: HashMap<String, RolloutRecord>,
     active_rollouts: HashMap<PipelineKey, String>,
+    terminal_rollouts: HashMap<PipelineKey, VecDeque<String>>,
     shutdowns: HashMap<String, ShutdownRecord>,
     active_shutdowns: HashMap<PipelineKey, String>,
+    terminal_shutdowns: HashMap<PipelineKey, VecDeque<String>>,
     generation_counters: HashMap<PipelineKey, u64>,
     active_instances: usize,
     next_rollout_id: u64,
@@ -365,14 +390,23 @@ struct ActiveRuntimeCoreState {
     has_foreign_active_generations: bool,
 }
 
+/// Returns a fresh RFC3339 timestamp for externally visible status updates.
 fn timestamp_now() -> String {
     Utc::now().to_rfc3339()
+}
+
+/// Returns whether a terminal operation snapshot has exceeded retention TTL.
+fn is_expired(completed_at: Option<Instant>, now: Instant) -> bool {
+    completed_at
+        .and_then(|completed_at| now.checked_duration_since(completed_at))
+        .is_some_and(|age| age >= TERMINAL_OPERATION_RETENTION_TTL)
 }
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
     ControllerRuntime<PData>
 {
     #[allow(clippy::too_many_arguments)]
+    /// Builds the resident controller runtime used by live reconfiguration.
     pub(super) fn new(
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_context: ControllerContext,
@@ -405,8 +439,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 runtime_instances: HashMap::new(),
                 rollouts: HashMap::new(),
                 active_rollouts: HashMap::new(),
+                terminal_rollouts: HashMap::new(),
                 shutdowns: HashMap::new(),
                 active_shutdowns: HashMap::new(),
+                terminal_shutdowns: HashMap::new(),
                 generation_counters: HashMap::new(),
                 active_instances: 0,
                 next_rollout_id: 0,
@@ -418,6 +454,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
+    /// Seeds the runtime registry with a pipeline already committed at startup.
     pub(super) fn register_committed_pipeline(
         &self,
         resolved: ResolvedPipelineConfig,
@@ -446,6 +483,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         );
     }
 
+    /// Allocates the next controller-local logical thread identifier.
     pub(super) fn next_thread_id(&self) -> usize {
         let mut state = self
             .state
@@ -456,16 +494,221 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         thread_id
     }
 
+    /// Returns the declared-topic registry shared with launched pipelines.
     pub(super) fn declared_topics(&self) -> &DeclaredTopics<PData> {
         &self.declared_topics
     }
 
+    /// Exposes the runtime as the admin control-plane trait object.
     pub(super) fn control_plane(self: &Arc<Self>) -> Arc<dyn ControlPlane> {
         Arc::new(ControllerControlPlane {
             runtime: Arc::clone(self),
         })
     }
 
+    /// Checks whether a logical pipeline still has an active rollout or shutdown.
+    fn pipeline_has_active_operation_locked(
+        state: &ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+    ) -> bool {
+        state.active_rollouts.contains_key(pipeline_key)
+            || state.active_shutdowns.contains_key(pipeline_key)
+    }
+
+    /// Marks a rollout terminal and enqueues it for bounded retention.
+    fn record_terminal_rollout_locked(
+        state: &mut ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+        rollout_id: &str,
+        now: Instant,
+    ) {
+        let mut enqueue = false;
+        if let Some(rollout) = state.rollouts.get_mut(rollout_id) {
+            if rollout.state.is_terminal() && rollout.completed_at.is_none() {
+                rollout.completed_at = Some(now);
+                enqueue = true;
+            }
+        }
+        if enqueue {
+            state
+                .terminal_rollouts
+                .entry(pipeline_key.clone())
+                .or_default()
+                .push_back(rollout_id.to_owned());
+        }
+        Self::prune_terminal_rollout_queue_locked(state, pipeline_key, now);
+    }
+
+    /// Evicts expired or over-cap terminal rollout snapshots for one pipeline.
+    fn prune_terminal_rollout_queue_locked(
+        state: &mut ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+        now: Instant,
+    ) {
+        loop {
+            let Some((rollout_id, queue_len)) =
+                state.terminal_rollouts.get(pipeline_key).and_then(|queue| {
+                    queue
+                        .front()
+                        .cloned()
+                        .map(|rollout_id| (rollout_id, queue.len()))
+                })
+            else {
+                break;
+            };
+
+            let should_evict = queue_len > TERMINAL_ROLLOUT_RETENTION_LIMIT
+                || state
+                    .rollouts
+                    .get(&rollout_id)
+                    .is_none_or(|rollout| is_expired(rollout.completed_at, now));
+            if !should_evict {
+                break;
+            }
+
+            if let Some(evicted_id) = state
+                .terminal_rollouts
+                .get_mut(pipeline_key)
+                .and_then(VecDeque::pop_front)
+            {
+                _ = state.rollouts.remove(&evicted_id);
+            }
+        }
+
+        if state
+            .terminal_rollouts
+            .get(pipeline_key)
+            .is_some_and(VecDeque::is_empty)
+        {
+            _ = state.terminal_rollouts.remove(pipeline_key);
+        }
+    }
+
+    /// Marks a shutdown terminal and enqueues it for bounded retention.
+    fn record_terminal_shutdown_locked(
+        state: &mut ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+        shutdown_id: &str,
+        now: Instant,
+    ) {
+        let mut enqueue = false;
+        if let Some(shutdown) = state.shutdowns.get_mut(shutdown_id) {
+            if shutdown.state.is_terminal() && shutdown.completed_at.is_none() {
+                shutdown.completed_at = Some(now);
+                enqueue = true;
+            }
+        }
+        if enqueue {
+            state
+                .terminal_shutdowns
+                .entry(pipeline_key.clone())
+                .or_default()
+                .push_back(shutdown_id.to_owned());
+        }
+        Self::prune_terminal_shutdown_queue_locked(state, pipeline_key, now);
+    }
+
+    /// Evicts expired or over-cap terminal shutdown snapshots for one pipeline.
+    fn prune_terminal_shutdown_queue_locked(
+        state: &mut ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+        now: Instant,
+    ) {
+        loop {
+            let Some((shutdown_id, queue_len)) = state
+                .terminal_shutdowns
+                .get(pipeline_key)
+                .and_then(|queue| {
+                    queue
+                        .front()
+                        .cloned()
+                        .map(|shutdown_id| (shutdown_id, queue.len()))
+                })
+            else {
+                break;
+            };
+
+            let should_evict = queue_len > TERMINAL_SHUTDOWN_RETENTION_LIMIT
+                || state
+                    .shutdowns
+                    .get(&shutdown_id)
+                    .is_none_or(|shutdown| is_expired(shutdown.completed_at, now));
+            if !should_evict {
+                break;
+            }
+
+            if let Some(evicted_id) = state
+                .terminal_shutdowns
+                .get_mut(pipeline_key)
+                .and_then(VecDeque::pop_front)
+            {
+                _ = state.shutdowns.remove(&evicted_id);
+            }
+        }
+
+        if state
+            .terminal_shutdowns
+            .get(pipeline_key)
+            .is_some_and(VecDeque::is_empty)
+        {
+            _ = state.terminal_shutdowns.remove(pipeline_key);
+        }
+    }
+
+    /// Runs TTL/cap eviction across all retained terminal operation history.
+    fn prune_terminal_operation_history_locked(state: &mut ControllerRuntimeState, now: Instant) {
+        let rollout_keys: Vec<_> = state.terminal_rollouts.keys().cloned().collect();
+        for pipeline_key in rollout_keys {
+            Self::prune_terminal_rollout_queue_locked(state, &pipeline_key, now);
+        }
+
+        let shutdown_keys: Vec<_> = state.terminal_shutdowns.keys().cloned().collect();
+        for pipeline_key in shutdown_keys {
+            Self::prune_terminal_shutdown_queue_locked(state, &pipeline_key, now);
+        }
+    }
+
+    /// Drops exited runtime instances once no active controller work still needs them.
+    fn prune_exited_runtime_instances_for_pipeline_locked(
+        state: &mut ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+    ) {
+        if Self::pipeline_has_active_operation_locked(state, pipeline_key) {
+            return;
+        }
+
+        state.runtime_instances.retain(|deployed_key, instance| {
+            if deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
+                || deployed_key.pipeline_id != *pipeline_key.pipeline_id()
+            {
+                return true;
+            }
+
+            matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+        });
+    }
+
+    /// Opportunistically trims retained rollout and shutdown history.
+    fn prune_retained_operation_history(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::prune_terminal_operation_history_locked(&mut state, Instant::now());
+    }
+
+    /// Trims exited instances and terminal history for one logical pipeline.
+    fn prune_pipeline_runtime_and_history(&self, pipeline_key: &PipelineKey) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::prune_exited_runtime_instances_for_pipeline_locked(&mut state, pipeline_key);
+        Self::prune_terminal_rollout_queue_locked(&mut state, pipeline_key, Instant::now());
+        Self::prune_terminal_shutdown_queue_locked(&mut state, pipeline_key, Instant::now());
+    }
+
+    /// Resolves the concrete core ids selected by a pipeline resource policy.
     fn assigned_cores_for_resolved(
         &self,
         resolved_pipeline: &ResolvedPipelineConfig,
@@ -480,6 +723,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         })
     }
 
+    /// Reports which active cores still belong to the current committed generation.
     fn active_runtime_core_state(
         &self,
         pipeline_key: &PipelineKey,
@@ -514,6 +758,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
+    /// Compares two resolved pipelines while ignoring resource-policy differences.
     fn runtime_shape_matches_ignoring_resources(
         current: &ResolvedPipelineConfig,
         candidate: &ResolvedPipelineConfig,
@@ -545,6 +790,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             && current.policies.transport_headers == candidate.policies.transport_headers)
     }
 
+    /// Compares two resolved pipelines for exact runtime equivalence.
     fn resolved_pipeline_matches(
         current: &ResolvedPipelineConfig,
         candidate: &ResolvedPipelineConfig,
@@ -564,6 +810,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             && current.policies == candidate.policies)
     }
 
+    /// Builds the effective runtime topic profile map used to reject broker mutations.
     fn pipeline_topic_profiles(
         config: &OtelDataflowSpec,
     ) -> Result<HashMap<TopicName, TopicRuntimeProfile>, ControlPlaneError> {
@@ -650,6 +897,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(profiles)
     }
 
+    /// Classifies a reconfigure request and prepares the rollout state machine inputs.
     fn prepare_rollout_plan(
         &self,
         pipeline_group_id: &str,
@@ -925,11 +1173,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         })
     }
 
+    /// Registers a newly accepted rollout and publishes its initial summary.
     fn insert_rollout(
         &self,
         pipeline_key: &PipelineKey,
         rollout: RolloutRecord,
     ) -> Result<(), ControlPlaneError> {
+        self.prune_retained_operation_history();
         {
             let mut state = self
                 .state
@@ -952,6 +1202,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Applies an in-place update to a rollout record and refreshes observed state.
     fn update_rollout<F>(&self, pipeline_key: &PipelineKey, rollout_id: &str, update: F)
     where
         F: FnOnce(&mut RolloutRecord),
@@ -966,12 +1217,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             };
             update(rollout);
             rollout.updated_at = timestamp_now();
-            rollout.summary()
+            let is_terminal = rollout.state.is_terminal();
+            let summary = rollout.summary();
+            if is_terminal {
+                Self::record_terminal_rollout_locked(
+                    &mut state,
+                    pipeline_key,
+                    rollout_id,
+                    Instant::now(),
+                );
+            }
+            summary
         };
         self.observed_state_store
             .set_pipeline_rollout_summary(pipeline_key.clone(), summary);
     }
 
+    /// Updates the per-core progress entry for a rollout.
     fn update_rollout_core_state(
         &self,
         pipeline_key: &PipelineKey,
@@ -993,28 +1255,35 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         });
     }
 
+    /// Marks a rollout inactive and prunes any no-longer-needed retained state.
     fn finish_rollout(&self, pipeline_key: &PipelineKey, rollout_id: &str) {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state
+                .active_rollouts
+                .get(pipeline_key)
+                .is_some_and(|id| id == rollout_id)
+            {
+                let _ = state.active_rollouts.remove(pipeline_key);
+            }
+        }
+        self.prune_pipeline_runtime_and_history(pipeline_key);
+    }
+
+    /// Returns the latest rollout snapshot, evicting expired history first.
+    fn rollout_status_snapshot(&self, rollout_id: &str) -> Option<RolloutStatus> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state
-            .active_rollouts
-            .get(pipeline_key)
-            .is_some_and(|id| id == rollout_id)
-        {
-            let _ = state.active_rollouts.remove(pipeline_key);
-        }
-    }
-
-    fn rollout_status_snapshot(&self, rollout_id: &str) -> Option<RolloutStatus> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::prune_terminal_operation_history_locked(&mut state, Instant::now());
         state.rollouts.get(rollout_id).map(RolloutRecord::status)
     }
 
+    /// Clears temporary serving-generation overrides after a rollout settles.
     fn clear_pipeline_serving_generations<I>(&self, pipeline_key: &PipelineKey, core_ids: I)
     where
         I: IntoIterator<Item = usize>,
@@ -1025,6 +1294,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
+    /// Commits the winning pipeline config and active generation into runtime state.
     fn commit_pipeline_record(&self, plan: &CandidateRolloutPlan, active_generation: u64) {
         {
             let mut state = self
@@ -1049,6 +1319,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .set_pipeline_active_generation(plan.pipeline_key.clone(), active_generation);
     }
 
+    /// Selects the active instances targeted by a per-pipeline shutdown request.
     fn prepare_shutdown_plan(
         &self,
         pipeline_group_id: &str,
@@ -1141,11 +1412,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         })
     }
 
+    /// Registers a newly accepted shutdown operation.
     fn insert_shutdown(
         &self,
         pipeline_key: &PipelineKey,
         shutdown: ShutdownRecord,
     ) -> Result<(), ControlPlaneError> {
+        self.prune_retained_operation_history();
         let mut state = self
             .state
             .lock()
@@ -1164,35 +1437,52 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Applies an in-place update to a shutdown record and prunes on completion.
     fn update_shutdown<F>(&self, pipeline_key: &PipelineKey, shutdown_id: &str, update: F)
     where
         F: FnOnce(&mut ShutdownRecord),
     {
+        let should_prune = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(shutdown) = state.shutdowns.get_mut(shutdown_id) else {
+                return;
+            };
+            update(shutdown);
+            shutdown.updated_at = timestamp_now();
+            let is_terminal = shutdown.state.is_terminal();
+            if is_terminal {
+                Self::record_terminal_shutdown_locked(
+                    &mut state,
+                    pipeline_key,
+                    shutdown_id,
+                    Instant::now(),
+                );
+                let _ = state.active_shutdowns.remove(pipeline_key);
+                true
+            } else {
+                false
+            }
+        };
+
+        if should_prune {
+            self.prune_pipeline_runtime_and_history(pipeline_key);
+        }
+    }
+
+    /// Returns the latest shutdown snapshot, evicting expired history first.
+    fn shutdown_status_snapshot(&self, shutdown_id: &str) -> Option<ShutdownStatus> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(shutdown) = state.shutdowns.get_mut(shutdown_id) else {
-            return;
-        };
-        update(shutdown);
-        shutdown.updated_at = timestamp_now();
-        if matches!(
-            shutdown.state,
-            ShutdownLifecycleState::Succeeded | ShutdownLifecycleState::Failed
-        ) {
-            let _ = state.active_shutdowns.remove(pipeline_key);
-        }
-    }
-
-    fn shutdown_status_snapshot(&self, shutdown_id: &str) -> Option<ShutdownStatus> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::prune_terminal_operation_history_locked(&mut state, Instant::now());
         state.shutdowns.get(shutdown_id).map(ShutdownRecord::status)
     }
 
+    /// Returns the committed pipeline config plus any currently active rollout summary.
     fn pipeline_details_snapshot(
         &self,
         pipeline_key: &PipelineKey,
@@ -1225,6 +1515,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }))
     }
 
+    /// Records a rollout and launches its background execution worker.
     fn spawn_rollout(
         self: &Arc<Self>,
         plan: CandidateRolloutPlan,
@@ -1267,6 +1558,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(initial_status)
     }
 
+    /// Records a shutdown and launches its background execution worker.
     fn spawn_shutdown(
         self: &Arc<Self>,
         plan: CandidateShutdownPlan,
@@ -1298,6 +1590,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(initial_status)
     }
 
+    /// Drives one rollout operation from running to a terminal state.
     fn run_rollout(self: Arc<Self>, plan: CandidateRolloutPlan) {
         self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Running;
@@ -1334,6 +1627,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self.finish_rollout(&plan.pipeline_key, &plan.rollout.rollout_id);
     }
 
+    /// Drives one pipeline shutdown operation to completion or failure.
     fn run_shutdown(self: Arc<Self>, plan: CandidateShutdownPlan) {
         self.update_shutdown(&plan.pipeline_key, &plan.shutdown.shutdown_id, |shutdown| {
             shutdown.state = ShutdownLifecycleState::Running;
@@ -1458,6 +1752,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         });
     }
 
+    /// Creates a brand-new logical pipeline by launching all target instances.
     fn run_create_rollout(
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
@@ -1501,6 +1796,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Resizes a pipeline when only core allocation changed and common cores stay untouched.
     fn run_resize_rollout(
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
@@ -1588,6 +1884,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Performs the serial rolling cutover used for topology or config changes.
     fn run_replace_rollout(
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
@@ -1775,6 +2072,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Restores the prior core footprint after a resize rollout fails.
     fn rollback_resize_rollout(
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
@@ -1853,6 +2151,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 
+    /// Restores the previous serving generation after a replace rollout fails.
     fn rollback_replace_rollout(
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
@@ -1976,6 +2275,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 
+    /// Best-effort cleanup helper for batches of launched candidate instances.
     fn shutdown_instances(
         self: &Arc<Self>,
         keys: &[DeployedPipelineKey],
@@ -1987,6 +2287,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Launches one regular pipeline instance on a specific core and generation.
     fn launch_regular_pipeline_instance(
         self: &Arc<Self>,
         resolved_pipeline: &ResolvedPipelineConfig,
@@ -2034,6 +2335,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(deployed_key)
     }
 
+    /// Registers a launched instance and starts a watcher for its terminal exit.
     pub(super) fn register_launched_instance(
         self: &Arc<Self>,
         launched: LaunchedPipelineThread<PData>,
@@ -2072,6 +2374,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             });
     }
 
+    /// Records a pipeline instance exit and wakes any waiters observing it.
     fn note_instance_exit(&self, pipeline_key: DeployedPipelineKey, exit: RuntimeInstanceExit) {
         match &exit {
             RuntimeInstanceExit::Success => {
@@ -2106,9 +2409,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 state.first_error = Some(message.clone());
             }
         }
+        let logical_pipeline_key = PipelineKey::new(
+            pipeline_key.pipeline_group_id.clone(),
+            pipeline_key.pipeline_id.clone(),
+        );
+        Self::prune_exited_runtime_instances_for_pipeline_locked(&mut state, &logical_pipeline_key);
         self.state_changed.notify_all();
     }
 
+    /// Waits for a specific deployed instance to report admitted plus ready.
     fn wait_for_pipeline_ready(
         &self,
         deployed_key: &DeployedPipelineKey,
@@ -2163,6 +2472,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
+    /// Returns the terminal exit result for one deployed instance, if any.
     fn instance_exit(&self, deployed_key: &DeployedPipelineKey) -> Option<RuntimeInstanceExit> {
         let state = self
             .state
@@ -2177,6 +2487,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             })
     }
 
+    /// Sends shutdown to one instance and releases the retained control sender.
     fn request_instance_shutdown(
         &self,
         deployed_key: &DeployedPipelineKey,
@@ -2231,6 +2542,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Waits until a specific deployed instance exits or the deadline expires.
     fn wait_for_instance_exit(
         &self,
         deployed_key: &DeployedPipelineKey,
@@ -2256,6 +2568,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
+    /// Requests shutdown for one instance and waits until it exits.
     fn shutdown_instance(
         &self,
         deployed_key: &DeployedPipelineKey,
@@ -2269,6 +2582,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         )
     }
 
+    /// Drops the retained admin sender so draining can observe channel closure.
     fn release_instance_control_sender(&self, deployed_key: &DeployedPipelineKey) {
         let mut state = self
             .state
@@ -2279,6 +2593,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
+    /// Broadcasts shutdown to every currently active runtime instance.
     fn request_shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
         let senders: Vec<_> = {
             let state = self
@@ -2312,6 +2627,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Starts a tracked shutdown operation for one logical pipeline.
     fn request_shutdown_pipeline(
         self: &Arc<Self>,
         pipeline_group_id: &str,
@@ -2322,6 +2638,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self.spawn_shutdown(plan)
     }
 
+    /// Blocks until all active runtime instances have exited.
     pub(super) fn wait_until_all_instances_exit(&self) {
         let mut state = self
             .state
@@ -2335,6 +2652,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
+    /// Returns the first runtime error observed by any watched pipeline thread.
     pub(super) fn take_runtime_error(&self) -> Option<Error> {
         let state = self
             .state

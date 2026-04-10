@@ -127,6 +127,21 @@ groups:
     .expect("engine config should parse")
 }
 
+fn simple_pipeline_yaml() -> &'static str {
+    r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+}
+
 fn register_existing_pipeline(runtime: &ControllerRuntime<()>, config: &OtelDataflowSpec) {
     register_pipeline(runtime, config, "g1", "p1");
 }
@@ -217,6 +232,39 @@ fn wait_for_shutdown_message(receiver: &mut RuntimeCtrlMsgReceiver<()>) -> Runti
         );
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+fn terminal_rollout_record(
+    pipeline_group_id: &str,
+    pipeline_id: &str,
+    rollout_id: &str,
+) -> RolloutRecord {
+    let mut rollout = RolloutRecord::new(
+        rollout_id.to_owned(),
+        pipeline_group_id.to_owned().into(),
+        pipeline_id.to_owned().into(),
+        RolloutAction::Replace,
+        1,
+        Some(0),
+        Vec::new(),
+    );
+    rollout.state = RolloutLifecycleState::Succeeded;
+    rollout
+}
+
+fn terminal_shutdown_record(
+    pipeline_group_id: &str,
+    pipeline_id: &str,
+    shutdown_id: &str,
+) -> ShutdownRecord {
+    let mut shutdown = ShutdownRecord::new(
+        shutdown_id.to_owned(),
+        pipeline_group_id.to_owned().into(),
+        pipeline_id.to_owned().into(),
+        Vec::new(),
+    );
+    shutdown.state = ShutdownLifecycleState::Succeeded;
+    shutdown
 }
 
 /// Scenario: a reconfigure request changes only the effective core
@@ -1255,6 +1303,21 @@ fn request_shutdown_pipeline_tracks_completion() {
         },
         RuntimeInstanceExit::Success,
     );
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state.runtime_instances.contains_key(&DeployedPipelineKey {
+                pipeline_group_id: "g1".into(),
+                pipeline_id: "p1".into(),
+                core_id: 0,
+                deployment_generation: 0,
+            }),
+            "active shutdown should retain exited instances until completion"
+        );
+    }
     runtime.note_instance_exit(
         DeployedPipelineKey {
             pipeline_group_id: "g1".into(),
@@ -1278,6 +1341,18 @@ fn request_shutdown_pipeline_tracks_completion() {
             .active_shutdowns
             .contains_key(&PipelineKey::new("g1".into(), "p1".into()))
     );
+    assert!(!state.runtime_instances.contains_key(&DeployedPipelineKey {
+        pipeline_group_id: "g1".into(),
+        pipeline_id: "p1".into(),
+        core_id: 0,
+        deployment_generation: 0,
+    }));
+    assert!(!state.runtime_instances.contains_key(&DeployedPipelineKey {
+        pipeline_group_id: "g1".into(),
+        pipeline_id: "p1".into(),
+        core_id: 1,
+        deployment_generation: 0,
+    }));
 }
 
 /// Scenario: a pipeline shutdown request is accepted but the targeted
@@ -1323,4 +1398,199 @@ fn request_shutdown_pipeline_tracks_timeout_failure() {
     );
     assert_eq!(status.cores.len(), 1);
     assert_eq!(status.cores[0].state, "failed");
+}
+
+/// Scenario: terminal rollout history grows beyond the retention cap for one
+/// logical pipeline while another pipeline also retains rollout history.
+/// Guarantees: eviction is oldest-first and scoped per logical pipeline rather
+/// than dropping unrelated rollout history.
+#[test]
+fn terminal_rollout_history_is_bounded_per_pipeline() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let other_pipeline_key = PipelineKey::new("g1".into(), "p2".into());
+
+    let mut state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for index in 0..=TERMINAL_ROLLOUT_RETENTION_LIMIT {
+        let rollout_id = format!("rollout-{index}");
+        _ = state.rollouts.insert(
+            rollout_id.clone(),
+            terminal_rollout_record("g1", "p1", &rollout_id),
+        );
+        ControllerRuntime::<()>::record_terminal_rollout_locked(
+            &mut state,
+            &pipeline_key,
+            &rollout_id,
+            Instant::now(),
+        );
+    }
+
+    let other_rollout_id = "rollout-other".to_owned();
+    _ = state.rollouts.insert(
+        other_rollout_id.clone(),
+        terminal_rollout_record("g1", "p2", &other_rollout_id),
+    );
+    ControllerRuntime::<()>::record_terminal_rollout_locked(
+        &mut state,
+        &other_pipeline_key,
+        &other_rollout_id,
+        Instant::now(),
+    );
+
+    assert!(!state.rollouts.contains_key("rollout-0"));
+    assert!(state.rollouts.contains_key("rollout-1"));
+    assert!(state.rollouts.contains_key(&other_rollout_id));
+    assert_eq!(
+        state
+            .terminal_rollouts
+            .get(&pipeline_key)
+            .map(|queue| queue.len()),
+        Some(TERMINAL_ROLLOUT_RETENTION_LIMIT)
+    );
+    assert_eq!(
+        state
+            .terminal_rollouts
+            .get(&other_pipeline_key)
+            .map(|queue| queue.len()),
+        Some(1)
+    );
+}
+
+/// Scenario: terminal shutdown history grows beyond the retention cap for one
+/// logical pipeline while another pipeline also retains shutdown history.
+/// Guarantees: shutdown eviction is oldest-first and scoped per logical
+/// pipeline rather than trimming unrelated shutdown history.
+#[test]
+fn terminal_shutdown_history_is_bounded_per_pipeline() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let other_pipeline_key = PipelineKey::new("g1".into(), "p2".into());
+
+    let mut state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for index in 0..=TERMINAL_SHUTDOWN_RETENTION_LIMIT {
+        let shutdown_id = format!("shutdown-{index}");
+        _ = state.shutdowns.insert(
+            shutdown_id.clone(),
+            terminal_shutdown_record("g1", "p1", &shutdown_id),
+        );
+        ControllerRuntime::<()>::record_terminal_shutdown_locked(
+            &mut state,
+            &pipeline_key,
+            &shutdown_id,
+            Instant::now(),
+        );
+    }
+
+    let other_shutdown_id = "shutdown-other".to_owned();
+    _ = state.shutdowns.insert(
+        other_shutdown_id.clone(),
+        terminal_shutdown_record("g1", "p2", &other_shutdown_id),
+    );
+    ControllerRuntime::<()>::record_terminal_shutdown_locked(
+        &mut state,
+        &other_pipeline_key,
+        &other_shutdown_id,
+        Instant::now(),
+    );
+
+    assert!(!state.shutdowns.contains_key("shutdown-0"));
+    assert!(state.shutdowns.contains_key("shutdown-1"));
+    assert!(state.shutdowns.contains_key(&other_shutdown_id));
+    assert_eq!(
+        state
+            .terminal_shutdowns
+            .get(&pipeline_key)
+            .map(|queue| queue.len()),
+        Some(TERMINAL_SHUTDOWN_RETENTION_LIMIT)
+    );
+    assert_eq!(
+        state
+            .terminal_shutdowns
+            .get(&other_pipeline_key)
+            .map(|queue| queue.len()),
+        Some(1)
+    );
+}
+
+/// Scenario: terminal rollout and shutdown ids outlive their retention TTL in
+/// the controller's in-memory history.
+/// Guarantees: history pruning expires those terminal records and subsequent
+/// by-id lookups return not found instead of growing unboundedly.
+#[test]
+fn terminal_operation_history_expires_after_ttl() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let rollout_id = "rollout-old".to_owned();
+    let shutdown_id = "shutdown-old".to_owned();
+    let expired_at = Instant::now() - TERMINAL_OPERATION_RETENTION_TTL - Duration::from_secs(1);
+
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let mut rollout = terminal_rollout_record("g1", "p1", &rollout_id);
+        rollout.completed_at = Some(expired_at);
+        _ = state.rollouts.insert(rollout_id.clone(), rollout);
+        state
+            .terminal_rollouts
+            .entry(pipeline_key.clone())
+            .or_default()
+            .push_back(rollout_id.clone());
+
+        let mut shutdown = terminal_shutdown_record("g1", "p1", &shutdown_id);
+        shutdown.completed_at = Some(expired_at);
+        _ = state.shutdowns.insert(shutdown_id.clone(), shutdown);
+        state
+            .terminal_shutdowns
+            .entry(pipeline_key.clone())
+            .or_default()
+            .push_back(shutdown_id.clone());
+    }
+
+    assert!(runtime.rollout_status_snapshot(&rollout_id).is_none());
+    assert!(runtime.shutdown_status_snapshot(&shutdown_id).is_none());
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!state.rollouts.contains_key(&rollout_id));
+    assert!(!state.shutdowns.contains_key(&shutdown_id));
+    assert!(!state.terminal_rollouts.contains_key(&pipeline_key));
+    assert!(!state.terminal_shutdowns.contains_key(&pipeline_key));
+}
+
+/// Scenario: an instance exits when there is no active rollout or shutdown for
+/// its logical pipeline.
+/// Guarantees: the controller does not retain that exited runtime instance as
+/// history once no active control-plane operation depends on it.
+#[test]
+fn exited_runtime_instances_without_active_operation_are_pruned_immediately() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let deployed_key = DeployedPipelineKey {
+        pipeline_group_id: "g1".into(),
+        pipeline_id: "p1".into(),
+        core_id: 0,
+        deployment_generation: 0,
+    };
+    runtime.note_instance_exit(deployed_key.clone(), RuntimeInstanceExit::Success);
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!state.runtime_instances.contains_key(&deployed_key));
 }

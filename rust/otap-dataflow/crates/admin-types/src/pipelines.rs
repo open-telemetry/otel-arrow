@@ -146,7 +146,8 @@ pub struct RolloutCoreStatus {
 /// Snapshot of one live reconfiguration operation.
 ///
 /// This describes the current state of a specific rollout id. It is operation
-/// status, not a stable pipeline definition.
+/// status, not a stable pipeline definition. These snapshots are retained in
+/// controller memory only for a bounded window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RolloutStatus {
@@ -196,7 +197,8 @@ pub struct ShutdownCoreStatus {
 /// Snapshot of one pipeline shutdown operation.
 ///
 /// This describes the current state of a specific shutdown id. It is operation
-/// status, not a stable pipeline definition.
+/// status, not a stable pipeline definition. These snapshots are retained in
+/// controller memory only for a bounded window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShutdownStatus {

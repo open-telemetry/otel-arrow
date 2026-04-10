@@ -275,6 +275,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Self { pipeline_factory }
     }
 
+    /// Validates component-specific configuration for one pipeline before startup or reconfigure.
     fn validate_pipeline_components_with_factory(
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_group_id: &PipelineGroupId,
@@ -334,6 +335,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(())
     }
 
+    /// Validates every configured pipeline and observability pipeline against registered components.
     fn validate_engine_components_with_factory(
         pipeline_factory: &'static PipelineFactory<PData>,
         engine_cfg: &OtelDataflowSpec,

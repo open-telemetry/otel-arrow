@@ -9,8 +9,12 @@
 //!   Get the status of the specified pipeline.
 //! - GET `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}`
 //!   Get the status of a specific rollout job for the logical pipeline.
+//!   Older rollout ids may return `404 Not Found` after bounded in-memory
+//!   retention evicts terminal history.
 //! - GET `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}`
 //!   Get the status of a specific shutdown job for the logical pipeline.
+//!   Older shutdown ids may return `404 Not Found` after bounded in-memory
+//!   retention evicts terminal history.
 //! - PUT `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 //!   Create or replace a pipeline and return a rollout job status snapshot.
 //! - POST `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
@@ -89,10 +93,12 @@ const fn default_timeout_secs() -> u64 {
     60
 }
 
+/// Converts a typed control-plane rejection into the shared HTTP error shape.
 fn operation_error_response(status: StatusCode, error: crate::ControlPlaneError) -> Response {
     (status, Json(error.as_operation_error())).into_response()
 }
 
+/// Returns whether a rollout status is already in a terminal state.
 fn rollout_is_terminal(state: PipelineRolloutState) -> bool {
     matches!(
         state,
@@ -102,18 +108,22 @@ fn rollout_is_terminal(state: PipelineRolloutState) -> bool {
     )
 }
 
+/// Returns whether a terminal rollout finished successfully.
 fn rollout_is_success(state: PipelineRolloutState) -> bool {
     state == PipelineRolloutState::Succeeded
 }
 
+/// Returns whether a shutdown status string represents a terminal state.
 fn shutdown_is_terminal(state: &str) -> bool {
     matches!(state, "succeeded" | "failed")
 }
 
+/// Returns whether a terminal shutdown finished successfully.
 fn shutdown_is_success(state: &str) -> bool {
     state == "succeeded"
 }
 
+/// Returns committed configuration details for one logical pipeline.
 pub async fn show_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -131,6 +141,7 @@ pub async fn show_pipeline(
     }
 }
 
+/// Starts a pipeline reconfiguration and optionally waits for its terminal result.
 pub async fn put_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     Query(params): Query<WaitParams>,
@@ -231,6 +242,7 @@ pub async fn put_pipeline(
     }
 }
 
+/// Returns the latest snapshot for one rollout operation id.
 pub async fn show_rollout(
     Path((pipeline_group_id, pipeline_id, rollout_id)): Path<(String, String, String)>,
     State(state): State<AppState>,
@@ -246,6 +258,7 @@ pub async fn show_rollout(
     }
 }
 
+/// Returns the latest snapshot for one shutdown operation id.
 pub async fn show_shutdown(
     Path((pipeline_group_id, pipeline_id, shutdown_id)): Path<(String, String, String)>,
     State(state): State<AppState>,
@@ -261,6 +274,7 @@ pub async fn show_shutdown(
     }
 }
 
+/// Starts a tracked shutdown for one logical pipeline and optionally waits.
 pub async fn shutdown_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     Query(params): Query<WaitParams>,
@@ -357,6 +371,7 @@ pub async fn shutdown_pipeline(
     }
 }
 
+/// Returns aggregated runtime status for one logical pipeline.
 pub async fn show_status(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -378,6 +393,8 @@ pub async fn show_status(
 /// - Should be cheap and internal (not dependent on external systems).
 ///
 /// ToDo Implement heartbeat checks.
+///
+/// Serves the liveness probe for one logical pipeline.
 async fn liveness(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -398,6 +415,8 @@ async fn liveness(
 /// - Gate traffic until startup work is done (pipeline deployed and running).
 /// - Temporarily remove the Pod from load balancing when it can't serve correctly.
 /// - Can check key dependencies, but avoid making it too fragile.
+///
+/// Serves the readiness probe for one logical pipeline.
 async fn readiness(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -672,5 +691,55 @@ mod tests {
             serde_json::from_slice(&body).expect("timeout body should deserialize");
         assert_eq!(status.shutdown_id, "shutdown-1");
         assert_eq!(status.state, "running");
+    }
+
+    /// Scenario: a caller asks for a rollout status id that is no longer
+    /// available from the control plane.
+    /// Guarantees: the admin handler returns HTTP 404 so evicted rollout
+    /// history is observable as not found.
+    #[tokio::test]
+    async fn show_rollout_returns_not_found_when_status_is_missing() {
+        let response = show_rollout(
+            Path((
+                "default".to_string(),
+                "main".to_string(),
+                "rollout-1".to_string(),
+            )),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Scenario: a caller asks for a shutdown status id that is no longer
+    /// available from the control plane.
+    /// Guarantees: the admin handler returns HTTP 404 so evicted shutdown
+    /// history is observable as not found.
+    #[tokio::test]
+    async fn show_shutdown_returns_not_found_when_status_is_missing() {
+        let response = show_shutdown(
+            Path((
+                "default".to_string(),
+                "main".to_string(),
+                "shutdown-1".to_string(),
+            )),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
