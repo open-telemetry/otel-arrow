@@ -170,6 +170,7 @@ impl ObservedStateStore {
         _ = policies.insert(pipeline_key, health_policy);
     }
 
+    /// Returns the health policy currently configured for one logical pipeline.
     fn health_policy_for_pipeline(&self, pipeline_key: &PipelineKey) -> HealthPolicy {
         self.health_policies
             .lock()

@@ -275,6 +275,10 @@ The SDK exposes the live pipeline control surface behind typed methods:
   returns a typed outcome.
 - `pipelines().shutdown_status(...)` polls a shutdown operation by id.
 
+Terminal rollout and shutdown ids are retained only within a bounded in-memory
+window. Older ids may return `Ok(None)` after the controller evicts historical
+operation snapshots.
+
 Waited operations return typed terminal outcomes instead of surfacing rollout
 or shutdown failures as transport-level errors. Request rejection remains a
 typed SDK error via `Error::AdminOperation`.

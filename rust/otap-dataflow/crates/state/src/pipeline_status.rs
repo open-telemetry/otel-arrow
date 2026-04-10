@@ -118,6 +118,7 @@ impl PipelineStatus {
 
     /// Returns the runtime status for a specific `(core, generation)`.
     #[must_use]
+    /// Returns the status for one observed runtime instance generation on a core.
     pub fn instance_status(
         &self,
         core_id: CoreId,
@@ -129,22 +130,27 @@ impl PipelineStatus {
         })
     }
 
+    /// Records the committed active generation for this logical pipeline.
     pub(crate) fn set_active_generation(&mut self, generation: u64) {
         self.active_generation = Some(generation);
     }
 
+    /// Pins the serving generation chosen for one logical core.
     pub(crate) fn set_serving_generation(&mut self, core_id: CoreId, generation: u64) {
         _ = self.serving_generations.insert(core_id, generation);
     }
 
+    /// Removes the serving-generation override for one logical core.
     pub(crate) fn clear_serving_generation(&mut self, core_id: CoreId) {
         let _ = self.serving_generations.remove(&core_id);
     }
 
+    /// Stores the rollout summary currently exposed for this pipeline.
     pub(crate) fn set_rollout_summary(&mut self, rollout: PipelineRolloutSummary) {
         self.rollout = Some(rollout);
     }
 
+    /// Clears the rollout summary once no rollout is active anymore.
     pub(crate) fn clear_rollout_summary(&mut self) {
         self.rollout = None;
     }
@@ -184,6 +190,7 @@ impl PipelineStatus {
         ]
     }
 
+    /// Aggregates the accepted condition across the selected serving runtimes.
     fn aggregate_accepted_condition(&self) -> Condition {
         let selected = self.selected_runtimes();
         if selected.is_empty() {
@@ -270,6 +277,7 @@ impl PipelineStatus {
         }
     }
 
+    /// Aggregates the ready condition across the selected serving runtimes.
     fn aggregate_ready_condition(&self) -> Condition {
         let selected = self.selected_runtimes();
         if selected.is_empty() {
@@ -408,6 +416,7 @@ impl PipelineStatus {
         denom > 0 && quorum_satisfied(numer, denom, self.health_policy.ready_quorum)
     }
 
+    /// Selects the runtime instances that currently represent this logical pipeline.
     fn selected_runtimes(&self) -> Vec<(RuntimeInstanceKey, &PipelineRuntimeStatus)> {
         if !self.serving_generations.is_empty() {
             return self
@@ -448,6 +457,7 @@ impl PipelineStatus {
         per_core.into_values().collect()
     }
 
+    /// Builds a per-core view of the selected runtime instances.
     fn selected_core_map(&self) -> HashMap<CoreId, PipelineRuntimeStatus> {
         self.selected_runtimes()
             .into_iter()
@@ -455,6 +465,7 @@ impl PipelineStatus {
             .collect()
     }
 
+    /// Counts how many selected runtimes satisfy a quorum predicate.
     fn count_quorum_from<F>(
         &self,
         selected: &[(RuntimeInstanceKey, &PipelineRuntimeStatus)],

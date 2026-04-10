@@ -522,7 +522,9 @@ impl PipelinesClient<'_> {
     /// [`pipelines::ReconfigureOutcome::Accepted`] result.
     ///
     /// Returns `Ok(None)` when the requested rollout status resource is not
-    /// found.
+    /// found. Terminal rollout history is retained only within a bounded
+    /// in-memory window, so older rollout ids may also return `Ok(None)` after
+    /// eviction.
     ///
     /// # Examples
     ///
@@ -669,7 +671,9 @@ impl PipelinesClient<'_> {
     /// [`pipelines::ShutdownOutcome::Accepted`] result.
     ///
     /// Returns `Ok(None)` when the requested shutdown status resource is not
-    /// found.
+    /// found. Terminal shutdown history is retained only within a bounded
+    /// in-memory window, so older shutdown ids may also return `Ok(None)` after
+    /// eviction.
     ///
     /// # Examples
     ///
