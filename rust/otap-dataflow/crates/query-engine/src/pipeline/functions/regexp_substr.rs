@@ -773,7 +773,7 @@ mod test {
     };
     use arrow::datatypes::{
         ArrowDictionaryKeyType, ArrowNativeType, Field, Int8Type, Int16Type, Int32Type, Int64Type,
-        Schema, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+        Schema, UInt8Type, UInt16Type, UInt64Type,
     };
     use datafusion::common::DFSchema;
     use datafusion::logical_expr::ColumnarValue;
@@ -797,8 +797,7 @@ mod test {
         ))
     }
 
-    /// Helper: build 6-arg form equivalent to old `regexp_capture(source, pattern, group)`.
-    /// Fills in start=1, occurrence=1, flags=NULL.
+    /// Helper for testing regexp capture group behaviour: build 6-arg form of args
     fn capture_args(source: Expr, pattern: Expr, group: Expr) -> Vec<Expr> {
         vec![
             source,
@@ -811,7 +810,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_utf8_arr_values_scalar_pattern_scalar_group() {
+    async fn test_capture_utf8_arr_values_scalar_pattern_scalar_group() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -858,7 +857,7 @@ mod test {
         }
     }
 
-    async fn test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic<
+    async fn test_capture_dict_utf8_arr_values_scalar_pattern_scalar_group_generic<
         K: ArrowDictionaryKeyType,
     >() {
         let session_context = Pipeline::create_session_context();
@@ -912,19 +911,13 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_dict_utf8_arr_values_scalar_pattern_scalar_group() {
-        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<Int8Type>().await;
-        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<Int16Type>().await;
-        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<Int32Type>().await;
-        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<Int64Type>().await;
-        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt8Type>().await;
-        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt16Type>().await;
-        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt32Type>().await;
-        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt64Type>().await;
+    async fn test_capture_dict_utf8_arr_values_scalar_pattern_scalar_group() {
+        test_capture_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt8Type>().await;
+        test_capture_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt16Type>().await;
     }
 
     #[tokio::test]
-    async fn test_dict_utf8_arr_values_with_nulls_scalar_pattern_scalar_group() {
+    async fn test_capture_dict_utf8_arr_values_with_nulls_scalar_pattern_scalar_group() {
         // test to ensure we preserve the original nulls when reconciling the
         // nulls from dict values that didn't match the passed scalar regex
         let session_context = Pipeline::create_session_context();
@@ -974,7 +967,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_dict_utf8_arr_values_dict_utf8_arr_pattern_scalar_group() {
+    async fn test_capture_dict_utf8_arr_values_dict_utf8_arr_pattern_scalar_group() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -1019,7 +1012,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_utf8_arr_utf8_arr_pattern_scalar_group() {
+    async fn test_capture_utf8_arr_utf8_arr_pattern_scalar_group() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -1061,7 +1054,9 @@ mod test {
         }
     }
 
-    async fn test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic<K: ArrowDictionaryKeyType>() {
+    async fn test_capture_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic<
+        K: ArrowDictionaryKeyType,
+    >() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -1113,19 +1108,13 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_utf8_arr_dict_utf8_arr_pattern_scalar_group() {
-        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<Int8Type>().await;
-        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<Int16Type>().await;
-        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<Int32Type>().await;
-        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<Int64Type>().await;
-        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt8Type>().await;
-        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt16Type>().await;
-        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt32Type>().await;
-        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt64Type>().await;
+    async fn test_capture_utf8_arr_dict_utf8_arr_pattern_scalar_group() {
+        test_capture_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt8Type>().await;
+        test_capture_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt16Type>().await;
     }
 
     #[tokio::test]
-    async fn test_capture_group_not_in_regex() {
+    async fn test_capture_capture_group_not_in_regex() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -1167,7 +1156,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_zero_capture_group_matches_full_text() {
+    async fn test_capture_zero_capture_group_matches_full_text() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -1213,7 +1202,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_invalid_but_coercible_source_input_types_are_rejected() {
+    async fn test_capture_invalid_but_coercible_source_input_types_are_rejected() {
         let inputs: Vec<ArrayRef> = vec![
             Arc::new(LargeStringArray::from_iter_values(["hello world"])),
             Arc::new(StringViewArray::from_iter_values(["hello world"])),
@@ -1260,7 +1249,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_coercible_regex_input_arrays_are_cast_to_utf8() {
+    async fn test_capture_coercible_regex_input_arrays_are_cast_to_utf8() {
         let inputs: Vec<ArrayRef> = vec![
             Arc::new(LargeStringArray::from_iter_values([".*(.).*"])),
             Arc::new(StringViewArray::from_iter_values([".*(.).*"])),
@@ -1315,7 +1304,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_coercing_scalar_integer_types() {
+    async fn test_capture_coercing_scalar_integer_types() {
         let session_context = Pipeline::create_session_context();
 
         for group_expr in [
@@ -1371,7 +1360,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_coercing_scalar_array_types() {
+    async fn test_capture_coercing_scalar_array_types() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
             regexp_substr(),
@@ -1426,7 +1415,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_coercing_scalar_array_types_with_negative_vals() {
+    async fn test_capture_coercing_scalar_array_types_with_negative_vals() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
             regexp_substr(),
@@ -1476,7 +1465,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_coercing_negative_signed_scalar_integer_types() {
+    async fn test_capture_coercing_negative_signed_scalar_integer_types() {
         let session_context = Pipeline::create_session_context();
 
         for group_expr in [lit(-1i8), lit(-1i16), lit(-1i32), lit(-1i64)] {
@@ -1521,7 +1510,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_dict_encoded_group_arrays() {
+    async fn test_capture_dict_encoded_group_arrays() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
             regexp_substr(),
@@ -1580,7 +1569,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_dict_encoded_group_arrays_with_negative_vals() {
+    async fn test_capture_dict_encoded_group_arrays_with_negative_vals() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
             regexp_substr(),
@@ -1635,7 +1624,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_dict_encoded_group_arrays_with_null_keys() {
+    async fn test_capture_dict_encoded_group_arrays_with_null_keys() {
         let session_context = Pipeline::create_session_context();
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
             regexp_substr(),
@@ -1680,7 +1669,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_all_scalar_args_returns_scalar() {
+    async fn test_capture_all_scalar_args_returns_scalar() {
         let session_context = Pipeline::create_session_context();
 
         // matching case
@@ -1716,6 +1705,342 @@ mod test {
         match result {
             ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {}
             other => panic!("expected Scalar(Utf8(None)), got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for new regexp_substr parameters: start, occurrence, flags
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_two_arg_form_returns_full_match() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![col("test_col"), lit("hello \\w+")],
+        ));
+
+        let input_col =
+            StringArray::from_iter_values(["hello world", "otap", "hello otap", "arrow"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([
+            Some("hello world"),
+            None,
+            Some("hello otap"),
+            None,
+        ]));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_start_parameter() {
+        let session_context = Pipeline::create_session_context();
+
+        // regexp_substr("xxhello world", "hello (\\w+)", start=3) — skip first 2 chars
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![col("test_col"), lit("hello (\\w+)"), lit(3i64)],
+        ));
+
+        let input_col =
+            StringArray::from_iter_values(["xxhello world", "hello world", "xxhello otap"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        // start=3 means search from char index 2 onward:
+        //   "xxhello world" -> search "hello world" -> full match "hello world"
+        //   "hello world"   -> search "llo world"   -> no match (pattern starts with "hello")
+        //   "xxhello otap"  -> search "hello otap"  -> full match "hello otap"
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([
+            Some("hello world"),
+            None,
+            Some("hello otap"),
+        ]));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_start_beyond_string_length_returns_null() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![col("test_col"), lit("hello"), lit(100i64)],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        let expected: ArrayRef = Arc::new(StringArray::new_null(1));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_occurrence_parameter() {
+        let session_context = Pipeline::create_session_context();
+
+        // Find the 2nd occurrence of a word
+        // regexp_substr(source, "\\w+", start=1, occurrence=2)
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![col("test_col"), lit("\\w+"), lit(1i64), lit(2i64)],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world", "one", "a b c"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        // "hello world" -> 2nd word match = "world"
+        // "one"         -> only 1 match, 2nd doesn't exist = null
+        // "a b c"       -> 2nd word match = "b"
+        let expected: ArrayRef =
+            Arc::new(StringArray::from_iter([Some("world"), None, Some("b")]));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_occurrence_beyond_matches_returns_null() {
+        let session_context = Pipeline::create_session_context();
+
+        // occurrence=10 but there's only 1 match
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![col("test_col"), lit("hello"), lit(1i64), lit(10i64)],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        let expected: ArrayRef = Arc::new(StringArray::new_null(1));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flags_case_insensitive() {
+        let session_context = Pipeline::create_session_context();
+
+        // regexp_substr(source, "HELLO", start=1, occurrence=1, flags="i")
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![
+                col("test_col"),
+                lit("HELLO"),
+                lit(1i64),
+                lit(1i64),
+                lit("i"),
+            ],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world", "HELLO WORLD", "no match"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        // Case-insensitive: "HELLO" matches "hello" and "HELLO", not "no match"
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([
+            Some("hello"),
+            Some("HELLO"),
+            None,
+        ]));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_start_and_occurrence_combined() {
+        let session_context = Pipeline::create_session_context();
+
+        // Start from position 6, find 2nd word
+        // regexp_substr(source, "\\w+", start=6, occurrence=2)
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![col("test_col"), lit("\\w+"), lit(6i64), lit(2i64)],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world foo bar"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        // start=6 -> search " world foo bar" (from char 5 onward)
+        // 1st word match in " world foo bar" = "world"
+        // 2nd word match = "foo"
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([Some("foo")]));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_all_six_args() {
+        let session_context = Pipeline::create_session_context();
+
+        // regexp_substr("xxHELLO world HELLO foo", "hello (\\w+)", 3, 2, "i", 1)
+        // start=3 -> search from char 2: "HELLO world HELLO foo"
+        // pattern with flag "i": case-insensitive "hello (\\w+)"
+        // occurrence=2 -> 2nd match: "HELLO foo"
+        // group=1 -> capture group 1: "foo"
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_substr(),
+            vec![
+                col("test_col"),
+                lit("hello (\\w+)"),
+                lit(3i64),
+                lit(2i64),
+                lit("i"),
+                lit(1i64),
+            ],
+        ));
+
+        let input_col = StringArray::from_iter_values(["xxHELLO world HELLO foo"]);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([Some("foo")]));
+        match result {
+            ColumnarValue::Array(arr) => assert_eq!(&arr, &expected),
+            s => panic!("expected Array, got {s:?}"),
         }
     }
 }
