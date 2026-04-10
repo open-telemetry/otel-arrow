@@ -4473,7 +4473,7 @@ mod test {
     async fn test_update_attr_to_regexp_capture_with_non_scalar_args_kql_parser() {
         test_update_attr_to_regexp_capture_with_non_scalar_args::<KqlParser>(
             "extract",
-            &["severity_text", "event_name", "severity_number"],
+            &["severity_text", "severity_number", "event_name"],
         )
         .await
     }

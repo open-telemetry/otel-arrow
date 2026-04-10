@@ -286,7 +286,6 @@ where
                 let regex_arr_str = regex_arr.as_string::<i32>();
                 regex_capture_with_regex_iter(values, regex_arr_str.iter(), groups)
             }
-            // TODO need tests for this
             DataType::Dictionary(k, v) => {
                 if !matches!(v.as_ref(), &DataType::Utf8) {
                     return exec_err!(
@@ -559,8 +558,8 @@ mod test {
         UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     };
     use arrow::datatypes::{
-        ArrowDictionaryKeyType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Schema,
-        UInt8Type, UInt16Type, UInt64Type,
+        ArrowDictionaryKeyType, ArrowNativeType, Field, Int8Type, Int16Type, Int32Type, Int64Type,
+        Schema, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
     };
     use datafusion::common::DFSchema;
     use datafusion::logical_expr::ColumnarValue;
@@ -593,7 +592,8 @@ mod test {
             vec![col("test_col"), lit("hello (.*)"), lit(1u16)],
         ));
 
-        let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
+        let input_col =
+            StringArray::from_iter_values(["hello world", "otap", "hello otap", "arrow"]);
 
         let input = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
@@ -615,8 +615,12 @@ mod test {
 
         let result = physical_expr.evaluate(&input).unwrap();
 
-        let expected: ArrayRef =
-            Arc::new(StringArray::from_iter([Some("world"), Some("otap"), None]));
+        let expected: ArrayRef = Arc::new(StringArray::from_iter([
+            Some("world"),
+            None,
+            Some("otap"),
+            None,
+        ]));
         match result {
             ColumnarValue::Array(arr) => {
                 assert_eq!(&arr, &expected)
@@ -627,8 +631,9 @@ mod test {
         }
     }
 
-    #[tokio::test]
-    async fn test_dict_utf8_arr_values_scalar_pattern_scalar_group() {
+    async fn test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic<
+        K: ArrowDictionaryKeyType,
+    >() {
         let session_context = Pipeline::create_session_context();
 
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -637,7 +642,9 @@ mod test {
         ));
 
         let input_col = DictionaryArray::new(
-            UInt8Array::from_iter_values(vec![0, 0, 1]),
+            PrimitiveArray::<K>::from_iter_values(
+                [0usize, 0, 1].map(|i| K::Native::from_usize(i).unwrap()),
+            ),
             Arc::new(StringArray::from_iter_values(["hello world", "arrow"])),
         );
 
@@ -662,7 +669,71 @@ mod test {
         let result = physical_expr.evaluate(&input).unwrap();
 
         let expected: ArrayRef = Arc::new(DictionaryArray::new(
-            UInt8Array::from_iter([Some(0), Some(0), None]),
+            PrimitiveArray::<K>::from_iter(
+                [Some(0usize), Some(0), None].map(|i| i.map(|i| K::Native::from_usize(i).unwrap())),
+            ),
+            Arc::new(StringArray::from_iter_values(["world", ""])),
+        ));
+        match result {
+            ColumnarValue::Array(arr) => {
+                assert_eq!(&arr, &expected)
+            }
+            s => {
+                panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dict_utf8_arr_values_scalar_pattern_scalar_group() {
+        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<Int8Type>().await;
+        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<Int16Type>().await;
+        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<Int32Type>().await;
+        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<Int64Type>().await;
+        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt8Type>().await;
+        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt16Type>().await;
+        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt32Type>().await;
+        test_dict_utf8_arr_values_scalar_pattern_scalar_group_generic::<UInt64Type>().await;
+    }
+
+    #[tokio::test]
+    async fn test_dict_utf8_arr_values_with_nulls_scalar_pattern_scalar_group() {
+        // test to ensure we preserve the original nulls when reconciling the
+        // nulls from dict values that didn't match the passed scalar regex
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), lit("hello (.*)"), lit(1u16)],
+        ));
+
+        let input_col = DictionaryArray::new(
+            UInt8Array::from_iter([Some(0), Some(1), None]),
+            Arc::new(StringArray::from_iter_values(["hello world", "arrow"])),
+        );
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test_col",
+                input_col.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(input_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+
+        let expected: ArrayRef = Arc::new(DictionaryArray::new(
+            UInt8Array::from_iter([Some(0), None, None]),
             Arc::new(StringArray::from_iter_values(["world", ""])),
         ));
         match result {
@@ -761,6 +832,69 @@ mod test {
                 panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
             }
         }
+    }
+
+    async fn test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic<K: ArrowDictionaryKeyType>() {
+        let session_context = Pipeline::create_session_context();
+
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), col("regexp_col"), lit(1u16)],
+        ));
+
+        let input_col = StringArray::from_iter_values(["hello world", "hello otap", "arrow"]);
+        let regex_col = DictionaryArray::new(
+            PrimitiveArray::<K>::from_iter_values(
+                [0usize, 1usize, 2usize].map(|i| K::Native::from_usize(i).unwrap()),
+            ),
+            Arc::new(StringArray::from_iter_values([
+                ".(.).*",
+                "..(..).*",
+                "(arr)(ow)",
+            ])),
+        );
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("test_col", input_col.data_type().clone(), true),
+                Field::new("regexp_col", regex_col.data_type().clone(), true),
+            ])),
+            vec![Arc::new(input_col), Arc::new(regex_col)],
+        )
+        .unwrap();
+
+        let df_schema =
+            DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
+                .unwrap();
+
+        let physical_expr =
+            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                .unwrap();
+
+        let result = physical_expr.evaluate(&input).unwrap();
+
+        let expected: ArrayRef =
+            Arc::new(StringArray::from_iter([Some("e"), Some("ll"), Some("arr")]));
+        match result {
+            ColumnarValue::Array(arr) => {
+                assert_eq!(&arr, &expected)
+            }
+            s => {
+                panic!("invalid ColumnarValue variant ColumnarValue::Scalar({s:?})")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_utf8_arr_dict_utf8_arr_pattern_scalar_group() {
+        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<Int8Type>().await;
+        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<Int16Type>().await;
+        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<Int32Type>().await;
+        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<Int64Type>().await;
+        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt8Type>().await;
+        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt16Type>().await;
+        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt32Type>().await;
+        test_utf8_arr_dict_utf8_arr_pattern_scalar_group_generic::<UInt64Type>().await;
     }
 
     #[tokio::test]
@@ -903,6 +1037,53 @@ mod test {
         let inputs: Vec<ArrayRef> = vec![
             Arc::new(LargeStringArray::from_iter_values([".*(.).*"])),
             Arc::new(StringViewArray::from_iter_values([".*(.).*"])),
+        ];
+
+        let session_context = Pipeline::create_session_context();
+        let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
+            regexp_capture(),
+            vec![col("test_col"), col("regex_col"), lit(0u16)],
+        ));
+
+        for regex_col in inputs {
+            let input_col = StringArray::from_iter_values(["hello"]);
+            let input = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("test_col", input_col.data_type().clone(), true),
+                    Field::new("regex_col", regex_col.data_type().clone(), true),
+                ])),
+                vec![Arc::new(input_col.clone()), Arc::new(regex_col.clone())],
+            )
+            .unwrap();
+
+            let df_schema = DFSchema::from_unqualified_fields(
+                input.schema().fields.clone(),
+                Default::default(),
+            )
+            .unwrap();
+
+            let physical_expr =
+                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
+                    .unwrap();
+
+            let error = physical_expr.evaluate(&input).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Unsupported data type for regexes array"),
+                "unexpected error: `{}`",
+                error
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn test_invalid_but_coercible_dict_regex_input_arrays_are_rejected() {
+        let inputs: Vec<ArrayRef> = vec![
+            Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values([0]),
+                Arc::new(LargeStringArray::from_iter_values([".*(.).*"])),
+            )),
             Arc::new(DictionaryArray::new(
                 UInt8Array::from_iter_values([0]),
                 Arc::new(StringViewArray::from_iter_values([".*(.).*"])),
@@ -940,7 +1121,7 @@ mod test {
             assert!(
                 error
                     .to_string()
-                    .contains("Unsupported data type for regexes array"),
+                    .contains("Unsupported dictionary values type for regexes array"),
                 "unexpected error: `{}`",
                 error
             )
