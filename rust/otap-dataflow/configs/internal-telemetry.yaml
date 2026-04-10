@@ -13,7 +13,8 @@ engine:
       readers:
         - pull:
             exporter:
-              prometheus:
+              type: prometheus
+              config:
                 host: "0.0.0.0"
                 port: 9090
                 path: "/metrics"
