@@ -5,58 +5,62 @@
 The OTAP-direct Metrics SDK described here replaces the
 OpenTelemetry-Rust metrics SDK metrics with pieces of the OTAP
 dataflow engine used for an internal telemetry pipeline. This document
-reflects how the internal metrics SDK is designed, with a three-phase
-implementation plan. See the corresponding document for the [internal
-logs SDK](./internal-logs-sdk.md), however note that the logs SDK
-forms OTLP bytes directly, whereas the metrics SDK forms OTAP batches.
+reflects how the internal metrics SDK is designed, with a four-phase
+implementation plan. See the corresponding document describing the
+[internal logs SDK](./internal-logs-sdk.md), however note that the
+logs SDK forms OTLP bytes directly, whereas the metrics SDK forms OTAP
+batches directly.
 
 This is a functionally complete Metric SDK tailored for efficiency in
 the OTAP dataflow operating environment. It may be considered as a
-general purpose OpenTelemetry Metric SDK for Rust.
+general purpose OpenTelemetry Metric SDK for Rust with a few caveats.
 
-- Multivariate design with `#[metric_set]`-annotated structs with
-  future [OTAP-multivariate](../../../docs/multivariate-design.md) uses
+- Multivariate design for future
+  [OTAP-multivariate](../../../docs/multivariate-design.md) uses
 - Thread-per-core architecture with push-oriented collection supports 
   synchronous and asynchronous instrument patterns
 - Instruments are fully "bound"; there are no dynamic attributes.
 - OTel-Weaver semantic convention registry with code generation tools
-  support type-safe interfaces, patterns for schema migration
+  support type-safe interfaces, schema migration
 - Compile-time View configuration supports three levels Basic, Normal,
   and Detailed selected at runtime; there are no dynamic views
 - Schema-driven versioning includes a migration path from initial
-  `#[metric_set]` to generated from a schema registry with
-  runtime-configurable output schemas
+  `#[metric_set]` to generated code using a schema registry with
+  runtime-configurable output schemas.
 
-The SDK is specialized for producing OTAP batch payloads from its
-collection cycle of individual metric sets. The metric SDK includes
-built-in support for console and Prometheus reporting through its
-`MetricsTap` component, meaning with or without a full internal
-metrics pipeline and the `internal_telemetry_receiver`.
+The SDK is specialized for producing OTAP batch payloads, as it
+performs a continuous collection cycle combining individual metric
+sets. The metric SDK includes built-in support for console and
+Prometheus reporting through its `MetricsTap` component, meaning with
+or without a full internal metrics pipeline and the
+`internal_telemetry_receiver`.
 
 ### Project phases
 
 There are four phases in this design plan:
 
 1. **Drop-in replacement**. The existing `#[metric_set]` and the
-   Counter, UpDownCounter, and Mmsc instruments reporting paths are
-   unchanged. The current dispatcher is extended with the option to
-   select the OpenTelemetry SDK, None, the bare-bones Admin behavior,
-   or the new ITS mode. As this phase progresses, we will reach a
-   point where the ITS mode provides full functionality.
+   Counter, UpDownCounter, Gauge, and Mmsc instruments reporting paths
+   are unchanged. The current dispatcher is extended with the option
+   to select the OpenTelemetry SDK, a no-op SDK, the bare-bones Admin
+   behavior, or the new ITS mode. As this phase progresses, we will
+   reach a point where the ITS mode provides a sufficient level of
+   basic functionality.   
 2. **Schema-driven code generation**. New codegen tools will be
    developed supporting controlled metric schema evolution. One by
    one, each `#[metric_set]` struct will be replaced by generated
    code. An initial `v0` schema will be written to match the current
-   output, and an initial `v1` schema with optional metric-level
-   attributes. Metric cardinality is limited to a static mapping of
-   attribute dimensions. As this phase progresses, users will be able
-   to control which metric schemas are compiled and which (e.g., old,
-   new, or both) are selected at runtime. Using Rust `enum` variants
+   output. In some cases, a new "streamlined" `v1` schema with
+   metric-level attributes will follow. Where attributes are added,
+   metric cardinality is limited to a static mapping of attribute
+   dimensions. As this phase progresses, users will be able to control
+   which metric schemas are compiled and which (e.g., old, new, or
+   both) are selected at runtime. Using Rust `enum` variants
    corresponding with each metric level, users can configure the level
    of detail and corresponding cost.
 3. Remove the OpenTelemetry SDK. There will be at this point two
    choices when configuring the Metrics SDK: the built-in basic 
-   behavior and the ITS internal pipeline.
+   behavior and the ITS internal pipeline with its variety of nodes.
 4. Introduce exponential histograms. In most cases, existing `Mmsc`
    instruments are configured at Normal level. At the Detailed metric
    level, we introduce a choice of exponential histogram. This data
@@ -87,8 +91,8 @@ pub struct ConsumerMetrics {
 }
 ```
 
-After the transition, we will have a schema definition like listing
-the metric groups and their dimensions and level-specific defaults:
+After the transition, we will have a schema definition listing the
+metric groups, their dimensions and level-specific defaults:
 
 ```yaml
 groups:
@@ -114,9 +118,9 @@ groups:
   # ... and more
 ```
 
-and in separate files, definitions for the `outcome` and `signal`
-attributes would be given, as they are common across other metric
-sets. In the generated code, we might see:
+In separate files, a registry will include definitions for the
+`outcome` and `signal` attributes. In the generated code, we might
+see:
 
 ```rust
 /// [Generated Code]
@@ -148,51 +152,52 @@ impl ConsumedItemsByOutcomeAndSignal {
 ```
 
 In another file, we will define the translation from the `v1` to `v0`
-schema.  In another part of the implementation, we will define how to
-generate either the v1 or the v0 schema using current instrumentation.
+schema, which we eventually deprecate.  In another part of the
+implementation, we will define how to generate either the `v1` or the
+`v0` schema from the current instrumentation.
 
 ## Phase 1: Drop-in replacement
 
-In this phase we will insert alternatives when configuring internal
+In this phase we will insert alternatives for configuring internal
 metrics, similar to how internal logging uses `logs::ProviderMode`,
 with values including `None`, `Builtin`, `OpenTelemetry`, and `ITS`.
 The OpenTelemetry mode will be suppported through Phase 3, at which
 point we will have only two real options.
 
-We do not seek to change the manner of reporting multivariate metric
-structs, including the use of structs which are annotated with
-`#[metric_set]`, and the use of periodic reporting on a short
-interval, through channels, to a location determined by the engine
-controller.
+We will not change the manner of reporting multivariate metric structs
+currently in use. We will continue to use the structs currently
+annotated with `#[metric_set]`, and will continue to use periodic
+reporting on short intervals, through channels, to a location
+determined by the engine controller.
 
 The provider modes listed above are implemented at the collection
 point, where a central component (`MetricsDispatcher`) receives a
 stream of events and is responsible for dispatching. The `None`
-setting means no metrics are sent, `Builtin` means serving a
-Prometheus-compatible endpoint without using a telemetry pipeline. The
-`OpenTelemetry` setting preserves existing functionality, and `ITS`
-enables new standard functionality.
+setting means no metrics are ever sent, `Builtin` means serving a
+Prometheus-compatible endpoint without using a full telemetry
+pipeline. The `OpenTelemetry` setting preserves existing
+functionality, and `ITS` enables our new standard functionality.
 
 ### Internal telemetry system
 
 In the internal telemetry system mode, Metrics SDK events are sent to
 a global, NUMA-regional, or CPU-local copy of the dataflow engine
 serving internal telemetry. This is the same model of configuration
-used in the Logging SDK in the corresponding ITS mode, with pipeline
+used in the Logging SDK in its corresponding ITS mode, with pipeline
 nodes configured separately in the `observability` settings.
 
 The internal telemetry system has an in-transit representation using
-`EntityKey` to describe the scope and containing a partial OTAP batch,
-precisely one scope of metric data with a single timestamp that aligns
-the set of observations as a single multivariate event. When the
-built-in provider mode is configured, the internal representation is
-used directly, making a short and relatively low-risk code path for
-exporting to the console or Prometheus. The same Prometheus export
-path is also supported in the ITS mode (we do not implement an OTAP
-Prometheus exporter).
+`EntityKey` to describe the scope and containing a snapshot of the
+measurements and a timestamp. In other words, the basic reporting unit
+is an entity key, a snapshot of the measurements and one
+timestamp. When the built-in provider mode is configured, the internal
+representation is used directly, making a short and relatively
+low-risk code path for exporting to the console or Prometheus. The
+same Prometheus export path is also supported in the ITS mode.
 
 Internal events are received representing a partial OTAP payload. For
-the current OTAP specification, we will generate the follow tables:
+the current OTAP specification, we will may generate any of the follow
+tables:
 
 - UnivariateMetrics: the top-level table, listing metric type, name,
   temporality, description, monotonicity, resource, and scope
@@ -201,6 +206,7 @@ the current OTAP specification, we will generate the follow tables:
 - HistogramDataPoint: contains min/max/sum/count, optional buckets,
   timestamps, and flags (used by `Mmsc`)
 - ScopeAttrs: the attributes associated with each `EntityKey`
+- MetricAttrs: the attributes associated with each data point.
 
 Note that the timestamp column corresponding with the data point
 tables will be identical in all cases, as metric sets are observed as
