@@ -251,9 +251,6 @@ unchecked-arithmetic = []
 # Dev/test tooling (fake data generator).
 dev-tools = ["otap-df-core-nodes/dev-tools"]
 
-# Experimental features
-experimental-tls = ["otap-df-otap/experimental-tls", "otap-df-core-nodes/experimental-tls"]
-
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).
 crypto-ring = ["otap-df-otap/crypto-ring"]

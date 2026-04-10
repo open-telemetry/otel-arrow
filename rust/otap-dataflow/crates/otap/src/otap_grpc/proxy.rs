@@ -15,41 +15,32 @@
 //! The implementation uses HTTP CONNECT method to establish tunnels through proxies.
 //! It supports both:
 //! - `http://proxy:port` (plaintext to proxy)
-//! - `https://proxy:port` (TLS to proxy, requires `experimental-tls`)
+//! - `https://proxy:port` (TLS to proxy)
 
 use crate::socket_options;
 use base64::Engine;
 use base64::prelude::*;
 use http::Uri;
 use ipnet::IpNet;
-#[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsClientConfig;
 use otap_df_telemetry::{otel_debug, otel_warn};
-#[cfg(feature = "experimental-tls")]
 use rustls::RootCertStore;
-#[cfg(feature = "experimental-tls")]
 use rustls_native_certs::load_native_certs;
-#[cfg(feature = "experimental-tls")]
 use rustls_pki_types::pem::PemObject;
-#[cfg(feature = "experimental-tls")]
 use rustls_pki_types::{CertificateDer, ServerName};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::env;
 use std::io;
 use std::net::IpAddr;
-#[cfg(feature = "experimental-tls")]
 use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-#[cfg(feature = "experimental-tls")]
 use tokio::sync::OnceCell;
-#[cfg(feature = "experimental-tls")]
 use tokio_rustls::TlsConnector;
 
-#[cfg(feature = "experimental-tls")]
 use crate::tls_utils::read_file_with_limit_async;
 
 /// A URL-like string that should be treated as sensitive.
@@ -158,7 +149,6 @@ pub enum ProxyError {
     InvalidUri(String),
 
     /// TLS handshake or setup failure while connecting to an HTTPS proxy.
-    #[cfg(feature = "experimental-tls")]
     #[error("failed to establish TLS connection to proxy: {0}")]
     ProxyTlsHandshake(String),
 }
@@ -195,8 +185,6 @@ pub struct ProxyConfig {
     /// TLS/mTLS settings for HTTPS proxy connections (`https://proxy-host:port`).
     ///
     /// This setting is ignored for `http://` proxy URLs.
-    /// Requires the `experimental-tls` feature.
-    #[cfg(feature = "experimental-tls")]
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
 }
@@ -225,7 +213,6 @@ impl ProxyConfig {
                 .or_else(|_| env::var("no_proxy"))
                 .ok()
                 .filter(|s| !s.is_empty()),
-            #[cfg(feature = "experimental-tls")]
             tls: None,
         }
     }
@@ -240,7 +227,6 @@ impl ProxyConfig {
             https_proxy: self.https_proxy.or(env_config.https_proxy),
             all_proxy: self.all_proxy.or(env_config.all_proxy),
             no_proxy: self.no_proxy.or(env_config.no_proxy),
-            #[cfg(feature = "experimental-tls")]
             tls: self.tls,
         }
     }
@@ -253,7 +239,6 @@ impl std::fmt::Display for ProxyConfig {
         let _ = dbg.field("https_proxy", &self.https_proxy);
         let _ = dbg.field("all_proxy", &self.all_proxy);
         let _ = dbg.field("no_proxy", &self.no_proxy);
-        #[cfg(feature = "experimental-tls")]
         let _ = dbg.field("tls", &self.tls.as_ref().map(|_| "[configured]"));
         dbg.finish()
     }
@@ -448,7 +433,6 @@ impl ProxyConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProxyScheme {
     Http,
-    #[cfg(feature = "experimental-tls")]
     Https,
 }
 
@@ -472,18 +456,7 @@ fn parse_proxy_url(proxy_url: &str) -> Result<ParsedProxyUrl, ProxyError> {
 
     let scheme = match uri.scheme_str().unwrap_or("http") {
         "http" => ProxyScheme::Http,
-        "https" => {
-            #[cfg(feature = "experimental-tls")]
-            {
-                ProxyScheme::Https
-            }
-            #[cfg(not(feature = "experimental-tls"))]
-            {
-                return Err(ProxyError::InvalidProxyUrl(format!(
-                    "https:// proxy URLs require the `experimental-tls` feature (proxy URL: {proxy_url_redacted})"
-                )));
-            }
-        }
+        "https" => ProxyScheme::Https,
         other => {
             return Err(ProxyError::InvalidProxyUrl(format!(
                 "unsupported proxy URL scheme `{other}` ({proxy_url_redacted})"
@@ -500,7 +473,6 @@ fn parse_proxy_url(proxy_url: &str) -> Result<ParsedProxyUrl, ProxyError> {
 
     let port = uri.port_u16().unwrap_or(match scheme {
         ProxyScheme::Http => 3128,
-        #[cfg(feature = "experimental-tls")]
         ProxyScheme::Https => 443,
     });
 
@@ -525,7 +497,6 @@ fn parse_proxy_url(proxy_url: &str) -> Result<ParsedProxyUrl, ProxyError> {
     })
 }
 
-#[cfg(feature = "experimental-tls")]
 fn tls_server_name_for_proxy(
     proxy_host: &str,
     tls: Option<&TlsClientConfig>,
@@ -545,7 +516,6 @@ fn tls_server_name_for_proxy(
     })
 }
 
-#[cfg(feature = "experimental-tls")]
 async fn read_proxy_tls_file(path: &Path, field: &str) -> Result<Vec<u8>, ProxyError> {
     read_file_with_limit_async(path).await.map_err(|e| {
         ProxyError::InvalidProxyUrl(format!(
@@ -555,7 +525,6 @@ async fn read_proxy_tls_file(path: &Path, field: &str) -> Result<Vec<u8>, ProxyE
     })
 }
 
-#[cfg(feature = "experimental-tls")]
 async fn load_proxy_system_root_certs() -> Result<Vec<CertificateDer<'static>>, ProxyError> {
     // Cache system roots for the process lifetime to avoid repeated blocking OS/keychain reads.
     static SYSTEM_ROOTS: OnceCell<Vec<CertificateDer<'static>>> = OnceCell::const_new();
@@ -581,7 +550,6 @@ async fn load_proxy_system_root_certs() -> Result<Vec<CertificateDer<'static>>, 
     Ok(roots.clone())
 }
 
-#[cfg(feature = "experimental-tls")]
 async fn build_proxy_tls_connector(
     proxy_host: &str,
     tls: Option<&TlsClientConfig>,
@@ -980,7 +948,6 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
             ProxyScheme::Http => {
                 http_connect_tunnel_on_stream(stream, host, port, proxy_auth.as_deref()).await?
             }
-            #[cfg(feature = "experimental-tls")]
             ProxyScheme::Https => {
                 let (connector, server_name) =
                     build_proxy_tls_connector(proxy_host.as_str(), proxy_config.tls.as_ref())
@@ -1038,7 +1005,6 @@ mod tests {
         result
     }
 
-    #[cfg(feature = "experimental-tls")]
     async fn start_tls_proxy_for_handshake_failure()
     -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
         use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
@@ -1232,7 +1198,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn test_parse_proxy_url_accepts_https() {
         let parsed = parse_proxy_url("https://secure-proxy.example.com:8443").unwrap();
@@ -1242,7 +1207,6 @@ mod tests {
         assert_eq!(parsed.scheme, ProxyScheme::Https);
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn test_parse_proxy_url_https_default_port() {
         let parsed = parse_proxy_url("https://secure-proxy.example.com").unwrap();
@@ -1250,13 +1214,6 @@ mod tests {
         assert_eq!(parsed.port, 443);
         assert!(parsed.auth_header.is_none());
         assert_eq!(parsed.scheme, ProxyScheme::Https);
-    }
-
-    #[cfg(not(feature = "experimental-tls"))]
-    #[test]
-    fn test_parse_proxy_url_rejects_https_without_tls_feature() {
-        let err = parse_proxy_url("https://secure-proxy.example.com").unwrap_err();
-        assert!(err.to_string().contains("experimental-tls"));
     }
 
     #[test]
@@ -1271,7 +1228,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn test_build_proxy_tls_connector_rejects_insecure() {
         let tls = TlsClientConfig {
@@ -1288,7 +1244,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn test_build_proxy_tls_connector_rejects_insecure_skip_verify() {
         let tls = TlsClientConfig {
@@ -1305,7 +1260,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn test_build_proxy_tls_connector_rejects_empty_trust_store() {
         let tls = TlsClientConfig {
@@ -1322,7 +1276,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn test_build_proxy_tls_connector_reports_ca_file_read_error_as_config_error() {
         use std::path::PathBuf;
@@ -1347,7 +1300,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn test_build_proxy_tls_connector_rejects_partial_mtls_config() {
         use otap_df_config::tls::TlsConfig;
@@ -1375,7 +1327,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn test_tls_server_name_for_proxy_rejects_invalid_name() {
         let tls = TlsClientConfig {
@@ -1389,7 +1340,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn test_connect_tcp_stream_with_proxy_config_maps_tls_handshake_error() {
         use otap_df_config::tls::TlsConfig;
