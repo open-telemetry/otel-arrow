@@ -120,6 +120,10 @@ enum PendingPublishProgress {
     Pending,
 }
 
+/// Retry cadence while a topic publish remains blocked after an immediate
+/// fast-path admission attempt already failed.
+const PENDING_PUBLISH_RETRY_DELAY: Duration = Duration::from_millis(1);
+
 /// Declares the topic exporter as a local exporter factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
@@ -249,6 +253,113 @@ impl TopicExporter {
         }
         Ok(())
     }
+
+    /// Handle one incoming pdata message, using the immediate fast path when
+    /// topic admission is currently available and returning a retained pending
+    /// publish only when `queue_on_full: block` has to wait.
+    async fn handle_pdata_message(
+        data: OtapPdata,
+        queue_on_full: &TopicQueueOnFullPolicy,
+        ack_propagation_mode: TopicAckPropagationMode,
+        topic: &TopicHandle<OtapPdata>,
+        tracked_publisher: Option<&otap_df_engine::topic::TrackedTopicPublisher<OtapPdata>>,
+        effect_handler: &EffectHandler<OtapPdata>,
+        metrics: &mut MetricSet<TopicExporterMetrics>,
+        pending_messages: &mut HashMap<u64, OtapPdata>,
+        pending_outcomes: &mut FuturesUnordered<
+            Pin<Box<dyn Future<Output = (u64, TrackedPublishOutcome)> + Send>>,
+        >,
+    ) -> Result<Option<PendingPublish>, Error> {
+        let should_track_end_to_end = ack_propagation_mode == TopicAckPropagationMode::Auto
+            && data.has_ack_or_nack_interests();
+
+        match queue_on_full {
+            TopicQueueOnFullPolicy::Block => {
+                let pending_publish = PendingPublish::new(data, should_track_end_to_end);
+                match Self::try_progress_pending_publish(
+                    &pending_publish,
+                    topic,
+                    tracked_publisher,
+                    effect_handler,
+                    metrics,
+                    pending_messages,
+                    pending_outcomes,
+                )
+                .await?
+                {
+                    PendingPublishProgress::Published => Ok(None),
+                    PendingPublishProgress::Pending => Ok(Some(pending_publish)),
+                }
+            }
+            TopicQueueOnFullPolicy::DropNewest => {
+                let published = Arc::new(data.clone_without_context());
+                if should_track_end_to_end {
+                    let tracked_publisher = tracked_publisher
+                        .expect("tracked publisher should exist when ack propagation is auto");
+                    match tracked_publisher.try_publish(published)? {
+                        TrackedTryPublishOutcome::Published(receipt) => {
+                            let message_id = receipt.message_id();
+                            metrics.published_messages.add(1);
+                            _ = pending_messages.insert(message_id, data);
+                            pending_outcomes.push(Box::pin(async move {
+                                (message_id, receipt.wait_for_outcome().await)
+                            }));
+                        }
+                        TrackedTryPublishOutcome::DroppedOnFull => {
+                            metrics.dropped_messages_on_full.add(1);
+                            let exporter_id = effect_handler.exporter_id();
+                            otel_warn!(
+                                "topic_exporter.drop_newest",
+                                node = exporter_id.name.as_ref(),
+                                topic = topic.name().as_ref(),
+                                message = "Dropping message because topic queue is full"
+                            );
+                            effect_handler
+                                .notify_nack(NackMsg::new("topic queue full: dropped newest", data))
+                                .await?;
+                        }
+                        TrackedTryPublishOutcome::MaxInFlightReached => {
+                            metrics.dropped_messages_on_outcome_capacity.add(1);
+                            let exporter_id = effect_handler.exporter_id();
+                            otel_warn!(
+                                "topic_exporter.outcome_capacity_full",
+                                node = exporter_id.name.as_ref(),
+                                topic = topic.name().as_ref(),
+                                message = "Dropping message because tracked publish outcome capacity is exhausted"
+                            );
+                            effect_handler
+                                .notify_nack(NackMsg::new(
+                                    "topic publish outcome capacity exhausted",
+                                    data,
+                                ))
+                                .await?;
+                        }
+                    }
+                } else {
+                    match topic.try_publish(published)? {
+                        PublishOutcome::Published => {
+                            metrics.published_messages.add(1);
+                            effect_handler.notify_ack(AckMsg::new(data)).await?;
+                        }
+                        PublishOutcome::DroppedOnFull => {
+                            metrics.dropped_messages_on_full.add(1);
+                            let exporter_id = effect_handler.exporter_id();
+                            otel_warn!(
+                                "topic_exporter.drop_newest",
+                                node = exporter_id.name.as_ref(),
+                                topic = topic.name().as_ref(),
+                                message = "Dropping message because topic queue is full"
+                            );
+                            effect_handler
+                                .notify_nack(NackMsg::new("topic queue full: dropped newest", data))
+                                .await?;
+                        }
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -330,87 +441,19 @@ impl Exporter<OtapPdata> for TopicExporter {
                                 break;
                             }
                             Message::PData(data) => {
-                                let should_track_end_to_end =
-                                    ack_propagation_mode == TopicAckPropagationMode::Auto
-                                        && data.has_ack_or_nack_interests();
-
-                                match queue_on_full {
-                                    TopicQueueOnFullPolicy::Block => {
-                                        pending_publish =
-                                            Some(PendingPublish::new(data, should_track_end_to_end));
-                                    }
-                                    TopicQueueOnFullPolicy::DropNewest => {
-                                        let published = Arc::new(data.clone_without_context());
-                                        if should_track_end_to_end {
-                                            let tracked_publisher = tracked_publisher
-                                                .as_ref()
-                                                .expect("tracked publisher should exist when ack propagation is auto");
-                                            match tracked_publisher.try_publish(published)? {
-                                                TrackedTryPublishOutcome::Published(receipt) => {
-                                                    let message_id = receipt.message_id();
-                                                    metrics.published_messages.add(1);
-                                                    _ = pending_messages.insert(message_id, data);
-                                                    pending_outcomes.push(Box::pin(async move {
-                                                        (message_id, receipt.wait_for_outcome().await)
-                                                    }));
-                                                }
-                                                TrackedTryPublishOutcome::DroppedOnFull => {
-                                                    metrics.dropped_messages_on_full.add(1);
-                                                    otel_warn!(
-                                                        "topic_exporter.drop_newest",
-                                                        node = exporter_id.name.as_ref(),
-                                                        topic = topic.name().as_ref(),
-                                                        message = "Dropping message because topic queue is full"
-                                                    );
-                                                    effect_handler
-                                                        .notify_nack(NackMsg::new(
-                                                            "topic queue full: dropped newest",
-                                                            data,
-                                                        ))
-                                                        .await?;
-                                                }
-                                                TrackedTryPublishOutcome::MaxInFlightReached => {
-                                                    metrics.dropped_messages_on_outcome_capacity.add(1);
-                                                    otel_warn!(
-                                                        "topic_exporter.outcome_capacity_full",
-                                                        node = exporter_id.name.as_ref(),
-                                                        topic = topic.name().as_ref(),
-                                                        message = "Dropping message because tracked publish outcome capacity is exhausted"
-                                                    );
-                                                    effect_handler
-                                                        .notify_nack(NackMsg::new(
-                                                            "topic publish outcome capacity exhausted",
-                                                            data,
-                                                        ))
-                                                        .await?;
-                                                }
-                                            }
-                                        } else {
-                                            match topic.try_publish(published)? {
-                                                PublishOutcome::Published => {
-                                                    metrics.published_messages.add(1);
-                                                    effect_handler.notify_ack(AckMsg::new(data)).await?;
-                                                }
-                                                PublishOutcome::DroppedOnFull => {
-                                                    metrics.dropped_messages_on_full.add(1);
-                                                    otel_warn!(
-                                                        "topic_exporter.drop_newest",
-                                                        node = exporter_id.name.as_ref(),
-                                                        topic = topic.name().as_ref(),
-                                                        message = "Dropping message because topic queue is full"
-                                                    );
-                                                    effect_handler
-                                                        .notify_nack(NackMsg::new(
-                                                            "topic queue full: dropped newest",
-                                                            data,
-                                                        ))
-                                                        .await?;
-                                                }
-                                            }
-                                        }
-                                        tokio::task::consume_budget().await;
-                                    }
-                                }
+                                pending_publish = Self::handle_pdata_message(
+                                    data,
+                                    &queue_on_full,
+                                    ack_propagation_mode,
+                                    &topic,
+                                    tracked_publisher.as_ref(),
+                                    &effect_handler,
+                                    &mut metrics,
+                                    &mut pending_messages,
+                                    &mut pending_outcomes,
+                                )
+                                .await?;
+                                tokio::task::consume_budget().await;
                             }
                             _ => {}
                         }
@@ -421,7 +464,7 @@ impl Exporter<OtapPdata> for TopicExporter {
                 let should_retry_pending_publish = pending_publish.is_some();
                 let mut retry_pending_publish = std::pin::pin!(async {
                     if should_retry_pending_publish {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        tokio::time::sleep(PENDING_PUBLISH_RETRY_DELAY).await;
                     } else {
                         future::pending::<()>().await;
                     }
@@ -485,7 +528,23 @@ impl Exporter<OtapPdata> for TopicExporter {
                             break;
                         }
                         Message::PData(data) => {
-                            buffered_messages.push_back(Message::PData(data));
+                            if pending_publish.is_some() || !buffered_messages.is_empty() {
+                                buffered_messages.push_back(Message::PData(data));
+                            } else {
+                                pending_publish = Self::handle_pdata_message(
+                                    data,
+                                    &queue_on_full,
+                                    ack_propagation_mode,
+                                    &topic,
+                                    tracked_publisher.as_ref(),
+                                    &effect_handler,
+                                    &mut metrics,
+                                    &mut pending_messages,
+                                    &mut pending_outcomes,
+                                )
+                                .await?;
+                                tokio::task::consume_budget().await;
+                            }
                         }
                         _ => {}
                     },
