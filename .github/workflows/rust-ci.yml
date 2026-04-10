@@ -72,19 +72,19 @@ jobs:
         run: make otelarrowcol
       - name: Run tests with coverage (Linux x86_64)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --profile ci --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Linux ARM64)
         if: matrix.os == 'ubuntu-24.04-arm'
-        run: cargo nextest run --all-features --workspace
+        run: cargo nextest run --profile ci --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo nextest run --all-features --workspace
+        run: cargo nextest run --profile ci --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (macOS)
         if: runner.os == 'macOS'
-        run: cargo nextest run --all-features --workspace
+        run: cargo nextest run --profile ci --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload to codecov.io
         if: matrix.os == 'ubuntu-latest'
@@ -168,7 +168,7 @@ jobs:
           name: nextest-archive-${{ matrix.os }}
           path: ./rust/${{ matrix.folder }}
       - name: Run tests (partition ${{ matrix.partition }}/3)
-        run: cargo nextest run --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
+        run: cargo nextest run --profile ci --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
 
   fmt:
@@ -508,7 +508,7 @@ jobs:
           name: nextest-archive-${{ matrix.os }}
           path: ./rust/${{ matrix.folder }}
       - name: Run tests (partition ${{ matrix.partition }}/3)
-        run: cargo nextest run --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
+        run: cargo nextest run --profile ci --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
 
   # Coverage runs unpartitioned on Linux x86_64 (does not block merge).
@@ -543,7 +543,7 @@ jobs:
       - name: Build the test collector
         run: make otelarrowcol
       - name: Run tests with coverage
-        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --profile ci --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/otap-dataflow
       - name: Upload to codecov.io
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
