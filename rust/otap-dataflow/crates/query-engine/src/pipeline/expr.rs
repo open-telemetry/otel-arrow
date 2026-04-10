@@ -290,6 +290,9 @@ impl ExprLogicalPlanner {
                     StaticScalarExpression::String(string_expr) => {
                         (lit(string_expr.get_value()), ExprLogicalType::String)
                     }
+                    StaticScalarExpression::Null(_) => {
+                        (Expr::default(), ExprLogicalType::AnyValue) // default is lit(null)
+                    }
                     _ => {
                         return Err(Error::NotYetSupportedError {
                             message: format!(

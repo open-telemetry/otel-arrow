@@ -4478,8 +4478,7 @@ mod test {
         .await
     }
 
-    #[tokio::test]
-    async fn test_update_attr_to_regexp_substring_func_call_with_scalars() {
+    async fn test_update_attr_to_regexp_substring_func_call_with_scalars<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![KeyValue::new(
@@ -4491,7 +4490,7 @@ mod test {
 
         let query =
             r#"logs | extend attributes["s1"] = regexp_substr(attributes["attr"], "hell.")"#;
-        let pipeline_expr = OplParser::parse_with_options(&query, default_parser_options())
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
@@ -4510,5 +4509,15 @@ mod test {
                 KeyValue::new("s1", AnyValue::new_string("hello")),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_substring_func_call_with_scalars_opl_parser() {
+        test_update_attr_to_regexp_substring_func_call_with_scalars::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_substring_func_call_with_scalars_kq_parser() {
+        test_update_attr_to_regexp_substring_func_call_with_scalars::<KqlParser>().await
     }
 }
