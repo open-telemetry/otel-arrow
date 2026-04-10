@@ -1272,13 +1272,74 @@ fn escape_prom_help(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        ControlPlane, ControlPlaneError, PipelineDetails, ReconfigureRequest, RolloutStatus,
+        ShutdownStatus,
+    };
     use axum::body::to_bytes;
     use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+
+    struct NoopControlPlane;
+
+    impl ControlPlane for NoopControlPlane {
+        fn shutdown_all(&self, _timeout_secs: u64) -> Result<(), ControlPlaneError> {
+            Err(ControlPlaneError::Internal {
+                message: "not used in telemetry tests".to_string(),
+            })
+        }
+
+        fn shutdown_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _timeout_secs: u64,
+        ) -> Result<ShutdownStatus, ControlPlaneError> {
+            Err(ControlPlaneError::Internal {
+                message: "not used in telemetry tests".to_string(),
+            })
+        }
+
+        fn reconfigure_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _request: ReconfigureRequest,
+        ) -> Result<RolloutStatus, ControlPlaneError> {
+            Err(ControlPlaneError::Internal {
+                message: "not used in telemetry tests".to_string(),
+            })
+        }
+
+        fn pipeline_details(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+        ) -> Result<Option<PipelineDetails>, ControlPlaneError> {
+            Ok(None)
+        }
+
+        fn rollout_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _rollout_id: &str,
+        ) -> Result<Option<RolloutStatus>, ControlPlaneError> {
+            Ok(None)
+        }
+
+        fn shutdown_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _shutdown_id: &str,
+        ) -> Result<Option<ShutdownStatus>, ControlPlaneError> {
+            Ok(None)
+        }
+    }
 
     static TEST_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test_metrics",
@@ -1322,8 +1383,8 @@ mod tests {
         AppState {
             observed_state_store: observed_state_store.handle(),
             metrics_registry,
+            controller: Arc::new(NoopControlPlane),
             log_tap: None,
-            ctrl_msg_senders: Arc::new(Mutex::new(Vec::new())),
             memory_pressure_state: MemoryPressureState::default(),
         }
     }

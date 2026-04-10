@@ -66,13 +66,14 @@ use otap_df_engine::ReceivedAtNode;
 use otap_df_engine::Unwindable;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
-    PipelineCompletionMsgReceiver, PipelineCompletionMsgSender, RuntimeCtrlMsgReceiver,
-    RuntimeCtrlMsgSender, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+    PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
+    RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
+    runtime_ctrl_msg_channel,
 };
 use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
-use otap_df_engine::error::{Error as EngineError, error_summary_from};
+use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
@@ -94,13 +95,17 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
+use std::time::Duration;
 
 /// Error types and helpers for the controller module.
 pub mod error;
+mod live_control;
 /// Reusable startup helpers (validation, CLI overrides, system info).
 pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
 pub mod thread_task;
+
+use live_control::{ControllerRuntime, LaunchedPipelineThread};
 
 /// Controller for managing pipelines in a thread-per-core model.
 ///
@@ -268,6 +273,103 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     /// Creates a new controller with the given pipeline factory.
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
         Self { pipeline_factory }
+    }
+
+    /// Validates component-specific configuration for one pipeline before startup or reconfigure.
+    fn validate_pipeline_components_with_factory(
+        pipeline_factory: &'static PipelineFactory<PData>,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        pipeline_cfg: &PipelineConfig,
+    ) -> Result<(), String> {
+        for (node_id, node_cfg) in pipeline_cfg.node_iter() {
+            let urn_str = node_cfg.r#type.as_str();
+            let validate_config_fn = match node_cfg.kind() {
+                NodeKind::Receiver => pipeline_factory
+                    .get_receiver_factory_map()
+                    .get(urn_str)
+                    .map(|factory| factory.validate_config),
+                NodeKind::Processor | NodeKind::ProcessorChain => pipeline_factory
+                    .get_processor_factory_map()
+                    .get(urn_str)
+                    .map(|factory| factory.validate_config),
+                NodeKind::Exporter => pipeline_factory
+                    .get_exporter_factory_map()
+                    .get(urn_str)
+                    .map(|factory| factory.validate_config),
+                NodeKind::Extension => {
+                    // Extensions are not yet validated here because PipelineFactory
+                    // does not expose an extension factory registry.
+                    continue;
+                }
+            };
+
+            let Some(validate_fn) = validate_config_fn else {
+                let kind_name = match node_cfg.kind() {
+                    NodeKind::Receiver => "receiver",
+                    NodeKind::Processor | NodeKind::ProcessorChain => "processor",
+                    NodeKind::Exporter => "exporter",
+                    NodeKind::Extension => unreachable!("handled above"),
+                };
+                return Err(format!(
+                    "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",
+                    kind_name,
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref()
+                ));
+            };
+
+            validate_fn(&node_cfg.config).map_err(|err| {
+                format!(
+                    "Invalid config for component `{}` in pipeline_group={} pipeline={} node={}: {}",
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref(),
+                    err
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Validates every configured pipeline and observability pipeline against registered components.
+    fn validate_engine_components_with_factory(
+        pipeline_factory: &'static PipelineFactory<PData>,
+        engine_cfg: &OtelDataflowSpec,
+    ) -> Result<(), String> {
+        for (pipeline_group_id, pipeline_group) in &engine_cfg.groups {
+            for (pipeline_id, pipeline_cfg) in &pipeline_group.pipelines {
+                Self::validate_pipeline_components_with_factory(
+                    pipeline_factory,
+                    pipeline_group_id,
+                    pipeline_id,
+                    pipeline_cfg,
+                )?;
+            }
+        }
+
+        if let Some(obs_pipeline) = &engine_cfg.engine.observability.pipeline {
+            let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+            let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
+            let obs_pipeline_config = obs_pipeline.clone().into_pipeline_config();
+            Self::validate_pipeline_components_with_factory(
+                pipeline_factory,
+                &obs_group_id,
+                &obs_pipeline_id,
+                &obs_pipeline_config,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Validates that every configured node resolves to a registered component and that the
+    /// static component-specific configuration validates.
+    pub fn validate_engine_components(&self, engine_cfg: &OtelDataflowSpec) -> Result<(), String> {
+        Self::validate_engine_components_with_factory(self.pipeline_factory, engine_cfg)
     }
 
     /// Starts the controller with the given engine configurations.
@@ -446,10 +548,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         config: &OtelDataflowSpec,
         global_names: &HashMap<TopicName, TopicName>,
         group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
-    ) -> (
-        HashMap<TopicName, InferredTopicMode>,
-        Vec<InferredTopicModeReport>,
-    ) {
+    ) -> Result<
+        (
+            HashMap<TopicName, InferredTopicMode>,
+            Vec<InferredTopicModeReport>,
+        ),
+        Error,
+    > {
         let mut usage_by_declared_topic = HashMap::<TopicName, TopicUsageSummary>::new();
         for declared_name in global_names.values().chain(group_names.values()) {
             _ = usage_by_declared_topic.insert(declared_name.clone(), TopicUsageSummary::default());
@@ -516,16 +621,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             }
         }
 
-        let mut inferred_modes = HashMap::with_capacity(usage_by_declared_topic.len());
-        let mut inferred_mode_reports = Vec::with_capacity(usage_by_declared_topic.len());
-        let mut declared_topics: Vec<_> = usage_by_declared_topic.keys().cloned().collect();
-        declared_topics.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        let mut declared_topics: Vec<_> = usage_by_declared_topic.into_iter().collect();
+        declared_topics.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
 
-        for declared_topic in declared_topics {
-            let summary = usage_by_declared_topic
-                .get(&declared_topic)
-                .expect("declared topic must have a usage summary");
-            let topology_mode = Self::infer_topic_mode(summary);
+        let mut inferred_modes = HashMap::with_capacity(declared_topics.len());
+        let mut inferred_mode_reports = Vec::with_capacity(declared_topics.len());
+        for (declared_topic, summary) in declared_topics {
+            let topology_mode = Self::infer_topic_mode(&summary);
             inferred_mode_reports.push(InferredTopicModeReport {
                 topic: declared_topic.clone(),
                 topology_mode,
@@ -540,7 +642,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             _ = inferred_modes.insert(declared_topic, topology_mode);
         }
 
-        (inferred_modes, inferred_mode_reports)
+        Ok((inferred_modes, inferred_mode_reports))
     }
 
     fn add_topic_wiring_edge(
@@ -681,21 +783,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let mut group_ids = config.groups.keys().cloned().collect::<Vec<_>>();
         group_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
         for group_id in group_ids {
-            let group_cfg = config
-                .groups
-                .get(&group_id)
-                .expect("group collected from config must still exist");
-            let mut pipeline_ids = group_cfg.pipelines.keys().cloned().collect::<Vec<_>>();
-            pipeline_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
-            for pipeline_id in pipeline_ids {
-                let pipeline_cfg = group_cfg
-                    .pipelines
-                    .get(&pipeline_id)
-                    .expect("pipeline collected from config must still exist");
+            let Some(group_cfg) = config.groups.get(&group_id) else {
+                return Err(Error::PipelineRuntimeError {
+                    source: Box::new(EngineError::InternalError {
+                        message: format!(
+                            "group `{}` disappeared while validating topic wiring",
+                            group_id.as_ref()
+                        ),
+                    }),
+                });
+            };
+            let mut pipelines = group_cfg.pipelines.iter().collect::<Vec<_>>();
+            pipelines.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+            for (pipeline_id, pipeline_cfg) in pipelines {
                 Self::collect_topic_wiring_edges_for_pipeline(
                     &mut adjacency,
                     &group_id,
-                    &pipeline_id,
+                    pipeline_id,
                     pipeline_cfg,
                     global_names,
                     group_names,
@@ -885,13 +989,20 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let (global_names, group_names) = Self::build_declared_topic_name_maps(config)?;
         Self::validate_topic_wiring_acyclic(config, &global_names, &group_names)?;
         let (inferred_modes, mut inferred_mode_reports) =
-            Self::infer_topic_modes(config, &global_names, &group_names);
+            Self::infer_topic_modes(config, &global_names, &group_names)?;
         let default_selection_policy = config.engine.topics.impl_selection;
 
         for (topic_name, spec) in &config.topics {
             let declared_name = global_names
                 .get(topic_name)
-                .expect("global topic declaration must resolve to a declared topic name")
+                .ok_or_else(|| Error::PipelineRuntimeError {
+                    source: Box::new(EngineError::InternalError {
+                        message: format!(
+                            "missing declared topic name for global topic `{}` during topic declaration",
+                            topic_name.as_ref()
+                        ),
+                    }),
+                })?
                 .clone();
             let topology_mode = inferred_modes
                 .get(&declared_name)
@@ -913,7 +1024,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             for (topic_name, spec) in &group_cfg.topics {
                 let declared_name = group_names
                     .get(&(group_id.clone(), topic_name.clone()))
-                    .expect("group topic declaration must resolve to a declared topic name")
+                    .ok_or_else(|| Error::PipelineRuntimeError {
+                        source: Box::new(EngineError::InternalError {
+                            message: format!(
+                                "missing declared topic name for group `{}` topic `{}` during topic declaration",
+                                group_id.as_ref(),
+                                topic_name.as_ref()
+                            ),
+                        }),
+                    })?
                     .clone();
                 let topology_mode = inferred_modes
                     .get(&declared_name)
@@ -1179,10 +1298,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             );
         }
 
-        let pipeline_count = pipelines.len();
         let all_cores =
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
-        let its_core = *all_cores.first().expect("a cpu core");
+        let its_core = *all_cores
+            .first()
+            .ok_or_else(|| Error::CoreDetectionUnavailable)?;
         let its_key = Self::internal_pipeline_key(its_core);
         if let Some(pipeline) = observability_pipeline.as_ref() {
             obs_state_store.register_pipeline_health_policy(
@@ -1193,13 +1313,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 pipeline.policies.health.clone(),
             );
         }
-        let available_core_ids = if pipeline_count == 0 {
-            Vec::new()
-        } else {
-            all_cores
-        };
         let planned_core_assignments =
-            Self::preflight_pipeline_core_allocations(&pipelines, &available_core_ids)?;
+            Self::preflight_pipeline_core_allocations(&pipelines, &all_cores)?;
 
         let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
             its_key.clone(),
@@ -1262,10 +1377,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         };
 
         // Start the observed state store background task
+        let obs_state_store_runtime = obs_state_store.clone();
         let obs_state_join_handle = spawn_thread_local_task(
             "observed-state-store",
             admin_tracing_setup.clone(),
-            move |cancellation_token| obs_state_store.run(cancellation_token),
+            move |cancellation_token| obs_state_store_runtime.run(cancellation_token),
         )?;
 
         // Start the engine-wide metrics collection task.
@@ -1315,142 +1431,83 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             },
         )?;
 
-        let mut threads = Vec::new();
-        let mut ctrl_msg_senders = Vec::new();
+        let runtime = Arc::new(ControllerRuntime::new(
+            self.pipeline_factory,
+            controller_ctx.clone(),
+            obs_state_store.clone(),
+            obs_state_handle.clone(),
+            engine_evt_reporter.clone(),
+            metrics_reporter.clone(),
+            declared_topics,
+            all_cores.clone(),
+            telemetry_system.engine_tracing_setup(),
+            telemetry_reporting_interval,
+            memory_pressure_tx.clone(),
+            engine_config.clone(),
+        ));
 
-        // TODO: We do not have proper thread::current().id assignment.
-        let mut next_thread_id: usize = 1;
-        let its_thread_id: usize = 0;
-
-        // Add internal pipeline to threads list if present
-        if let Some((thread_name, handle)) = internal_pipeline_handle {
-            threads.push((thread_name, its_thread_id, its_key, handle));
+        if let Some(launched) = internal_pipeline_handle {
+            runtime.register_launched_instance(launched);
         }
 
-        for (pipeline_entry, requested_cores) in pipelines.into_iter().zip(planned_core_assignments)
-        {
+        for (pipeline_entry, requested_cores) in pipelines.iter().zip(planned_core_assignments) {
+            runtime.register_committed_pipeline(pipeline_entry.clone(), 0);
+            let num_cores = requested_cores.len();
+
             let core_allocation = pipeline_entry
                 .policies
                 .resources
                 .core_allocation
                 .to_string();
-            let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
-            let telemetry_policy = pipeline_entry.policies.telemetry;
-            let transport_headers_policy = pipeline_entry.policies.transport_headers;
-            let pipeline_group_id = pipeline_entry.pipeline_group_id;
-            let pipeline_id = pipeline_entry.pipeline_id;
-            let pipeline = pipeline_entry.pipeline;
-
-            let num_cores = requested_cores.len();
             otel_info!(
                 "pipeline.core_allocation",
-                pipeline_group_id = pipeline_group_id.as_ref(),
-                pipeline_id = pipeline_id.as_ref(),
+                pipeline_group_id = pipeline_entry.pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_entry.pipeline_id.as_ref(),
                 num_cores = num_cores,
                 core_allocation = core_allocation
             );
-            for core_id in requested_cores {
-                let pipeline_key = DeployedPipelineKey {
-                    pipeline_group_id: pipeline_group_id.clone(),
-                    pipeline_id: pipeline_id.clone(),
-                    core_id: core_id.id,
-                };
-                let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
-                    runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-                let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
-                    pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
-                ctrl_msg_senders.push(runtime_ctrl_msg_tx.clone());
 
-                let pipeline_config = pipeline.clone();
-                let pipeline_factory = self.pipeline_factory;
-                let thread_id = next_thread_id;
-                next_thread_id += 1;
-                let mut pipeline_handle = controller_ctx.pipeline_context_with(
-                    pipeline_group_id.clone(),
-                    pipeline_id.clone(),
-                    core_id.id,
+            for core_id in &requested_cores {
+                let launched = Self::launch_pipeline_thread(
+                    self.pipeline_factory,
+                    DeployedPipelineKey {
+                        pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
+                        pipeline_id: pipeline_entry.pipeline_id.clone(),
+                        core_id: core_id.id,
+                        deployment_generation: 0,
+                    },
+                    *core_id,
                     num_cores,
-                    thread_id,
-                );
-                let topic_set = Self::build_pipeline_topic_set(
+                    pipeline_entry.pipeline.clone(),
+                    pipeline_entry.policies.channel_capacity.clone(),
+                    pipeline_entry.policies.telemetry.clone(),
+                    pipeline_entry.policies.transport_headers.clone(),
+                    controller_ctx.clone(),
+                    metrics_reporter.clone(),
+                    engine_evt_reporter.clone(),
+                    telemetry_system.engine_tracing_setup(),
+                    telemetry_reporting_interval,
+                    memory_pressure_tx.clone(),
                     &engine_config,
-                    &declared_topics,
-                    &pipeline_group_id,
-                    &pipeline_id,
-                    core_id.id,
+                    runtime.declared_topics(),
+                    runtime.next_thread_id(),
+                    None,
                 )?;
-                pipeline_handle.set_topic_set(topic_set);
-                let metrics_reporter = metrics_reporter.clone();
-
-                let thread_name = format!(
-                    "pipeline-{}-{}-core-{}",
-                    pipeline_group_id.as_ref(),
-                    pipeline_id.as_ref(),
-                    core_id.id
-                );
-
-                let run_key = pipeline_key.clone();
-                let engine_tracing_setup = telemetry_system.engine_tracing_setup();
-                let engine_evt_reporter = engine_evt_reporter.clone();
-                let effective_channel_capacity_policy = channel_capacity_policy.clone();
-                let effective_telemetry_policy = telemetry_policy.clone();
-                let pipeline_memory_pressure_rx = memory_pressure_tx.subscribe();
-                let effective_transport_headers_policy = transport_headers_policy.clone();
-                let handle = thread::Builder::new()
-                    .name(thread_name.clone())
-                    .spawn(move || {
-                        Self::run_pipeline_thread(
-                            run_key,
-                            core_id,
-                            pipeline_config,
-                            effective_channel_capacity_policy,
-                            effective_telemetry_policy,
-                            effective_transport_headers_policy,
-                            telemetry_reporting_interval,
-                            pipeline_factory,
-                            pipeline_handle,
-                            engine_evt_reporter,
-                            metrics_reporter,
-                            runtime_ctrl_msg_tx,
-                            runtime_ctrl_msg_rx,
-                            pipeline_completion_msg_tx,
-                            pipeline_completion_msg_rx,
-                            pipeline_memory_pressure_rx,
-                            engine_tracing_setup,
-                            None,
-                        )
-                    })
-                    .map_err(|e| Error::ThreadSpawnError {
-                        thread_name: thread_name.clone(),
-                        source: e,
-                    })?;
-
-                threads.push((thread_name, thread_id, pipeline_key, handle));
+                runtime.register_launched_instance(launched);
             }
         }
 
-        // Drop the original metrics sender so only pipeline threads hold references
         drop(metrics_reporter);
 
-        // Start the admin HTTP server
+        let control_plane = runtime.control_plane();
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
             admin_tracing_setup,
             move |cancellation_token| {
-                // Convert the concrete senders to trait objects for the admin crate
-                let admin_senders: Vec<Arc<dyn otap_df_engine::control::PipelineAdminSender>> =
-                    ctrl_msg_senders
-                        .into_iter()
-                        .map(|sender| {
-                            Arc::new(sender)
-                                as Arc<dyn otap_df_engine::control::PipelineAdminSender>
-                        })
-                        .collect();
-
                 otap_df_admin::run(
                     admin_settings,
                     obs_state_handle,
-                    admin_senders,
+                    control_plane,
                     telemetry_registry,
                     memory_pressure_state,
                     log_tap_handle,
@@ -1459,48 +1516,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             },
         )?;
 
-        // Wait for all pipeline threads to finish and collect their results
-        let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
-        for (thread_name, thread_id, pipeline_key, handle) in threads {
-            match handle.join() {
-                Ok(Ok(_)) => {
-                    engine_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
-                }
-                Ok(Err(e)) => {
-                    let err_summary: ErrorSummary = error_summary_from_gen(&e);
-                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
-                        pipeline_key.clone(),
-                        "Pipeline encountered a runtime error.",
-                        err_summary,
-                    ));
-                    results.push(Err(e));
-                }
-                Err(e) => {
-                    let err_summary = ErrorSummary::Pipeline {
-                        error_kind: "panic".into(),
-                        message: "The pipeline panicked during execution.".into(),
-                        source: Some(format!("{e:?}")),
-                    };
-                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
-                        pipeline_key.clone(),
-                        "The pipeline panicked during execution.",
-                        err_summary,
-                    ));
-                    // Thread join failed, handle the error
-                    let core_id = pipeline_key.core_id;
-                    return Err(Error::ThreadPanic {
-                        thread_name,
-                        thread_id,
-                        core_id,
-                        panic_message: format!("{e:?}"),
-                    });
-                }
-            }
-        }
-
-        // Check if any pipeline threads returned an error
-        if let Some(err) = results.into_iter().find_map(Result::err) {
-            return Err(err);
+        if run_mode == RunMode::ShutdownWhenDone {
+            runtime.wait_until_all_instances_exit();
         }
 
         // In standard engine mode we keep the main thread parked after startup.
@@ -1520,6 +1537,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
         obs_state_join_handle.shutdown_and_join()?;
         telemetry_system.shutdown_otel()?;
+
+        if let Some(err) = runtime.take_runtime_error() {
+            return Err(err);
+        }
 
         Ok(())
     }
@@ -1724,7 +1745,101 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
             pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
             core_id: core_id.id,
+            deployment_generation: 0,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch_pipeline_thread(
+        pipeline_factory: &'static PipelineFactory<PData>,
+        pipeline_key: DeployedPipelineKey,
+        core_id: CoreId,
+        num_cores: usize,
+        pipeline_config: PipelineConfig,
+        channel_capacity_policy: ChannelCapacityPolicy,
+        telemetry_policy: TelemetryPolicy,
+        transport_headers_policy: Option<TransportHeadersPolicy>,
+        controller_ctx: ControllerContext,
+        metrics_reporter: MetricsReporter,
+        engine_evt_reporter: ObservedEventReporter,
+        tracing_setup: TracingSetup,
+        telemetry_reporting_interval: Duration,
+        memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
+        config: &OtelDataflowSpec,
+        declared_topics: &DeclaredTopics<PData>,
+        thread_id: usize,
+        internal_telemetry: Option<(
+            InternalTelemetrySettings,
+            std_mpsc::SyncSender<Result<(), EngineError>>,
+        )>,
+    ) -> Result<LaunchedPipelineThread<PData>, Error> {
+        let mut pipeline_ctx = controller_ctx.pipeline_context_with_generation(
+            pipeline_key.pipeline_group_id.clone(),
+            pipeline_key.pipeline_id.clone(),
+            pipeline_key.core_id,
+            num_cores,
+            thread_id,
+            pipeline_key.deployment_generation,
+        );
+        let topic_set = Self::build_pipeline_topic_set(
+            config,
+            declared_topics,
+            &pipeline_key.pipeline_group_id,
+            &pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+        )?;
+        pipeline_ctx.set_topic_set(topic_set);
+        let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
+            runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
+        let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(runtime_ctrl_msg_tx.clone());
+        let memory_pressure_rx = memory_pressure_tx.subscribe();
+        let thread_name = format!(
+            "pipeline-{}-{}-core-{}-gen-{}",
+            pipeline_key.pipeline_group_id.as_ref(),
+            pipeline_key.pipeline_id.as_ref(),
+            pipeline_key.core_id,
+            pipeline_key.deployment_generation
+        );
+        let run_key = pipeline_key.clone();
+        let handle = thread::Builder::new()
+            .name(thread_name.clone())
+            .spawn(move || {
+                Self::run_pipeline_thread(
+                    run_key,
+                    core_id,
+                    pipeline_config,
+                    channel_capacity_policy,
+                    telemetry_policy,
+                    transport_headers_policy,
+                    telemetry_reporting_interval,
+                    pipeline_factory,
+                    pipeline_ctx,
+                    engine_evt_reporter,
+                    metrics_reporter,
+                    runtime_ctrl_msg_tx,
+                    runtime_ctrl_msg_rx,
+                    pipeline_completion_msg_tx,
+                    pipeline_completion_msg_rx,
+                    memory_pressure_rx,
+                    tracing_setup,
+                    internal_telemetry,
+                )
+            })
+            .map_err(|e| Error::ThreadSpawnError {
+                thread_name: thread_name.clone(),
+                source: e,
+            })?;
+
+        Ok(LaunchedPipelineThread {
+            thread_name,
+            thread_id,
+            pipeline_key,
+            control_sender,
+            join_handle: handle,
+            _marker: std::marker::PhantomData,
+        })
     }
 
     /// Spawns the internal telemetry pipeline if engine observability config provides one.
@@ -1743,10 +1858,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         controller_ctx: &ControllerContext,
         engine_evt_reporter: &ObservedEventReporter,
         metrics_reporter: &MetricsReporter,
-        telemetry_reporting_interval: std::time::Duration,
+        telemetry_reporting_interval: Duration,
         memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
-    ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
+    ) -> Result<Option<LaunchedPipelineThread<PData>>, Error> {
         let (internal_config, channel_capacity_policy, telemetry_policy): (
             PipelineConfig,
             ChannelCapacityPolicy,
@@ -1778,66 +1893,28 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             Some(its_settings) => its_settings,
         };
 
-        let mut internal_pipeline_ctx = controller_ctx.pipeline_context_with(
-            its_key.pipeline_group_id.clone(),
-            its_key.pipeline_id.clone(),
-            its_key.core_id,
-            1, // Internal telemetry pipeline runs on a single core
-            0, // TODO: we do not have a thread_id
-        );
-        let topic_set = Self::build_pipeline_topic_set(
-            config,
-            declared_topics,
-            &its_key.pipeline_group_id,
-            &its_key.pipeline_id,
-            its_key.core_id,
-        )?;
-        internal_pipeline_ctx.set_topic_set(topic_set);
-
-        // Create control message channel for internal pipeline
-        let (internal_ctrl_tx, internal_ctrl_rx) =
-            runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-        let (internal_return_tx, internal_return_rx) =
-            pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
-
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
-
-        let thread_name = "internal-pipeline".to_string();
-        let internal_evt_reporter = engine_evt_reporter.clone();
-        let internal_metrics_reporter = metrics_reporter.clone();
-        let internal_channel_capacity_policy = channel_capacity_policy;
-        let internal_telemetry_policy = telemetry_policy;
-        let internal_memory_pressure_rx = memory_pressure_tx.subscribe();
-
-        let handle = thread::Builder::new()
-            .name(thread_name.clone())
-            .spawn(move || {
-                Self::run_pipeline_thread(
-                    its_key,
-                    its_core,
-                    internal_config,
-                    internal_channel_capacity_policy,
-                    internal_telemetry_policy,
-                    None, // no transport headers for the internal observability pipeline
-                    telemetry_reporting_interval,
-                    pipeline_factory,
-                    internal_pipeline_ctx,
-                    internal_evt_reporter,
-                    internal_metrics_reporter,
-                    internal_ctrl_tx,
-                    internal_ctrl_rx,
-                    internal_return_tx,
-                    internal_return_rx,
-                    internal_memory_pressure_rx,
-                    tracing_setup,
-                    Some((its_settings, startup_tx)),
-                )
-            })
-            .map_err(|e| Error::ThreadSpawnError {
-                thread_name: thread_name.clone(),
-                source: e,
-            })?;
+        let launched = Self::launch_pipeline_thread(
+            pipeline_factory,
+            its_key,
+            its_core,
+            1,
+            internal_config,
+            channel_capacity_policy,
+            telemetry_policy,
+            None,
+            controller_ctx.clone(),
+            metrics_reporter.clone(),
+            engine_evt_reporter.clone(),
+            tracing_setup,
+            telemetry_reporting_interval,
+            memory_pressure_tx.clone(),
+            config,
+            declared_topics,
+            0,
+            Some((its_settings, startup_tx)),
+        )?;
 
         // Wait for the internal pipeline to signal successful startup
         match startup_rx.recv() {
@@ -1861,7 +1938,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             }
         }
 
-        Ok(Some((thread_name, handle)))
+        Ok(Some(launched))
     }
 
     /// Runs a single pipeline in the current thread.
@@ -1872,7 +1949,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
-        telemetry_reporting_interval: std::time::Duration,
+        telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
@@ -1983,27 +2060,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     }
                 })
         })
-    }
-}
-
-fn error_summary_from_gen(error: &Error) -> ErrorSummary {
-    match error {
-        Error::PipelineRuntimeError { source } => {
-            if let Some(engine_error) = source.downcast_ref::<EngineError>() {
-                error_summary_from(engine_error)
-            } else {
-                ErrorSummary::Pipeline {
-                    error_kind: "runtime".into(),
-                    message: source.to_string(),
-                    source: None,
-                }
-            }
-        }
-        _ => ErrorSummary::Pipeline {
-            error_kind: "runtime".into(),
-            message: error.to_string(),
-            source: None,
-        },
     }
 }
 
@@ -2288,7 +2344,6 @@ connections:
 
     #[test]
     fn select_with_adjacent_ranges_succeeds() {
-        // Adjacent but non-overlapping ranges should work
         let core_allocation = CoreAllocation::CoreSet {
             set: vec![
                 CoreRange { start: 2, end: 3 },
@@ -3119,7 +3174,7 @@ groups:
         );
         assert_eq!(
             local_block.default_publish_outcome_config().timeout,
-            std::time::Duration::from_secs(46)
+            Duration::from_secs(46)
         );
 
         // group-local declaration must override global policy for same local name
@@ -3144,7 +3199,7 @@ groups:
         );
         assert_eq!(
             overridden.default_publish_outcome_config().timeout,
-            std::time::Duration::from_secs(47)
+            Duration::from_secs(47)
         );
     }
 

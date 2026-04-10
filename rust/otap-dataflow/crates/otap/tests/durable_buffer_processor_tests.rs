@@ -536,6 +536,7 @@ where
         pipeline_group_id: pipeline_group_id.clone(),
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
+        deployment_generation: 0,
     };
     // Create a metrics reporter with our own receiver so we can inspect metrics.
     // Use a very large channel so it never overflows, even on extremely slow CI
@@ -601,13 +602,17 @@ where
     };
 
     let _ = shutdown_handle.join();
-    // Accept either Ok or a "Channel is closed" error during shutdown.
+    // Accept either Ok or a closed-channel error during shutdown.
     // When an always-NACK exporter races with shutdown, the exporter may try to
-    // send a NACK after the control channel has closed. This is expected behavior
-    // for this test scenario (error_exporter + time-based shutdown).
+    // return a NACK after shutdown has already started tearing down downstream
+    // channels. Depending on where the close is observed, the error may come
+    // from the control channel or from the data path.
     let is_acceptable_shutdown = match &run_result {
         Ok(_) => true,
-        Err(e) => e.to_string().contains("Channel is closed"),
+        Err(e) => {
+            let message = e.to_string();
+            message.contains("Channel is closed") || message.contains("downstream channel closed")
+        }
     };
     assert!(
         is_acceptable_shutdown,
@@ -827,6 +832,7 @@ where
         pipeline_group_id: pipeline_group_id.clone(),
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
+        deployment_generation: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
     let event_reporter = observed_state_store.reporter(SendPolicy::default());
@@ -902,7 +908,10 @@ where
 
     let is_acceptable_shutdown = match &run_result {
         Ok(_) => true,
-        Err(e) => e.to_string().contains("Channel is closed"),
+        Err(e) => {
+            let message = e.to_string();
+            message.contains("Channel is closed") || message.contains("downstream channel closed")
+        }
     };
     assert!(
         is_acceptable_shutdown,
