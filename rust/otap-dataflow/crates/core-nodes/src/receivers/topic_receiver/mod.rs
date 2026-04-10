@@ -141,6 +141,10 @@ struct PendingForward {
     send_started_at: Instant,
 }
 
+/// Retry cadence while a downstream channel remains full after an immediate
+/// fast-path forward attempt already failed.
+const PENDING_FORWARD_RETRY_DELAY: Duration = Duration::from_millis(1);
+
 /// Declares the topic receiver as a local receiver factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
@@ -390,7 +394,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                 let should_retry_pending_send = pending_forward.is_some();
                 let mut retry_pending_send = std::pin::pin!(async {
                     if should_retry_pending_send {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        tokio::time::sleep(PENDING_FORWARD_RETRY_DELAY).await;
                     } else {
                         future::pending::<()>().await;
                     }
@@ -533,11 +537,36 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         &mut pdata,
                                     );
                                 }
-                                pending_forward = Some(PendingForward {
-                                    pdata,
-                                    tracked_message_id,
-                                    send_started_at: Instant::now(),
-                                });
+                                let send_started_at = Instant::now();
+                                match effect_handler.try_send_message_with_source_node(pdata) {
+                                    Ok(()) => {
+                                        if let Some(message_id) = tracked_message_id {
+                                            _ = pending_tracked_message_ids.insert(message_id);
+                                        }
+                                        metrics.forwarded_messages.add(1);
+                                        tokio::task::consume_budget().await;
+                                    }
+                                    Err(otap_df_engine::error::TypedError::ChannelSendError(
+                                        SendError::Full(pdata),
+                                    )) => {
+                                        pending_forward = Some(PendingForward {
+                                            pdata,
+                                            tracked_message_id,
+                                            send_started_at,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        metrics.forward_failures.add(1);
+                                        otel_warn!(
+                                            "topic_receiver.forward_failed",
+                                            node = receiver_id.name.as_ref(),
+                                            topic = config.topic.as_ref(),
+                                            error = e.to_string(),
+                                            message = "Topic receiver failed forwarding to downstream channel"
+                                        );
+                                        return Err(Error::from(e));
+                                    }
+                                }
                             }
                             Ok(RecvItem::Lagged { missed }) => {
                                 metrics.lagged_notifications.add(1);
