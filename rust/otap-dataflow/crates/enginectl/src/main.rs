@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Binary entrypoint for the `df_enginectl` OTAP Dataflow Engine admin CLI.
+//! Binary entrypoint for the `dfctl` OTAP Dataflow Engine admin CLI.
 
 use clap::Parser;
 use std::io::{self, Write};

@@ -10,7 +10,7 @@ This section documents the admin surface of the OTAP Dataflow Engine:
 ## Document map
 
 - [Admin UI Architecture](architecture.md)
-- [df_enginectl CLI](enginectl.md)
+- [dfctl CLI](enginectl.md)
 - [Live Pipeline Reconfiguration](live-reconfiguration.md)
 - [Crate README (admin endpoints and crate layout)](../../crates/admin/README.md)
 - [Public Rust SDK README](../../crates/admin-api/README.md)

@@ -1,6 +1,6 @@
-# df_enginectl
+# dfctl
 
-`df_enginectl` is the OTAP Dataflow Engine command-line client built on top of
+`dfctl` is the OTAP Dataflow Engine command-line client built on top of
 the public Rust admin SDK, `otap-df-admin-api`.
 
 It is intended to be:
@@ -12,21 +12,21 @@ It is intended to be:
 ## Command Overview
 
 ```text
-df_enginectl engine status|livez|readyz
-df_enginectl groups status|shutdown
-df_enginectl pipelines get|status|livez|readyz|reconfigure|shutdown
-df_enginectl pipelines rollouts get|watch
-df_enginectl pipelines shutdowns get|watch
-df_enginectl telemetry logs get|watch
-df_enginectl telemetry metrics get|watch
+dfctl engine status|livez|readyz
+dfctl groups status|shutdown
+dfctl pipelines get|status|livez|readyz|reconfigure|shutdown
+dfctl pipelines rollouts get|watch
+dfctl pipelines shutdowns get|watch
+dfctl telemetry logs get|watch
+dfctl telemetry metrics get|watch
 ```
 
 ## Connection Resolution
 
-`df_enginectl` resolves connection settings in this order:
+`dfctl` resolves connection settings in this order:
 
 1. CLI flags
-1. environment variables with the `DF_ENGINECTL_` prefix
+1. environment variables with the `DFCTL_` prefix
 1. an explicit YAML profile passed with `--profile-file`
 1. the default local URL: `http://127.0.0.1:8085`
 
@@ -45,7 +45,7 @@ Common flags include:
 Example:
 
 ```bash
-df_enginectl --url https://admin.example.com/engine-a engine readyz
+dfctl --url https://admin.example.com/engine-a engine readyz
 ```
 
 ## Output Modes
@@ -69,19 +69,19 @@ Mutation commands also support `--output ndjson` when used together with
 Read engine status from the default local target:
 
 ```bash
-df_enginectl engine status
+dfctl engine status
 ```
 
 Get a pipeline status snapshot as JSON:
 
 ```bash
-df_enginectl pipelines status tenant-a ingest --output json
+dfctl pipelines status tenant-a ingest --output json
 ```
 
 Submit a pipeline update and wait for completion:
 
 ```bash
-df_enginectl pipelines reconfigure tenant-a ingest \
+dfctl pipelines reconfigure tenant-a ingest \
   --file pipeline.yaml \
   --wait
 ```
@@ -89,7 +89,7 @@ df_enginectl pipelines reconfigure tenant-a ingest \
 Submit a pipeline update and keep watching rollout progress:
 
 ```bash
-df_enginectl pipelines reconfigure tenant-a ingest \
+dfctl pipelines reconfigure tenant-a ingest \
   --file pipeline.yaml \
   --watch \
   --output ndjson
@@ -98,11 +98,11 @@ df_enginectl pipelines reconfigure tenant-a ingest \
 Watch retained logs:
 
 ```bash
-df_enginectl telemetry logs watch --tail 50
+dfctl telemetry logs watch --tail 50
 ```
 
 Watch compact metrics snapshots:
 
 ```bash
-df_enginectl telemetry metrics watch --shape compact --output ndjson
+dfctl telemetry metrics watch --shape compact --output ndjson
 ```

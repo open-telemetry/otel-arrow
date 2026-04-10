@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! `df_enginectl` library entrypoints for the OTAP Dataflow Engine admin CLI.
+//! `dfctl` library entrypoints for the OTAP Dataflow Engine admin CLI.
 
 mod args;
 mod config;
@@ -34,7 +34,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-/// Executes a parsed `df_enginectl` command and writes command output to `stdout`.
+/// Executes a parsed `dfctl` command and writes command output to `stdout`.
 pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError> {
     ensure_crypto_provider()?;
     let resolved = resolve_connection(&cli.connection)?;
@@ -911,7 +911,7 @@ mod tests {
             .await;
 
         let cli = Cli::try_parse_from([
-            "df_enginectl",
+            "dfctl",
             "--url",
             &server.uri(),
             "engine",
@@ -942,7 +942,7 @@ mod tests {
             .await;
 
         let cli = Cli::try_parse_from([
-            "df_enginectl",
+            "dfctl",
             "--url",
             &server.uri(),
             "telemetry",
@@ -973,7 +973,7 @@ mod tests {
             .await;
 
         let cli = Cli::try_parse_from([
-            "df_enginectl",
+            "dfctl",
             "--url",
             &server.uri(),
             "telemetry",
@@ -1026,7 +1026,7 @@ mod tests {
             .await;
 
         let cli = Cli::try_parse_from([
-            "df_enginectl",
+            "dfctl",
             "--url",
             &server.uri(),
             "pipelines",
@@ -1070,7 +1070,7 @@ mod tests {
             .await;
 
         let cli = Cli::try_parse_from([
-            "df_enginectl",
+            "dfctl",
             "--url",
             &server.uri(),
             "pipelines",
@@ -1113,7 +1113,7 @@ mod tests {
             .await;
 
         let cli = Cli::try_parse_from([
-            "df_enginectl",
+            "dfctl",
             "--url",
             &server.uri(),
             "pipelines",

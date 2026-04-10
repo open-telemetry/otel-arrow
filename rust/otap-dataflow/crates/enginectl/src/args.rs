@@ -7,11 +7,11 @@ use std::time::Duration;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "df_enginectl",
+    name = "dfctl",
     version,
     about = "Control CLI for the OTAP Dataflow Engine admin API"
 )]
-/// Top-level parsed CLI arguments for `df_enginectl`.
+/// Top-level parsed CLI arguments for `dfctl`.
 pub struct Cli {
     /// Shared connection and transport configuration.
     #[command(flatten)]
@@ -24,20 +24,15 @@ pub struct Cli {
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct ConnectionArgs {
-    #[arg(long, env = "DF_ENGINECTL_URL", global = true, value_name = "URL")]
+    #[arg(long, env = "DFCTL_URL", global = true, value_name = "URL")]
     pub url: Option<String>,
 
-    #[arg(
-        long,
-        env = "DF_ENGINECTL_PROFILE_FILE",
-        global = true,
-        value_name = "PATH"
-    )]
+    #[arg(long, env = "DFCTL_PROFILE_FILE", global = true, value_name = "PATH")]
     pub profile_file: Option<PathBuf>,
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_CONNECT_TIMEOUT",
+        env = "DFCTL_CONNECT_TIMEOUT",
         global = true,
         value_parser = parse_duration_arg,
         value_name = "DURATION"
@@ -46,7 +41,7 @@ pub struct ConnectionArgs {
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_REQUEST_TIMEOUT",
+        env = "DFCTL_REQUEST_TIMEOUT",
         global = true,
         value_parser = parse_duration_arg,
         value_name = "DURATION",
@@ -56,7 +51,7 @@ pub struct ConnectionArgs {
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_NO_REQUEST_TIMEOUT",
+        env = "DFCTL_NO_REQUEST_TIMEOUT",
         global = true,
         default_value_t = false
     )]
@@ -64,7 +59,7 @@ pub struct ConnectionArgs {
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_TCP_NODELAY",
+        env = "DFCTL_TCP_NODELAY",
         global = true,
         value_parser = clap::value_parser!(bool),
         value_name = "BOOL"
@@ -73,7 +68,7 @@ pub struct ConnectionArgs {
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_TCP_KEEPALIVE",
+        env = "DFCTL_TCP_KEEPALIVE",
         global = true,
         value_parser = parse_duration_arg,
         value_name = "DURATION"
@@ -82,19 +77,19 @@ pub struct ConnectionArgs {
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_TCP_KEEPALIVE_INTERVAL",
+        env = "DFCTL_TCP_KEEPALIVE_INTERVAL",
         global = true,
         value_parser = parse_duration_arg,
         value_name = "DURATION"
     )]
     pub tcp_keepalive_interval: Option<Duration>,
 
-    #[arg(long, env = "DF_ENGINECTL_CA_FILE", global = true, value_name = "PATH")]
+    #[arg(long, env = "DFCTL_CA_FILE", global = true, value_name = "PATH")]
     pub ca_file: Option<PathBuf>,
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_CLIENT_CERT_FILE",
+        env = "DFCTL_CLIENT_CERT_FILE",
         global = true,
         value_name = "PATH"
     )]
@@ -102,7 +97,7 @@ pub struct ConnectionArgs {
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_CLIENT_KEY_FILE",
+        env = "DFCTL_CLIENT_KEY_FILE",
         global = true,
         value_name = "PATH"
     )]
@@ -110,7 +105,7 @@ pub struct ConnectionArgs {
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_INCLUDE_SYSTEM_CA_CERTS",
+        env = "DFCTL_INCLUDE_SYSTEM_CA_CERTS",
         global = true,
         value_parser = clap::value_parser!(bool),
         value_name = "BOOL"
@@ -119,7 +114,7 @@ pub struct ConnectionArgs {
 
     #[arg(
         long,
-        env = "DF_ENGINECTL_INSECURE_SKIP_VERIFY",
+        env = "DFCTL_INSECURE_SKIP_VERIFY",
         global = true,
         value_parser = clap::value_parser!(bool),
         value_name = "BOOL"
@@ -487,9 +482,8 @@ mod tests {
 
     #[test]
     fn details_alias_parses_to_get() {
-        let cli =
-            Cli::try_parse_from(["df_enginectl", "pipelines", "details", "tenant-a", "ingest"])
-                .expect("details alias should parse");
+        let cli = Cli::try_parse_from(["dfctl", "pipelines", "details", "tenant-a", "ingest"])
+            .expect("details alias should parse");
 
         match cli.command {
             Command::Pipelines(PipelinesArgs {

@@ -1,6 +1,6 @@
-# df_enginectl
+# dfctl
 
-`df_enginectl` is a control CLI for the OTAP Dataflow Engine admin API.
+`dfctl` is a control CLI for the OTAP Dataflow Engine admin API.
 
 It is built on top of the public `otap-df-admin-api` SDK and is intended to
 work well both for humans at a terminal and for automation in shell scripts or
@@ -20,39 +20,39 @@ agent workflows.
 Local engine using the default admin address:
 
 ```bash
-df_enginectl engine status
-df_enginectl telemetry logs watch
+dfctl engine status
+dfctl telemetry logs watch
 ```
 
 Remote engine behind a gateway:
 
 ```bash
-df_enginectl --url https://admin.example.com/engine-a engine readyz
-df_enginectl --url https://admin.example.com/engine-a \
+dfctl --url https://admin.example.com/engine-a engine readyz
+dfctl --url https://admin.example.com/engine-a \
   telemetry metrics get --shape full --output json
 ```
 
 Pipeline reconfigure from a YAML file:
 
 ```bash
-df_enginectl pipelines reconfigure tenant-a ingest --file pipeline.yaml --wait
+dfctl pipelines reconfigure tenant-a ingest --file pipeline.yaml --wait
 ```
 
 Pipeline reconfigure from stdin:
 
 ```bash
 cat pipeline.yaml | \
-  df_enginectl pipelines reconfigure tenant-a ingest --file - --output json
+  dfctl pipelines reconfigure tenant-a ingest --file - --output json
 ```
 
 ## Connection Configuration
 
-By default, `df_enginectl` targets `http://127.0.0.1:8085`.
+By default, `dfctl` targets `http://127.0.0.1:8085`.
 
 You can override connection settings with:
 
 - CLI flags such as `--url`, `--ca-file`, and `--client-cert-file`
-- environment variables using the `DF_ENGINECTL_` prefix
+- environment variables using the `DFCTL_` prefix
 - an explicit YAML profile passed with `--profile-file`
 
 Precedence is:

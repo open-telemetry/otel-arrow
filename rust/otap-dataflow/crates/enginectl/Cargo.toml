@@ -10,7 +10,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "df_enginectl"
+name = "dfctl"
 path = "src/main.rs"
 
 [lints]
