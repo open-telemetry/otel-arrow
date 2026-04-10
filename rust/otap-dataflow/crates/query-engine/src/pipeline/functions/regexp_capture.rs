@@ -95,10 +95,10 @@ impl ScalarUDFImpl for RegexpCaptureFunc {
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         // datafusion won't call this since we implement return_field_from_args
-        return Err(DataFusionError::Internal(format!(
+        Err(DataFusionError::Internal(format!(
             "return_type should not be called on {}",
             FUNC_NAME
-        )));
+        )))
     }
 
     fn return_field_from_args(&self, args: ReturnFieldArgs<'_>) -> Result<FieldRef> {
@@ -216,7 +216,7 @@ fn invoke_for_dict_source<K: ArrowDictionaryKeyType>(
             // convert them to matched patterns
             let dict_vals_str = dict_vals.as_string::<i32>();
             let new_vals = regex_capture(dict_vals_str.iter(), regexes, groups)?;
-            replace_dict_values(&dict_arr, new_vals)
+            replace_dict_values(dict_arr, new_vals)
         }
         _ => {
             let typed_str_dict = dict_arr
@@ -529,7 +529,7 @@ where
         match (value, regex, group) {
             (Some(value), Some(regex), Some(group)) => {
                 let regex = compile_and_cache_regex(regex, None, &mut regex_cache)?;
-                if let Some(capture) = regex.captures(value).map(|c| c.get(group)).flatten() {
+                if let Some(capture) = regex.captures(value).and_then(|c| c.get(group)) {
                     if null_run > 0 {
                         result_builder.append_nulls(null_run);
                     }
@@ -1134,7 +1134,7 @@ mod test {
     async fn test_coercing_scalar_integer_types() {
         let session_context = Pipeline::create_session_context();
 
-        for group_expr in vec![
+        for group_expr in [
             lit(1u8),
             lit(1u16),
             lit(1u32),
@@ -1295,7 +1295,7 @@ mod test {
     async fn test_coercing_negative_signed_scalar_integer_types() {
         let session_context = Pipeline::create_session_context();
 
-        for group_expr in vec![lit(-1i8), lit(-1i16), lit(-1i32), lit(-1i64)] {
+        for group_expr in [lit(-1i8), lit(-1i16), lit(-1i32), lit(-1i64)] {
             let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
                 regexp_capture(),
                 vec![col("test_col"), lit("hello (.*)"), group_expr],
