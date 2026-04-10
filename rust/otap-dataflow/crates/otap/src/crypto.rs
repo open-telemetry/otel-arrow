@@ -19,6 +19,12 @@
 /// This function must be called **once**, early in `main()`, before any TLS
 /// connections are established (including via `reqwest`, `tonic`, etc.).
 ///
+/// TLS support is always compiled in, but a crypto provider is only required
+/// when the process actually uses TLS/HTTPS paths. Plaintext-only pipelines can
+/// run without a `crypto-*` feature. Any HTTPS exporter, TLS receiver, or
+/// HTTPS proxy configuration requires one of: `crypto-ring`,
+/// `crypto-aws-lc`, or `crypto-openssl`.
+///
 /// # Errors
 ///
 /// Returns `Err` if a provider was already installed (non-fatal in most cases).
