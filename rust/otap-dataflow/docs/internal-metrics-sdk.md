@@ -18,21 +18,21 @@ general purpose OpenTelemetry Metrics SDK for Rust, with several caveats.
 
 - Multivariate design for future
   [OTAP-multivariate](../../../docs/multivariate-design.md) uses
-- Thread-per-core architecture with push-oriented collection supports
+- A thread-per-core architecture with push-oriented collection supports
   synchronous and asynchronous instrument patterns
 - Instruments are fully "bound"; there are no dynamic attributes.
 - OTel-Weaver semantic convention registry with code generation tools
-  support type-safe interfaces, schema migration
+  supports type-safe interfaces and schema migration
 - View configuration defines three levels at compile time: Basic, Normal,
   and Detailed, which are selected at runtime; there are no dynamic views
 - Schema-driven versioning includes a migration path from initial
   `#[metric_set]` to generated code using a schema registry with
   runtime-configurable output schemas.
 
-The SDK is specialized for producing OTAP batches. The metric SDK
+The Metrics SDK is specialized for producing OTAP batches. It
 includes built-in support for console and Prometheus reporting through
-its `MetricsTap` component, meaning with or without a full internal
-metrics pipeline.
+its `MetricsTap` component, meaning it works with or without a full
+internal metrics pipeline.
 
 ### Project phases
 
@@ -54,8 +54,8 @@ There are four phases in this design plan:
    namespace) will follow. As this phase progresses, users will be
    able to control which metric schemas are compiled and which are
    selected at runtime (e.g., old, new, or both). Using Rust `enum`
-   variants corresponding with each metric level, users can configure
-   and choose between basic, normal, and detailed metric reporting.
+   variants corresponding to each metric level, users can configure
+   and choose between Basic, Normal, and Detailed metric reporting.
 3. **Remove the OpenTelemetry SDK.** There will be at this point two
    choices when configuring the Metrics SDK: the built-in basic
    behavior and the ITS internal pipeline with its variety of nodes.
@@ -67,8 +67,8 @@ There are four phases in this design plan:
 
 ### Transition from `#[metric_set]` to Metric Registry
 
-Prior to this design, metric instrumentation is fully expanded into
-individual counters. Previously, for example, we might see
+Prior to this design, metric instrumentation was fully expanded into
+individual counters. For example, we might see
 three counters corresponding to three outcome variants:
 
 ```rust
@@ -93,7 +93,7 @@ This is logically a single set of metrics using a flat namespace
 instead of metric-level attributes. As we use this example, we will
 consider how to add signal information (i.e. count logs, traces, and
 metrics requests separately). If we continued using a flat namespace,
-we would have 9 Counters, however a more idiomatic representation
+we would have 9 Counters; however, a more idiomatic representation
 would use metric attributes. For this example, we are considering a
 metric that usually has 1 or 2 dimensions having three variants
 each. We have three outcomes and three signals, making 3 or 9
@@ -167,7 +167,7 @@ implementation, we will define how to generate either the `v1` or the
 
 ## Phase 1: Drop-in replacement
 
-In this phase we will insert alternatives for configuring internal
+In this phase, we will insert alternatives for configuring internal
 metrics, similar to how internal logging uses `logs::ProviderMode`,
 with values including `None`, `Builtin`, `OpenTelemetry`, and `ITS`.
 The OpenTelemetry mode will be supported through Phase 3, at which
@@ -182,10 +182,10 @@ determined by the engine controller.
 The provider modes listed above are implemented at the collection
 point, where a central component (`MetricsDispatcher`) receives a
 stream of events and is responsible for dispatching. The `None`
-setting means no metrics are ever sent, `Builtin` means serving a
+setting means no metrics are ever sent; `Builtin` serves a
 Prometheus-compatible endpoint without using a full telemetry
-pipeline. The `OpenTelemetry` setting preserves existing
-functionality, and `ITS` enables our new standard functionality.
+pipeline; `OpenTelemetry` preserves existing functionality; and
+`ITS` enables our new standard functionality.
 
 ```mermaid
 flowchart TB
@@ -228,10 +228,8 @@ used in the Logging SDK in its corresponding ITS mode, with pipeline
 nodes configured separately in the `observability` settings.
 
 The internal telemetry system has an in-transit representation using
-`EntityKey` to describe the scope and containing a snapshot of the
-measurements and a timestamp. In other words, the basic reporting unit
-is an entity key, a snapshot of the measurements and one
-timestamp. When the built-in provider mode is configured, the internal
+`EntityKey` to describe the scope, a snapshot of the measurements,
+and a timestamp. When the built-in provider mode is configured, the internal
 representation is used directly, making a short and relatively
 low-risk code path for exporting to the console or Prometheus. The
 same Prometheus export path is also supported in the ITS mode.
@@ -249,43 +247,39 @@ tables:
 - ScopeAttrs: the attributes associated with each `EntityKey`
 - NumberDPAttrs: the attributes associated with each number data point.
 
-Note that the timestamp column corresponding with the data point
+Note that the timestamp column corresponding to the data point
 tables will be identical in all cases, as metric sets are observed as
-individual events. In phase 4 as we introduce the OpenTelemetry
+individual events. In Phase 4, as we introduce the OpenTelemetry
 exponential histogram data point, we will begin using one new table.
 Exemplars are not supported.
 
-In this phase, minimum support for OpenTelemetry Metric View
+In this phase, minimal support for OpenTelemetry Metric View
 configuration is preserved for use at runtime, limited to scoped
 renaming of instruments and descriptions. This is meant to assist with
 the initial stages of this transition; the limited Views functionality
 will become deprecated during Phase 2, once schema-driven code
 generation provides an alternative, and it will be fully eliminated
 in Phase 3 when the OpenTelemetry SDK is removed and users are able
-to achieve the same by modifying schema definitions.
+to achieve the same result by modifying schema definitions.
 
 ## Phase 2: Schema-driven code generation
 
-In this phase, we will replace the use of `#[metric_set]` with code
-generated through OpenTelemetry-Weaver tooling and the OpenTelemetry
-semantic conventions registry. This will be done on a set-by-set
-basis, gradually as we gain confidence with the technique. For each
-metric set, we aim to make a transition from `#[metric_set]` that does
-not change user-visible behavior by serving the `v0` semantic
-convention. At the same time, we will streamline the instrumentation.
+The migration from `#[metric_set]` to generated code will use
+OpenTelemetry-Weaver tooling and the semantic conventions registry,
+proceeding on a set-by-set basis. For each metric set, we aim for a
+transition that does not change user-visible behavior, by producing
+the `v0` semantic convention while streamlining the instrumentation.
 
-In the example above, `ConsumerMetrics` initially consisting of three
-counters (e.g., `consumed_success`), the instrumentation will
-transition to a single 1- or 2-dimensional Counter as shown above,
-with type-safe `SignalType` and `Outcome` arguments passed to the
-instrumentation via the generated code.
+In the example above, where `ConsumerMetrics` initially consists of
+three Counters (e.g., `consumed_success`), the instrumentation will
+transition to a single Counter field. The generated `add` method
+method for this instrument requires passing the `Outcome` and
+`SignalType` types at every call site.
 
-At the end of this phase, all `#[metric_set]` definitions will have
-been removed and replaced by code-generated equivalents backed by
-schema definitions. Each will have at least a `v0` schema. For many
-(not all), we will also define a `v1` schema with streamlined
-instrumentation and a runtime choice between two versions. We may
-expect to see the two schemas available using configuration such as:
+At the end of this phase, each metric set will have at least a `v0`
+schema. For many (not all), we will also define a `v1` schema with
+streamlined instrumentation and a runtime choice between versions.
+The two schemas may be configured as:
 
 ```yaml
 engine:
@@ -330,11 +324,11 @@ depending on the number of dimensions. We have a choice between the
 use of scope attributes vs metric attributes, and in a future version
 of OTAP we may consider entity definitions in the resource.
 
-Note that in all cases, the ScopeAttrs, UnivariateMetrics and
-NumberDPAttrs tables can be precomputed, that only the NumberDataPoint
-table in this example is computed on the fly. Note that all the
-columns can be dictionary encoded. All of the choices here are
-responsible and valid uses of OTAP.
+Note that in all cases the ScopeAttrs, UnivariateMetrics, and
+NumberDPAttrs tables can be precomputed; only the NumberDataPoint
+table in this example is computed on the fly. All columns can be
+dictionary encoded. All of the choices here are reasonable and valid
+uses of OTAP.
 
 #### Scope attributes, flat metrics
 
@@ -373,7 +367,7 @@ metric attributes.
 The best representation choice may depend on user preferences, and any
 of these choices could perform best depending on the nature of the
 data. This is the most direct representation of the OTLP protocol
-using the OTAP `NUMBER_DP_ATTRS` table, however it repeats the
+using the OTAP `NUMBER_DP_ATTRS` table; however, it repeats the
 attributes for every data point of every metric, so this works best
 when the number of metrics per set is small.
 
@@ -381,8 +375,8 @@ when the number of metrics per set is small.
 |-------------------|----------------------------|-----------------------------|
 | ScopeAttrs        | K                          | K                           |
 | UnivariateMetrics | M                          | M                           |
-| NumberDataPoint   | 3*M                        | 9*M                         |
-| NumberDPAttrs     | 3*M                        | 18*M                        |
+| NumberDataPoint   | 3M                         | 9M                          |
+| NumberDPAttrs     | 3M                         | 18M                         |
 | Total rows        | K+7M                       | K+28M                       |
 
 Note, as well, that these figures will be extended with more
@@ -400,21 +394,15 @@ specification.
 
 ## Phase 3: Remove OpenTelemetry SDK
 
-At this stage, we remove the OpenTelemetry SDK from the OTAP Dataflow
-dependencies. Since all `#[metric_set]` definitions were removed in
-Phase 2 and every caller now uses generated code, users have the
-option to configure an internal telemetry pipeline for metrics (e.g.,
-batch processor, OTLP exporter) and/or to use the builtin Prometheus
-support. We will have demonstrated that OTAP dataflow core processor
-and exporter nodes make a suitable replacement for the OpenTelemetry
-SDK by this point.
+With all `#[metric_set]` definitions replaced by generated code, we
+remove the OpenTelemetry SDK from the OTAP Dataflow dependencies.
+Users configure either the Builtin Prometheus support or an ITS
+internal telemetry pipeline (e.g., batch processor, OTLP exporter).
 
-With all callers on generated code, we now eliminate support for
-OpenTelemetry Metrics Views. This removes the minimal level of scoped
-renaming support that was meant to assist OpenTelemetry users. For the
-same functionality going forward, users will either: (1) build the
-engine with custom telemetry schema definitions, or (2) use the
-transform processor for custom metrics behavior.
+Support for OpenTelemetry Metrics Views is eliminated at this point.
+For the same functionality, users will either: (1) build the engine
+with custom telemetry schema definitions, or (2) use the transform
+processor for custom metrics behavior.
 
 ## Phase 4: Exponential Histogram support
 
@@ -434,7 +422,7 @@ B4, U8, U16, U32, and U64.
 
 The histogram parameters are:
 
-- `<const N: usize>` the number of `u64` words of space available
+- `<const N: usize>` the number of 64-bit words of space available
 - `min_width` the initial width of buckets
 - `max_scale` the initial maximum scale
 
@@ -455,20 +443,13 @@ detailed level.
 
 ## Appendix: Migration workflow
 
-For the example ConsumerMetrics `#[metric_set]`, a user who has
-developed existing monitoring and dashboards based on the original
-dataflow engine metrics will:
+This section describes the migration path for the example
+`ConsumerMetrics` `#[metric_set]`, from the perspective of a user with
+existing monitoring and dashboards.
 
-In phase 1, there are no changes.
-
-In phase 2, the `#[metric_set]` is replaced by a schema definition
-containing the `v0` and `v1` schemas. Instrumentation is updated to
-use the new streamlined, type-safe interfaces which are now generated
-code.
-
-The `v0` schema will remain the default for six months after the `v1`
-schema is introduced, after which it will be compiled in for six more
-months, after which it will be removed.
+In Phase 2, the `v0` schema will remain the default for six months
+after the `v1` schema is introduced; it will remain compiled-in for
+an additional six months before removal.
 
 Within the first six months, users will deploy an update of the
 dataflow engine and dual metric reporting, for example:
@@ -500,5 +481,5 @@ After twelve months, the OTel-Arrow project will deprecate the `v0`
 schema; we expect that users will have migrated to `v1` by then. Now,
 we are free to remove the `v0` schema definition.
 
-Now, re-run `cargo xtask generate-metrics` and recompile. `v1` metrics
-will be the only supported schema.
+After removing the `v0` schema definition, re-running
+`cargo xtask generate-metrics` will produce only `v1` metrics.
