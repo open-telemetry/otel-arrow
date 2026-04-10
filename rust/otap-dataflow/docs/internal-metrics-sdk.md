@@ -280,9 +280,10 @@ transition to a single 1- or 2-dimensional Counter as shown above,
 with type-safe `SignalType` and `Outcome` arguments passed to the
 instrumentation via the generated code.
 
-At the end of this phase, we will have transitioned each
-`#[metric_set]` to a code-generated replacement and a `v0` schema. For
-many (not all), we will also define a `v1` schema with streamlined
+At the end of this phase, all `#[metric_set]` definitions will have
+been removed and replaced by code-generated equivalents backed by
+schema definitions. Each will have at least a `v0` schema. For many
+(not all), we will also define a `v1` schema with streamlined
 instrumentation and a runtime choice between two versions. We may
 expect to see the two schemas available using configuration such as:
 
@@ -400,23 +401,20 @@ specification.
 ## Phase 3: Remove OpenTelemetry SDK
 
 At this stage, we remove the OpenTelemetry SDK from the OTAP Dataflow
-dependencies. By then, users will have the option to configure an
-internal telemetry pipeline for metrics with access to the inventory
-of nodes available in the dataflow engine. In order to reach this
-point, we will have first removed all the `#[metric_set]` definitions,
-replaced by metric schema definitions and one or more schema versions
-for each metric set. Users will have access to the built-in support
-(e.g., Prometheus), and we will have demonstrated that the built-in
-processors (batch, retry, OTAP and OTLP exporters) are a suitable
-replacement.
+dependencies. Since all `#[metric_set]` definitions were removed in
+Phase 2 and every caller now uses generated code, users have the
+option to configure an internal telemetry pipeline for metrics (e.g.,
+batch processor, OTLP exporter) and/or to use the builtin Prometheus
+support. We will have demonstrated that OTAP dataflow core processor
+and exporter nodes make a suitable replacement for the OpenTelemetry
+SDK by this point.
 
-At this stage we eliminate support for OpenTelemetry Metrics Views,
-which was deprecated in Phase 2. This removes the minimal level of
-scoped renaming support that was meant to assist OpenTelemetry users.
-In order to retain modified Views without this feature going forward,
-users will either: (1) build the code with custom telemetry schemas,
-or (2) use a transform processor to modify their metrics using our
-default schemas.
+With all callers on generated code, we now eliminate support for
+OpenTelemetry Metrics Views. This removes the minimal level of scoped
+renaming support that was meant to assist OpenTelemetry users. For the
+same functionality going forward, users will either: (1) build the
+engine with custom telemetry schema definitions, or (2) use the
+transform processor for custom metrics behavior.
 
 ## Phase 4: Exponential Histogram support
 
