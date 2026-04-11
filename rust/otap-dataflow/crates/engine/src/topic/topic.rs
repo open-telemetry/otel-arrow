@@ -24,6 +24,7 @@ use futures_core::Stream;
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
+use smallvec::SmallVec;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 struct QueuedEnvelope<T> {
@@ -127,6 +128,8 @@ fn try_acquire_balanced_permit(
         Err(tokio::sync::TryAcquireError::Closed) => Err(TopicClosed),
     }
 }
+
+type BalancedPermitVec = SmallVec<[OwnedSemaphorePermit; 4]>;
 
 pub(crate) struct FastBroadcastRing<T: Send + Sync + 'static> {
     slots: Box<[Mutex<Option<(u64, Envelope<T>)>>]>,
@@ -362,6 +365,24 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
             TopicInner::BalancedOnly(topic) => topic.close(),
             TopicInner::BroadcastOnly(topic) => topic.close(),
             TopicInner::Mixed(topic) => topic.close(),
+        }
+    }
+
+    #[cfg(test)]
+    fn debug_balanced_available_permits(&self) -> Vec<(SubscriptionGroupName, usize)> {
+        match self {
+            TopicInner::BalancedOnly(topic) => topic
+                .group
+                .get()
+                .map(|group| {
+                    vec![(
+                        group.group_name.clone(),
+                        group.admission.available_permits(),
+                    )]
+                })
+                .unwrap_or_default(),
+            TopicInner::BroadcastOnly(_) => Vec::new(),
+            TopicInner::Mixed(topic) => topic.balanced_available_permits(),
         }
     }
 }
@@ -670,6 +691,47 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    // Acquire balanced-group capacity atomically from the publisher's point of
+    // view: if one group is full, drop any partial acquisitions before waiting
+    // and retry from a fresh mixed-topic snapshot.
+    async fn acquire_balanced_admission(
+        &self,
+    ) -> Result<(Arc<[Arc<ConsumerGroup<T>>]>, BalancedPermitVec), Error> {
+        loop {
+            let groups = self.group_handles.read().clone();
+            let (permits, blocking_group) = Self::try_acquire_balanced_admission(&groups)?;
+            if let Some(group) = blocking_group {
+                drop(permits);
+                let permit = acquire_balanced_permit(&group.admission).await?;
+                drop(permit);
+            } else {
+                return Ok((groups, permits));
+            }
+        }
+    }
+
+    fn try_acquire_balanced_admission(
+        groups: &Arc<[Arc<ConsumerGroup<T>>]>,
+    ) -> Result<(BalancedPermitVec, Option<Arc<ConsumerGroup<T>>>), Error> {
+        let mut permits = BalancedPermitVec::with_capacity(groups.len());
+        for group in groups.as_ref() {
+            match try_acquire_balanced_permit(&group.admission)? {
+                Some(permit) => permits.push(permit),
+                None => return Ok((permits, Some(Arc::clone(group)))),
+            }
+        }
+        Ok((permits, None))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn balanced_available_permits(&self) -> Vec<(SubscriptionGroupName, usize)> {
+        self.groups
+            .read()
+            .iter()
+            .map(|(name, group)| (name.clone(), group.admission.available_permits()))
+            .collect()
+    }
+
     async fn publish(&self, msg: Arc<T>) -> Result<u64, Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
@@ -677,11 +739,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
 
         let id = self.next_message_id();
         if self.has_balanced_groups.load(Ordering::Acquire) {
-            let groups = self.group_handles.read().clone();
-            let mut permits = Vec::with_capacity(groups.len());
-            for group in groups.as_ref() {
-                permits.push(acquire_balanced_permit(&group.admission).await?);
-            }
+            let (groups, permits) = self.acquire_balanced_admission().await?;
             let envelope = Envelope {
                 id,
                 tracked: false,
@@ -713,11 +771,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
 
         let id = self.next_message_id();
         if self.has_balanced_groups.load(Ordering::Acquire) {
-            let groups = self.group_handles.read().clone();
-            let mut permits = Vec::with_capacity(groups.len());
-            for group in groups.as_ref() {
-                permits.push(acquire_balanced_permit(&group.admission).await?);
-            }
+            let (groups, permits) = self.acquire_balanced_admission().await?;
             let receipt = self.outcomes.register(id, timeout, permit);
             let envelope = Envelope {
                 id,
@@ -765,19 +819,8 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             tracked: false,
             payload: Arc::clone(&msg),
         };
-        let mut dropped_on_full = false;
-        let mut permits = Vec::with_capacity(groups.len());
-        for group in groups.as_ref() {
-            match try_acquire_balanced_permit(&group.admission)? {
-                Some(permit) => permits.push(permit),
-                None => {
-                    dropped_on_full = true;
-                    break;
-                }
-            }
-        }
-
-        if dropped_on_full {
+        let (permits, blocking_group) = Self::try_acquire_balanced_admission(&groups)?;
+        if blocking_group.is_some() {
             Ok((PublishOutcome::DroppedOnFull, id))
         } else {
             for (group, permit) in groups.as_ref().iter().zip(permits.into_iter()) {
@@ -805,12 +848,9 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         let id = self.next_message_id();
         if self.has_balanced_groups.load(Ordering::Acquire) {
             let groups = self.group_handles.read().clone();
-            let mut permits = Vec::with_capacity(groups.len());
-            for group in groups.as_ref() {
-                match try_acquire_balanced_permit(&group.admission)? {
-                    Some(permit) => permits.push(permit),
-                    None => return Ok(TrackedTryPublishOutcome::DroppedOnFull),
-                }
+            let (permits, blocking_group) = Self::try_acquire_balanced_admission(&groups)?;
+            if blocking_group.is_some() {
+                return Ok(TrackedTryPublishOutcome::DroppedOnFull);
             }
             let receipt = self.outcomes.register(id, timeout, permit);
             let envelope = Envelope {

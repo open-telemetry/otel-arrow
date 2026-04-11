@@ -550,6 +550,88 @@ async fn mixed_async_publish_waits_for_balanced_admission_before_broadcast() {
     topic.close();
 }
 
+// A blocked mixed publish must not reserve capacity on balanced groups that
+// were otherwise ready to admit the message.
+#[tokio::test]
+async fn mixed_async_publish_does_not_reserve_free_groups_while_waiting() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "mixed-no-convoy",
+            TopicOptions::Mixed {
+                balanced_capacity: 1,
+                broadcast_capacity: 16,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut fast = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("fast"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+    let mut slow = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("slow"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+
+    topic.publish(Arc::new(1u64)).await.unwrap();
+
+    match fast.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 1),
+        other => panic!("unexpected first fast item: {other:?}"),
+    }
+
+    let topic_clone = topic.clone();
+    let blocked_publish = tokio::spawn(async move {
+        topic_clone.publish(Arc::new(2u64)).await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !blocked_publish.is_finished(),
+        "publish should still be blocked by the slow group"
+    );
+
+    let mut permits = topic.debug_balanced_available_permits();
+    permits.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+    assert_eq!(
+        permits,
+        vec![
+            (SubscriptionGroupName::from("fast"), 1),
+            (SubscriptionGroupName::from("slow"), 0),
+        ],
+        "blocked mixed publish should not hold the fast group's permit"
+    );
+
+    match slow.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 1),
+        other => panic!("unexpected first slow item: {other:?}"),
+    }
+
+    blocked_publish.await.unwrap();
+
+    match fast.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 2),
+        other => panic!("unexpected second fast item: {other:?}"),
+    }
+    match slow.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 2),
+        other => panic!("unexpected second slow item: {other:?}"),
+    }
+
+    topic.close();
+}
+
 // Dropping a blocked async mixed-topic publish must not partially publish to
 // broadcast subscribers before balanced admission succeeds.
 #[tokio::test]
