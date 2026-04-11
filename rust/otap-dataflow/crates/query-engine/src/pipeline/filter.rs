@@ -242,8 +242,19 @@ impl FilterPlan {
         attr_keys_case_sensitive: bool,
         functions: &[PipelineFunction],
     ) -> Result<Self> {
-        let mut left_arg = BinaryArg::try_from(left_expr)?;
-        let mut right_arg = BinaryArg::try_from(right_expr)?;
+        // Try to convert both sides to BinaryArg for the fast path. If either side is a
+        // complex expression (e.g. arithmetic, function call), BinaryArg::try_from will fail
+        // and we fall back to the general expression evaluation path.
+        let left_arg = BinaryArg::try_from(left_expr);
+        let right_arg = BinaryArg::try_from(right_expr);
+        let (mut left_arg, mut right_arg) = match (left_arg, right_arg) {
+            (Ok(l), Ok(r)) => (l, r),
+            _ => {
+                return Self::try_from_binary_expr_via_expr_eval(
+                    left_expr, binary_op, right_expr, functions,
+                );
+            }
+        };
 
         // don't allow non equals comparisons for null
         if binary_op != Operator::Eq
@@ -266,7 +277,7 @@ impl FilterPlan {
             BinaryArg::Column(left_column) => match left_column {
                 ColumnAccessor::ColumnName(left_col_name) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
-                        // left = column & right = literal (fast path)
+                        // left = column & right = literal
                         let right_expr =
                             try_static_scalar_to_literal_for_column(&left_col_name, &right_lit)?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
@@ -276,7 +287,7 @@ impl FilterPlan {
                         ))))
                     }
                     BinaryArg::Null => {
-                        // left = column & right == null (fast path)
+                        // left = column & right == null
                         Ok(FilterPlan::from(col(left_col_name).is_null()))
                     }
                     _ => Self::try_from_binary_expr_via_expr_eval(
@@ -285,7 +296,7 @@ impl FilterPlan {
                 },
                 ColumnAccessor::StructCol(left_struct_name, left_struct_field) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
-                        // left = struct col & right = literal (fast path)
+                        // left = struct col & right = literal
                         let right_expr = try_static_scalar_to_literal_for_column(
                             &left_struct_field,
                             &right_lit,
@@ -297,7 +308,7 @@ impl FilterPlan {
                         ))))
                     }
                     BinaryArg::Null => {
-                        // left = struct col & right = null (fast path)
+                        // left = struct col & right = null
                         Ok(FilterPlan::from(
                             col(left_struct_name).field(left_struct_field).is_null(),
                         ))
@@ -309,7 +320,7 @@ impl FilterPlan {
                 ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                     match right_arg {
                         BinaryArg::Literal(right_lit) => {
-                            // left = attribute & right = literal (fast path)
+                            // left = attribute & right = literal
                             Ok(FilterPlan::from(AttributesFilterPlan::new(
                                 // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
                                 Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
@@ -343,7 +354,7 @@ impl FilterPlan {
                 }
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
-                        // left = literal & right = column (fast path)
+                        // left = literal & right = column
                         let left_expr =
                             try_static_scalar_to_literal_for_column(&right_col_name, &left_lit)?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
@@ -353,7 +364,7 @@ impl FilterPlan {
                         ))))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
-                        // left = literal & right = struct col (fast path)
+                        // left = literal & right = struct col
                         let left_expr = try_static_scalar_to_literal_for_column(
                             &right_struct_field,
                             &left_lit,
@@ -365,7 +376,7 @@ impl FilterPlan {
                         ))))
                     }
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
-                        // left = literal & right = attribute (fast path)
+                        // left = literal & right = attribute
                         Ok(FilterPlan::from(AttributesFilterPlan::new(
                             // col(consts::ATTRIBUTE_KEY)
                             //     .eq(lit(attrs_key))
@@ -388,11 +399,11 @@ impl FilterPlan {
             BinaryArg::Null => match right_arg {
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
-                        // left = null & right = column (fast path)
+                        // left = null & right = column
                         Ok(FilterPlan::from(col(right_col_name).is_null()))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
-                        // left = null, right = struct column (fast path)
+                        // left = null, right = struct column
                         Ok(FilterPlan::from(
                             col(right_struct_name).field(right_struct_field).is_null(),
                         ))
@@ -441,13 +452,22 @@ impl FilterPlan {
 
     /// Build a `ScopedLogicalExpr` that performs a boolean comparison (eq, gt, etc.) on the
     /// results of two child expressions. Handles both same-scope and cross-scope cases.
+    ///
+    /// Type coercion is applied to ensure both sides have compatible types for the comparison
+    /// (e.g., Int32 vs Int64 will have the narrower side cast to Int64).
     fn build_scoped_comparison_expr(
-        left: ScopedLogicalExpr,
+        mut left: ScopedLogicalExpr,
         binary_op: Operator,
-        right: ScopedLogicalExpr,
+        mut right: ScopedLogicalExpr,
     ) -> Result<ScopedLogicalExpr> {
         use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
-        use crate::pipeline::expr::types::ExprLogicalType;
+        use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic};
+
+        // Apply type coercion so both sides of the comparison have compatible types.
+        // We reuse the arithmetic coercion rules (which handle Int32 vs Int64, AnyValue vs
+        // concrete types, etc.) -- the side-effect of adding cast expressions is what we need.
+        // We ignore the returned result type since comparisons always produce Boolean.
+        let _ = coerce_arithmetic(&mut left, &mut right);
 
         // check if both sides can be evaluated in the same scope (no join needed)
         let possible_combined_scope = match (&left.source, &right.source) {
@@ -5490,5 +5510,328 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for expression-backed filter predicates
+    // -----------------------------------------------------------------------
+
+    /// Filter comparing two root columns: severity_text == event_name
+    async fn test_filter_column_vs_column<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("match")
+                .event_name("match")
+                .finish(),
+            LogRecord::build()
+                .severity_text("a")
+                .event_name("b")
+                .finish(),
+            LogRecord::build()
+                .severity_text("other")
+                .event_name("other")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_text == event_name",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_column_vs_column_kql_parser() {
+        test_filter_column_vs_column::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_column_vs_column_opl_parser() {
+        test_filter_column_vs_column::<OplParser>().await;
+    }
+
+    /// Filter comparing a root column to an attribute: severity_number == attributes["x"]
+    async fn test_filter_column_vs_attribute<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("1")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(10))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("2")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(99))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(5)
+                .event_name("3")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_number == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_column_vs_attribute_kql_parser() {
+        test_filter_column_vs_attribute::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_column_vs_attribute_opl_parser() {
+        test_filter_column_vs_attribute::<OplParser>().await;
+    }
+
+    /// Filter comparing two attributes: attributes["x"] == attributes["y"]
+    async fn test_filter_attribute_vs_attribute<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("same")),
+                    KeyValue::new("y", AnyValue::new_string("same")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("b")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("match")),
+                    KeyValue::new("y", AnyValue::new_string("match")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] == attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_vs_attribute_kql_parser() {
+        test_filter_attribute_vs_attribute::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_vs_attribute_opl_parser() {
+        test_filter_attribute_vs_attribute::<OplParser>().await;
+    }
+
+    /// Filter with arithmetic in the predicate: severity_number + 1 > 10
+    async fn test_filter_arithmetic_in_predicate<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(9)
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .severity_number(17)
+                .event_name("3")
+                .finish(),
+        ];
+
+        // severity_number + 1 > 10 means severity_number > 9
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_number + 1 > 10",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_arithmetic_in_predicate_kql_parser() {
+        test_filter_arithmetic_in_predicate::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_arithmetic_in_predicate_opl_parser() {
+        test_filter_arithmetic_in_predicate::<OplParser>().await;
+    }
+
+    /// Filter with cross-scope arithmetic: severity_number > attributes["threshold"]
+    async fn test_filter_cross_scope_gt<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("1")
+                .attributes(vec![KeyValue::new("threshold", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(3)
+                .event_name("2")
+                .attributes(vec![KeyValue::new("threshold", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(20)
+                .event_name("3")
+                .attributes(vec![KeyValue::new("threshold", AnyValue::new_int(15))])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_number > attributes[\"threshold\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_cross_scope_gt_kql_parser() {
+        test_filter_cross_scope_gt::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_cross_scope_gt_opl_parser() {
+        test_filter_cross_scope_gt::<OplParser>().await;
+    }
+
+    /// Filter combining expr-based predicate with traditional fast-path filter via AND
+    async fn test_filter_expr_combined_with_fast_path<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .severity_number(17)
+                .event_name("match_both")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(17))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .severity_number(10)
+                .event_name("match_text_only")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(99))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .severity_number(5)
+                .event_name("match_neither")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+        ];
+
+        // severity_text == "ERROR" uses fast path; severity_number == attributes["x"] uses expr path
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_text == \"ERROR\" and severity_number == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_combined_with_fast_path_kql_parser() {
+        test_filter_expr_combined_with_fast_path::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_combined_with_fast_path_opl_parser() {
+        test_filter_expr_combined_with_fast_path::<OplParser>().await;
+    }
+
+    /// Filter where no rows match the expression predicate
+    async fn test_filter_expr_no_match<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("a")
+                .event_name("x")
+                .finish(),
+            LogRecord::build()
+                .severity_text("b")
+                .event_name("y")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_text == event_name",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert!(result.resource_logs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_no_match_kql_parser() {
+        test_filter_expr_no_match::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_no_match_opl_parser() {
+        test_filter_expr_no_match::<OplParser>().await;
+    }
+
+    /// Filter with missing attributes -- rows without the attribute should not pass
+    async fn test_filter_expr_missing_attribute<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("has_attr")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(10))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("no_attr")
+                .finish(),
+        ];
+
+        // the second record has no attributes so the cross-scope join produces no result
+        // for it -- it should not pass the filter
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_number == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_missing_attribute_kql_parser() {
+        test_filter_expr_missing_attribute::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_missing_attribute_opl_parser() {
+        test_filter_expr_missing_attribute::<OplParser>().await;
     }
 }
