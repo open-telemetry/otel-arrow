@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775863456903,
+  "lastUpdate": 1775869140585,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "10ee8b33104ce8779489988d91bca4a72d6e0e60",
-          "message": "Ignore flaky test from CI (#2228)\n\nTemporarily to get CI to be stable.\n\nhttps://github.com/open-telemetry/otel-arrow/issues/2227 to track adding\nthem back.",
-          "timestamp": "2026-03-06T20:54:32Z",
-          "tree_id": "a69f65e950829e644a8499da0504f0ae401999dc",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/10ee8b33104ce8779489988d91bca4a72d6e0e60"
-        },
-        "date": 1772833713054,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -2.3113181591033936,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.77727397111295,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.41227223217042,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 54.706119791666666,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 58.2265625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 468854.09974169655,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 479690.8097835906,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003451,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11111693.563749462,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11047336.676559865,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 16948346.984008566,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dd5aa21c51c1f7a81251cc6bfd889ca3d6442a90",
+          "message": "Reduce WARN volume on azure_monitor_exporter Heartbeat failure (#2628)\n\n# Change Summary\n\nOn heartbeat failure (simulated in this case by providing an invalid dcr\nidentifier), internal telemetry produces two almost identical WARN logs:\n\nProduced by inner `Heartbeat.send()`:\n> 2026-04-10T15:58:58.087Z WARN\notap-df-contrib-nodes::azure_monitor_exporter.heartbeat.error:\n{\"error\":{\"code\":\"NotFound\",\"message\":\"Data collection rule with\nimmutable Id 'dcr-badid' not found.\"}} [status=404] entity/node.attrs:\nnode.id=exporter node.urn=urn:microsoft:exporter:azure_monitor\nnode.type=exporter pipeline.id=main\npipeline.group.id=example-azuremonitorpipeline core.id=0 numa.node.id=0\nprocess.instance.id=AGOXQHRN2NZSBC2J3VHVEMWHMU host.id=CPC-drewr-ZFPSN\ncontainer.id=\n\nProduced by outer continuous loop:\n> 2026-04-10T15:58:58.087Z WARN\notap-df-contrib-nodes::azure_monitor_exporter.heartbeat.send_failed:\n[error=UnexpectedStatus { status: 404, body:\n\"{\\\"error\\\":{\\\"code\\\":\\\"NotFound\\\",\\\"message\\\":\\\"Data collection rule\nwith immutable Id 'dcr-badid' not found.\\\"}}\" }] entity/node.attrs:\nnode.id=exporter node.urn=urn:microsoft:exporter:azure_monitor\nnode.type=exporter pipeline.id=main\npipeline.group.id=example-azuremonitorpipeline core.id=0 numa.node.id=0\nprocess.instance.id=AGOXQHRN2NZSBC2J3VHVEMWHMU host.id=CPC-drewr-ZFPSN\ncontainer.id=\n\nSince the caller of `Heartbeat.send()` already logs the error with the\nsame details:\n\n\nhttps://github.com/open-telemetry/otel-arrow/blob/b5f0814099566c119a29aa8465a137e04adbeeb4/rust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs#L585-L588\n\nThe inner WARN only doubles telemetry volume for the same information.\n\n\nhttps://github.com/open-telemetry/otel-arrow/blob/b5f0814099566c119a29aa8465a137e04adbeeb4/rust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_monitor_exporter/heartbeat.rs#L226-L230\n\n## What issue does this PR close?\n\nN/A\n\n## How are these changes tested?\n\nDebug run of df_engine\n\n## Are there any user-facing changes?\n\nYes, less telemetry on Heartbeat failure scenarios",
+          "timestamp": "2026-04-10T22:32:57Z",
+          "tree_id": "2f996c975a16e9c8c24aa1548204864e133de109",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/dd5aa21c51c1f7a81251cc6bfd889ca3d6442a90"
+        },
+        "date": 1775869140006,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.4629325270652771,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 99.94869982054922,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.2682863340564,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 28.817578125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 30.44140625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 648825.3629134082,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 645821.7393124572,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002192,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16863318.568242297,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 16868296.442443036,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
