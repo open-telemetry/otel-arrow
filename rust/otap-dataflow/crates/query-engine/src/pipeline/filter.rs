@@ -139,18 +139,6 @@ impl<T> From<T> for Composite<T> {
 
 /// A logical plan for filtering data across root batch's columns and attributes.
 ///
-/// Supports two types of filters that can be applied independently or together:
-/// - `source_filter`: Filters on regular columns in the source data
-/// - `attribute_filter`: Filters on key-value attribute pairs
-///
-/// When both types of filters are present, the resulting execution of the plan will be the
-/// intersection of the two filters.
-///
-/// Can be constructed from either a DataFusion `Expr` (for root batch's filters) or an
-/// `AttributesFilterPlan` (for attribute filters), and can be composed into boolean expressions
-/// using `Composite`.
-/// A logical plan for filtering data across root batch's columns and attributes.
-///
 /// Supports three types of filters that can be applied independently or together:
 /// - `source_filter`: Filters on regular columns in the source data (fast path)
 /// - `attribute_filter`: Filters on key-value attribute pairs (fast path)
@@ -159,6 +147,16 @@ impl<T> From<T> for Composite<T> {
 ///
 /// When multiple filter types are present, the resulting execution of the plan will be the
 /// intersection of all filters.
+///
+/// Can be constructed from either a DataFusion `Expr` (for root batch's filters) an,
+/// `AttributesFilterPlan` (for attribute filters), and can be composed into boolean expressions
+/// using `Composite`, or a more general purpose expression.
+///
+/// The code paths for comparing attributes or columns from the root record batch to literals are
+/// well optimized. In cases where a more general purpose expression is involved, we fall back
+/// to evaluating the expression which may involve realigning data from sub-expressions using the
+/// expression evaluation's join mechanics.
+///
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
@@ -347,7 +345,7 @@ impl FilterPlan {
             },
             BinaryArg::Literal(left_lit) => match right_arg {
                 BinaryArg::Literal(_right_lit) => {
-                    // comparing two literals -- delegate to expression eval
+                    // comparing two literals
                     Self::try_from_binary_expr_via_expr_eval(
                         left_expr, binary_op, right_expr, functions,
                     )
@@ -390,7 +388,7 @@ impl FilterPlan {
                     }
                 },
                 BinaryArg::Null => {
-                    // literal == null -- delegate to expression eval
+                    // literal == null
                     Self::try_from_binary_expr_via_expr_eval(
                         left_expr, binary_op, right_expr, functions,
                     )
@@ -417,13 +415,17 @@ impl FilterPlan {
                     }
                 },
                 BinaryArg::Literal(_lit) => {
-                    // null == lit -- delegate to expression eval
+                    // null == lit
+                    // Note: most of the time, the folding mechanism of expression crate will
+                    // take care of folding this into a boolean literal.
                     Self::try_from_binary_expr_via_expr_eval(
                         left_expr, binary_op, right_expr, functions,
                     )
                 }
                 BinaryArg::Null => {
-                    // null == null -- delegate to expression eval
+                    // null == null
+                    // Note: most of the time, the folding mechanism of expression crate will
+                    // take care of folding this into a boolean literal.
                     Self::try_from_binary_expr_via_expr_eval(
                         left_expr, binary_op, right_expr, functions,
                     )
@@ -460,8 +462,8 @@ impl FilterPlan {
         binary_op: Operator,
         mut right: ScopedLogicalExpr,
     ) -> Result<ScopedLogicalExpr> {
-        use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
         use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic};
+        use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
 
         // Apply type coercion so both sides of the comparison have compatible types.
         // We reuse the arithmetic coercion rules (which handle Int32 vs Int64, AnyValue vs
@@ -570,10 +572,7 @@ impl FilterPlan {
                     }
                 })
             }
-            BinaryArg::Null => Self::try_from_contains_expr_via_expr_eval(
-                contains_expr,
-                functions,
-            ),
+            BinaryArg::Null => Self::try_from_contains_expr_via_expr_eval(contains_expr, functions),
         }
     }
 
@@ -614,8 +613,7 @@ impl FilterPlan {
         };
 
         if let Some(combined_scope) = possible_combined_scope {
-            let dict_downcast =
-                haystack.requires_dict_downcast || needle.requires_dict_downcast;
+            let dict_downcast = haystack.requires_dict_downcast || needle.requires_dict_downcast;
             Ok(ScopedLogicalExpr {
                 logical_expr: contains(haystack.logical_expr, needle.logical_expr),
                 source: LogicalExprDataSource::DataSource(combined_scope.clone()),
@@ -833,8 +831,7 @@ impl Composite<FilterPlan> {
                 Ok(Self::and(left, right))
             }
             LogicalExpression::Or(or_expr) => {
-                let left =
-                    Self::try_from(or_expr.get_left(), attr_keys_case_sensitive, functions)?;
+                let left = Self::try_from(or_expr.get_left(), attr_keys_case_sensitive, functions)?;
                 let right =
                     Self::try_from(or_expr.get_right(), attr_keys_case_sensitive, functions)?;
                 Ok(Self::or(left, right))
@@ -847,20 +844,20 @@ impl Composite<FilterPlan> {
                 )?;
                 Ok(Self::not(inner))
             }
-            LogicalExpression::Contains(contains_expr) => Ok(Self::from(
-                FilterPlan::try_from_contains_expr(
+            LogicalExpression::Contains(contains_expr) => {
+                Ok(Self::from(FilterPlan::try_from_contains_expr(
                     contains_expr,
                     attr_keys_case_sensitive,
                     functions,
-                )?,
-            )),
-            LogicalExpression::Matches(matches_expr) => Ok(Self::from(
-                FilterPlan::try_from_matches_expr(
+                )?))
+            }
+            LogicalExpression::Matches(matches_expr) => {
+                Ok(Self::from(FilterPlan::try_from_matches_expr(
                     matches_expr,
                     attr_keys_case_sensitive,
                     functions,
-                )?,
-            )),
+                )?))
+            }
 
             LogicalExpression::Scalar(scalar_expr) => match scalar_expr {
                 ScalarExpression::Static(StaticScalarExpression::Boolean(bool)) => {
@@ -1194,10 +1191,7 @@ impl FilterExec {
             Some(result) => result,
             None => {
                 // expression result was null/absent -- treat as all rows failing the filter
-                return Ok(BooleanArray::new(
-                    BooleanBuffer::new_unset(num_rows),
-                    None,
-                ));
+                return Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None));
             }
         };
 
@@ -1229,17 +1223,27 @@ impl FilterExec {
             ColumnarValue::Array(arr) => arr.clone(),
         };
 
-        let boolean_arr = as_boolean_array(&result_array)
-            .cloned()
-            .map_err(|_| Error::ExecutionError {
-                cause: format!(
-                    "expression predicate must evaluate to a boolean, found {}",
-                    result_array.data_type()
-                ),
-            })?;
+        let boolean_arr =
+            as_boolean_array(&result_array)
+                .cloned()
+                .map_err(|_| Error::ExecutionError {
+                    cause: format!(
+                        "expression predicate must evaluate to a boolean, found {}",
+                        result_array.data_type()
+                    ),
+                })?;
 
         // strip nulls: treat null predicate results as false
-        let boolean_arr = strip_null_from_boolean_filter(&boolean_arr);
+        let (values, null_buffer) = boolean_arr.clone().into_parts();
+        let boolean_arr = match null_buffer {
+            None => boolean_arr.clone(),
+            Some(null_buffer) => {
+                // AND values with null_buffer to turn null positions into false
+                let null_mask = BooleanArray::new(null_buffer.into_inner(), None);
+                // safety: both arrays have the same length (they came from the same BooleanArray)
+                and(&BooleanArray::new(values, None), &null_mask).expect("same length arrays")
+            }
+        };
 
         // check if the result is already aligned to the root batch
         match eval_result.data_scope.as_ref() {
@@ -1314,10 +1318,7 @@ impl FilterExec {
             }
             None => {
                 // no ID column means no attributes exist -- all rows fail
-                return Ok(BooleanArray::new(
-                    BooleanBuffer::new_unset(num_rows),
-                    None,
-                ));
+                return Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None));
             }
         };
 
@@ -1782,22 +1783,6 @@ impl AdaptivePhysicalExprExec {
 pub(crate) use otap_df_pdata::otap::filter::filter_otap_batch;
 
 // ChildBatchFilterIdHelper trait and impls are provided by otap_df_pdata::otap::filter.
-
-/// Strips nulls from a boolean array by treating null values as `false`.
-///
-/// This is used for filter predicate results where null should mean "does not pass the filter".
-fn strip_null_from_boolean_filter(arr: &BooleanArray) -> BooleanArray {
-    let (values, null_buffer) = arr.clone().into_parts();
-    match null_buffer {
-        None => arr.clone(),
-        Some(null_buffer) => {
-            // AND values with null_buffer to turn null positions into false
-            let null_mask = BooleanArray::new(null_buffer.into_inner(), None);
-            // safety: both arrays have the same length (they came from the same BooleanArray)
-            and(&BooleanArray::new(values, None), &null_mask).expect("same length arrays")
-        }
-    }
-}
 
 fn get_parent_id_column(record_batch: &RecordBatch) -> Result<&UInt16Array> {
     // get the parent ID column
@@ -5069,10 +5054,7 @@ mod test {
             self
         }
 
-        fn evaluate(
-            &self,
-            _batch: &RecordBatch,
-        ) -> datafusion::error::Result<ColumnarValue> {
+        fn evaluate(&self, _batch: &RecordBatch) -> datafusion::error::Result<ColumnarValue> {
             panic!("this shouldn't get called")
         }
 
