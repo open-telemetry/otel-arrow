@@ -5834,4 +5834,231 @@ mod test {
     async fn test_filter_expr_missing_attribute_opl_parser() {
         test_filter_expr_missing_attribute::<OplParser>().await;
     }
+
+    /// Filter using substring function result in the predicate
+    async fn test_filter_with_substring<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERR_timeout")
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO_normal")
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERR_connection")
+                .event_name("3")
+                .finish(),
+        ];
+
+        // substring(severity_text, 0, 3) extracts the first 3 chars
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_substring_kql_parser() {
+        test_filter_with_substring::<KqlParser>(
+            r#"logs | where substring(severity_text, 0, 3) == "ERR""#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_substring_opl_parser() {
+        test_filter_with_substring::<OplParser>(
+            r#"logs | where substring(severity_text, 0, 3) == "ERR""#,
+        )
+        .await;
+    }
+
+    /// Filter using substring on an attribute value
+    async fn test_filter_with_substring_on_attribute<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![KeyValue::new("code", AnyValue::new_string("ERR-001"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![KeyValue::new("code", AnyValue::new_string("OK-200"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![KeyValue::new("code", AnyValue::new_string("ERR-502"))])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_substring_on_attribute_kql_parser() {
+        test_filter_with_substring_on_attribute::<KqlParser>(
+            r#"logs | where substring(attributes["code"], 0, 3) == "ERR""#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_substring_on_attribute_opl_parser() {
+        test_filter_with_substring_on_attribute::<OplParser>(
+            r#"logs | where substring(attributes["code"], 0, 3) == "ERR""#,
+        )
+        .await;
+    }
+
+    /// Filter using contains where the needle is a column reference (not a literal).
+    /// This exercises the `try_from_contains_expr_via_expr_eval` fallback.
+    async fn test_filter_contains_column_needle<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("error in module auth")
+                .event_name("auth")
+                .finish(),
+            LogRecord::build()
+                .severity_text("warning from module payments")
+                .event_name("payments")
+                .finish(),
+            LogRecord::build()
+                .severity_text("error in module auth")
+                .event_name("missing")
+                .finish(),
+        ];
+
+        // contains(severity_text, event_name) -- needle is a column, not a literal
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_column_needle_kql_parser() {
+        test_filter_contains_column_needle::<KqlParser>(
+            r#"logs | where severity_text contains event_name"#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_column_needle_opl_parser() {
+        test_filter_contains_column_needle::<OplParser>(
+            r#"logs | where contains(severity_text, event_name)"#,
+        )
+        .await;
+    }
+
+    /// Filter using contains where the needle is an attribute (cross-scope contains).
+    /// This exercises the expression-eval fallback for contains with cross-scope args.
+    async fn test_filter_contains_attribute_needle<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("error: timeout occurred")
+                .event_name("1")
+                .attributes(vec![KeyValue::new(
+                    "keyword",
+                    AnyValue::new_string("timeout"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .severity_text("info: all good")
+                .event_name("2")
+                .attributes(vec![KeyValue::new(
+                    "keyword",
+                    AnyValue::new_string("failure"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .severity_text("warn: disk failure detected")
+                .event_name("3")
+                .attributes(vec![KeyValue::new(
+                    "keyword",
+                    AnyValue::new_string("failure"),
+                )])
+                .finish(),
+        ];
+
+        // contains(severity_text, attributes["keyword"]) -- cross-scope contains
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_attribute_needle_kql_parser() {
+        test_filter_contains_attribute_needle::<KqlParser>(
+            r#"logs | where severity_text contains attributes["keyword"]"#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_attribute_needle_opl_parser() {
+        test_filter_contains_attribute_needle::<OplParser>(
+            r#"logs | where contains(severity_text, attributes["keyword"])"#,
+        )
+        .await;
+    }
+
+    /// Filter using matches (regex) on a column -- the existing fast path.
+    /// This confirms the fast path still works correctly alongside the new expr path.
+    async fn test_filter_matches_with_attribute_haystack<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![KeyValue::new(
+                    "path",
+                    AnyValue::new_string("/api/v1/users"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![KeyValue::new(
+                    "path",
+                    AnyValue::new_string("/static/main.css"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![KeyValue::new(
+                    "path",
+                    AnyValue::new_string("/api/v2/orders"),
+                )])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_matches_with_attribute_haystack_kql_parser() {
+        test_filter_matches_with_attribute_haystack::<KqlParser>(
+            r#"logs | where attributes["path"] matches regex "^/api/.*""#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_matches_with_attribute_haystack_opl_parser() {
+        test_filter_matches_with_attribute_haystack::<OplParser>(
+            r#"logs | where matches(attributes["path"], "^/api/.*")"#,
+        )
+        .await;
+    }
 }
