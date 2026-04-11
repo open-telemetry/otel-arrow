@@ -6012,30 +6012,30 @@ mod test {
         .await;
     }
 
-    /// Filter using matches (regex) on a column -- the existing fast path.
-    /// This confirms the fast path still works correctly alongside the new expr path.
-    async fn test_filter_matches_with_attribute_haystack<P: Parser>(q: &str) {
+    /// Filter using contains where both haystack and needle are attributes (cross-scope
+    /// on both sides). This exercises `build_scoped_contains_expr` with a Join.
+    async fn test_filter_contains_attribute_both_sides<P: Parser>(q: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
-                .attributes(vec![KeyValue::new(
-                    "path",
-                    AnyValue::new_string("/api/v1/users"),
-                )])
+                .attributes(vec![
+                    KeyValue::new("haystack", AnyValue::new_string("hello world")),
+                    KeyValue::new("needle", AnyValue::new_string("world")),
+                ])
                 .finish(),
             LogRecord::build()
                 .event_name("2")
-                .attributes(vec![KeyValue::new(
-                    "path",
-                    AnyValue::new_string("/static/main.css"),
-                )])
+                .attributes(vec![
+                    KeyValue::new("haystack", AnyValue::new_string("foo bar")),
+                    KeyValue::new("needle", AnyValue::new_string("baz")),
+                ])
                 .finish(),
             LogRecord::build()
                 .event_name("3")
-                .attributes(vec![KeyValue::new(
-                    "path",
-                    AnyValue::new_string("/api/v2/orders"),
-                )])
+                .attributes(vec![
+                    KeyValue::new("haystack", AnyValue::new_string("quick brown fox")),
+                    KeyValue::new("needle", AnyValue::new_string("brown")),
+                ])
                 .finish(),
         ];
 
@@ -6047,17 +6047,17 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_matches_with_attribute_haystack_kql_parser() {
-        test_filter_matches_with_attribute_haystack::<KqlParser>(
-            r#"logs | where attributes["path"] matches regex "^/api/.*""#,
+    async fn test_filter_contains_attribute_both_sides_kql_parser() {
+        test_filter_contains_attribute_both_sides::<KqlParser>(
+            r#"logs | where attributes["haystack"] contains attributes["needle"]"#,
         )
         .await;
     }
 
     #[tokio::test]
-    async fn test_filter_matches_with_attribute_haystack_opl_parser() {
-        test_filter_matches_with_attribute_haystack::<OplParser>(
-            r#"logs | where matches(attributes["path"], "^/api/.*")"#,
+    async fn test_filter_contains_attribute_both_sides_opl_parser() {
+        test_filter_contains_attribute_both_sides::<OplParser>(
+            r#"logs | where contains(attributes["haystack"], attributes["needle"])"#,
         )
         .await;
     }
