@@ -9,6 +9,7 @@ mod error;
 mod render;
 mod style;
 mod troubleshoot;
+mod ui;
 
 pub use args::Cli;
 
@@ -63,11 +64,22 @@ pub async fn run_with_terminal(
     stdout_is_terminal: bool,
 ) -> Result<(), CliError> {
     ensure_crypto_provider()?;
-    let human_style = HumanStyle::resolve(cli.color, stdout_is_terminal);
-    let resolved = resolve_connection(&cli.connection)?;
+    let ParsedCli {
+        connection,
+        color,
+        command,
+    } = cli;
+    if matches!(command, Command::Ui(_)) && !stdout_is_terminal {
+        return Err(CliError::invalid_usage(
+            "`dfctl ui` requires an interactive terminal",
+        ));
+    }
+    let human_style = HumanStyle::resolve(color, stdout_is_terminal);
+    let resolved = resolve_connection(&connection)?;
     let client = AdminClient::builder().http(resolved.settings).build()?;
 
-    match cli.command {
+    match command {
+        Command::Ui(args) => ui::run_ui(&client, args, color).await,
         Command::Engine(args) => match args.command {
             EngineCommand::Status(output) => {
                 let status = client.engine().status().await?;

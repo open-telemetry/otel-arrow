@@ -30,6 +30,10 @@ impl HumanStyle {
         Self { enabled }
     }
 
+    pub const fn is_enabled(self) -> bool {
+        self.enabled
+    }
+
     pub fn header(self, text: impl AsRef<str>) -> String {
         self.paint(text, &[AnsiCode::Bold, AnsiCode::Cyan])
     }

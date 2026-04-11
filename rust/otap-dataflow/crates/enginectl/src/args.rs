@@ -26,6 +26,14 @@ pub struct Cli {
     pub command: Command,
 }
 
+impl Cli {
+    /// Returns true when the parsed command should launch the interactive UI.
+    #[must_use]
+    pub const fn is_ui(&self) -> bool {
+        matches!(self.command, Command::Ui(_))
+    }
+}
+
 #[derive(Args, Debug, Clone, Default)]
 pub struct ConnectionArgs {
     #[arg(long, env = "DFCTL_URL", global = true, value_name = "URL")]
@@ -128,10 +136,23 @@ pub struct ConnectionArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
+    Ui(UiArgs),
     Engine(EngineArgs),
     Groups(GroupsArgs),
     Pipelines(PipelinesArgs),
     Telemetry(TelemetryArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UiArgs {
+    #[arg(long, value_enum, default_value_t = UiStartView::Pipelines)]
+    pub start_view: UiStartView,
+
+    #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
+    pub refresh_interval: Duration,
+
+    #[arg(long, default_value_t = 200)]
+    pub logs_tail: usize,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -246,6 +267,13 @@ pub struct MetricsArgs {
 pub enum MetricsCommand {
     Get(MetricsGetArgs),
     Watch(MetricsWatchArgs),
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum UiStartView {
+    Pipelines,
+    Groups,
+    Engine,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -815,6 +843,30 @@ mod tests {
             .expect("color flag should parse");
 
         assert_eq!(cli.color, ColorChoice::Always);
+    }
+
+    #[test]
+    fn ui_args_parse() {
+        let cli = Cli::try_parse_from([
+            "dfctl",
+            "ui",
+            "--start-view",
+            "groups",
+            "--refresh-interval",
+            "5s",
+            "--logs-tail",
+            "250",
+        ])
+        .expect("ui args should parse");
+
+        match cli.command {
+            Command::Ui(args) => {
+                assert_eq!(args.start_view, UiStartView::Groups);
+                assert_eq!(args.refresh_interval, Duration::from_secs(5));
+                assert_eq!(args.logs_tail, 250);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

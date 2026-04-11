@@ -27,8 +27,10 @@ otap-df-admin-api = { path = "../admin-api", default-features = false, features 
 otap-df-config = { workspace = true }
 
 clap = { workspace = true, features = ["derive", "env"] }
+crossterm = { workspace = true }
 humantime = { workspace = true }
 humantime-serde = { workspace = true }
+ratatui = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
