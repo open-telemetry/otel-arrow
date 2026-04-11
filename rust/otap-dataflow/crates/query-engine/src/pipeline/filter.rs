@@ -5,6 +5,10 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::{
+    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, LogicalExprDataSource, ScopedLogicalExpr,
+    ScopedPhysicalExpr,
+};
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
@@ -19,8 +23,8 @@ use arrow::datatypes::UInt16Type;
 use async_trait::async_trait;
 use data_engine_expressions::{
     BooleanValue, ContainsLogicalExpression, Expression, LogicalExpression,
-    MatchesLogicalExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
-    StringValue,
+    MatchesLogicalExpression, PipelineFunction, ScalarExpression, StaticScalarExpression,
+    StringScalarExpression, StringValue,
 };
 use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
@@ -28,7 +32,7 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
+use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
@@ -145,6 +149,16 @@ impl<T> From<T> for Composite<T> {
 /// Can be constructed from either a DataFusion `Expr` (for root batch's filters) or an
 /// `AttributesFilterPlan` (for attribute filters), and can be composed into boolean expressions
 /// using `Composite`.
+/// A logical plan for filtering data across root batch's columns and attributes.
+///
+/// Supports three types of filters that can be applied independently or together:
+/// - `source_filter`: Filters on regular columns in the source data (fast path)
+/// - `attribute_filter`: Filters on key-value attribute pairs (fast path)
+/// - `expr_filter`: General-purpose filter using the expression evaluation system, supporting
+///   cross-scope comparisons (e.g. column vs attribute), function calls, arithmetic, etc.
+///
+/// When multiple filter types are present, the resulting execution of the plan will be the
+/// intersection of all filters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
@@ -153,6 +167,15 @@ pub struct FilterPlan {
     /// filters that will be applied to the attributes record batch in order fo filter the
     /// rows of the root batch
     pub attribute_filter: Option<Composite<AttributesFilterPlan>>,
+
+    /// General-purpose expression-based filter. Used for cases that cannot be handled by the
+    /// fast-path `source_filter` and `attribute_filter`, such as comparing two fields,
+    /// cross-scope comparisons (e.g. `severity_number == attributes["x"]`), function calls
+    /// in filters, arithmetic expressions, etc.
+    ///
+    /// This uses the same expression evaluation infrastructure as `set` expressions, including
+    /// support for joins across data scopes.
+    pub expr_filter: Option<ScopedLogicalExpr>,
 }
 
 impl From<Expr> for FilterPlan {
@@ -160,6 +183,7 @@ impl From<Expr> for FilterPlan {
         Self {
             source_filter: Some(expr),
             attribute_filter: None,
+            expr_filter: None,
         }
     }
 }
@@ -169,6 +193,7 @@ impl From<AttributesFilterPlan> for FilterPlan {
         Self {
             source_filter: None,
             attribute_filter: Some(attrs_filter.into()),
+            expr_filter: None,
         }
     }
 }
@@ -178,6 +203,18 @@ impl From<Composite<AttributesFilterPlan>> for FilterPlan {
         Self {
             source_filter: None,
             attribute_filter: Some(attrs_filter),
+            expr_filter: None,
+        }
+    }
+}
+
+impl FilterPlan {
+    /// Create a FilterPlan that uses the general expression evaluation path.
+    fn from_expr(expr: ScopedLogicalExpr) -> Self {
+        Self {
+            source_filter: None,
+            attribute_filter: None,
+            expr_filter: Some(expr),
         }
     }
 }
@@ -191,13 +228,19 @@ impl FilterPlan {
     /// - a column (e.g. severity_text, event_name, etc.)
     /// - a column nested within a struct (e.g. resource.schema_url, instrumentation_scope.name, etc.)
     /// - a literal (e.g. "a", 1234, true, etc.)
+    /// - a function invocation (e.g. encode(severity_text, "base64"))
+    /// - an arithmetic expression (e.g. severity_number + 1)
     ///
+    /// For common patterns (column vs literal, attribute vs literal), optimized fast paths are used.
+    /// For all other combinations (column vs column, attribute vs column, function calls, etc.),
+    /// the general expression evaluation system is used as a fallback.
     fn try_from_binary_expr(
         left_expr: &ScalarExpression,
         mut binary_op: Operator,
         right_expr: &ScalarExpression,
         case_sensitive: bool,
         attr_keys_case_sensitive: bool,
+        functions: &[PipelineFunction],
     ) -> Result<Self> {
         let mut left_arg = BinaryArg::try_from(left_expr)?;
         let mut right_arg = BinaryArg::try_from(right_expr)?;
@@ -219,18 +262,11 @@ impl FilterPlan {
             Self::transform_case_insensitive_equals(&mut left_arg, &mut binary_op, &mut right_arg);
         }
 
-        // TODO there are several branches below which are not yet supported
-        // - comparing two literals. e.g "a" == "b"
-        // - comparing non-literal left with non-literal right. e.g.
-        //   - severity_text == event_name
-        //   - attributes["x"] == severity_text
-        //   - etc.
-
         match left_arg {
             BinaryArg::Column(left_column) => match left_column {
                 ColumnAccessor::ColumnName(left_col_name) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
-                        // left = column & right = literal
+                        // left = column & right = literal (fast path)
                         let right_expr =
                             try_static_scalar_to_literal_for_column(&left_col_name, &right_lit)?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
@@ -240,16 +276,16 @@ impl FilterPlan {
                         ))))
                     }
                     BinaryArg::Null => {
-                        // left = column & right == null
+                        // left = column & right == null (fast path)
                         Ok(FilterPlan::from(col(left_col_name).is_null()))
                     }
-                    _ => Err(Error::NotYetSupportedError {
-                        message: "comparing left column with non-literal right in filter.".into(),
-                    }),
+                    _ => Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    ),
                 },
                 ColumnAccessor::StructCol(left_struct_name, left_struct_field) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
-                        // left = struct col & right = literal
+                        // left = struct col & right = literal (fast path)
                         let right_expr = try_static_scalar_to_literal_for_column(
                             &left_struct_field,
                             &right_lit,
@@ -261,20 +297,19 @@ impl FilterPlan {
                         ))))
                     }
                     BinaryArg::Null => {
-                        // left = struct col & right = null
+                        // left = struct col & right = null (fast path)
                         Ok(FilterPlan::from(
                             col(left_struct_name).field(left_struct_field).is_null(),
                         ))
                     }
-                    _ => Err(Error::NotYetSupportedError {
-                        message: "comparing left struct column with non-literal right in filter"
-                            .into(),
-                    }),
+                    _ => Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    ),
                 },
                 ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                     match right_arg {
                         BinaryArg::Literal(right_lit) => {
-                            // left = attribute & right = literal
+                            // left = attribute & right = literal (fast path)
                             Ok(FilterPlan::from(AttributesFilterPlan::new(
                                 // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
                                 Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
@@ -293,20 +328,22 @@ impl FilterPlan {
                                 attrs_identifier,
                             ))))
                         }
-                        _ => Err(Error::NotYetSupportedError {
-                            message: "comparing left attribute with non-literal right in filter"
-                                .into(),
-                        }),
+                        _ => Self::try_from_binary_expr_via_expr_eval(
+                            left_expr, binary_op, right_expr, functions,
+                        ),
                     }
                 }
             },
             BinaryArg::Literal(left_lit) => match right_arg {
-                BinaryArg::Literal(_right_lit) => Err(Error::NotYetSupportedError {
-                    message: "comparing literals in filter".into(),
-                }),
+                BinaryArg::Literal(_right_lit) => {
+                    // comparing two literals -- delegate to expression eval
+                    Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    )
+                }
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
-                        // left = literal & right = column
+                        // left = literal & right = column (fast path)
                         let left_expr =
                             try_static_scalar_to_literal_for_column(&right_col_name, &left_lit)?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
@@ -316,7 +353,7 @@ impl FilterPlan {
                         ))))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
-                        // left = literal & right = struct col
+                        // left = literal & right = struct col (fast path)
                         let left_expr = try_static_scalar_to_literal_for_column(
                             &right_struct_field,
                             &left_lit,
@@ -328,7 +365,7 @@ impl FilterPlan {
                         ))))
                     }
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
-                        // left = literal & right = attribute
+                        // left = literal & right = attribute (fast path)
                         Ok(FilterPlan::from(AttributesFilterPlan::new(
                             // col(consts::ATTRIBUTE_KEY)
                             //     .eq(lit(attrs_key))
@@ -342,20 +379,20 @@ impl FilterPlan {
                     }
                 },
                 BinaryArg::Null => {
-                    // literal == null
-                    Err(Error::NotYetSupportedError {
-                        message: "comparing left literal with right null".into(),
-                    })
+                    // literal == null -- delegate to expression eval
+                    Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    )
                 }
             },
             BinaryArg::Null => match right_arg {
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
-                        // left = null & right = column
+                        // left = null & right = column (fast path)
                         Ok(FilterPlan::from(col(right_col_name).is_null()))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
-                        // left = null, right = struct column
+                        // left = null, right = struct column (fast path)
                         Ok(FilterPlan::from(
                             col(right_struct_name).field(right_struct_field).is_null(),
                         ))
@@ -369,24 +406,95 @@ impl FilterPlan {
                     }
                 },
                 BinaryArg::Literal(_lit) => {
-                    // null == lit
-                    Err(Error::NotYetSupportedError {
-                        message: "comparing left null with right literal".into(),
-                    })
+                    // null == lit -- delegate to expression eval
+                    Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    )
                 }
                 BinaryArg::Null => {
-                    // null == null
-                    Err(Error::NotYetSupportedError {
-                        message: "comparing left null with right null".into(),
-                    })
+                    // null == null -- delegate to expression eval
+                    Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    )
                 }
             },
+        }
+    }
+
+    /// Fallback path: plan a binary comparison filter expression using the general expression
+    /// evaluation system. This handles cases that the optimized fast paths don't cover, such
+    /// as comparing two columns, cross-scope comparisons, function calls, etc.
+    fn try_from_binary_expr_via_expr_eval(
+        left_expr: &ScalarExpression,
+        binary_op: Operator,
+        right_expr: &ScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<Self> {
+        let planner = ExprLogicalPlanner::default();
+        let left = planner.plan_scalar_expr(left_expr, functions)?;
+        let right = planner.plan_scalar_expr(right_expr, functions)?;
+
+        // build the comparison expression using the expr system's scoping logic
+        let expr = Self::build_scoped_comparison_expr(left, binary_op, right)?;
+        Ok(FilterPlan::from_expr(expr))
+    }
+
+    /// Build a `ScopedLogicalExpr` that performs a boolean comparison (eq, gt, etc.) on the
+    /// results of two child expressions. Handles both same-scope and cross-scope cases.
+    fn build_scoped_comparison_expr(
+        left: ScopedLogicalExpr,
+        binary_op: Operator,
+        right: ScopedLogicalExpr,
+    ) -> Result<ScopedLogicalExpr> {
+        use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
+        use crate::pipeline::expr::types::ExprLogicalType;
+
+        // check if both sides can be evaluated in the same scope (no join needed)
+        let possible_combined_scope = match (&left.source, &right.source) {
+            (
+                LogicalExprDataSource::DataSource(left_scope),
+                LogicalExprDataSource::DataSource(right_scope),
+            ) => left_scope
+                .can_combine(right_scope)
+                .then_some(if !left_scope.is_scalar() {
+                    left_scope
+                } else {
+                    right_scope
+                }),
+            _ => None,
+        };
+
+        if let Some(combined_scope) = possible_combined_scope {
+            let dict_downcast = left.requires_dict_downcast || right.requires_dict_downcast;
+            Ok(ScopedLogicalExpr {
+                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(left.logical_expr),
+                    binary_op,
+                    Box::new(right.logical_expr),
+                )),
+                source: LogicalExprDataSource::DataSource(combined_scope.clone()),
+                expr_type: ExprLogicalType::Boolean,
+                requires_dict_downcast: dict_downcast,
+            })
+        } else {
+            // different scopes -- need a join
+            Ok(ScopedLogicalExpr {
+                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(col(LEFT_COLUMN_NAME)),
+                    binary_op,
+                    Box::new(col(RIGHT_COLUMN_NAME)),
+                )),
+                source: LogicalExprDataSource::Join(Box::new(left), Box::new(right)),
+                expr_type: ExprLogicalType::Boolean,
+                requires_dict_downcast: true,
+            })
         }
     }
 
     fn try_from_contains_expr(
         contains_expr: &ContainsLogicalExpression,
         attr_keys_case_sensitive: bool,
+        functions: &[PipelineFunction],
     ) -> Result<Self> {
         let left_arg = BinaryArg::try_from(contains_expr.get_haystack())?;
         let right_arg = BinaryArg::try_from(contains_expr.get_needle())?;
@@ -397,11 +505,11 @@ impl FilterPlan {
                 let right_expr = match right_arg {
                     BinaryArg::Literal(right_lit) => try_static_scalar_to_attr_literal(&right_lit)?,
                     _ => {
-                        return Err(Error::NotYetSupportedError {
-                            message:
-                                "text contains predicate comparing column left to non literal right"
-                                    .into(),
-                        });
+                        // non-literal needle -- fall back to expression evaluation
+                        return Self::try_from_contains_expr_via_expr_eval(
+                            contains_expr,
+                            functions,
+                        );
                     }
                 };
 
@@ -422,9 +530,11 @@ impl FilterPlan {
                 let (right_expr, attrs) = match right_arg {
                     BinaryArg::Column(right_column) => Self::contains_column_arg(right_column),
                     _ => {
-                        return Err(Error::NotYetSupportedError {
-                            message: "contains with left literal and right non-column".into(),
-                        });
+                        // non-column right side -- fall back to expression evaluation
+                        return Self::try_from_contains_expr_via_expr_eval(
+                            contains_expr,
+                            functions,
+                        );
                     }
                 };
 
@@ -440,15 +550,73 @@ impl FilterPlan {
                     }
                 })
             }
-            BinaryArg::Null => Err(Error::NotYetSupportedError {
-                message: "contains with left literal null".into(),
-            }),
+            BinaryArg::Null => Self::try_from_contains_expr_via_expr_eval(
+                contains_expr,
+                functions,
+            ),
+        }
+    }
+
+    /// Fallback path for contains expressions that can't be handled by the fast path.
+    fn try_from_contains_expr_via_expr_eval(
+        contains_expr: &ContainsLogicalExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<Self> {
+        let planner = ExprLogicalPlanner::default();
+        let haystack = planner.plan_scalar_expr(contains_expr.get_haystack(), functions)?;
+        let needle = planner.plan_scalar_expr(contains_expr.get_needle(), functions)?;
+
+        // Build a contains function call as a ScopedLogicalExpr
+        let expr = Self::build_scoped_contains_expr(haystack, needle)?;
+        Ok(FilterPlan::from_expr(expr))
+    }
+
+    /// Build a `ScopedLogicalExpr` that performs a contains check on two expressions.
+    fn build_scoped_contains_expr(
+        haystack: ScopedLogicalExpr,
+        needle: ScopedLogicalExpr,
+    ) -> Result<ScopedLogicalExpr> {
+        use crate::pipeline::expr::types::ExprLogicalType;
+
+        // check if both sides can be evaluated in the same scope
+        let possible_combined_scope = match (&haystack.source, &needle.source) {
+            (
+                LogicalExprDataSource::DataSource(left_scope),
+                LogicalExprDataSource::DataSource(right_scope),
+            ) => left_scope
+                .can_combine(right_scope)
+                .then_some(if !left_scope.is_scalar() {
+                    left_scope
+                } else {
+                    right_scope
+                }),
+            _ => None,
+        };
+
+        if let Some(combined_scope) = possible_combined_scope {
+            let dict_downcast =
+                haystack.requires_dict_downcast || needle.requires_dict_downcast;
+            Ok(ScopedLogicalExpr {
+                logical_expr: contains(haystack.logical_expr, needle.logical_expr),
+                source: LogicalExprDataSource::DataSource(combined_scope.clone()),
+                expr_type: ExprLogicalType::Boolean,
+                requires_dict_downcast: dict_downcast,
+            })
+        } else {
+            use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
+            Ok(ScopedLogicalExpr {
+                logical_expr: contains(col(LEFT_COLUMN_NAME), col(RIGHT_COLUMN_NAME)),
+                source: LogicalExprDataSource::Join(Box::new(haystack), Box::new(needle)),
+                expr_type: ExprLogicalType::Boolean,
+                requires_dict_downcast: true,
+            })
         }
     }
 
     fn try_from_matches_expr(
         matches_expr: &MatchesLogicalExpression,
         attr_keys_case_sensitive: bool,
+        _functions: &[PipelineFunction],
     ) -> Result<Self> {
         let left_arg = BinaryArg::try_from(matches_expr.get_haystack())?;
         let pattern = match matches_expr.get_pattern() {
@@ -607,6 +775,7 @@ impl Composite<FilterPlan> {
     pub fn try_from(
         logical_expr: &LogicalExpression,
         attr_keys_case_sensitive: bool,
+        functions: &[PipelineFunction],
     ) -> Result<Self> {
         match logical_expr {
             LogicalExpression::EqualTo(equals_to_expr) => FilterPlan::try_from_binary_expr(
@@ -615,6 +784,7 @@ impl Composite<FilterPlan> {
                 equals_to_expr.get_right(),
                 !equals_to_expr.get_case_insensitive(),
                 attr_keys_case_sensitive,
+                functions,
             )
             .map(|plan| plan.into()),
             LogicalExpression::GreaterThan(gt_expr) => FilterPlan::try_from_binary_expr(
@@ -623,6 +793,7 @@ impl Composite<FilterPlan> {
                 gt_expr.get_right(),
                 Default::default(),
                 attr_keys_case_sensitive,
+                functions,
             )
             .map(|plan| plan.into()),
             LogicalExpression::GreaterThanOrEqualTo(geq_expr) => FilterPlan::try_from_binary_expr(
@@ -631,38 +802,58 @@ impl Composite<FilterPlan> {
                 geq_expr.get_right(),
                 Default::default(),
                 attr_keys_case_sensitive,
+                functions,
             )
             .map(|plan| plan.into()),
             LogicalExpression::And(and_expr) => {
-                let left = Self::try_from(and_expr.get_left(), attr_keys_case_sensitive)?;
-                let right = Self::try_from(and_expr.get_right(), attr_keys_case_sensitive)?;
+                let left =
+                    Self::try_from(and_expr.get_left(), attr_keys_case_sensitive, functions)?;
+                let right =
+                    Self::try_from(and_expr.get_right(), attr_keys_case_sensitive, functions)?;
                 Ok(Self::and(left, right))
             }
             LogicalExpression::Or(or_expr) => {
-                let left = Self::try_from(or_expr.get_left(), attr_keys_case_sensitive)?;
-                let right = Self::try_from(or_expr.get_right(), attr_keys_case_sensitive)?;
+                let left =
+                    Self::try_from(or_expr.get_left(), attr_keys_case_sensitive, functions)?;
+                let right =
+                    Self::try_from(or_expr.get_right(), attr_keys_case_sensitive, functions)?;
                 Ok(Self::or(left, right))
             }
             LogicalExpression::Not(not_expr) => {
-                let inner =
-                    Self::try_from(not_expr.get_inner_expression(), attr_keys_case_sensitive)?;
+                let inner = Self::try_from(
+                    not_expr.get_inner_expression(),
+                    attr_keys_case_sensitive,
+                    functions,
+                )?;
                 Ok(Self::not(inner))
             }
             LogicalExpression::Contains(contains_expr) => Ok(Self::from(
-                FilterPlan::try_from_contains_expr(contains_expr, attr_keys_case_sensitive)?,
+                FilterPlan::try_from_contains_expr(
+                    contains_expr,
+                    attr_keys_case_sensitive,
+                    functions,
+                )?,
             )),
             LogicalExpression::Matches(matches_expr) => Ok(Self::from(
-                FilterPlan::try_from_matches_expr(matches_expr, attr_keys_case_sensitive)?,
+                FilterPlan::try_from_matches_expr(
+                    matches_expr,
+                    attr_keys_case_sensitive,
+                    functions,
+                )?,
             )),
 
             LogicalExpression::Scalar(scalar_expr) => match scalar_expr {
                 ScalarExpression::Static(StaticScalarExpression::Boolean(bool)) => {
                     Ok(Self::from(FilterPlan::from(lit(bool.get_value()))))
                 }
-                // TODO add support for these expressions eventually
-                _ => Err(Error::NotYetSupportedError {
-                    message: format!("Logical expression not yet supported {logical_expr:?}"),
-                }),
+                // For any other scalar expression, plan it via the expression evaluation system.
+                // This handles cases like function calls that return booleans, boolean column
+                // references, etc.
+                other => {
+                    let planner = ExprLogicalPlanner::default();
+                    let expr = planner.plan_scalar_expr(other, functions)?;
+                    Ok(Self::from(FilterPlan::from_expr(expr)))
+                }
             },
         }
     }
@@ -687,6 +878,16 @@ impl ToExec for FilterPlan {
             .map(|attr_filter| attr_filter.to_exec(session_ctx, otap_batch))
             .transpose()?;
 
+        let expr_predicate = self
+            .expr_filter
+            .as_ref()
+            .map(|logical_expr| {
+                let planner = ExprPhysicalPlanner::default();
+                // clone the logical expr since into_physical consumes it
+                planner.plan(logical_expr.clone())
+            })
+            .transpose()?;
+
         // compute how to handle missing attributes. If the attrs filter is not(attr exists), then
         // if the id column null for some row (meaning no attributes), or if the ID column is
         // absent entirely (meaning now rows have attributes) then we treat the rows as it passes
@@ -702,6 +903,7 @@ impl ToExec for FilterPlan {
         Ok(FilterExec {
             predicate: physical_expr,
             attributes_filter: attrs_filter,
+            expr_predicate,
             missing_attrs_pass,
         })
     }
@@ -809,6 +1011,11 @@ pub struct FilterExec {
 
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 
+    /// General-purpose expression-based predicate. Evaluated using the expression evaluation
+    /// system (supporting joins across data scopes). The result is converted to a
+    /// `BooleanArray` aligned to the root record batch.
+    expr_predicate: Option<ScopedPhysicalExpr>,
+
     /// determines how we treat rows that where there are no attributes. if false, this cause the
     /// row not to pass the filter, unless this is true which it should be set it as for filters/
     /// like `attributes["x"] == null`
@@ -820,6 +1027,7 @@ impl From<AdaptivePhysicalExprExec> for FilterExec {
         Self {
             predicate: Some(predicate),
             attributes_filter: None,
+            expr_predicate: None,
             missing_attrs_pass: false,
         }
     }
@@ -925,6 +1133,17 @@ impl FilterExec {
             });
         }
 
+        // evaluate the general expression-based predicate (if present)
+        if let Some(expr_pred) = &mut self.expr_predicate {
+            let expr_selection_vec =
+                Self::evaluate_expr_predicate(expr_pred, otap_batch, session_ctx, root_rb)?;
+
+            selection_vec = Some(match selection_vec {
+                Some(sv) => and(&sv, &expr_selection_vec)?,
+                None => expr_selection_vec,
+            });
+        }
+
         // if for some reason this filter was empty (would be unusual b/c we shouldn't be planning
         // filters like this), we just return a vec indicating that all rows passed the predicate
         let result = selection_vec.unwrap_or(BooleanArray::new(
@@ -933,6 +1152,201 @@ impl FilterExec {
         ));
 
         Ok(result)
+    }
+
+    /// Evaluates a [`ScopedPhysicalExpr`] and converts the result to a `BooleanArray` selection
+    /// vector aligned to the root record batch.
+    ///
+    /// The expression may produce results from any data scope (root, attributes, join result, or
+    /// scalar). This method handles the alignment:
+    /// - Root scope: result is already aligned, just extract the boolean array
+    /// - Scalar scope: broadcast the scalar boolean to all rows
+    /// - Attributes scope: use parent_id -> root join to align
+    fn evaluate_expr_predicate(
+        expr_pred: &mut ScopedPhysicalExpr,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+        root_rb: &RecordBatch,
+    ) -> Result<BooleanArray> {
+        let num_rows = root_rb.num_rows();
+
+        let eval_result = match expr_pred.execute(otap_batch, session_ctx)? {
+            Some(result) => result,
+            None => {
+                // expression result was null/absent -- treat as all rows failing the filter
+                return Ok(BooleanArray::new(
+                    BooleanBuffer::new_unset(num_rows),
+                    None,
+                ));
+            }
+        };
+
+        // convert the ColumnarValue to an array
+        let result_array = match &eval_result.values {
+            ColumnarValue::Scalar(scalar) => {
+                // scalar result -- broadcast to all rows of root batch
+                let bool_val = match scalar {
+                    ScalarValue::Boolean(Some(b)) => *b,
+                    ScalarValue::Boolean(None) | ScalarValue::Null => false,
+                    other => {
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "expression predicate must evaluate to a boolean, found {:?}",
+                                other.data_type()
+                            ),
+                        });
+                    }
+                };
+                return Ok(BooleanArray::new(
+                    if bool_val {
+                        BooleanBuffer::new_set(num_rows)
+                    } else {
+                        BooleanBuffer::new_unset(num_rows)
+                    },
+                    None,
+                ));
+            }
+            ColumnarValue::Array(arr) => arr.clone(),
+        };
+
+        let boolean_arr = as_boolean_array(&result_array)
+            .cloned()
+            .map_err(|_| Error::ExecutionError {
+                cause: format!(
+                    "expression predicate must evaluate to a boolean, found {}",
+                    result_array.data_type()
+                ),
+            })?;
+
+        // strip nulls: treat null predicate results as false
+        let boolean_arr = strip_null_from_boolean_filter(&boolean_arr);
+
+        // check if the result is already aligned to the root batch
+        match eval_result.data_scope.as_ref() {
+            DataScope::Root | DataScope::StaticScalar => {
+                // result is already aligned to root batch rows
+                Ok(boolean_arr)
+            }
+            DataScope::Attributes(attrs_id, _) => {
+                // result is aligned to some filtered attributes batch -- need to map back to root
+                // using parent_id -> root.id join. Rows in root that have no matching attribute
+                // will be treated as not passing the filter.
+                Self::align_attrs_result_to_root(
+                    &boolean_arr,
+                    &eval_result,
+                    *attrs_id,
+                    otap_batch,
+                    root_rb,
+                )
+            }
+        }
+    }
+
+    /// Aligns a boolean result from an attributes-scoped expression evaluation back to the root
+    /// record batch.
+    ///
+    /// This uses a similar approach to the existing attribute filter path: we build a
+    /// `BooleanArray` for the root batch by looking up which parent_ids passed the expression
+    /// predicate.
+    fn align_attrs_result_to_root(
+        boolean_arr: &BooleanArray,
+        eval_result: &crate::pipeline::expr::PhysicalExprEvalResult,
+        attrs_id: AttributesIdentifier,
+        otap_batch: &OtapArrowRecords,
+        root_rb: &RecordBatch,
+    ) -> Result<BooleanArray> {
+        let num_rows = root_rb.num_rows();
+
+        // get parent_id column from the expression result
+        let parent_ids = eval_result
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "expression predicate result from attributes scope missing parent_id column"
+                    .into(),
+            })?;
+        let parent_id_col = parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: format!(
+                    "expected parent_id to be UInt16, found {:?}",
+                    parent_ids.data_type()
+                ),
+            })?;
+
+        // get the id column from the root batch that corresponds to the attributes payload type
+        let attrs_payload_type = match attrs_id {
+            AttributesIdentifier::Root => match otap_batch.root_payload_type() {
+                ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
+                ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
+                _ => ArrowPayloadType::MetricAttrs,
+            },
+            AttributesIdentifier::NonRoot(payload_type) => payload_type,
+        };
+
+        let id_col = match UInt16Type::get_id_col_from_parent(root_rb, attrs_payload_type)? {
+            Some(MaybeDictArrayAccessor::Native(id_col)) => id_col,
+            Some(_) => {
+                return Err(Error::ExecutionError {
+                    cause: "invalid type for ID column on root batch".into(),
+                });
+            }
+            None => {
+                // no ID column means no attributes exist -- all rows fail
+                return Ok(BooleanArray::new(
+                    BooleanBuffer::new_unset(num_rows),
+                    None,
+                ));
+            }
+        };
+
+        // build a lookup from parent_id -> boolean result. For attributes, multiple rows may
+        // share the same parent_id (shouldn't normally happen for a key-filtered result, but
+        // we handle it defensively). We use OR semantics: if any attribute row for a parent_id
+        // passes, the parent passes.
+        //
+        // We use a simple array indexed by parent_id value (u16 range is small enough)
+        // 0 = not seen, 1 = seen but false, 2 = seen and true
+        let mut id_result: Vec<u8> = vec![0u8; 65536];
+        for i in 0..parent_id_col.len() {
+            if parent_id_col.is_valid(i) {
+                let pid = parent_id_col.value(i) as usize;
+                let passes = boolean_arr.value(i);
+                if passes {
+                    id_result[pid] = 2;
+                } else if id_result[pid] == 0 {
+                    id_result[pid] = 1;
+                }
+            }
+        }
+
+        // map the root batch's id column through the lookup
+        let mut builder = BooleanBufferBuilder::new(num_rows);
+        let mut segment_validity = false;
+        let mut segment_len = 0usize;
+
+        for index in 0..id_col.len() {
+            let row_passes = if id_col.is_valid(index) {
+                id_result[id_col.value(index) as usize] == 2
+            } else {
+                false
+            };
+
+            if segment_validity != row_passes {
+                if segment_len > 0 {
+                    builder.append_n(segment_len, segment_validity);
+                }
+                segment_validity = row_passes;
+                segment_len = 0;
+            }
+            segment_len += 1;
+        }
+        if segment_len > 0 {
+            builder.append_n(segment_len, segment_validity);
+        }
+
+        Ok(BooleanArray::new(builder.finish(), None))
     }
 }
 
@@ -1348,6 +1762,22 @@ impl AdaptivePhysicalExprExec {
 pub(crate) use otap_df_pdata::otap::filter::filter_otap_batch;
 
 // ChildBatchFilterIdHelper trait and impls are provided by otap_df_pdata::otap::filter.
+
+/// Strips nulls from a boolean array by treating null values as `false`.
+///
+/// This is used for filter predicate results where null should mean "does not pass the filter".
+fn strip_null_from_boolean_filter(arr: &BooleanArray) -> BooleanArray {
+    let (values, null_buffer) = arr.clone().into_parts();
+    match null_buffer {
+        None => arr.clone(),
+        Some(null_buffer) => {
+            // AND values with null_buffer to turn null positions into false
+            let null_mask = BooleanArray::new(null_buffer.into_inner(), None);
+            // safety: both arrays have the same length (they came from the same BooleanArray)
+            and(&BooleanArray::new(values, None), &null_mask).expect("same length arrays")
+        }
+    }
+}
 
 fn get_parent_id_column(record_batch: &RecordBatch) -> Result<&UInt16Array> {
     // get the parent ID column
@@ -4622,7 +5052,7 @@ mod test {
         fn evaluate(
             &self,
             _batch: &RecordBatch,
-        ) -> datafusion::error::Result<datafusion::logical_expr::ColumnarValue> {
+        ) -> datafusion::error::Result<ColumnarValue> {
             panic!("this shouldn't get called")
         }
 
