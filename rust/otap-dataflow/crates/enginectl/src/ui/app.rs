@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::args::UiStartView;
-use otap_df_admin_api::{engine, groups, telemetry};
+use humantime::format_duration;
+use otap_df_admin_api::{engine, groups, pipelines, telemetry};
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+pub(crate) const UI_TITLE: &str = "OpenTelemetry - Rust Dataflow Engine";
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum View {
@@ -21,6 +24,43 @@ impl View {
             Self::Pipelines => "Pipelines",
             Self::Groups => "Groups",
             Self::Engine => "Engine",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CommandLine {
+    pub(crate) label: String,
+    pub(crate) command: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CommandRecipe {
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) commands: Vec<CommandLine>,
+    pub(crate) note: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UiCommandContext {
+    pub(crate) target_url: String,
+    pub(crate) prefix_args: Vec<String>,
+    pub(crate) refresh_interval: Duration,
+    pub(crate) logs_tail: usize,
+}
+
+impl UiCommandContext {
+    pub(crate) fn local_default(logs_tail: usize) -> Self {
+        Self {
+            target_url: "http://127.0.0.1:8085".to_string(),
+            prefix_args: vec![
+                "dfctl".to_string(),
+                "--url".to_string(),
+                "http://127.0.0.1:8085".to_string(),
+            ],
+            refresh_interval: Duration::from_secs(2),
+            logs_tail,
         }
     }
 }
@@ -127,9 +167,312 @@ impl EngineTab {
     }
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Tone {
+    #[default]
+    Neutral,
+    Accent,
+    Success,
+    Warning,
+    Failure,
+    Muted,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct StatusChip {
+    pub(crate) label: String,
+    pub(crate) value: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DetailHeader {
+    pub(crate) title: String,
+    pub(crate) subtitle: Option<String>,
+    pub(crate) chips: Vec<StatusChip>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct StatCard {
+    pub(crate) label: String,
+    pub(crate) value: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ConditionRow {
+    pub(crate) kind: String,
+    pub(crate) status: String,
+    pub(crate) reason: String,
+    pub(crate) message: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CoreRow {
+    pub(crate) core: String,
+    pub(crate) generation: String,
+    pub(crate) phase: String,
+    pub(crate) heartbeat: String,
+    pub(crate) delete_pending: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TimelineRow {
+    pub(crate) time: String,
+    pub(crate) kind: String,
+    pub(crate) scope: String,
+    pub(crate) message: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct LogRow {
+    pub(crate) time: String,
+    pub(crate) level: String,
+    pub(crate) target: String,
+    pub(crate) message: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MetricRow {
+    pub(crate) metric_set: String,
+    pub(crate) metric: String,
+    pub(crate) instrument: String,
+    pub(crate) unit: String,
+    pub(crate) value: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OperationRow {
+    pub(crate) core: String,
+    pub(crate) state: String,
+    pub(crate) current_generation: String,
+    pub(crate) previous_generation: String,
+    pub(crate) updated_at: String,
+    pub(crate) detail: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FindingRow {
+    pub(crate) severity: String,
+    pub(crate) code: String,
+    pub(crate) summary: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct EvidenceRow {
+    pub(crate) source: String,
+    pub(crate) time: String,
+    pub(crate) message: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PipelineInventoryRow {
+    pub(crate) pipeline: String,
+    pub(crate) running: String,
+    pub(crate) ready: String,
+    pub(crate) active_generation: String,
+    pub(crate) rollout: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProbeFailureRow {
+    pub(crate) pipeline: String,
+    pub(crate) condition: String,
+    pub(crate) message: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PipelineSummaryPane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) stats: Vec<StatCard>,
+    pub(crate) conditions: Vec<ConditionRow>,
+    pub(crate) cores: Vec<CoreRow>,
+    pub(crate) events: Vec<TimelineRow>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GroupSummaryPane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) stats: Vec<StatCard>,
+    pub(crate) problem_pipelines: Vec<PipelineInventoryRow>,
+    pub(crate) pipelines: Vec<PipelineInventoryRow>,
+    pub(crate) events: Vec<TimelineRow>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EngineSummaryPane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) stats: Vec<StatCard>,
+    pub(crate) pipelines: Vec<PipelineInventoryRow>,
+    pub(crate) failing: Vec<ProbeFailureRow>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EventPane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) rows: Vec<TimelineRow>,
+    pub(crate) empty_message: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MetricsPane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) timestamp: Option<String>,
+    pub(crate) rows: Vec<MetricRow>,
+    pub(crate) empty_message: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OperationPane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) stats: Vec<StatCard>,
+    pub(crate) rows: Vec<OperationRow>,
+    pub(crate) empty_message: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DiagnosisPane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) summary: String,
+    pub(crate) findings: Vec<FindingRow>,
+    pub(crate) evidence: Vec<EvidenceRow>,
+    pub(crate) next_steps: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BundlePane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) stats: Vec<StatCard>,
+    pub(crate) preview: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LogFeedState {
+    pub(crate) scope_key: Option<String>,
+    pub(crate) next_seq: Option<u64>,
+    pub(crate) response: Option<telemetry::LogsResponse>,
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) rows: Vec<LogRow>,
+    pub(crate) empty_message: String,
+}
+
+impl LogFeedState {
+    pub(crate) fn reset(&mut self, scope_key: String) {
+        self.scope_key = Some(scope_key);
+        self.next_seq = None;
+        self.response = None;
+        self.header = None;
+        self.rows.clear();
+        self.empty_message.clear();
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.scope_key = None;
+        self.next_seq = None;
+        self.response = None;
+        self.header = None;
+        self.rows.clear();
+        self.empty_message.clear();
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PipelinePaneState {
+    pub(crate) target_key: Option<String>,
+    pub(crate) summary: PipelineSummaryPane,
+    pub(crate) events: EventPane,
+    pub(crate) logs: LogFeedState,
+    pub(crate) metrics: MetricsPane,
+    pub(crate) rollout: OperationPane,
+    pub(crate) diagnosis: DiagnosisPane,
+    pub(crate) bundle: BundlePane,
+}
+
+impl PipelinePaneState {
+    pub(crate) fn reset(&mut self, target_key: String) {
+        self.target_key = Some(target_key.clone());
+        self.summary = PipelineSummaryPane::default();
+        self.events = EventPane::default();
+        self.logs.reset(format!("pipeline:{target_key}"));
+        self.metrics = MetricsPane::default();
+        self.rollout = OperationPane::default();
+        self.diagnosis = DiagnosisPane::default();
+        self.bundle = BundlePane::default();
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.target_key = None;
+        self.summary = PipelineSummaryPane::default();
+        self.events = EventPane::default();
+        self.logs.clear();
+        self.metrics = MetricsPane::default();
+        self.rollout = OperationPane::default();
+        self.diagnosis = DiagnosisPane::default();
+        self.bundle = BundlePane::default();
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GroupPaneState {
+    pub(crate) group_id: Option<String>,
+    pub(crate) summary: GroupSummaryPane,
+    pub(crate) events: EventPane,
+    pub(crate) logs: LogFeedState,
+    pub(crate) metrics: MetricsPane,
+    pub(crate) diagnosis: DiagnosisPane,
+    pub(crate) bundle: BundlePane,
+}
+
+impl GroupPaneState {
+    pub(crate) fn reset(&mut self, group_id: String) {
+        self.group_id = Some(group_id.clone());
+        self.summary = GroupSummaryPane::default();
+        self.events = EventPane::default();
+        self.logs.reset(format!("group:{group_id}"));
+        self.metrics = MetricsPane::default();
+        self.diagnosis = DiagnosisPane::default();
+        self.bundle = BundlePane::default();
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.group_id = None;
+        self.summary = GroupSummaryPane::default();
+        self.events = EventPane::default();
+        self.logs.clear();
+        self.metrics = MetricsPane::default();
+        self.diagnosis = DiagnosisPane::default();
+        self.bundle = BundlePane::default();
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EnginePaneState {
+    pub(crate) summary: EngineSummaryPane,
+    pub(crate) logs: LogFeedState,
+    pub(crate) metrics: MetricsPane,
+}
+
+impl EnginePaneState {
+    pub(crate) fn new() -> Self {
+        let mut state = Self::default();
+        state.logs.reset("engine".to_string());
+        state
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PipelineItem {
     pub(crate) key: String,
+    pub(crate) status_badge: String,
+    pub(crate) tone: Tone,
     pub(crate) pipeline_group_id: String,
     pub(crate) pipeline_id: String,
     pub(crate) running: String,
@@ -140,6 +483,8 @@ pub(crate) struct PipelineItem {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GroupItem {
     pub(crate) group_id: String,
+    pub(crate) status_badge: String,
+    pub(crate) tone: Tone,
     pub(crate) pipelines: usize,
     pub(crate) running: usize,
     pub(crate) ready: usize,
@@ -149,117 +494,11 @@ pub(crate) struct GroupItem {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EnginePipelineItem {
     pub(crate) key: String,
+    pub(crate) status_badge: String,
+    pub(crate) tone: Tone,
     pub(crate) running: String,
     pub(crate) active_generation: String,
     pub(crate) rollout: String,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct LogFeedState {
-    pub(crate) scope_key: Option<String>,
-    pub(crate) next_seq: Option<u64>,
-    pub(crate) response: Option<telemetry::LogsResponse>,
-    pub(crate) rendered: String,
-}
-
-impl LogFeedState {
-    pub(crate) fn reset(&mut self, scope_key: String) {
-        self.scope_key = Some(scope_key);
-        self.next_seq = None;
-        self.response = None;
-        self.rendered.clear();
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.scope_key = None;
-        self.next_seq = None;
-        self.response = None;
-        self.rendered.clear();
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct PipelinePaneState {
-    pub(crate) target_key: Option<String>,
-    pub(crate) summary: String,
-    pub(crate) events: String,
-    pub(crate) logs: LogFeedState,
-    pub(crate) metrics: String,
-    pub(crate) rollout: String,
-    pub(crate) diagnosis: String,
-    pub(crate) bundle: String,
-}
-
-impl PipelinePaneState {
-    pub(crate) fn reset(&mut self, target_key: String) {
-        self.target_key = Some(target_key.clone());
-        self.summary.clear();
-        self.events.clear();
-        self.logs.reset(format!("pipeline:{target_key}"));
-        self.metrics.clear();
-        self.rollout.clear();
-        self.diagnosis.clear();
-        self.bundle.clear();
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.target_key = None;
-        self.summary.clear();
-        self.events.clear();
-        self.logs.clear();
-        self.metrics.clear();
-        self.rollout.clear();
-        self.diagnosis.clear();
-        self.bundle.clear();
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct GroupPaneState {
-    pub(crate) group_id: Option<String>,
-    pub(crate) summary: String,
-    pub(crate) events: String,
-    pub(crate) logs: LogFeedState,
-    pub(crate) metrics: String,
-    pub(crate) diagnosis: String,
-    pub(crate) bundle: String,
-}
-
-impl GroupPaneState {
-    pub(crate) fn reset(&mut self, group_id: String) {
-        self.group_id = Some(group_id.clone());
-        self.summary.clear();
-        self.events.clear();
-        self.logs.reset(format!("group:{group_id}"));
-        self.metrics.clear();
-        self.diagnosis.clear();
-        self.bundle.clear();
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.group_id = None;
-        self.summary.clear();
-        self.events.clear();
-        self.logs.clear();
-        self.metrics.clear();
-        self.diagnosis.clear();
-        self.bundle.clear();
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct EnginePaneState {
-    pub(crate) summary: String,
-    pub(crate) logs: LogFeedState,
-    pub(crate) metrics: String,
-}
-
-impl EnginePaneState {
-    pub(crate) fn new() -> Self {
-        let mut state = Self::default();
-        state.logs.reset("engine".to_string());
-        state
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -274,6 +513,7 @@ pub(crate) struct AppState {
     pub(crate) filter_input: String,
     pub(crate) filter_mode: bool,
     pub(crate) show_help: bool,
+    pub(crate) show_command_overlay: bool,
     pub(crate) detail_scroll: u16,
     pub(crate) pipeline_selected: Option<String>,
     pub(crate) group_selected: Option<String>,
@@ -284,13 +524,14 @@ pub(crate) struct AppState {
     pub(crate) engine_status: Option<engine::Status>,
     pub(crate) engine_livez: Option<engine::ProbeResponse>,
     pub(crate) engine_readyz: Option<engine::ProbeResponse>,
+    pub(crate) command_context: UiCommandContext,
     pub(crate) pipelines: PipelinePaneState,
     pub(crate) groups: GroupPaneState,
     pub(crate) engine: EnginePaneState,
 }
 
 impl AppState {
-    pub(crate) fn new(start_view: UiStartView, color_enabled: bool, _logs_tail: usize) -> Self {
+    pub(crate) fn new(start_view: UiStartView, color_enabled: bool, logs_tail: usize) -> Self {
         Self {
             view: start_view.into(),
             focus: FocusArea::List,
@@ -302,6 +543,7 @@ impl AppState {
             filter_input: String::new(),
             filter_mode: false,
             show_help: false,
+            show_command_overlay: false,
             detail_scroll: 0,
             pipeline_selected: None,
             group_selected: None,
@@ -312,10 +554,15 @@ impl AppState {
             engine_status: None,
             engine_livez: None,
             engine_readyz: None,
+            command_context: UiCommandContext::local_default(logs_tail),
             pipelines: PipelinePaneState::default(),
             groups: GroupPaneState::default(),
             engine: EnginePaneState::new(),
         }
+    }
+
+    pub(crate) fn set_command_context(&mut self, command_context: UiCommandContext) {
+        self.command_context = command_context;
     }
 
     pub(crate) fn pipeline_items(&self) -> Vec<PipelineItem> {
@@ -336,8 +583,11 @@ impl AppState {
                 continue;
             }
 
+            let (status_badge, tone) = classify_pipeline_row(pipeline);
             items.push(PipelineItem {
                 key: key.clone(),
+                status_badge,
+                tone,
                 pipeline_group_id: pipeline_group_id.to_string(),
                 pipeline_id: pipeline_id.to_string(),
                 running: format!("{}/{}", pipeline.running_cores, pipeline.total_cores),
@@ -361,13 +611,15 @@ impl AppState {
             return Vec::new();
         };
 
-        let mut grouped: BTreeMap<String, GroupItem> = BTreeMap::new();
+        let mut grouped = BTreeMap::<String, GroupItem>::new();
         for (key, pipeline) in &status.pipelines {
             let (group_id, _) = split_pipeline_key(key).unwrap_or((key.as_str(), ""));
             let entry = grouped
                 .entry(group_id.to_string())
                 .or_insert_with(|| GroupItem {
                     group_id: group_id.to_string(),
+                    status_badge: "ok".to_string(),
+                    tone: Tone::Success,
                     pipelines: 0,
                     running: 0,
                     ready: 0,
@@ -383,6 +635,8 @@ impl AppState {
             if pipeline_is_terminal(pipeline) {
                 entry.terminal += 1;
             }
+            let (_, pipeline_tone) = classify_pipeline_row(pipeline);
+            entry.tone = combine_tones(entry.tone, pipeline_tone);
         }
 
         grouped
@@ -393,6 +647,22 @@ impl AppState {
                         .group_id
                         .to_ascii_lowercase()
                         .contains(&self.filter_query.to_ascii_lowercase())
+            })
+            .map(|mut item| {
+                item.tone = if item.tone == Tone::Failure {
+                    Tone::Failure
+                } else if item.tone == Tone::Accent {
+                    Tone::Accent
+                } else if item.ready < item.pipelines
+                    || item.running < item.pipelines
+                    || item.terminal > 0
+                {
+                    Tone::Warning
+                } else {
+                    Tone::Success
+                };
+                item.status_badge = tone_badge(item.tone).to_string();
+                item
             })
             .collect()
     }
@@ -411,18 +681,23 @@ impl AppState {
                         .to_ascii_lowercase()
                         .contains(&self.filter_query.to_ascii_lowercase())
             })
-            .map(|(key, pipeline)| EnginePipelineItem {
-                key: key.clone(),
-                running: format!("{}/{}", pipeline.running_cores, pipeline.total_cores),
-                active_generation: pipeline
-                    .active_generation
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "none".to_string()),
-                rollout: pipeline
-                    .rollout
-                    .as_ref()
-                    .map(|value| format!("{:?}", value.state).to_ascii_lowercase())
-                    .unwrap_or_else(|| "none".to_string()),
+            .map(|(key, pipeline)| {
+                let (status_badge, tone) = classify_pipeline_row(pipeline);
+                EnginePipelineItem {
+                    key: key.clone(),
+                    status_badge,
+                    tone,
+                    running: format!("{}/{}", pipeline.running_cores, pipeline.total_cores),
+                    active_generation: pipeline
+                        .active_generation
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    rollout: pipeline
+                        .rollout
+                        .as_ref()
+                        .map(|value| format!("{:?}", value.state).to_ascii_lowercase())
+                        .unwrap_or_else(|| "none".to_string()),
+                }
             })
             .collect()
     }
@@ -582,58 +857,82 @@ impl AppState {
         }
     }
 
-    pub(crate) fn active_detail_text(&self) -> &str {
-        match self.view {
-            View::Pipelines => match self.pipeline_tab {
-                PipelineTab::Summary => self.pipelines.summary.as_str(),
-                PipelineTab::Events => self.pipelines.events.as_str(),
-                PipelineTab::Logs => self.pipelines.logs.rendered.as_str(),
-                PipelineTab::Metrics => self.pipelines.metrics.as_str(),
-                PipelineTab::Rollout => self.pipelines.rollout.as_str(),
-                PipelineTab::Diagnose => self.pipelines.diagnosis.as_str(),
-                PipelineTab::Bundle => self.pipelines.bundle.as_str(),
-            },
-            View::Groups => match self.group_tab {
-                GroupTab::Summary => self.groups.summary.as_str(),
-                GroupTab::Events => self.groups.events.as_str(),
-                GroupTab::Logs => self.groups.logs.rendered.as_str(),
-                GroupTab::Metrics => self.groups.metrics.as_str(),
-                GroupTab::Diagnose => self.groups.diagnosis.as_str(),
-                GroupTab::Bundle => self.groups.bundle.as_str(),
-            },
-            View::Engine => match self.engine_tab {
-                EngineTab::Summary => self.engine.summary.as_str(),
-                EngineTab::Logs => self.engine.logs.rendered.as_str(),
-                EngineTab::Metrics => self.engine.metrics.as_str(),
-            },
-        }
-    }
-
-    pub(crate) fn active_detail_title(&self) -> String {
-        match self.view {
-            View::Pipelines => {
-                let label = self
-                    .pipeline_selected
-                    .as_deref()
-                    .unwrap_or("no pipeline selected");
-                format!("{}: {label}", self.pipeline_tab.title())
-            }
-            View::Groups => {
-                let label = self
-                    .group_selected
-                    .as_deref()
-                    .unwrap_or("no group selected");
-                format!("{}: {label}", self.group_tab.title())
-            }
-            View::Engine => format!("{}: engine", self.engine_tab.title()),
-        }
-    }
-
     pub(crate) fn current_list_title(&self) -> &'static str {
         match self.view {
             View::Pipelines => "Pipelines",
             View::Groups => "Groups",
             View::Engine => "Engine Pipelines",
+        }
+    }
+
+    pub(crate) fn current_selection_label(&self) -> String {
+        match self.view {
+            View::Pipelines => self
+                .pipeline_selected
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+            View::Groups => self
+                .group_selected
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+            View::Engine => self
+                .engine_selected
+                .clone()
+                .unwrap_or_else(|| "engine".to_string()),
+        }
+    }
+
+    pub(crate) fn current_focus_label(&self) -> &'static str {
+        match self.focus {
+            FocusArea::List => "list",
+            FocusArea::Detail => "detail",
+        }
+    }
+
+    pub(crate) fn target_url(&self) -> &str {
+        &self.command_context.target_url
+    }
+
+    pub(crate) fn active_header(&self) -> Option<&DetailHeader> {
+        match self.view {
+            View::Pipelines => match self.pipeline_tab {
+                PipelineTab::Summary => self.pipelines.summary.header.as_ref(),
+                PipelineTab::Events => self.pipelines.events.header.as_ref(),
+                PipelineTab::Logs => self.pipelines.logs.header.as_ref(),
+                PipelineTab::Metrics => self.pipelines.metrics.header.as_ref(),
+                PipelineTab::Rollout => self.pipelines.rollout.header.as_ref(),
+                PipelineTab::Diagnose => self.pipelines.diagnosis.header.as_ref(),
+                PipelineTab::Bundle => self.pipelines.bundle.header.as_ref(),
+            },
+            View::Groups => match self.group_tab {
+                GroupTab::Summary => self.groups.summary.header.as_ref(),
+                GroupTab::Events => self.groups.events.header.as_ref(),
+                GroupTab::Logs => self.groups.logs.header.as_ref(),
+                GroupTab::Metrics => self.groups.metrics.header.as_ref(),
+                GroupTab::Diagnose => self.groups.diagnosis.header.as_ref(),
+                GroupTab::Bundle => self.groups.bundle.header.as_ref(),
+            },
+            View::Engine => match self.engine_tab {
+                EngineTab::Summary => self.engine.summary.header.as_ref(),
+                EngineTab::Logs => self.engine.logs.header.as_ref(),
+                EngineTab::Metrics => self.engine.metrics.header.as_ref(),
+            },
+        }
+    }
+
+    pub(crate) fn current_detail_title(&self) -> String {
+        match self.view {
+            View::Pipelines => self.pipeline_tab.title().to_string(),
+            View::Groups => self.group_tab.title().to_string(),
+            View::Engine => self.engine_tab.title().to_string(),
+        }
+    }
+
+    pub(crate) fn current_command_recipe(&self) -> CommandRecipe {
+        match self.view {
+            View::Pipelines => self.pipeline_command_recipe(),
+            View::Groups => self.group_command_recipe(),
+            View::Engine => self.engine_command_recipe(),
         }
     }
 
@@ -663,6 +962,442 @@ impl AppState {
     pub(crate) fn reset_scroll(&mut self) {
         self.detail_scroll = 0;
     }
+
+    fn pipeline_command_recipe(&self) -> CommandRecipe {
+        let Some((group_id, pipeline_id)) = self.selected_pipeline_target() else {
+            return empty_recipe(
+                "Equivalent CLI",
+                "Wait for the first refresh and select a pipeline.",
+            );
+        };
+        let selected_key = format!("{group_id}:{pipeline_id}");
+        let pipeline_status = self
+            .groups_status
+            .as_ref()
+            .and_then(|status| status.pipelines.get(&selected_key));
+
+        match self.pipeline_tab {
+            PipelineTab::Summary => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!("Describe pipeline {group_id}/{pipeline_id}."),
+                commands: vec![command_line(
+                    "describe",
+                    self.command(vec![
+                        "pipelines".to_string(),
+                        "describe".to_string(),
+                        group_id.clone(),
+                        pipeline_id.clone(),
+                    ]),
+                )],
+                note: None,
+            },
+            PipelineTab::Events => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!(
+                    "Watch normalized controller events for {group_id}/{pipeline_id}."
+                ),
+                commands: vec![command_line(
+                    "watch events",
+                    self.command(vec![
+                        "pipelines".to_string(),
+                        "events".to_string(),
+                        "watch".to_string(),
+                        group_id.clone(),
+                        pipeline_id.clone(),
+                        "--watch-interval".to_string(),
+                        format_duration_arg(self.command_context.refresh_interval),
+                    ]),
+                )],
+                note: None,
+            },
+            PipelineTab::Logs => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!("Watch retained logs for {group_id}/{pipeline_id}."),
+                commands: vec![command_line(
+                    "watch logs",
+                    self.command(vec![
+                        "telemetry".to_string(),
+                        "logs".to_string(),
+                        "watch".to_string(),
+                        "--tail".to_string(),
+                        self.command_context.logs_tail.to_string(),
+                        "--interval".to_string(),
+                        format_duration_arg(self.command_context.refresh_interval),
+                        "--group".to_string(),
+                        group_id.clone(),
+                        "--pipeline".to_string(),
+                        pipeline_id.clone(),
+                    ]),
+                )],
+                note: None,
+            },
+            PipelineTab::Metrics => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!("Watch compact metrics for {group_id}/{pipeline_id}."),
+                commands: vec![command_line(
+                    "watch metrics",
+                    self.command(vec![
+                        "telemetry".to_string(),
+                        "metrics".to_string(),
+                        "watch".to_string(),
+                        "--shape".to_string(),
+                        "compact".to_string(),
+                        "--interval".to_string(),
+                        format_duration_arg(self.command_context.refresh_interval),
+                        "--group".to_string(),
+                        group_id.clone(),
+                        "--pipeline".to_string(),
+                        pipeline_id.clone(),
+                    ]),
+                )],
+                note: None,
+            },
+            PipelineTab::Rollout => {
+                if let Some(rollout_id) = pipeline_status
+                    .and_then(|status| status.rollout.as_ref())
+                    .map(|rollout| rollout.rollout_id.clone())
+                {
+                    CommandRecipe {
+                        title: "Equivalent CLI".to_string(),
+                        description: format!(
+                            "Watch active rollout {rollout_id} for {group_id}/{pipeline_id}."
+                        ),
+                        commands: vec![command_line(
+                            "watch rollout",
+                            self.command(vec![
+                                "pipelines".to_string(),
+                                "rollouts".to_string(),
+                                "watch".to_string(),
+                                group_id.clone(),
+                                pipeline_id.clone(),
+                                rollout_id.clone(),
+                                "--interval".to_string(),
+                                format_duration_arg(self.command_context.refresh_interval),
+                            ]),
+                        )],
+                        note: None,
+                    }
+                } else {
+                    CommandRecipe {
+                        title: "Equivalent CLI".to_string(),
+                        description: format!(
+                            "No active rollout is visible for {group_id}/{pipeline_id}."
+                        ),
+                        commands: vec![command_line(
+                            "watch rollout",
+                            self.command(vec![
+                                "pipelines".to_string(),
+                                "rollouts".to_string(),
+                                "watch".to_string(),
+                                group_id.clone(),
+                                pipeline_id.clone(),
+                                "<rollout-id>".to_string(),
+                                "--interval".to_string(),
+                                format_duration_arg(self.command_context.refresh_interval),
+                            ]),
+                        )],
+                        note: Some(
+                            "This pane only has an exact CLI equivalent while a rollout is active."
+                                .to_string(),
+                        ),
+                    }
+                }
+            }
+            PipelineTab::Diagnose => {
+                let (label, command) = if let Some(rollout_id) = pipeline_status
+                    .and_then(|status| status.rollout.as_ref())
+                    .map(|rollout| rollout.rollout_id.clone())
+                {
+                    (
+                        "diagnose rollout",
+                        self.command(vec![
+                            "pipelines".to_string(),
+                            "diagnose".to_string(),
+                            "rollout".to_string(),
+                            group_id.clone(),
+                            pipeline_id.clone(),
+                            "--rollout-id".to_string(),
+                            rollout_id,
+                            "--logs-limit".to_string(),
+                            self.command_context.logs_tail.to_string(),
+                        ]),
+                    )
+                } else {
+                    (
+                        "diagnose shutdown",
+                        self.command(vec![
+                            "pipelines".to_string(),
+                            "diagnose".to_string(),
+                            "shutdown".to_string(),
+                            group_id.clone(),
+                            pipeline_id.clone(),
+                            "--logs-limit".to_string(),
+                            self.command_context.logs_tail.to_string(),
+                        ]),
+                    )
+                };
+                CommandRecipe {
+                    title: "Equivalent CLI".to_string(),
+                    description: format!("Run diagnosis for {group_id}/{pipeline_id}."),
+                    commands: vec![command_line(label, command)],
+                    note: None,
+                }
+            }
+            PipelineTab::Bundle => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!(
+                    "Export a troubleshooting bundle for {group_id}/{pipeline_id}."
+                ),
+                commands: vec![command_line(
+                    "bundle",
+                    self.command(vec![
+                        "pipelines".to_string(),
+                        "bundle".to_string(),
+                        group_id.clone(),
+                        pipeline_id.clone(),
+                        "--logs-limit".to_string(),
+                        self.command_context.logs_tail.to_string(),
+                        "--metrics-shape".to_string(),
+                        "compact".to_string(),
+                        "--output".to_string(),
+                        "json".to_string(),
+                    ]),
+                )],
+                note: None,
+            },
+        }
+    }
+
+    fn group_command_recipe(&self) -> CommandRecipe {
+        let Some(group_id) = self.selected_group_id() else {
+            return empty_recipe(
+                "Equivalent CLI",
+                "Wait for the first refresh and select a group.",
+            );
+        };
+
+        match self.group_tab {
+            GroupTab::Summary => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!(
+                    "Describe fleet-wide groups state while focusing on group {group_id}."
+                ),
+                commands: vec![command_line(
+                    "describe groups",
+                    self.command(vec!["groups".to_string(), "describe".to_string()]),
+                )],
+                note: Some(format!(
+                    "The UI summary is scoped to group {group_id} client-side. The CLI command is fleet-wide."
+                )),
+            },
+            GroupTab::Events => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!("Watch normalized events for group {group_id}."),
+                commands: vec![command_line(
+                    "watch events",
+                    self.command(vec![
+                        "groups".to_string(),
+                        "events".to_string(),
+                        "watch".to_string(),
+                        "--group".to_string(),
+                        group_id.clone(),
+                        "--watch-interval".to_string(),
+                        format_duration_arg(self.command_context.refresh_interval),
+                    ]),
+                )],
+                note: None,
+            },
+            GroupTab::Logs => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!("Watch retained logs for group {group_id}."),
+                commands: vec![command_line(
+                    "watch logs",
+                    self.command(vec![
+                        "telemetry".to_string(),
+                        "logs".to_string(),
+                        "watch".to_string(),
+                        "--tail".to_string(),
+                        self.command_context.logs_tail.to_string(),
+                        "--interval".to_string(),
+                        format_duration_arg(self.command_context.refresh_interval),
+                        "--group".to_string(),
+                        group_id.clone(),
+                    ]),
+                )],
+                note: None,
+            },
+            GroupTab::Metrics => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!("Watch compact metrics for group {group_id}."),
+                commands: vec![command_line(
+                    "watch metrics",
+                    self.command(vec![
+                        "telemetry".to_string(),
+                        "metrics".to_string(),
+                        "watch".to_string(),
+                        "--shape".to_string(),
+                        "compact".to_string(),
+                        "--interval".to_string(),
+                        format_duration_arg(self.command_context.refresh_interval),
+                        "--group".to_string(),
+                        group_id.clone(),
+                    ]),
+                )],
+                note: None,
+            },
+            GroupTab::Diagnose => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!(
+                    "Diagnose coordinated shutdown while focusing on group {group_id}."
+                ),
+                commands: vec![command_line(
+                    "diagnose shutdown",
+                    self.command(vec![
+                        "groups".to_string(),
+                        "diagnose".to_string(),
+                        "shutdown".to_string(),
+                        "--logs-limit".to_string(),
+                        self.command_context.logs_tail.to_string(),
+                    ]),
+                )],
+                note: Some(format!(
+                    "The UI diagnosis is scoped to group {group_id} client-side. The CLI command is fleet-wide."
+                )),
+            },
+            GroupTab::Bundle => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!(
+                    "Export a fleet-wide troubleshooting bundle while focusing on group {group_id}."
+                ),
+                commands: vec![command_line(
+                    "bundle",
+                    self.command(vec![
+                        "groups".to_string(),
+                        "bundle".to_string(),
+                        "--logs-limit".to_string(),
+                        self.command_context.logs_tail.to_string(),
+                        "--metrics-shape".to_string(),
+                        "compact".to_string(),
+                        "--output".to_string(),
+                        "json".to_string(),
+                    ]),
+                )],
+                note: Some(format!(
+                    "The UI bundle preview is scoped to group {group_id} client-side. The CLI command is fleet-wide."
+                )),
+            },
+        }
+    }
+
+    fn engine_command_recipe(&self) -> CommandRecipe {
+        match self.engine_tab {
+            EngineTab::Summary => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: "Inspect engine status and readiness.".to_string(),
+                commands: vec![
+                    command_line(
+                        "status",
+                        self.command(vec!["engine".to_string(), "status".to_string()]),
+                    ),
+                    command_line(
+                        "livez",
+                        self.command(vec!["engine".to_string(), "livez".to_string()]),
+                    ),
+                    command_line(
+                        "readyz",
+                        self.command(vec!["engine".to_string(), "readyz".to_string()]),
+                    ),
+                ],
+                note: None,
+            },
+            EngineTab::Logs => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: "Watch retained engine logs.".to_string(),
+                commands: vec![command_line(
+                    "watch logs",
+                    self.command(vec![
+                        "telemetry".to_string(),
+                        "logs".to_string(),
+                        "watch".to_string(),
+                        "--tail".to_string(),
+                        self.command_context.logs_tail.to_string(),
+                        "--interval".to_string(),
+                        format_duration_arg(self.command_context.refresh_interval),
+                    ]),
+                )],
+                note: None,
+            },
+            EngineTab::Metrics => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: "Watch compact engine metrics.".to_string(),
+                commands: vec![command_line(
+                    "watch metrics",
+                    self.command(vec![
+                        "telemetry".to_string(),
+                        "metrics".to_string(),
+                        "watch".to_string(),
+                        "--shape".to_string(),
+                        "compact".to_string(),
+                        "--interval".to_string(),
+                        format_duration_arg(self.command_context.refresh_interval),
+                    ]),
+                )],
+                note: None,
+            },
+        }
+    }
+
+    fn command<S>(&self, args: impl IntoIterator<Item = S>) -> String
+    where
+        S: Into<String>,
+    {
+        let mut parts = self.command_context.prefix_args.clone();
+        parts.extend(args.into_iter().map(Into::into));
+        shell_join(parts)
+    }
+}
+
+fn empty_recipe(title: &str, description: &str) -> CommandRecipe {
+    CommandRecipe {
+        title: title.to_string(),
+        description: description.to_string(),
+        commands: Vec::new(),
+        note: None,
+    }
+}
+
+fn command_line(label: &str, command: String) -> CommandLine {
+    CommandLine {
+        label: label.to_string(),
+        command,
+    }
+}
+
+fn format_duration_arg(duration: Duration) -> String {
+    format_duration(duration).to_string()
+}
+
+fn shell_join(parts: Vec<String>) -> String {
+    parts
+        .into_iter()
+        .map(|part| shell_quote(&part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | ':' | '.' | '_' | '-' | '='))
+    {
+        return value.to_string();
+    }
+
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn ensure_selected_key<T, F>(selected: Option<String>, items: &[T], map: F) -> Option<String>
@@ -715,23 +1450,75 @@ fn split_pipeline_key(key: &str) -> Option<(&str, &str)> {
     key.split_once(':')
 }
 
-fn pipeline_is_ready(status: &otap_df_admin_api::pipelines::Status) -> bool {
+fn classify_pipeline_row(status: &pipelines::Status) -> (String, Tone) {
+    if status.rollout.is_some() {
+        return ("roll".to_string(), Tone::Accent);
+    }
+    let has_failure = status.cores.values().any(|core| {
+        matches!(
+            core.phase,
+            pipelines::Phase::Failed(_) | pipelines::Phase::Rejected(_)
+        )
+    }) || status.instances.as_ref().is_some_and(|instances| {
+        instances.iter().any(|instance| {
+            matches!(
+                instance.status.phase,
+                pipelines::Phase::Failed(_) | pipelines::Phase::Rejected(_)
+            )
+        })
+    });
+    if has_failure {
+        return ("fail".to_string(), Tone::Failure);
+    }
+    if pipeline_is_terminal(status) {
+        return ("stop".to_string(), Tone::Muted);
+    }
+    if !pipeline_is_ready(status) || status.running_cores < status.total_cores {
+        return ("warn".to_string(), Tone::Warning);
+    }
+    ("ok".to_string(), Tone::Success)
+}
+
+fn combine_tones(left: Tone, right: Tone) -> Tone {
+    use Tone::{Accent, Failure, Muted, Neutral, Success, Warning};
+    match (left, right) {
+        (Failure, _) | (_, Failure) => Failure,
+        (Warning, _) | (_, Warning) => Warning,
+        (Accent, _) | (_, Accent) => Accent,
+        (Success, _) | (_, Success) => Success,
+        (Muted, _) | (_, Muted) => Muted,
+        _ => Neutral,
+    }
+}
+
+fn tone_badge(tone: Tone) -> &'static str {
+    match tone {
+        Tone::Accent => "roll",
+        Tone::Success => "ok",
+        Tone::Warning => "warn",
+        Tone::Failure => "fail",
+        Tone::Muted => "stop",
+        Tone::Neutral => "info",
+    }
+}
+
+fn pipeline_is_ready(status: &pipelines::Status) -> bool {
     status.conditions.iter().any(|condition| {
-        condition.kind == otap_df_admin_api::pipelines::ConditionKind::Ready
-            && condition.status == otap_df_admin_api::pipelines::ConditionStatus::True
+        condition.kind == pipelines::ConditionKind::Ready
+            && condition.status == pipelines::ConditionStatus::True
     })
 }
 
-fn pipeline_is_terminal(status: &otap_df_admin_api::pipelines::Status) -> bool {
+fn pipeline_is_terminal(status: &pipelines::Status) -> bool {
     let phases_terminal = if let Some(instances) = &status.instances {
         !instances.is_empty()
             && instances.iter().all(|instance| {
                 matches!(
                     instance.status.phase,
-                    otap_df_admin_api::pipelines::Phase::Stopped
-                        | otap_df_admin_api::pipelines::Phase::Deleted
-                        | otap_df_admin_api::pipelines::Phase::Failed(_)
-                        | otap_df_admin_api::pipelines::Phase::Rejected(_)
+                    pipelines::Phase::Stopped
+                        | pipelines::Phase::Deleted
+                        | pipelines::Phase::Failed(_)
+                        | pipelines::Phase::Rejected(_)
                 )
             })
     } else {
@@ -739,10 +1526,10 @@ fn pipeline_is_terminal(status: &otap_df_admin_api::pipelines::Status) -> bool {
             && status.cores.values().all(|core| {
                 matches!(
                     core.phase,
-                    otap_df_admin_api::pipelines::Phase::Stopped
-                        | otap_df_admin_api::pipelines::Phase::Deleted
-                        | otap_df_admin_api::pipelines::Phase::Failed(_)
-                        | otap_df_admin_api::pipelines::Phase::Rejected(_)
+                    pipelines::Phase::Stopped
+                        | pipelines::Phase::Deleted
+                        | pipelines::Phase::Failed(_)
+                        | pipelines::Phase::Rejected(_)
                 )
             })
     };
@@ -754,8 +1541,14 @@ mod tests {
     use super::*;
     use otap_df_admin_api::pipelines::Status as PipelineStatus;
     use serde_json::json;
+    use std::time::Duration;
 
-    fn pipeline_status(running_cores: usize, total_cores: usize, ready: bool) -> PipelineStatus {
+    fn pipeline_status(
+        running_cores: usize,
+        total_cores: usize,
+        ready: bool,
+        with_rollout: bool,
+    ) -> PipelineStatus {
         let conditions = if ready {
             vec![json!({
                 "type": "Ready",
@@ -766,7 +1559,7 @@ mod tests {
         } else {
             Vec::new()
         };
-        serde_json::from_value(json!({
+        let mut value = json!({
             "conditions": conditions.clone(),
             "totalCores": total_cores,
             "runningCores": running_cores,
@@ -778,8 +1571,17 @@ mod tests {
                     "deletePending": false
                 }
             }
-        }))
-        .expect("status fixture should deserialize")
+        });
+        if with_rollout {
+            value["rollout"] = json!({
+                "rolloutId": "rollout-0",
+                "state": "running",
+                "targetGeneration": 1,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:01Z"
+            });
+        }
+        serde_json::from_value(value).expect("status fixture should deserialize")
     }
 
     #[test]
@@ -788,8 +1590,14 @@ mod tests {
         app.groups_status = Some(groups::Status {
             generated_at: "2026-01-01T00:00:00Z".to_string(),
             pipelines: BTreeMap::from([
-                ("tenant-a:ingest".to_string(), pipeline_status(1, 1, true)),
-                ("tenant-b:export".to_string(), pipeline_status(1, 1, true)),
+                (
+                    "tenant-a:ingest".to_string(),
+                    pipeline_status(1, 1, true, false),
+                ),
+                (
+                    "tenant-b:export".to_string(),
+                    pipeline_status(1, 1, true, false),
+                ),
             ]),
         });
         app.filter_query = "tenant-a".to_string();
@@ -797,6 +1605,7 @@ mod tests {
         let items = app.pipeline_items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].key, "tenant-a:ingest");
+        assert_eq!(items[0].status_badge, "ok");
     }
 
     #[test]
@@ -805,10 +1614,13 @@ mod tests {
         app.groups_status = Some(groups::Status {
             generated_at: "2026-01-01T00:00:00Z".to_string(),
             pipelines: BTreeMap::from([
-                ("tenant-a:ingest".to_string(), pipeline_status(1, 1, true)),
+                (
+                    "tenant-a:ingest".to_string(),
+                    pipeline_status(1, 1, true, false),
+                ),
                 (
                     "tenant-a:transform".to_string(),
-                    pipeline_status(0, 1, false),
+                    pipeline_status(0, 1, false, false),
                 ),
             ]),
         });
@@ -820,6 +1632,7 @@ mod tests {
         assert_eq!(items[0].running, 1);
         assert_eq!(items[0].ready, 1);
         assert_eq!(items[0].terminal, 1);
+        assert_eq!(items[0].status_badge, "warn");
     }
 
     #[test]
@@ -828,8 +1641,14 @@ mod tests {
         app.groups_status = Some(groups::Status {
             generated_at: "2026-01-01T00:00:00Z".to_string(),
             pipelines: BTreeMap::from([
-                ("tenant-a:ingest".to_string(), pipeline_status(1, 1, true)),
-                ("tenant-b:export".to_string(), pipeline_status(1, 1, true)),
+                (
+                    "tenant-a:ingest".to_string(),
+                    pipeline_status(1, 1, true, false),
+                ),
+                (
+                    "tenant-b:export".to_string(),
+                    pipeline_status(1, 1, true, true),
+                ),
             ]),
         });
         app.pipeline_selected = Some("tenant-b:export".to_string());
@@ -838,5 +1657,67 @@ mod tests {
         app.apply_filter_input();
 
         assert_eq!(app.pipeline_selected.as_deref(), Some("tenant-a:ingest"));
+    }
+
+    #[test]
+    fn rollout_pipeline_items_show_roll_badge() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.groups_status = Some(groups::Status {
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+            pipelines: BTreeMap::from([(
+                "tenant-a:ingest".to_string(),
+                pipeline_status(1, 1, true, true),
+            )]),
+        });
+
+        let items = app.pipeline_items();
+        assert_eq!(items[0].status_badge, "roll");
+        assert_eq!(items[0].tone, Tone::Accent);
+    }
+
+    #[test]
+    fn pipeline_logs_recipe_uses_selected_target_and_context() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.pipeline_selected = Some("tenant-a:ingest".to_string());
+        app.pipeline_tab = PipelineTab::Logs;
+        app.set_command_context(UiCommandContext {
+            target_url: "https://admin.example.com:8443/engine-a".to_string(),
+            prefix_args: vec![
+                "dfctl".to_string(),
+                "--url".to_string(),
+                "https://admin.example.com:8443/engine-a".to_string(),
+                "--color".to_string(),
+                "always".to_string(),
+            ],
+            refresh_interval: Duration::from_secs(5),
+            logs_tail: 250,
+        });
+
+        let recipe = app.current_command_recipe();
+
+        assert_eq!(recipe.commands.len(), 1);
+        assert!(recipe.commands[0].command.contains(
+            "telemetry logs watch --tail 250 --interval 5s --group tenant-a --pipeline ingest"
+        ));
+        assert!(recipe.commands[0].command.contains("--color always"));
+    }
+
+    #[test]
+    fn group_summary_recipe_mentions_client_side_scope() {
+        let mut app = AppState::new(UiStartView::Groups, true, 200);
+        app.group_selected = Some("tenant-a".to_string());
+
+        let recipe = app.current_command_recipe();
+
+        assert_eq!(
+            recipe.commands[0].command,
+            "dfctl --url http://127.0.0.1:8085 groups describe"
+        );
+        assert!(
+            recipe
+                .note
+                .expect("group summary recipe should include note")
+                .contains("client-side")
+        );
     }
 }

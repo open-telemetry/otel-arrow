@@ -76,10 +76,22 @@ pub async fn run_with_terminal(
     }
     let human_style = HumanStyle::resolve(color, stdout_is_terminal);
     let resolved = resolve_connection(&connection)?;
+    let ui_command_context = match &command {
+        Command::Ui(args) => Some(ui::build_command_context(&resolved.settings, color, args)),
+        _ => None,
+    };
     let client = AdminClient::builder().http(resolved.settings).build()?;
 
     match command {
-        Command::Ui(args) => ui::run_ui(&client, args, color).await,
+        Command::Ui(args) => {
+            ui::run_ui(
+                &client,
+                args,
+                color,
+                ui_command_context.expect("ui command context should be present"),
+            )
+            .await
+        }
         Command::Engine(args) => match args.command {
             EngineCommand::Status(output) => {
                 let status = client.engine().status().await?;
