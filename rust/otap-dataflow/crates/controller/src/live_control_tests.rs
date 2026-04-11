@@ -300,6 +300,26 @@ fn register_runtime_instance(
     rx
 }
 
+fn launched_runtime_instance(
+    pipeline_group_id: &str,
+    pipeline_id: &str,
+    core_id: usize,
+    generation: u64,
+) -> LaunchedPipelineThread<()> {
+    let (tx, _rx) = runtime_ctrl_msg_channel::<()>(4);
+    let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(tx);
+    LaunchedPipelineThread {
+        pipeline_key: DeployedPipelineKey {
+            pipeline_group_id: pipeline_group_id.to_owned().into(),
+            pipeline_id: pipeline_id.to_owned().into(),
+            core_id,
+            deployment_generation: generation,
+        },
+        control_sender,
+        _marker: std::marker::PhantomData,
+    }
+}
+
 fn wait_for_shutdown_state(
     runtime: &ControllerRuntime<()>,
     shutdown_id: &str,
@@ -1876,6 +1896,30 @@ fn exited_runtime_instances_without_active_operation_are_pruned_immediately() {
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!state.runtime_instances.contains_key(&deployed_key));
+}
+
+/// Scenario: a runtime thread reports exit before the controller finishes
+/// registering the launched instance as active.
+/// Guarantees: early exit bookkeeping is reconciled during registration, so
+/// active-instance tracking does not leak and the pending-exit entry is cleared.
+#[test]
+fn register_launched_instance_reconciles_early_exit_without_leaking_active_count() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let deployed_key = deployed_key("g1", "p1", 0, 0);
+    runtime.note_instance_exit(deployed_key.clone(), RuntimeInstanceExit::Success);
+
+    runtime.register_launched_instance(launched_runtime_instance("g1", "p1", 0, 0));
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(state.active_instances, 0);
+    assert!(!state.pending_instance_exits.contains_key(&deployed_key));
     assert!(!state.runtime_instances.contains_key(&deployed_key));
 }
 
