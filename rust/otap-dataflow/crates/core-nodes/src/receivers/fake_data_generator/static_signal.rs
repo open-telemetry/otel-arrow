@@ -272,9 +272,11 @@ const METRIC_DEFS: &[MetricDef] = &[
     },
 ];
 
-/// Standard histogram bucket boundaries for duration metrics (in ms).
+/// OTel SDK default explicit bucket histogram boundaries.
+/// See <https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation>
 const HISTOGRAM_BOUNDS: &[f64] = &[
-    0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0,
+    0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0,
+    10000.0,
 ];
 
 /// Standard quantiles for summary metrics.
@@ -811,19 +813,20 @@ fn build_histogram_data_points(
     metric_index: usize,
     attr_count: usize,
 ) -> Vec<HistogramDataPoint> {
-    // Pre-computed bucket count distributions (15 buckets = 14 bounds + 1 overflow)
-    // representing different latency profiles
+    // Pre-computed bucket count distributions (16 buckets = 15 bounds + 1 overflow)
+    // representing different latency profiles.
+    // Bounds: [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000, +inf]
     const DISTRIBUTIONS: &[&[u64]] = &[
         // Mostly fast requests with tail latency
-        &[10, 45, 120, 200, 180, 90, 40, 15, 8, 4, 2, 1, 0, 0, 0],
+        &[10, 45, 120, 200, 180, 90, 40, 15, 8, 4, 2, 1, 0, 0, 0, 0],
         // Bimodal: fast + slow
-        &[5, 20, 80, 150, 60, 20, 10, 5, 30, 80, 40, 10, 3, 1, 0],
+        &[5, 20, 80, 150, 60, 20, 10, 5, 30, 80, 40, 10, 3, 1, 0, 0],
         // Uniform-ish spread
-        &[8, 12, 18, 25, 30, 35, 32, 28, 22, 15, 10, 6, 3, 1, 1],
+        &[8, 12, 18, 25, 30, 35, 32, 28, 22, 15, 10, 6, 3, 1, 1, 0],
         // Very fast (cache hits)
-        &[200, 150, 50, 10, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        &[200, 150, 50, 10, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         // Slow service
-        &[0, 1, 3, 5, 10, 20, 45, 80, 120, 90, 50, 25, 12, 5, 2],
+        &[0, 1, 3, 5, 10, 20, 45, 80, 120, 90, 50, 25, 12, 5, 2, 0],
     ];
 
     (0..count)
@@ -834,16 +837,28 @@ fn build_histogram_data_points(
             let attributes = build_metric_attributes(attr_count, point_idx);
             let dist = DISTRIBUTIONS[point_idx % DISTRIBUTIONS.len()];
             let total_count: u64 = dist.iter().sum();
-            // Compute a realistic sum from the distribution and bucket midpoints
+            // Midpoints of each bucket: [(-inf,0], (0,5], (5,10], ... (10000,+inf)]
             let midpoints = [
-                0.25, 0.75, 1.75, 3.75, 7.5, 17.5, 37.5, 75.0, 175.0, 375.0, 750.0, 1750.0, 3750.0,
-                7500.0, 15000.0,
+                0.0, 2.5, 7.5, 17.5, 37.5, 62.5, 87.5, 175.0, 375.0, 625.0, 875.0, 1750.0, 3750.0,
+                6250.0, 8750.0, 15000.0,
             ];
             let sum: f64 = dist
                 .iter()
                 .zip(midpoints.iter())
                 .map(|(&c, &m)| c as f64 * m)
                 .sum();
+            // Derive min/max from the first and last non-zero bucket midpoints
+            let min_val = dist
+                .iter()
+                .zip(midpoints.iter())
+                .find(|(c, _)| **c > 0)
+                .map_or(0.0, |(_, &m)| m);
+            let max_val = dist
+                .iter()
+                .zip(midpoints.iter())
+                .rev()
+                .find(|(c, _)| **c > 0)
+                .map_or(0.0, |(_, &m)| m);
 
             HistogramDataPoint::build()
                 .time_unix_nano(timestamp)
@@ -852,8 +867,8 @@ fn build_histogram_data_points(
                 .sum(sum)
                 .bucket_counts(dist.to_vec())
                 .explicit_bounds(HISTOGRAM_BOUNDS.to_vec())
-                .min(midpoints[0])
-                .max(midpoints[dist.len() - 1])
+                .min(min_val)
+                .max(max_val)
                 .attributes(attributes)
                 .finish()
         })
@@ -882,14 +897,15 @@ fn build_exp_histogram_data_points(
             };
             let total_count: u64 = positive_buckets.bucket_counts.iter().sum();
             let sum = total_count as f64 * 12.5;
+            let zeros = 2u64;
 
             ExponentialHistogramDataPoint::build()
                 .time_unix_nano(timestamp)
                 .start_time_unix_nano(start_time)
-                .count(total_count)
+                .count(total_count + zeros)
                 .sum(sum)
                 .scale(4)
-                .zero_count(2u64)
+                .zero_count(zeros)
                 .positive(positive_buckets)
                 .min(0.1)
                 .max(sum / total_count as f64 * 3.0)
@@ -1170,6 +1186,41 @@ mod tests {
             .unwrap()
             .attributes;
         assert!(attrs.iter().any(|kv| kv.key == "tenant.id"));
+    }
+
+    /// Verify that generated metric batches achieve a realistic compression ratio.
+    ///
+    /// Generates 500 metrics covering all five OTLP metric types with 6
+    /// attributes and 3 data points per metric, then checks the zstd
+    /// compression ratio stays within a realistic range.
+    ///
+    /// Run with:
+    /// ```sh
+    /// cargo test -p otap-df-core-nodes --features dev-tools -- test_metrics_compression_ratio --nocapture
+    /// ```
+    #[test]
+    fn test_metrics_compression_ratio_is_realistic() {
+        use prost::Message;
+
+        let metrics = static_otlp_metrics_with_config(500, Some(6), Some(3), None);
+        let raw = metrics.encode_to_vec();
+        let raw_size = raw.len();
+
+        let compressed = zstd::bulk::compress(&raw, 3).expect("zstd compression failed");
+        let compressed_size = compressed.len();
+
+        let ratio = raw_size as f64 / compressed_size as f64;
+
+        println!(
+            "Metrics compression: raw={raw_size} bytes, compressed={compressed_size} bytes, \
+             ratio={ratio:.1}:1"
+        );
+
+        assert!(
+            (3.0..=45.0).contains(&ratio),
+            "compression ratio {ratio:.1}:1 is outside acceptable range (3:1 - 45:1); \
+             raw={raw_size} bytes, compressed={compressed_size} bytes"
+        );
     }
 
     #[test]
