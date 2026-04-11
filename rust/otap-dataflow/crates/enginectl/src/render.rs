@@ -11,6 +11,7 @@ use crate::troubleshoot::{
 use otap_df_admin_api::{engine, groups, pipelines, telemetry};
 use serde::Serialize;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::io::Write;
 
 pub fn write_read_output<T: Serialize>(
@@ -148,8 +149,9 @@ pub fn render_engine_status(style: &HumanStyle, status: &engine::Status) -> Stri
         field(style, "generated_at", status.generated_at.to_string()),
         field(style, "pipelines", status.pipelines.len().to_string()),
     ];
-    for (name, pipeline) in &status.pipelines {
-        lines.push(pipeline_summary_line(style, name, pipeline));
+    if !status.pipelines.is_empty() {
+        lines.push(String::new());
+        lines.push(render_pipeline_summary_table(style, &status.pipelines));
     }
     lines.join("\n")
 }
@@ -159,8 +161,9 @@ pub fn render_groups_status(style: &HumanStyle, status: &groups::Status) -> Stri
         field(style, "generated_at", status.generated_at.to_string()),
         field(style, "pipelines", status.pipelines.len().to_string()),
     ];
-    for (name, pipeline) in &status.pipelines {
-        lines.push(pipeline_summary_line(style, name, pipeline));
+    if !status.pipelines.is_empty() {
+        lines.push(String::new());
+        lines.push(render_pipeline_summary_table(style, &status.pipelines));
     }
     lines.join("\n")
 }
@@ -191,10 +194,15 @@ pub fn render_groups_describe(style: &HumanStyle, report: &GroupsDescribeReport)
             report.summary.non_terminal_pipelines.join(", "),
         ));
     }
-    for (name, pipeline) in &report.status.pipelines {
-        lines.push(pipeline_summary_line(style, name, pipeline));
+    if !report.status.pipelines.is_empty() {
+        lines.push(String::new());
+        lines.push(render_pipeline_summary_table(
+            style,
+            &report.status.pipelines,
+        ));
     }
     if !report.recent_events.is_empty() {
+        lines.push(String::new());
         lines.push(field(style, "recent_events", report.recent_events.len()));
         for event in report.recent_events.iter().take(8) {
             lines.push(render_event_line(style, event));
@@ -278,17 +286,12 @@ pub fn render_pipeline_describe(style: &HumanStyle, report: &PipelineDescribeRep
     for condition in &report.status.conditions {
         lines.push(condition_line(style, condition));
     }
-    for (core_id, core) in &report.status.cores {
-        lines.push(format!(
-            "{} {} phase={:?} delete_pending={} last_heartbeat_time={}",
-            style.label("core:"),
-            core_id,
-            core.phase,
-            core.delete_pending,
-            core.last_heartbeat_time
-        ));
+    if !report.status.cores.is_empty() {
+        lines.push(String::new());
+        lines.push(render_pipeline_core_table(style, &report.status.cores));
     }
     if !report.recent_events.is_empty() {
+        lines.push(String::new());
         lines.push(field(style, "recent_events", report.recent_events.len()));
         for event in report.recent_events.iter().take(8) {
             lines.push(render_event_line(style, event));
@@ -355,15 +358,9 @@ pub fn render_pipeline_status(style: &HumanStyle, status: &pipelines::Status) ->
     for condition in &status.conditions {
         lines.push(condition_line(style, condition));
     }
-    for (core_id, core) in &status.cores {
-        lines.push(format!(
-            "{} {} phase={:?} delete_pending={} last_heartbeat_time={}",
-            style.label("core:"),
-            core_id,
-            core.phase,
-            core.delete_pending,
-            core.last_heartbeat_time
-        ));
+    if !status.cores.is_empty() {
+        lines.push(String::new());
+        lines.push(render_pipeline_core_table(style, &status.cores));
     }
     lines.join("\n")
 }
@@ -394,18 +391,9 @@ pub fn render_rollout_status(style: &HumanStyle, status: &pipelines::RolloutStat
     if let Some(reason) = &status.failure_reason {
         lines.push(field(style, "failure_reason", reason));
     }
-    for core in &status.cores {
-        lines.push(format!(
-            "{} {} state={} target_generation={} previous_generation={} updated_at={}",
-            style.label("core:"),
-            core.core_id,
-            style.state(&core.state),
-            core.target_generation,
-            core.previous_generation
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-            core.updated_at
-        ));
+    if !status.cores.is_empty() {
+        lines.push(String::new());
+        lines.push(render_rollout_core_table(style, &status.cores));
     }
     lines.join("\n")
 }
@@ -422,15 +410,9 @@ pub fn render_shutdown_status(style: &HumanStyle, status: &pipelines::ShutdownSt
     if let Some(reason) = &status.failure_reason {
         lines.push(field(style, "failure_reason", reason));
     }
-    for core in &status.cores {
-        lines.push(format!(
-            "{} {} state={} deployment_generation={} updated_at={}",
-            style.label("core:"),
-            core.core_id,
-            style.state(&core.state),
-            core.deployment_generation,
-            core.updated_at
-        ));
+    if !status.cores.is_empty() {
+        lines.push(String::new());
+        lines.push(render_shutdown_core_table(style, &status.cores));
     }
     lines.join("\n")
 }
@@ -475,20 +457,26 @@ pub fn render_metrics_compact(
         field(style, "metric_sets", response.metric_sets.len().to_string()),
     ];
     for metric_set in &response.metric_sets {
+        lines.push(String::new());
         lines.push(format!(
-            "{} {} attributes={} metrics={}",
+            "{} {}",
             style.header("metric_set:"),
-            metric_set.name,
-            metric_set.attributes.len(),
-            metric_set.metrics.len()
+            metric_set.name
         ));
-        for (name, value) in &metric_set.metrics {
-            lines.push(format!(
-                "  {}={}",
-                style.label(name),
-                metric_value_string(value)
-            ));
-        }
+        lines.push(field(
+            style,
+            "attributes",
+            format_metric_attributes(&metric_set.attributes),
+        ));
+        lines.push(render_table(
+            style,
+            &[TableColumn::left("metric"), TableColumn::right("value")],
+            metric_set
+                .metrics
+                .iter()
+                .map(|(name, value)| vec![name.clone(), metric_value_string(value)])
+                .collect(),
+        ));
     }
     lines.join("\n")
 }
@@ -499,22 +487,38 @@ pub fn render_metrics_full(style: &HumanStyle, response: &telemetry::MetricsResp
         field(style, "metric_sets", response.metric_sets.len().to_string()),
     ];
     for metric_set in &response.metric_sets {
+        lines.push(String::new());
         lines.push(format!(
-            "{} {} attributes={} metrics={}",
+            "{} {}",
             style.header("metric_set:"),
-            metric_set.name,
-            metric_set.attributes.len(),
-            metric_set.metrics.len()
+            metric_set.name
         ));
-        for point in &metric_set.metrics {
-            lines.push(format!(
-                "  {} [{}] ({:?}) = {}",
-                style.label(&point.metadata.name),
-                style.dim(&point.metadata.unit),
-                point.metadata.instrument,
-                metric_value_string(&point.value)
-            ));
-        }
+        lines.push(field(
+            style,
+            "attributes",
+            format_metric_attributes(&metric_set.attributes),
+        ));
+        lines.push(render_table(
+            style,
+            &[
+                TableColumn::left("metric"),
+                TableColumn::left("unit"),
+                TableColumn::left("instrument"),
+                TableColumn::right("value"),
+            ],
+            metric_set
+                .metrics
+                .iter()
+                .map(|point| {
+                    vec![
+                        point.metadata.name.clone(),
+                        point.metadata.unit.clone(),
+                        format!("{:?}", point.metadata.instrument),
+                        metric_value_string(&point.value),
+                    ]
+                })
+                .collect(),
+        ));
     }
     lines.join("\n")
 }
@@ -604,15 +608,28 @@ pub fn render_group_shutdown_watch(
         ),
         state_field(style, "all_terminal", snapshot.all_terminal.to_string()),
     ];
-    for pipeline in &snapshot.pipelines {
-        lines.push(format!(
-            "{} {} running={}/{} terminal={} phases={}",
-            style.header("pipeline:"),
-            pipeline.pipeline,
-            pipeline.running_cores,
-            pipeline.total_cores,
-            style.state(pipeline.terminal.to_string()),
-            pipeline.phases.join(",")
+    if !snapshot.pipelines.is_empty() {
+        lines.push(String::new());
+        lines.push(render_table(
+            style,
+            &[
+                TableColumn::left("pipeline"),
+                TableColumn::right("running"),
+                TableColumn::left("terminal"),
+                TableColumn::left("phases"),
+            ],
+            snapshot
+                .pipelines
+                .iter()
+                .map(|pipeline| {
+                    vec![
+                        pipeline.pipeline.clone(),
+                        format!("{}/{}", pipeline.running_cores, pipeline.total_cores),
+                        style.state(pipeline.terminal.to_string()),
+                        style.state(pipeline.phases.join(", ")),
+                    ]
+                })
+                .collect(),
         ));
     }
     lines.join("\n")
@@ -649,26 +666,6 @@ pub fn write_stream_snapshot<T: Serialize>(
         StreamOutput::Human => write_stream_human(writer, resource, &human()?, style),
         StreamOutput::Ndjson => write_snapshot_event(writer, resource, value),
     }
-}
-
-fn pipeline_summary_line(style: &HumanStyle, name: &str, status: &pipelines::Status) -> String {
-    let rollout = status
-        .rollout
-        .as_ref()
-        .map(|value| style.state(format!("{:?}", value.state)))
-        .unwrap_or_else(|| "none".to_string());
-    format!(
-        "{} {} running={}/{} active_generation={} rollout={}",
-        style.header("pipeline:"),
-        name,
-        style.state(status.running_cores.to_string()),
-        status.total_cores,
-        status
-            .active_generation
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        rollout
-    )
 }
 
 fn render_finding_line(style: &HumanStyle, finding: &DiagnosisFinding) -> String {
@@ -720,6 +717,227 @@ fn metric_value_string(value: &telemetry::MetricValue) -> String {
     }
 }
 
+fn render_pipeline_summary_table(
+    style: &HumanStyle,
+    pipelines: &BTreeMap<String, pipelines::Status>,
+) -> String {
+    render_table(
+        style,
+        &[
+            TableColumn::left("pipeline"),
+            TableColumn::right("running"),
+            TableColumn::right("active_generation"),
+            TableColumn::left("rollout"),
+        ],
+        pipelines
+            .iter()
+            .map(|(name, status)| {
+                vec![
+                    name.clone(),
+                    format!("{}/{}", status.running_cores, status.total_cores),
+                    status
+                        .active_generation
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    status
+                        .rollout
+                        .as_ref()
+                        .map(|value| style.state(format!("{:?}", value.state)))
+                        .unwrap_or_else(|| "none".to_string()),
+                ]
+            })
+            .collect(),
+    )
+}
+
+fn render_pipeline_core_table(
+    style: &HumanStyle,
+    cores: &BTreeMap<usize, pipelines::CoreStatus>,
+) -> String {
+    render_table(
+        style,
+        &[
+            TableColumn::right("core"),
+            TableColumn::left("phase"),
+            TableColumn::left("delete_pending"),
+            TableColumn::left("last_heartbeat_time"),
+        ],
+        cores
+            .iter()
+            .map(|(core_id, core)| {
+                vec![
+                    core_id.to_string(),
+                    style.state(format!("{:?}", core.phase)),
+                    core.delete_pending.to_string(),
+                    core.last_heartbeat_time.clone(),
+                ]
+            })
+            .collect(),
+    )
+}
+
+fn render_rollout_core_table(style: &HumanStyle, cores: &[pipelines::RolloutCoreStatus]) -> String {
+    render_table(
+        style,
+        &[
+            TableColumn::right("core"),
+            TableColumn::left("state"),
+            TableColumn::right("target_generation"),
+            TableColumn::right("previous_generation"),
+            TableColumn::left("updated_at"),
+        ],
+        cores
+            .iter()
+            .map(|core| {
+                vec![
+                    core.core_id.to_string(),
+                    style.state(&core.state),
+                    core.target_generation.to_string(),
+                    core.previous_generation
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    core.updated_at.clone(),
+                ]
+            })
+            .collect(),
+    )
+}
+
+fn render_shutdown_core_table(
+    style: &HumanStyle,
+    cores: &[pipelines::ShutdownCoreStatus],
+) -> String {
+    render_table(
+        style,
+        &[
+            TableColumn::right("core"),
+            TableColumn::left("state"),
+            TableColumn::right("deployment_generation"),
+            TableColumn::left("updated_at"),
+        ],
+        cores
+            .iter()
+            .map(|core| {
+                vec![
+                    core.core_id.to_string(),
+                    style.state(&core.state),
+                    core.deployment_generation.to_string(),
+                    core.updated_at.clone(),
+                ]
+            })
+            .collect(),
+    )
+}
+
+fn format_metric_attributes(attributes: &BTreeMap<String, telemetry::AttributeValue>) -> String {
+    if attributes.is_empty() {
+        return "none".to_string();
+    }
+
+    attributes
+        .iter()
+        .map(|(key, value)| format!("{key}={}", attribute_value_string(value)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn attribute_value_string(value: &telemetry::AttributeValue) -> String {
+    match value {
+        telemetry::AttributeValue::String(value) => value.clone(),
+        telemetry::AttributeValue::Int(value) => value.to_string(),
+        telemetry::AttributeValue::UInt(value) => value.to_string(),
+        telemetry::AttributeValue::Double(value) => value.to_string(),
+        telemetry::AttributeValue::Boolean(value) => value.to_string(),
+        telemetry::AttributeValue::Map(values) => format!(
+            "{{{}}}",
+            values
+                .iter()
+                .map(|(key, value)| format!("{key}={}", attribute_value_string(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn render_table(style: &HumanStyle, columns: &[TableColumn<'_>], rows: Vec<Vec<String>>) -> String {
+    let mut widths = columns
+        .iter()
+        .map(|column| visible_width(column.header))
+        .collect::<Vec<_>>();
+
+    for row in &rows {
+        for (index, cell) in row.iter().enumerate().take(widths.len()) {
+            widths[index] = widths[index].max(visible_width(cell));
+        }
+    }
+
+    let mut rendered = Vec::with_capacity(rows.len().saturating_add(2));
+    rendered.push(join_table_row(
+        columns
+            .iter()
+            .zip(widths.iter())
+            .map(|(column, width)| pad_cell(&style.header(column.header), *width, TableAlign::Left))
+            .collect(),
+    ));
+    rendered.push(join_table_row(
+        widths.iter().map(|width| "-".repeat(*width)).collect(),
+    ));
+
+    for row in rows {
+        rendered.push(join_table_row(
+            columns
+                .iter()
+                .enumerate()
+                .map(|(index, column)| {
+                    pad_cell(
+                        row.get(index).map(String::as_str).unwrap_or(""),
+                        widths[index],
+                        column.align,
+                    )
+                })
+                .collect(),
+        ));
+    }
+
+    rendered.join("\n")
+}
+
+fn join_table_row(cells: Vec<String>) -> String {
+    cells.join("  ")
+}
+
+fn pad_cell(text: &str, width: usize, align: TableAlign) -> String {
+    let padding = width.saturating_sub(visible_width(text));
+    match align {
+        TableAlign::Left => format!("{text}{}", " ".repeat(padding)),
+        TableAlign::Right => format!("{}{text}", " ".repeat(padding)),
+    }
+}
+
+fn visible_width(text: &str) -> usize {
+    strip_ansi(text).chars().count()
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            let _ = chars.next();
+            for code in chars.by_ref() {
+                if ('@'..='~').contains(&code) {
+                    break;
+                }
+            }
+        } else {
+            stripped.push(ch);
+        }
+    }
+
+    stripped
+}
+
 fn io_serialize_error(error: impl std::fmt::Display) -> CliError {
     CliError::config(format!("failed to serialize output: {error}"))
 }
@@ -734,4 +952,178 @@ fn state_field(style: &HumanStyle, label: &str, value: impl AsRef<str>) -> Strin
         style.label(format!("{label}:")),
         style.state(value.as_ref())
     )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TableAlign {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TableColumn<'a> {
+    header: &'a str,
+    align: TableAlign,
+}
+
+impl<'a> TableColumn<'a> {
+    const fn left(header: &'a str) -> Self {
+        Self {
+            header,
+            align: TableAlign::Left,
+        }
+    }
+
+    const fn right(header: &'a str) -> Self {
+        Self {
+            header,
+            align: TableAlign::Right,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::args::ColorChoice;
+    use crate::troubleshoot::GroupShutdownWatchPipeline;
+    use serde_json::json;
+
+    fn no_color_style() -> HumanStyle {
+        HumanStyle::resolve(ColorChoice::Never, false)
+    }
+
+    #[test]
+    fn table_alignment_ignores_ansi_sequences() {
+        let style = HumanStyle::resolve(ColorChoice::Always, true);
+        let rendered = render_table(
+            &style,
+            &[TableColumn::left("name"), TableColumn::left("state")],
+            vec![
+                vec!["alpha".to_string(), style.state("succeeded")],
+                vec!["beta-long".to_string(), style.state("failed")],
+            ],
+        );
+
+        let widths = rendered.lines().map(visible_width).collect::<Vec<_>>();
+        assert!(widths.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn engine_status_renders_pipeline_table() {
+        let status: engine::Status = serde_json::from_value(json!({
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "pipelines": {
+                "tenant-a:ingest": {
+                    "conditions": [],
+                    "totalCores": 2,
+                    "runningCores": 1,
+                    "cores": {},
+                    "activeGeneration": 7,
+                    "rollout": {
+                        "rolloutId": "rollout-1",
+                        "state": "running",
+                        "targetGeneration": 8,
+                        "startedAt": "2026-01-01T00:00:00Z",
+                        "updatedAt": "2026-01-01T00:00:00Z"
+                    }
+                }
+            }
+        }))
+        .expect("status");
+
+        let rendered = render_engine_status(&no_color_style(), &status);
+        assert!(rendered.contains("pipeline"));
+        assert!(rendered.contains("active_generation"));
+        assert!(rendered.contains("tenant-a:ingest"));
+        assert!(rendered.contains("1/2"));
+        assert!(!rendered.contains("pipeline: tenant-a:ingest"));
+    }
+
+    #[test]
+    fn pipeline_status_renders_core_table() {
+        let status: pipelines::Status = serde_json::from_value(json!({
+            "conditions": [],
+            "totalCores": 1,
+            "runningCores": 1,
+            "cores": {
+                "0": {
+                    "phase": "running",
+                    "lastHeartbeatTime": "2026-01-01T00:00:00Z",
+                    "conditions": [],
+                    "deletePending": false
+                }
+            },
+            "activeGeneration": 3
+        }))
+        .expect("status");
+
+        let rendered = render_pipeline_status(&no_color_style(), &status);
+        assert!(rendered.contains("core"));
+        assert!(rendered.contains("last_heartbeat_time"));
+        assert!(rendered.contains("Running"));
+        assert!(!rendered.contains("core: 0"));
+    }
+
+    #[test]
+    fn group_shutdown_watch_renders_pipeline_table() {
+        let snapshot = GroupShutdownWatchSnapshot {
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            generated_at: "2026-01-01T00:00:05Z".to_string(),
+            request_status: "accepted".to_string(),
+            elapsed_ms: 5000,
+            total_pipelines: 2,
+            terminal_pipelines: 1,
+            all_terminal: false,
+            pipelines: vec![
+                GroupShutdownWatchPipeline {
+                    pipeline: "tenant-a:ingest".to_string(),
+                    running_cores: 0,
+                    total_cores: 1,
+                    terminal: true,
+                    phases: vec!["stopped".to_string()],
+                },
+                GroupShutdownWatchPipeline {
+                    pipeline: "tenant-a:egress".to_string(),
+                    running_cores: 0,
+                    total_cores: 1,
+                    terminal: false,
+                    phases: vec!["draining".to_string()],
+                },
+            ],
+        };
+
+        let rendered = render_group_shutdown_watch(&no_color_style(), &snapshot);
+        assert!(rendered.contains("terminal"));
+        assert!(rendered.contains("tenant-a:egress"));
+        assert!(rendered.contains("draining"));
+        assert!(!rendered.contains("pipeline: tenant-a:egress"));
+    }
+
+    #[test]
+    fn metrics_compact_renders_metric_table() {
+        let response: telemetry::CompactMetricsResponse = serde_json::from_value(json!({
+            "timestamp": "2026-01-01T00:00:00Z",
+            "metric_sets": [
+                {
+                    "name": "engine.runtime",
+                    "attributes": {
+                        "pipeline.id": { "String": "ingest" }
+                    },
+                    "metrics": {
+                        "pipelines": 3,
+                        "ready": 1
+                    }
+                }
+            ]
+        }))
+        .expect("metrics");
+
+        let rendered = render_metrics_compact(&no_color_style(), &response);
+        assert!(rendered.contains("metric_set: engine.runtime"));
+        assert!(rendered.contains("attributes: pipeline.id=ingest"));
+        assert!(rendered.contains("metric"));
+        assert!(rendered.contains("value"));
+        assert!(rendered.contains("pipelines"));
+    }
 }
