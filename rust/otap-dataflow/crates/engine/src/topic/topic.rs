@@ -15,24 +15,33 @@ use crate::error::Error::{
     SubscribeSingleGroupViolation, SubscriptionClosed, TopicClosed,
 };
 use crate::topic::backend::{PublishFuture, PublishTrackedFuture, SubscriptionBackend, TopicState};
+use crate::topic::subscription::{Delivery, RecvDelivery};
 use crate::topic::types::{
-    Envelope, PublishOutcome, RecvItem, SubscriberOptions, TopicOptions, TrackedPublishOutcome,
+    Envelope, PublishOutcome, SubscriberOptions, TopicOptions, TrackedPublishOutcome,
     TrackedPublishPermit, TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
 use futures_core::Stream;
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+struct QueuedEnvelope<T> {
+    envelope: Envelope<T>,
+    _admission_permit: OwnedSemaphorePermit,
+}
 
 struct ConsumerGroup<T> {
-    tx: async_channel::Sender<Envelope<T>>,
-    rx: async_channel::Receiver<Envelope<T>>,
+    tx: async_channel::Sender<QueuedEnvelope<T>>,
+    rx: async_channel::Receiver<QueuedEnvelope<T>>,
+    admission: Arc<Semaphore>,
 }
 
 struct SingleGroup<T> {
     group_name: SubscriptionGroupName,
-    tx: async_channel::Sender<Envelope<T>>,
-    rx: async_channel::Receiver<Envelope<T>>,
+    tx: async_channel::Sender<QueuedEnvelope<T>>,
+    rx: async_channel::Receiver<QueuedEnvelope<T>>,
+    admission: Arc<Semaphore>,
 }
 
 pub(crate) enum BroadcastReadResult<T> {
@@ -79,6 +88,43 @@ impl WakerSet {
         for waker in wakers {
             waker.wake();
         }
+    }
+}
+
+fn send_queued_envelope<T>(
+    sender: &async_channel::Sender<QueuedEnvelope<T>>,
+    envelope: Envelope<T>,
+    permit: OwnedSemaphorePermit,
+) -> Result<(), Error> {
+    match sender.try_send(QueuedEnvelope {
+        envelope,
+        _admission_permit: permit,
+    }) {
+        Ok(()) => Ok(()),
+        Err(async_channel::TrySendError::Full(_)) => {
+            panic!("reserved topic admission permit should guarantee queue capacity")
+        }
+        Err(async_channel::TrySendError::Closed(_)) => Err(TopicClosed),
+    }
+}
+
+async fn acquire_balanced_permit(
+    admission: &Arc<Semaphore>,
+) -> Result<OwnedSemaphorePermit, Error> {
+    admission
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| TopicClosed)
+}
+
+fn try_acquire_balanced_permit(
+    admission: &Arc<Semaphore>,
+) -> Result<Option<OwnedSemaphorePermit>, Error> {
+    match admission.clone().try_acquire_owned() {
+        Ok(permit) => Ok(Some(permit)),
+        Err(tokio::sync::TryAcquireError::NoPermits) => Ok(None),
+        Err(tokio::sync::TryAcquireError::Closed) => Err(TopicClosed),
     }
 }
 
@@ -353,12 +399,13 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 
         let id = self.next_message_id();
         if let Some(group) = self.group.get() {
+            let permit = acquire_balanced_permit(&group.admission).await?;
             let envelope = Envelope {
                 id,
                 tracked: false,
                 payload: msg,
             };
-            group.tx.send(envelope).await.map_err(|_| TopicClosed)?;
+            send_queued_envelope(&group.tx, envelope, permit)?;
         }
         Ok(id)
     }
@@ -374,23 +421,19 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         }
 
         let id = self.next_message_id();
-        let receipt = self.outcomes.register(id, timeout, permit);
         if let Some(group) = self.group.get() {
+            let admission_permit = acquire_balanced_permit(&group.admission).await?;
+            let receipt = self.outcomes.register(id, timeout, permit);
             let envelope = Envelope {
                 id,
                 tracked: true,
                 payload: msg,
             };
-            if group.tx.send(envelope).await.is_err() {
-                let discarded = self.outcomes.discard(id);
-                debug_assert!(
-                    discarded,
-                    "freshly registered tracked publish should still be discardable when balanced send fails"
-                );
-                return Err(TopicClosed);
-            }
+            send_queued_envelope(&group.tx, envelope, admission_permit)?;
+            Ok(receipt)
+        } else {
+            Ok(self.outcomes.register(id, timeout, permit))
         }
-        Ok(receipt)
     }
 
     fn try_publish(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
@@ -400,18 +443,15 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 
         let id = self.next_message_id();
         if let Some(group) = self.group.get() {
+            let Some(permit) = try_acquire_balanced_permit(&group.admission)? else {
+                return Ok((PublishOutcome::DroppedOnFull, id));
+            };
             let envelope = Envelope {
                 id,
                 tracked: false,
                 payload: msg,
             };
-            match group.tx.try_send(envelope) {
-                Ok(()) => {}
-                Err(async_channel::TrySendError::Full(_)) => {
-                    return Ok((PublishOutcome::DroppedOnFull, id));
-                }
-                Err(async_channel::TrySendError::Closed(_)) => return Err(TopicClosed),
-            }
+            send_queued_envelope(&group.tx, envelope, permit)?;
         }
         Ok((PublishOutcome::Published, id))
     }
@@ -427,34 +467,23 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         }
 
         let id = self.next_message_id();
-        let receipt = self.outcomes.register(id, timeout, permit);
         if let Some(group) = self.group.get() {
+            let Some(admission_permit) = try_acquire_balanced_permit(&group.admission)? else {
+                return Ok(TrackedTryPublishOutcome::DroppedOnFull);
+            };
+            let receipt = self.outcomes.register(id, timeout, permit);
             let envelope = Envelope {
                 id,
                 tracked: true,
                 payload: msg,
             };
-            match group.tx.try_send(envelope) {
-                Ok(()) => {}
-                Err(async_channel::TrySendError::Full(_)) => {
-                    let discarded = self.outcomes.discard(id);
-                    debug_assert!(
-                        discarded,
-                        "freshly registered tracked publish should still be discardable when balanced try_send reports full"
-                    );
-                    return Ok(TrackedTryPublishOutcome::DroppedOnFull);
-                }
-                Err(async_channel::TrySendError::Closed(_)) => {
-                    let discarded = self.outcomes.discard(id);
-                    debug_assert!(
-                        discarded,
-                        "freshly registered tracked publish should still be discardable when balanced try_send reports closed"
-                    );
-                    return Err(TopicClosed);
-                }
-            }
+            send_queued_envelope(&group.tx, envelope, admission_permit)?;
+            Ok(TrackedTryPublishOutcome::Published(receipt))
+        } else {
+            Ok(TrackedTryPublishOutcome::Published(
+                self.outcomes.register(id, timeout, permit),
+            ))
         }
-        Ok(TrackedTryPublishOutcome::Published(receipt))
     }
 
     fn subscribe_balanced(
@@ -472,6 +501,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
                 group_name: group.clone(),
                 tx,
                 rx,
+                admission: Arc::new(Semaphore::new(self.balanced_capacity)),
             }
         });
 
@@ -491,6 +521,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         self.closed.store(true, Ordering::Relaxed);
         self.outcomes.close_all();
         if let Some(group) = self.group.get() {
+            group.admission.close();
             let _ = group.tx.close();
         }
     }
@@ -579,10 +610,14 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
         let start_seq = self.broadcast_ring.current_seq() + 1;
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
-            read_seq: start_seq,
+            cursor: Arc::new(Mutex::new(BroadcastCursor {
+                read_seq: start_seq,
+                leased_seq: None,
+                disconnected_on_lag: false,
+                spun: false,
+                lease_waiters: WakerSet::new(),
+            })),
             on_lag: self.broadcast_on_lag,
-            disconnected_on_lag: false,
-            spun: false,
             ack_state: AckState {
                 outcomes: self.outcomes.clone(),
             },
@@ -599,8 +634,8 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
 pub(crate) struct MixedTopic<T: Send + Sync + 'static> {
     name: TopicName,
     next_id: AtomicU64,
-    groups: RwLock<Vec<(SubscriptionGroupName, ConsumerGroup<T>)>>,
-    group_senders: RwLock<Arc<[async_channel::Sender<Envelope<T>>]>>,
+    groups: RwLock<Vec<(SubscriptionGroupName, Arc<ConsumerGroup<T>>)>>,
+    group_handles: RwLock<Arc<[Arc<ConsumerGroup<T>>]>>,
     has_balanced_groups: AtomicBool,
     balanced_capacity: usize,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
@@ -620,7 +655,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             name,
             next_id: AtomicU64::new(1),
             groups: RwLock::new(Vec::new()),
-            group_senders: RwLock::new(Arc::from(Vec::new())),
+            group_handles: RwLock::new(Arc::from(Vec::new())),
             has_balanced_groups: AtomicBool::new(false),
             balanced_capacity: balanced_capacity.max(1),
             broadcast_ring: Arc::new(FastBroadcastRing::new(broadcast_capacity)),
@@ -641,26 +676,27 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
 
         let id = self.next_message_id();
-        self.broadcast_ring.publish(Envelope {
-            id,
-            tracked: false,
-            payload: Arc::clone(&msg),
-        });
-
         if self.has_balanced_groups.load(Ordering::Acquire) {
-            let senders = self.group_senders.read().clone();
+            let groups = self.group_handles.read().clone();
+            let mut permits = Vec::with_capacity(groups.len());
+            for group in groups.as_ref() {
+                permits.push(acquire_balanced_permit(&group.admission).await?);
+            }
             let envelope = Envelope {
                 id,
                 tracked: false,
                 payload: Arc::clone(&msg),
             };
-            for sender in senders.as_ref() {
-                sender
-                    .send(envelope.clone())
-                    .await
-                    .map_err(|_| TopicClosed)?;
+            for (group, permit) in groups.as_ref().iter().zip(permits.into_iter()) {
+                send_queued_envelope(&group.tx, envelope.clone(), permit)?;
             }
         }
+
+        self.broadcast_ring.publish(Envelope {
+            id,
+            tracked: false,
+            payload: Arc::clone(&msg),
+        });
 
         Ok(id)
     }
@@ -676,35 +712,36 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
 
         let id = self.next_message_id();
-        let receipt = self.outcomes.register(id, timeout, permit);
-        self.broadcast_ring.publish(Envelope {
-            id,
-            tracked: true,
-            payload: Arc::clone(&msg),
-        });
-
         if self.has_balanced_groups.load(Ordering::Acquire) {
-            let senders = self.group_senders.read().clone();
+            let groups = self.group_handles.read().clone();
+            let mut permits = Vec::with_capacity(groups.len());
+            for group in groups.as_ref() {
+                permits.push(acquire_balanced_permit(&group.admission).await?);
+            }
+            let receipt = self.outcomes.register(id, timeout, permit);
             let envelope = Envelope {
                 id,
                 tracked: true,
                 payload: Arc::clone(&msg),
             };
-            for sender in senders.as_ref() {
-                if sender.send(envelope.clone()).await.is_err() {
-                    let resolved = self
-                        .outcomes
-                        .resolve(id, TrackedPublishOutcome::TopicClosed);
-                    debug_assert!(
-                        resolved,
-                        "freshly registered tracked publish should still resolve when mixed balanced send fails"
-                    );
-                    return Err(TopicClosed);
-                }
+            for (group, admission_permit) in groups.as_ref().iter().zip(permits.into_iter()) {
+                send_queued_envelope(&group.tx, envelope.clone(), admission_permit)?;
             }
+            self.broadcast_ring.publish(Envelope {
+                id,
+                tracked: true,
+                payload: Arc::clone(&msg),
+            });
+            Ok(receipt)
+        } else {
+            let receipt = self.outcomes.register(id, timeout, permit);
+            self.broadcast_ring.publish(Envelope {
+                id,
+                tracked: true,
+                payload: Arc::clone(&msg),
+            });
+            Ok(receipt)
         }
-
-        Ok(receipt)
     }
 
     fn try_publish(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
@@ -723,24 +760,30 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             return Ok((PublishOutcome::Published, id));
         }
 
-        let senders = self.group_senders.read().clone();
+        let groups = self.group_handles.read().clone();
         let envelope = Envelope {
             id,
             tracked: false,
             payload: Arc::clone(&msg),
         };
         let mut dropped_on_full = false;
-        for sender in senders.as_ref() {
-            match sender.try_send(envelope.clone()) {
-                Ok(()) => {}
-                Err(async_channel::TrySendError::Full(_)) => dropped_on_full = true,
-                Err(async_channel::TrySendError::Closed(_)) => return Err(TopicClosed),
+        let mut permits = Vec::with_capacity(groups.len());
+        for group in groups.as_ref() {
+            match try_acquire_balanced_permit(&group.admission)? {
+                Some(permit) => permits.push(permit),
+                None => {
+                    dropped_on_full = true;
+                    break;
+                }
             }
         }
 
         if dropped_on_full {
             Ok((PublishOutcome::DroppedOnFull, id))
         } else {
+            for (group, permit) in groups.as_ref().iter().zip(permits.into_iter()) {
+                send_queued_envelope(&group.tx, envelope.clone(), permit)?;
+            }
             Ok((PublishOutcome::Published, id))
         }
     }
@@ -756,44 +799,39 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
 
         let id = self.next_message_id();
-        let receipt = self.outcomes.register(id, timeout, permit);
-
         if self.has_balanced_groups.load(Ordering::Acquire) {
-            let senders = self.group_senders.read().clone();
+            let groups = self.group_handles.read().clone();
+            let mut permits = Vec::with_capacity(groups.len());
+            for group in groups.as_ref() {
+                match try_acquire_balanced_permit(&group.admission)? {
+                    Some(permit) => permits.push(permit),
+                    None => return Ok(TrackedTryPublishOutcome::DroppedOnFull),
+                }
+            }
+            let receipt = self.outcomes.register(id, timeout, permit);
             let envelope = Envelope {
                 id,
                 tracked: true,
                 payload: Arc::clone(&msg),
             };
-            for sender in senders.as_ref() {
-                match sender.try_send(envelope.clone()) {
-                    Ok(()) => {}
-                    Err(async_channel::TrySendError::Full(_)) => {
-                        let discarded = self.outcomes.discard(id);
-                        debug_assert!(
-                            discarded,
-                            "freshly registered tracked publish should still be discardable when mixed balanced try_send reports full"
-                        );
-                        return Ok(TrackedTryPublishOutcome::DroppedOnFull);
-                    }
-                    Err(async_channel::TrySendError::Closed(_)) => {
-                        let discarded = self.outcomes.discard(id);
-                        debug_assert!(
-                            discarded,
-                            "freshly registered tracked publish should still be discardable when mixed balanced try_send reports closed"
-                        );
-                        return Err(TopicClosed);
-                    }
-                }
+            for (group, admission_permit) in groups.as_ref().iter().zip(permits.into_iter()) {
+                send_queued_envelope(&group.tx, envelope.clone(), admission_permit)?;
             }
+            self.broadcast_ring.publish(Envelope {
+                id,
+                tracked: true,
+                payload: msg,
+            });
+            Ok(TrackedTryPublishOutcome::Published(receipt))
+        } else {
+            let receipt = self.outcomes.register(id, timeout, permit);
+            self.broadcast_ring.publish(Envelope {
+                id,
+                tracked: true,
+                payload: msg,
+            });
+            Ok(TrackedTryPublishOutcome::Published(receipt))
         }
-
-        self.broadcast_ring.publish(Envelope {
-            id,
-            tracked: true,
-            payload: msg,
-        });
-        Ok(TrackedTryPublishOutcome::Published(receipt))
     }
 
     fn subscribe_balanced(
@@ -811,13 +849,18 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
                 group_entry.rx.clone()
             } else {
                 let (tx, rx) = async_channel::bounded(self.balanced_capacity);
-                groups.push((group.clone(), ConsumerGroup { tx, rx: rx.clone() }));
-                let snapshot: Arc<[async_channel::Sender<Envelope<T>>]> = groups
+                let group_entry = Arc::new(ConsumerGroup {
+                    tx,
+                    rx: rx.clone(),
+                    admission: Arc::new(Semaphore::new(self.balanced_capacity)),
+                });
+                groups.push((group.clone(), Arc::clone(&group_entry)));
+                let snapshot: Arc<[Arc<ConsumerGroup<T>>]> = groups
                     .iter()
-                    .map(|(_, group_entry)| group_entry.tx.clone())
+                    .map(|(_, group_entry)| Arc::clone(group_entry))
                     .collect::<Vec<_>>()
                     .into();
-                *self.group_senders.write() = snapshot;
+                *self.group_handles.write() = snapshot;
                 self.has_balanced_groups.store(true, Ordering::Release);
                 rx
             }
@@ -835,10 +878,14 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         let start_seq = self.broadcast_ring.current_seq() + 1;
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
-            read_seq: start_seq,
+            cursor: Arc::new(Mutex::new(BroadcastCursor {
+                read_seq: start_seq,
+                leased_seq: None,
+                disconnected_on_lag: false,
+                spun: false,
+                lease_waiters: WakerSet::new(),
+            })),
             on_lag: self.broadcast_on_lag,
-            disconnected_on_lag: false,
-            spun: false,
             ack_state: AckState {
                 outcomes: self.outcomes.clone(),
             },
@@ -848,9 +895,10 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
     fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
         self.outcomes.close_all();
-        let senders = self.group_senders.read().clone();
-        for sender in senders.as_ref() {
-            let _ = sender.close();
+        let groups = self.group_handles.read().clone();
+        for group in groups.as_ref() {
+            group.admission.close();
+            let _ = group.tx.close();
         }
         self.has_balanced_groups.store(false, Ordering::Release);
         self.broadcast_ring.close();
@@ -858,14 +906,19 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
 }
 
 pub(crate) struct BalancedSub<T: Send + Sync + 'static> {
-    rx: Pin<Box<async_channel::Receiver<Envelope<T>>>>,
+    rx: Pin<Box<async_channel::Receiver<QueuedEnvelope<T>>>>,
     ack_state: AckState,
 }
 
 impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BalancedSub<T> {
-    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<RecvItem<T>, Error>> {
+    fn poll_recv_delivery(&mut self, cx: &mut Context<'_>) -> Poll<Result<RecvDelivery<T>, Error>> {
         match self.rx.as_mut().poll_next(cx) {
-            Poll::Ready(Some(envelope)) => Poll::Ready(Ok(RecvItem::Message(envelope))),
+            Poll::Ready(Some(queued)) => {
+                Poll::Ready(Ok(RecvDelivery::Message(Delivery::new_in_memory(
+                    queued.envelope,
+                    InMemoryDeliveryFinalizer::balanced(self.ack_state.clone()),
+                ))))
+            }
             Poll::Ready(None) => Poll::Ready(Err(SubscriptionClosed)),
             Poll::Pending => Poll::Pending,
         }
@@ -882,69 +935,60 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BalancedSub<T> {
 
 pub(crate) struct BroadcastSub<T: Send + Sync + 'static> {
     ring: Arc<FastBroadcastRing<T>>,
-    read_seq: u64,
+    cursor: Arc<Mutex<BroadcastCursor>>,
     on_lag: TopicBroadcastOnLagPolicy,
-    disconnected_on_lag: bool,
-    spun: bool,
     ack_state: AckState,
 }
 
 impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
-    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<RecvItem<T>, Error>> {
-        if self.disconnected_on_lag {
-            return Poll::Ready(Err(SubscriptionClosed));
-        }
-
-        match self.ring.try_read(self.read_seq) {
-            BroadcastReadResult::Ready(envelope) => {
-                self.read_seq += 1;
-                self.spun = false;
-                return Poll::Ready(Ok(RecvItem::Message(envelope)));
+    fn poll_recv_delivery(&mut self, cx: &mut Context<'_>) -> Poll<Result<RecvDelivery<T>, Error>> {
+        {
+            let cursor = self.cursor.lock();
+            if cursor.disconnected_on_lag {
+                return Poll::Ready(Err(SubscriptionClosed));
             }
-            BroadcastReadResult::Lagged {
-                missed,
-                new_read_seq,
-            } => return Poll::Ready(Ok(self.handle_lag(missed, new_read_seq))),
-            BroadcastReadResult::NotReady => {}
+            if cursor.leased_seq.is_some() {
+                cursor.lease_waiters.register(cx.waker());
+                return Poll::Pending;
+            }
         }
 
-        if !self.spun {
-            self.spun = true;
+        if let Some(result) = self.try_read_delivery() {
+            return Poll::Ready(result);
+        }
+
+        let should_spin = {
+            let mut cursor = self.cursor.lock();
+            if cursor.spun {
+                false
+            } else {
+                cursor.spun = true;
+                true
+            }
+        };
+
+        if should_spin {
             for _ in 0..32 {
                 std::hint::spin_loop();
-                if self.ring.current_seq() >= self.read_seq {
-                    match self.ring.try_read(self.read_seq) {
-                        BroadcastReadResult::Ready(envelope) => {
-                            self.read_seq += 1;
-                            self.spun = false;
-                            return Poll::Ready(Ok(RecvItem::Message(envelope)));
-                        }
-                        BroadcastReadResult::Lagged {
-                            missed,
-                            new_read_seq,
-                        } => return Poll::Ready(Ok(self.handle_lag(missed, new_read_seq))),
-                        BroadcastReadResult::NotReady => {}
-                    }
+                if let Some(result) = self.try_read_delivery() {
+                    return Poll::Ready(result);
                 }
             }
         }
 
         self.ring.register_waker(cx.waker());
+        {
+            let cursor = self.cursor.lock();
+            if cursor.leased_seq.is_some() {
+                cursor.lease_waiters.register(cx.waker());
+                return Poll::Pending;
+            }
+        }
 
-        match self.ring.try_read(self.read_seq) {
-            BroadcastReadResult::Ready(envelope) => {
-                self.read_seq += 1;
-                self.spun = false;
-                Poll::Ready(Ok(RecvItem::Message(envelope)))
-            }
-            BroadcastReadResult::Lagged {
-                missed,
-                new_read_seq,
-            } => Poll::Ready(Ok(self.handle_lag(missed, new_read_seq))),
-            BroadcastReadResult::NotReady if self.ring.is_closed() => {
-                Poll::Ready(Err(SubscriptionClosed))
-            }
-            BroadcastReadResult::NotReady => Poll::Pending,
+        match self.try_read_delivery() {
+            Some(result) => Poll::Ready(result),
+            None if self.ring.is_closed() => Poll::Ready(Err(SubscriptionClosed)),
+            None => Poll::Pending,
         }
     }
 
@@ -958,16 +1002,169 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
 }
 
 impl<T: Send + Sync + 'static> BroadcastSub<T> {
-    fn handle_lag(&mut self, missed: u64, new_read_seq: u64) -> RecvItem<T> {
-        self.read_seq = new_read_seq;
-        self.spun = false;
-        if self.on_lag == TopicBroadcastOnLagPolicy::Disconnect {
-            self.disconnected_on_lag = true;
+    fn try_read_delivery(&self) -> Option<Result<RecvDelivery<T>, Error>> {
+        let read_seq = {
+            let cursor = self.cursor.lock();
+            if cursor.disconnected_on_lag || cursor.leased_seq.is_some() {
+                return None;
+            }
+            cursor.read_seq
+        };
+
+        match self.ring.try_read(read_seq) {
+            BroadcastReadResult::Ready(envelope) => {
+                let mut cursor = self.cursor.lock();
+                if cursor.disconnected_on_lag || cursor.leased_seq.is_some() {
+                    return None;
+                }
+                cursor.leased_seq = Some(read_seq);
+                cursor.spun = false;
+                Some(Ok(RecvDelivery::Message(Delivery::new_in_memory(
+                    envelope,
+                    InMemoryDeliveryFinalizer::broadcast(
+                        read_seq,
+                        Arc::clone(&self.cursor),
+                        self.ack_state.clone(),
+                    ),
+                ))))
+            }
+            BroadcastReadResult::Lagged {
+                missed,
+                new_read_seq,
+            } => {
+                let mut cursor = self.cursor.lock();
+                cursor.read_seq = new_read_seq;
+                cursor.spun = false;
+                if self.on_lag == TopicBroadcastOnLagPolicy::Disconnect {
+                    cursor.disconnected_on_lag = true;
+                }
+                Some(Ok(RecvDelivery::Lagged { missed }))
+            }
+            BroadcastReadResult::NotReady => None,
         }
-        RecvItem::Lagged { missed }
     }
 }
 
+pub(crate) struct BroadcastCursor {
+    read_seq: u64,
+    leased_seq: Option<u64>,
+    disconnected_on_lag: bool,
+    spun: bool,
+    lease_waiters: WakerSet,
+}
+
+fn finish_broadcast_delivery(cursor: &Arc<Mutex<BroadcastCursor>>, seq: u64) {
+    let mut cursor = cursor.lock();
+    if cursor.leased_seq == Some(seq) {
+        cursor.read_seq = seq + 1;
+        cursor.leased_seq = None;
+        cursor.spun = false;
+        cursor.lease_waiters.wake_all();
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InMemoryDeliveryKind {
+    Balanced,
+    Broadcast,
+}
+
+pub(crate) enum InMemoryDeliveryFinalizer {
+    Balanced {
+        ack_state: AckState,
+    },
+    Broadcast {
+        seq: u64,
+        cursor: Arc<Mutex<BroadcastCursor>>,
+        ack_state: AckState,
+    },
+}
+
+impl InMemoryDeliveryFinalizer {
+    pub(crate) fn balanced(ack_state: AckState) -> Self {
+        Self::Balanced { ack_state }
+    }
+
+    pub(crate) fn broadcast(
+        seq: u64,
+        cursor: Arc<Mutex<BroadcastCursor>>,
+        ack_state: AckState,
+    ) -> Self {
+        Self::Broadcast {
+            seq,
+            cursor,
+            ack_state,
+        }
+    }
+
+    pub(crate) fn commit(&mut self) {
+        if let Self::Broadcast { seq, cursor, .. } = self {
+            finish_broadcast_delivery(cursor, *seq);
+        }
+    }
+
+    pub(crate) fn abort<T: Send + Sync + 'static>(
+        &mut self,
+        envelope: &Envelope<T>,
+        reason: Arc<str>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Balanced { ack_state } => {
+                if envelope.tracked {
+                    _ = ack_state.send_nack(envelope.id, reason);
+                }
+            }
+            Self::Broadcast {
+                seq,
+                cursor,
+                ack_state,
+            } => {
+                if envelope.tracked {
+                    _ = ack_state.send_nack(envelope.id, reason);
+                }
+                finish_broadcast_delivery(cursor, *seq);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn abandon<T: Send + Sync + 'static>(&mut self, envelope: &Envelope<T>) {
+        match self {
+            Self::Balanced { ack_state } => {
+                if envelope.tracked {
+                    _ = ack_state.send_nack(
+                        envelope.id,
+                        Arc::<str>::from("topic delivery abandoned before forward"),
+                    );
+                }
+            }
+            Self::Broadcast {
+                seq,
+                cursor,
+                ack_state,
+            } => {
+                if envelope.tracked {
+                    _ = ack_state.send_nack(
+                        envelope.id,
+                        Arc::<str>::from("topic delivery abandoned before forward"),
+                    );
+                }
+                finish_broadcast_delivery(cursor, *seq);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn kind(&self) -> InMemoryDeliveryKind {
+        match self {
+            Self::Balanced { .. } => InMemoryDeliveryKind::Balanced,
+            Self::Broadcast { .. } => InMemoryDeliveryKind::Broadcast,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct AckState {
     pub(crate) outcomes: TrackedPublishTracker,
 }
