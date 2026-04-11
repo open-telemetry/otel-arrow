@@ -168,7 +168,7 @@ jobs:
           name: nextest-archive-${{ matrix.os }}
           path: ./rust/${{ matrix.folder }}
       - name: Run tests (partition ${{ matrix.partition }}/3)
-        run: cargo nextest run --profile ci --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
+        run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
 
   fmt:
@@ -508,7 +508,7 @@ jobs:
           name: nextest-archive-${{ matrix.os }}
           path: ./rust/${{ matrix.folder }}
       - name: Run tests (partition ${{ matrix.partition }}/3)
-        run: cargo nextest run --profile ci --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
+        run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
 
   # Coverage runs unpartitioned on Linux x86_64 (does not block merge).
