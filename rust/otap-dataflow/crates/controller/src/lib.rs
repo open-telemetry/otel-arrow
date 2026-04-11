@@ -3228,13 +3228,13 @@ groups:
         assert_eq!(
             topic
                 .try_publish(Arc::new(()))
-                .expect("publish should still reach broadcast"),
+                .expect("publish should report backpressure once balanced is full"),
             otap_df_engine::topic::PublishOutcome::DroppedOnFull
         );
         assert_eq!(
             topic
                 .try_publish(Arc::new(()))
-                .expect("publish should still reach broadcast"),
+                .expect("publish should keep reporting backpressure while balanced is full"),
             otap_df_engine::topic::PublishOutcome::DroppedOnFull
         );
         assert_eq!(
@@ -3263,6 +3263,6 @@ groups:
                 }
             }
         }
-        assert_eq!(broadcast_messages, 3);
+        assert_eq!(broadcast_messages, 1);
     }
 }

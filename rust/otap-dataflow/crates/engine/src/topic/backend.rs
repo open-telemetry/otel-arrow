@@ -117,6 +117,10 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy;
     /// Close the topic. Existing subscriptions eventually observe closure.
     fn close(&self);
+
+    #[cfg(test)]
+    /// Snapshot the currently available balanced permits by consumer group.
+    fn debug_balanced_available_permits(&self) -> Vec<(SubscriptionGroupName, usize)>;
 }
 
 /// Per-subscription operations. Exclusively owned by one `Subscription`.
