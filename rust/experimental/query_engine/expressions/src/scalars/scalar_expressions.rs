@@ -1008,7 +1008,7 @@ pub struct SliceScalarExpression {
     query_location: QueryLocation,
     source: Box<ScalarExpression>,
     range_start_inclusive: Option<Box<ScalarExpression>>,
-    range_end_exclusive: Option<Box<ScalarExpression>>,
+    range_length: Option<Box<ScalarExpression>>,
 }
 
 impl SliceScalarExpression {
@@ -1016,13 +1016,13 @@ impl SliceScalarExpression {
         query_location: QueryLocation,
         source: ScalarExpression,
         range_start_inclusive: Option<ScalarExpression>,
-        range_end_exclusive: Option<ScalarExpression>,
+        range_length: Option<ScalarExpression>,
     ) -> SliceScalarExpression {
         Self {
             query_location,
             source: source.into(),
             range_start_inclusive: range_start_inclusive.map(|v| v.into()),
-            range_end_exclusive: range_end_exclusive.map(|v| v.into()),
+            range_length: range_length.map(|v| v.into()),
         }
     }
 
@@ -1034,8 +1034,8 @@ impl SliceScalarExpression {
         self.range_start_inclusive.as_deref()
     }
 
-    pub fn get_range_end_exclusive(&self) -> Option<&ScalarExpression> {
-        self.range_end_exclusive.as_deref()
+    pub fn get_range_length(&self) -> Option<&ScalarExpression> {
+        self.range_length.as_deref()
     }
 
     pub(crate) fn try_resolve_value_type(
@@ -1075,7 +1075,7 @@ impl SliceScalarExpression {
             None => 0,
         };
 
-        let range_end_exclusive = match &mut self.range_end_exclusive {
+        let range_length = match &mut self.range_length {
             Some(s) => {
                 let location = s.get_query_location().clone();
 
@@ -1101,7 +1101,7 @@ impl SliceScalarExpression {
                         "Array",
                         a.len(),
                         range_start_inclusive,
-                        range_end_exclusive,
+                        range_length,
                     )?;
 
                     // Note: We don't return an array slice statically. This
@@ -1116,7 +1116,7 @@ impl SliceScalarExpression {
                         "String",
                         s.get_value().chars().count(),
                         range_start_inclusive,
-                        range_end_exclusive,
+                        range_length,
                     )?;
 
                     // Note: We only return statically small string slices. The
@@ -1175,26 +1175,22 @@ impl SliceScalarExpression {
         name: &str,
         target_length: usize,
         range_start_inclusive: usize,
-        range_end_exclusive: Option<usize>,
+        range_length: Option<usize>,
     ) -> Result<usize, ExpressionError> {
-        let end = range_end_exclusive.unwrap_or(target_length);
+        if range_start_inclusive >= target_length {
+            return Err(ExpressionError::ValidationFailure(
+                query_location.clone(),
+                format!(
+                    "{name} slice index starts at '{range_start_inclusive}' but target ends at index '{}'",
+                    target_length - 1
+                ),
+            ));
+        }
 
-        if range_start_inclusive > end {
-            return Err(ExpressionError::ValidationFailure(
-                query_location.clone(),
-                format!(
-                    "{name} slice index starts at '{range_start_inclusive}' but ends at '{end}'"
-                ),
-            ));
-        }
-        if end > target_length {
-            return Err(ExpressionError::ValidationFailure(
-                query_location.clone(),
-                format!(
-                    "{name} slice index ends at '{end}' which is beyond the length of '{target_length}'"
-                ),
-            ));
-        }
+        let end = match range_length {
+            None => target_length,
+            Some(length) => std::cmp::min(range_start_inclusive + length, target_length),
+        };
 
         Ok(end)
     }
@@ -1238,13 +1234,13 @@ impl Expression for SliceScalarExpression {
             }
         }
 
-        match &self.range_end_exclusive {
+        match &self.range_length {
             Some(s) => {
-                write!(f, "{indent}└── EndExclusive(Scalar): ")?;
-                s.fmt_with_indent(f, format!("{indent}                          ").as_str())?;
+                write!(f, "{indent}└── Length(Scalar): ")?;
+                s.fmt_with_indent(f, format!("{indent}                    ").as_str())?;
             }
             None => {
-                writeln!(f, "{indent}└── EndExclusive: None")?;
+                writeln!(f, "{indent}└── Length: None")?;
             }
         }
 
@@ -1576,7 +1572,7 @@ impl InvokeFunctionScalarExpression {
             }
 
             if return_count == 1
-                // safety: we can "expect" one return_statement here because if return_count is 
+                // safety: we can "expect" one return_statement here because if return_count is
                 // non-zero, then we've set this variable to `Some` in the loop above
                 && let ScalarExpression::Static(s) = return_statement.expect("return_statement not None")
             {
@@ -2740,7 +2736,7 @@ mod tests {
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 ))),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                 ))),
             ),
             Some(ValueType::String),
@@ -2764,7 +2760,7 @@ mod tests {
             Some(ValueType::String),
             Some(Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
-                "ん",
+                "んに",
             ))),
         );
 
@@ -2800,18 +2796,22 @@ mod tests {
             ))),
         );
 
-        run_test_failure(
+        run_test_success(
             SliceScalarExpression::new(
                 QueryLocation::new_fake(),
                 small_string_source.clone(),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
                 ))),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 50),
                 ))),
             ),
-            "String slice index starts at '2' but ends at '1'",
+            Some(ValueType::String),
+            Some(Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "こんにちは",
+            ))),
         );
 
         run_test_failure(
@@ -2819,13 +2819,13 @@ mod tests {
                 QueryLocation::new_fake(),
                 small_string_source.clone(),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 50),
                 ))),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 50),
                 ))),
             ),
-            "String slice index ends at '6' which is beyond the length of '5'",
+            "String slice index starts at '50' but target ends at index '4'",
         );
 
         let large_string_source = ScalarExpression::Static(StaticScalarExpression::String(
@@ -2927,27 +2927,13 @@ mod tests {
                 QueryLocation::new_fake(),
                 array_source.clone(),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
                 ))),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 ))),
             ),
-            "Array slice index starts at '2' but ends at '1'",
-        );
-
-        run_test_failure(
-            SliceScalarExpression::new(
-                QueryLocation::new_fake(),
-                array_source.clone(),
-                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                ))),
-                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
-                ))),
-            ),
-            "Array slice index ends at '6' which is beyond the length of '5'",
+            "Array slice index starts at '5' but target ends at index '4'",
         );
     }
 
