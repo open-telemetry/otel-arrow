@@ -34,11 +34,11 @@ ratatui = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 rustls = { workspace = true, optional = true }
 rustls-openssl = { workspace = true, optional = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 wiremock = { workspace = true }

@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::app::{
-    AppState, BundlePane, ConditionRow, CoreRow, DiagnosisPane, EngineSummaryPane, EventPane,
-    FindingRow, FocusArea, GroupSummaryPane, LogFeedState, LogRow, MetricRow, MetricsPane,
-    OperationPane, PipelineInventoryRow, PipelineSummaryPane, ProbeFailureRow, StatCard,
-    TimelineRow, Tone, UI_TITLE, View,
+    ActionMenuState, AppState, BundlePane, ConditionRow, ConfigPane, CoreRow, DiagnosisPane,
+    EngineSummaryPane, EventPane, FindingRow, FocusArea, GroupShutdownPane, GroupShutdownRow,
+    GroupSummaryPane, LogFeedState, LogRow, MetricRow, MetricsPane, OperationPane,
+    PipelineInventoryRow, PipelineSummaryPane, ProbeFailureRow, StatCard, TimelineRow, Tone,
+    UI_TITLE, View,
 };
 use ratatui::{
     Frame,
@@ -47,14 +48,23 @@ pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     draw_detail(frame, body[1], app);
     draw_status_bar(frame, sections[3], app);
 
-    if app.show_help {
+    if app.show_help() {
         draw_help_overlay(frame, area, app);
     }
-    if app.filter_mode {
+    if app.is_filter_mode() {
         draw_filter_overlay(frame, area, app);
     }
-    if app.show_command_overlay {
+    if app.show_command_overlay() {
         draw_command_overlay(frame, area, app);
+    }
+    if let Some(menu) = app.action_menu() {
+        draw_action_menu_overlay(frame, area, menu, app);
+    }
+    if let Some(confirm) = app.shutdown_confirm() {
+        draw_shutdown_confirm_overlay(frame, area, confirm, app);
+    }
+    if let Some(editor) = app.scale_editor() {
+        draw_scale_editor_overlay(frame, area, editor, app);
     }
 }
 
@@ -354,6 +364,9 @@ fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             super::app::PipelineTab::Summary => {
                 draw_pipeline_summary(frame, area, &app.pipelines.summary, app)
             }
+            super::app::PipelineTab::Config => {
+                draw_config_pane(frame, area, &app.pipelines.config, app)
+            }
             super::app::PipelineTab::Events => {
                 draw_events_pane(frame, area, &app.pipelines.events, app)
             }
@@ -363,6 +376,9 @@ fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             }
             super::app::PipelineTab::Rollout => {
                 draw_operation_pane(frame, area, &app.pipelines.rollout, app)
+            }
+            super::app::PipelineTab::Shutdown => {
+                draw_operation_pane(frame, area, &app.pipelines.shutdown, app)
             }
             super::app::PipelineTab::Diagnose => {
                 draw_diagnosis_pane(frame, area, &app.pipelines.diagnosis, app)
@@ -380,6 +396,9 @@ fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             super::app::GroupTab::Metrics => {
                 draw_metrics_pane(frame, area, &app.groups.metrics, app)
             }
+            super::app::GroupTab::Shutdown => {
+                draw_group_shutdown_pane(frame, area, &app.groups.shutdown, app)
+            }
             super::app::GroupTab::Diagnose => {
                 draw_diagnosis_pane(frame, area, &app.groups.diagnosis, app)
             }
@@ -395,6 +414,39 @@ fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             }
         },
     }
+}
+
+fn draw_config_pane(frame: &mut Frame<'_>, area: Rect, pane: &ConfigPane, app: &AppState) {
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Min(8),
+        ])
+        .split(area);
+    draw_stat_cards(frame, sections[0], &pane.stats, app.color_enabled);
+
+    let note = Paragraph::new(
+        pane.note
+            .clone()
+            .unwrap_or_else(|| "No config note is available.".to_string()),
+    )
+    .block(block_with_title("Config Note", false, app.color_enabled))
+    .style(muted_style(app.color_enabled))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(note, sections[1]);
+
+    let preview = Paragraph::new(pane.preview.clone())
+        .block(block_with_title(
+            &pane.preview_title,
+            false,
+            app.color_enabled,
+        ))
+        .style(body_style(app.color_enabled))
+        .scroll((app.detail_scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(preview, sections[2]);
 }
 
 fn draw_pipeline_summary(
@@ -631,6 +683,45 @@ fn draw_operation_pane(frame: &mut Frame<'_>, area: Rect, pane: &OperationPane, 
     );
     if pane.rows.is_empty() {
         draw_empty_overlay(frame, sections[1], &pane.empty_message, app.color_enabled);
+    }
+}
+
+fn draw_group_shutdown_pane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    pane: &GroupShutdownPane,
+    app: &AppState,
+) {
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Min(8),
+        ])
+        .split(area);
+    draw_stat_cards(frame, sections[0], &pane.stats, app.color_enabled);
+
+    let note = Paragraph::new(
+        pane.note
+            .clone()
+            .unwrap_or_else(|| "No group shutdown note is available.".to_string()),
+    )
+    .block(block_with_title("Shutdown Note", false, app.color_enabled))
+    .style(muted_style(app.color_enabled))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(note, sections[1]);
+
+    draw_group_shutdown_table(
+        frame,
+        sections[2],
+        &pane.rows,
+        app.color_enabled,
+        usize::from(app.detail_scroll),
+        None,
+    );
+    if pane.rows.is_empty() {
+        draw_empty_overlay(frame, sections[2], &pane.empty_message, app.color_enabled);
     }
 }
 
@@ -1003,6 +1094,52 @@ fn draw_operation_table(
     );
 }
 
+fn draw_group_shutdown_table(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    rows: &[GroupShutdownRow],
+    color_enabled: bool,
+    offset: usize,
+    limit: Option<usize>,
+) {
+    let table_rows = slice(rows, offset, limit, area.height.saturating_sub(3) as usize)
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            Row::new(vec![
+                Cell::from(row.pipeline.clone()),
+                Cell::from(row.running.clone()),
+                Cell::from(Span::styled(
+                    row.terminal.clone(),
+                    tone_style(row.tone, color_enabled),
+                )),
+                Cell::from(row.phases.clone()),
+            ])
+            .style(stripe_style(index, color_enabled))
+        })
+        .collect::<Vec<_>>();
+    draw_table_block(
+        frame,
+        area,
+        table_rows,
+        vec![
+            "pipeline".to_string(),
+            "running".to_string(),
+            "terminal".to_string(),
+            "phases".to_string(),
+        ],
+        [
+            Constraint::Percentage(34),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Fill(1),
+        ],
+        "Group Shutdown State",
+        Some("No group shutdown rows are available."),
+        color_enabled,
+    );
+}
+
 fn draw_findings_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -1294,6 +1431,8 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Span::raw(" tabs  "),
         Span::styled("/", key_style(app.color_enabled)),
         Span::raw(" filter  "),
+        Span::styled("a", key_style(app.color_enabled)),
+        Span::raw(" actions  "),
         Span::styled("c", key_style(app.color_enabled)),
         Span::raw(" command"),
     ];
@@ -1330,7 +1469,9 @@ fn draw_help_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         )),
         Line::from("e: events  l: logs  m: metrics  d: diagnose  b: bundle"),
         Line::from("o: rollout tab (pipelines view)"),
+        Line::from("a: open context actions for the current selection"),
         Line::from("c: show equivalent CLI for the current pane"),
+        Line::from("Config tab: e edit, Enter redeploy staged draft, d discard draft"),
         Line::from("r: refresh immediately"),
         Line::from(""),
         Line::from(Span::styled("Other", title_style(app.color_enabled))),
@@ -1413,6 +1554,119 @@ fn draw_filter_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);
     frame.render_widget(text, overlay);
+}
+
+fn draw_action_menu_overlay(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    menu: &ActionMenuState,
+    app: &AppState,
+) {
+    let overlay = centered_rect(66, 48, area);
+    let mut lines = vec![
+        Line::from(Span::styled(
+            menu.title.clone(),
+            title_style(app.color_enabled),
+        )),
+        Line::from(Span::styled(
+            format!("target: {}", menu.target),
+            muted_style(app.color_enabled),
+        )),
+        Line::from(""),
+    ];
+
+    for (index, entry) in menu.entries.iter().enumerate() {
+        let prefix = if index == menu.selected { "▶ " } else { "  " };
+        let label_style = if entry.enabled {
+            if index == menu.selected {
+                selected_style(app.color_enabled)
+            } else {
+                header_style(app.color_enabled)
+            }
+        } else {
+            muted_style(app.color_enabled)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{prefix}{}", entry.label),
+            label_style,
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("   {}", entry.detail),
+            muted_style(app.color_enabled),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "Enter executes the selected action. Esc closes this menu.",
+        muted_style(app.color_enabled),
+    )));
+
+    let widget = Paragraph::new(lines)
+        .block(block_with_title("Actions", false, app.color_enabled))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, overlay);
+    frame.render_widget(widget, overlay);
+}
+
+fn draw_shutdown_confirm_overlay(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    confirm: &super::app::ShutdownConfirmState,
+    app: &AppState,
+) {
+    let overlay = centered_rect(60, 24, area);
+    let widget = Paragraph::new(vec![
+        Line::from(Span::styled(
+            confirm.title.clone(),
+            title_style(app.color_enabled),
+        )),
+        Line::from(""),
+        Line::from(confirm.prompt.clone()),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter or y confirms. Esc or n cancels.",
+            muted_style(app.color_enabled),
+        )),
+    ])
+    .block(block_with_title("Confirm", false, app.color_enabled))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, overlay);
+    frame.render_widget(widget, overlay);
+}
+
+fn draw_scale_editor_overlay(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    editor: &super::app::ScaleEditorState,
+    app: &AppState,
+) {
+    let overlay = centered_rect(58, 24, area);
+    let widget = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Set pipeline core count",
+            title_style(app.color_enabled),
+        )),
+        Line::from(format!(
+            "target: {}/{}",
+            editor.group_id, editor.pipeline_id
+        )),
+        Line::from(format!("current: {}", editor.current_cores)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", key_style(app.color_enabled)),
+            Span::raw(editor.input.clone()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter submits the resize. Esc cancels.",
+            muted_style(app.color_enabled),
+        )),
+    ])
+    .block(block_with_title("Scale Editor", false, app.color_enabled))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, overlay);
+    frame.render_widget(widget, overlay);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1618,7 +1872,7 @@ mod tests {
     use super::*;
     use crate::args::UiStartView;
     use crate::ui::app::{
-        DetailHeader, PipelineSummaryPane, StatCard, StatusChip, Tone, UiCommandContext,
+        ConfigPane, DetailHeader, PipelineSummaryPane, StatCard, StatusChip, Tone, UiCommandContext,
     };
     use ratatui::{Terminal, backend::TestBackend};
     use std::time::Duration;
@@ -1687,7 +1941,7 @@ mod tests {
         let backend = TestBackend::new(140, 40);
         let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
         let mut app = AppState::new(UiStartView::Pipelines, true, 200);
-        app.show_command_overlay = true;
+        app.toggle_command_overlay();
         app.pipeline_selected = Some("tenant-a:ingest".to_string());
         app.pipeline_tab = super::super::app::PipelineTab::Logs;
         app.set_command_context(UiCommandContext {
@@ -1715,5 +1969,48 @@ mod tests {
         assert!(rendered.contains("Equivalent CLI"));
         assert!(rendered.contains("telemetry logs watch"));
         assert!(rendered.contains("https://admin.example.com:8443/engine-a"));
+    }
+
+    #[test]
+    fn config_pane_renders_preview_and_note() {
+        let backend = TestBackend::new(140, 40);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.focus = FocusArea::Detail;
+        app.pipeline_selected = Some("tenant-a:ingest".to_string());
+        app.pipeline_tab = super::super::app::PipelineTab::Config;
+        app.pipelines.config = ConfigPane {
+            header: Some(DetailHeader {
+                title: "tenant-a/ingest".to_string(),
+                subtitle: Some("Pipeline".to_string()),
+                chips: vec![StatusChip {
+                    label: "config".to_string(),
+                    value: "draft".to_string(),
+                    tone: Tone::Accent,
+                }],
+            }),
+            stats: vec![StatCard {
+                label: "Status".to_string(),
+                value: "deployable".to_string(),
+                tone: Tone::Success,
+            }],
+            note: Some("Press Enter to redeploy the staged draft.".to_string()),
+            preview_title: "Canonical Diff".to_string(),
+            preview: "--- current\n+++ edited\n- old\n+ new".to_string(),
+        };
+
+        let _ = terminal
+            .draw(|frame| draw_ui(frame, &app))
+            .expect("draw should succeed");
+
+        let buffer = terminal.backend().buffer().clone();
+        let rendered = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Canonical Diff"));
+        assert!(rendered.contains("Press Enter to redeploy"));
+        assert!(rendered.contains("--- current"));
     }
 }

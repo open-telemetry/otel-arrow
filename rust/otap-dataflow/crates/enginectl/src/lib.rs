@@ -1572,7 +1572,7 @@ fn duration_to_secs_ceil(duration: Duration) -> u64 {
     .max(1)
 }
 
-fn load_pipeline_config(
+pub(crate) fn load_pipeline_config(
     path: &Path,
     pipeline_group_id: &str,
     pipeline_id: &str,
@@ -1589,17 +1589,25 @@ fn load_pipeline_config(
         })?;
     }
 
-    let parse_result = if looks_like_json(&content) {
+    parse_pipeline_config_content(&content, pipeline_group_id, pipeline_id)
+}
+
+pub(crate) fn parse_pipeline_config_content(
+    content: &str,
+    pipeline_group_id: &str,
+    pipeline_id: &str,
+) -> Result<PipelineConfig, CliError> {
+    let parse_result = if looks_like_json(content) {
         PipelineConfig::from_json(
             pipeline_group_id.to_string().into(),
             pipeline_id.to_string().into(),
-            &content,
+            content,
         )
     } else {
         PipelineConfig::from_yaml(
             pipeline_group_id.to_string().into(),
             pipeline_id.to_string().into(),
-            &content,
+            content,
         )
     };
 
@@ -1607,6 +1615,16 @@ fn load_pipeline_config(
         CliError::config(format!(
             "failed to parse pipeline config for '{}/{}': {err}",
             pipeline_group_id, pipeline_id
+        ))
+    })
+}
+
+pub(crate) fn serialize_pipeline_config_yaml(
+    pipeline: &PipelineConfig,
+) -> Result<String, CliError> {
+    serde_yaml::to_string(pipeline).map_err(|err| {
+        CliError::config(format!(
+            "failed to serialize pipeline config to YAML: {err}"
         ))
     })
 }

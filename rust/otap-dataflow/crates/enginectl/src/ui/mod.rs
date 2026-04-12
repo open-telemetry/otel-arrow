@@ -5,11 +5,11 @@ mod app;
 mod view;
 
 use self::app::{
-    AppState, BundlePane, ConditionRow, CoreRow, DetailHeader, DiagnosisPane, EngineSummaryPane,
-    EngineTab, EventPane, EvidenceRow, FindingRow, FocusArea, GroupSummaryPane, GroupTab,
-    LogFeedState, LogRow, MetricRow, MetricsPane, OperationPane, OperationRow,
-    PipelineInventoryRow, PipelineSummaryPane, PipelineTab, ProbeFailureRow, StatCard, StatusChip,
-    TimelineRow, Tone, UiCommandContext, View,
+    AppState, BundlePane, ConditionRow, ConfigPane, CoreRow, DetailHeader, DiagnosisPane,
+    EngineSummaryPane, EngineTab, EventPane, EvidenceRow, FindingRow, FocusArea, GroupShutdownPane,
+    GroupShutdownRow, GroupSummaryPane, GroupTab, LogFeedState, LogRow, MetricRow, MetricsPane,
+    OperationPane, OperationRow, PipelineInventoryRow, PipelineSummaryPane, PipelineTab,
+    ProbeFailureRow, StatCard, StatusChip, TimelineRow, Tone, UiAction, UiCommandContext, View,
 };
 use self::view::draw_ui;
 use crate::args::{ColorChoice, MetricsShape, UiArgs};
@@ -21,8 +21,9 @@ use crate::troubleshoot::{
     MetricsFilters, NormalizedEvent, NormalizedEventKind, PipelineBundle, PipelineDescribeReport,
     describe_groups, diagnose_group_shutdown, diagnose_pipeline_rollout,
     diagnose_pipeline_shutdown, extract_events_from_group_status, filter_logs,
-    filter_metrics_compact,
+    filter_metrics_compact, group_shutdown_snapshot,
 };
+use crate::{parse_pipeline_config_content, serialize_pipeline_config_yaml};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
@@ -30,17 +31,23 @@ use crossterm::{
 };
 use humantime::format_duration;
 use otap_df_admin_api::{
-    AdminClient, HttpAdminClientSettings, engine, groups, pipelines, telemetry,
+    AdminClient, HttpAdminClientSettings, engine, groups, operations::OperationOptions, pipelines,
+    telemetry,
 };
+use otap_df_config::pipeline::PipelineConfig;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::BTreeMap;
-use std::io;
+use std::env;
+use std::io::{self, Write};
+use std::process::Command;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use tokio::sync::mpsc;
 
 pub(crate) async fn run_ui(
@@ -60,17 +67,17 @@ pub(crate) async fn run_ui(
     refresh_view(client, &mut app, &args).await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let stop = Arc::new(AtomicBool::new(false));
-    let event_thread = spawn_event_thread(stop.clone(), tx);
+    let mut stop = Arc::new(AtomicBool::new(false));
+    let mut event_thread = Some(spawn_event_thread(stop.clone(), tx.clone()));
 
     let mut refresh = tokio::time::interval(args.refresh_interval);
     let _ = refresh.tick().await;
 
-    loop {
+    let result = loop {
         session.draw(&app)?;
 
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
+            _ = tokio::signal::ctrl_c() => break Ok(()),
             _ = refresh.tick() => {
                 refresh_view(client, &mut app, &args).await;
             }
@@ -78,8 +85,36 @@ pub(crate) async fn run_ui(
                 match event {
                     UiEvent::Terminal(event) => {
                         match handle_event(event, &mut app) {
-                            EventOutcome::Quit => break,
+                            EventOutcome::Quit => break Ok(()),
                             EventOutcome::Refresh => refresh_view(client, &mut app, &args).await,
+                            EventOutcome::OpenPipelineEditor {
+                                group_id,
+                                pipeline_id,
+                            } => {
+                                if let Err(err) = stage_pipeline_editor_draft(
+                                    client,
+                                    &mut session,
+                                    &tx,
+                                    &mut stop,
+                                    &mut event_thread,
+                                    &mut app,
+                                    &group_id,
+                                    &pipeline_id,
+                                )
+                                .await
+                                {
+                                    app.last_error = Some(err.to_string());
+                                }
+                                refresh_view(client, &mut app, &args).await;
+                            }
+                            EventOutcome::Execute(action) => {
+                                if let Err(err) =
+                                    execute_ui_action(client, &mut app, &args, action).await
+                                {
+                                    app.last_error = Some(err.to_string());
+                                }
+                                refresh_view(client, &mut app, &args).await;
+                            }
                             EventOutcome::Continue => {}
                         }
                     }
@@ -89,11 +124,10 @@ pub(crate) async fn run_ui(
                 }
             }
         }
-    }
+    };
 
-    stop.store(true, Ordering::Relaxed);
-    let _ = event_thread.join();
-    Ok(())
+    stop_event_thread(&stop, &mut event_thread);
+    result
 }
 
 #[derive(Debug)]
@@ -102,10 +136,15 @@ enum UiEvent {
     TerminalError(String),
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum EventOutcome {
     Continue,
     Refresh,
+    OpenPipelineEditor {
+        group_id: String,
+        pipeline_id: String,
+    },
+    Execute(UiAction),
     Quit,
 }
 
@@ -125,6 +164,21 @@ impl TerminalSession {
 
     fn draw(&mut self, app: &AppState) -> Result<(), CliError> {
         let _ = self.terminal.draw(|frame| draw_ui(frame, app))?;
+        Ok(())
+    }
+
+    fn suspend(&mut self) -> Result<(), io::Error> {
+        disable_raw_mode()?;
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        self.terminal.show_cursor()?;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<(), io::Error> {
+        enable_raw_mode()?;
+        execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
+        self.terminal.hide_cursor()?;
+        self.terminal.clear()?;
         Ok(())
     }
 }
@@ -165,6 +219,260 @@ fn spawn_event_thread(
     })
 }
 
+fn stop_event_thread(stop: &Arc<AtomicBool>, event_thread: &mut Option<thread::JoinHandle<()>>) {
+    stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = event_thread.take() {
+        let _ = handle.join();
+    }
+}
+
+fn restart_event_thread(
+    stop: &mut Arc<AtomicBool>,
+    event_thread: &mut Option<thread::JoinHandle<()>>,
+    tx: &mpsc::UnboundedSender<UiEvent>,
+) {
+    *stop = Arc::new(AtomicBool::new(false));
+    *event_thread = Some(spawn_event_thread(stop.clone(), tx.clone()));
+}
+
+async fn stage_pipeline_editor_draft(
+    client: &AdminClient,
+    session: &mut TerminalSession,
+    tx: &mpsc::UnboundedSender<UiEvent>,
+    stop: &mut Arc<AtomicBool>,
+    event_thread: &mut Option<thread::JoinHandle<()>>,
+    app: &mut AppState,
+    group_id: &str,
+    pipeline_id: &str,
+) -> Result<(), CliError> {
+    let details = load_pipeline_details(client, app, group_id, pipeline_id).await?;
+    let original_yaml = serialize_pipeline_config_yaml(&details.pipeline)?;
+    let initial_yaml = app
+        .pipelines
+        .config_draft
+        .as_ref()
+        .map(|draft| draft.edited_yaml.clone())
+        .unwrap_or_else(|| original_yaml.clone());
+    let edited_content = edit_pipeline_config_external(
+        session,
+        tx,
+        stop,
+        event_thread,
+        &initial_yaml,
+        group_id,
+        pipeline_id,
+    )?;
+
+    match parse_pipeline_config_content(&edited_content, group_id, pipeline_id) {
+        Ok(parsed) => {
+            let edited_yaml = serialize_pipeline_config_yaml(&parsed)?;
+            app.stage_pipeline_config_draft(
+                original_yaml,
+                edited_yaml.clone(),
+                Some(parsed),
+                String::new(),
+                None,
+            );
+            if let Some(draft) = app.pipelines.config_draft.as_mut() {
+                draft.diff = build_yaml_diff(&draft.original_yaml, &draft.edited_yaml);
+            }
+        }
+        Err(err) => {
+            app.stage_pipeline_config_draft(
+                original_yaml,
+                edited_content,
+                None,
+                String::new(),
+                Some(err.to_string()),
+            );
+        }
+    }
+
+    app.view = View::Pipelines;
+    app.pipeline_selected = Some(format!("{group_id}:{pipeline_id}"));
+    app.pipeline_tab = PipelineTab::Config;
+    app.focus = FocusArea::Detail;
+    app.reset_scroll();
+    Ok(())
+}
+
+fn edit_pipeline_config_external(
+    session: &mut TerminalSession,
+    tx: &mpsc::UnboundedSender<UiEvent>,
+    stop: &mut Arc<AtomicBool>,
+    event_thread: &mut Option<thread::JoinHandle<()>>,
+    initial_yaml: &str,
+    group_id: &str,
+    pipeline_id: &str,
+) -> Result<String, CliError> {
+    stop_event_thread(stop, event_thread);
+    session.suspend()?;
+
+    let edit_result = run_editor_command(initial_yaml, group_id, pipeline_id);
+    let resume_result = session.resume().map_err(CliError::from);
+    restart_event_thread(stop, event_thread, tx);
+    resume_result?;
+    edit_result
+}
+
+fn run_editor_command(
+    initial_yaml: &str,
+    group_id: &str,
+    pipeline_id: &str,
+) -> Result<String, CliError> {
+    let editor = resolve_editor_command()?;
+    let mut file = NamedTempFile::new().map_err(|err| {
+        CliError::config(format!(
+            "failed to create temporary pipeline config file: {err}"
+        ))
+    })?;
+    Write::write_all(&mut file, initial_yaml.as_bytes()).map_err(|err| {
+        CliError::config(format!(
+            "failed to write temporary pipeline config file: {err}"
+        ))
+    })?;
+    file.flush().map_err(|err| {
+        CliError::config(format!(
+            "failed to flush temporary pipeline config file: {err}"
+        ))
+    })?;
+
+    let program = &editor[0];
+    let status = Command::new(program)
+        .args(&editor[1..])
+        .arg(file.path())
+        .status()
+        .map_err(|err| CliError::config(format!("failed to launch editor '{program}': {err}")))?;
+    if !status.success() {
+        return Err(CliError::config(format!(
+            "editor '{program}' exited unsuccessfully while editing {group_id}/{pipeline_id}: {status}"
+        )));
+    }
+
+    std::fs::read_to_string(file.path()).map_err(|err| {
+        CliError::config(format!(
+            "failed to read edited pipeline config for '{group_id}/{pipeline_id}': {err}"
+        ))
+    })
+}
+
+fn resolve_editor_command() -> Result<Vec<String>, CliError> {
+    let value = env::var("VISUAL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var("EDITOR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "vi".to_string());
+    split_editor_command(&value)
+}
+
+fn split_editor_command(command: &str) -> Result<Vec<String>, CliError> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escape = false;
+
+    for ch in command.chars() {
+        if escape {
+            current.push(ch);
+            escape = false;
+            continue;
+        }
+
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            Some('"') => match ch {
+                '"' => quote = None,
+                '\\' => escape = true,
+                _ => current.push(ch),
+            },
+            None => match ch {
+                '\'' | '"' => quote = Some(ch),
+                '\\' => escape = true,
+                ch if ch.is_whitespace() => {
+                    if !current.is_empty() {
+                        parts.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(ch),
+            },
+            Some(other) => unreachable!("unsupported quote state {other}"),
+        }
+    }
+
+    if escape || quote.is_some() {
+        return Err(CliError::config(format!(
+            "failed to parse editor command '{command}'"
+        )));
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    if parts.is_empty() {
+        return Err(CliError::config("the configured editor command is empty"));
+    }
+    Ok(parts)
+}
+
+fn build_yaml_diff(original: &str, edited: &str) -> String {
+    if original == edited {
+        return "No effective config changes were detected.".to_string();
+    }
+
+    let original_lines = original.lines().collect::<Vec<_>>();
+    let edited_lines = edited.lines().collect::<Vec<_>>();
+    let lcs = longest_common_subsequence_lengths(&original_lines, &edited_lines);
+
+    let mut lines = vec!["--- current".to_string(), "+++ edited".to_string()];
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < original_lines.len() && j < edited_lines.len() {
+        if original_lines[i] == edited_lines[j] {
+            lines.push(format!("  {}", original_lines[i]));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            lines.push(format!("- {}", original_lines[i]));
+            i += 1;
+        } else {
+            lines.push(format!("+ {}", edited_lines[j]));
+            j += 1;
+        }
+    }
+    while i < original_lines.len() {
+        lines.push(format!("- {}", original_lines[i]));
+        i += 1;
+    }
+    while j < edited_lines.len() {
+        lines.push(format!("+ {}", edited_lines[j]));
+        j += 1;
+    }
+
+    lines.join("\n")
+}
+
+fn longest_common_subsequence_lengths<'a>(left: &[&'a str], right: &[&'a str]) -> Vec<Vec<usize>> {
+    let mut lcs = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+    for i in (0..left.len()).rev() {
+        for j in (0..right.len()).rev() {
+            lcs[i][j] = if left[i] == right[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    lcs
+}
+
 fn handle_event(event: Event, app: &mut AppState) -> EventOutcome {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(key, app),
@@ -174,25 +482,34 @@ fn handle_event(event: Event, app: &mut AppState) -> EventOutcome {
 }
 
 fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcome {
-    if app.filter_mode {
+    if app.is_filter_mode() {
         return handle_filter_key(key, app);
     }
 
-    if app.show_command_overlay {
+    if app.scale_editor().is_some() {
+        return handle_scale_editor_key(key, app);
+    }
+
+    if app.shutdown_confirm().is_some() {
+        return handle_shutdown_confirm_key(key, app);
+    }
+
+    if app.action_menu().is_some() {
+        return handle_action_menu_key(key, app);
+    }
+
+    if app.show_command_overlay() {
         return match key.code {
             KeyCode::Char('q') => EventOutcome::Quit,
             KeyCode::Esc | KeyCode::Char('c') => {
-                app.show_command_overlay = false;
+                app.hide_modal();
                 EventOutcome::Continue
             }
             KeyCode::Char('?') => {
-                app.show_command_overlay = false;
-                app.show_help = true;
+                app.toggle_help();
                 EventOutcome::Continue
             }
             KeyCode::Char('/') => {
-                app.show_command_overlay = false;
-                app.show_help = false;
                 app.start_filter_input();
                 EventOutcome::Continue
             }
@@ -200,19 +517,47 @@ fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcome {
         };
     }
 
+    if app.view == View::Pipelines
+        && app.focus == FocusArea::Detail
+        && app.pipeline_tab == PipelineTab::Config
+    {
+        match key.code {
+            KeyCode::Char('e') => {
+                let Some((group_id, pipeline_id)) = app.selected_pipeline_target() else {
+                    return EventOutcome::Continue;
+                };
+                return EventOutcome::OpenPipelineEditor {
+                    group_id,
+                    pipeline_id,
+                };
+            }
+            KeyCode::Char('d') => {
+                app.discard_pipeline_config_draft();
+                app.last_error = None;
+                return EventOutcome::Refresh;
+            }
+            KeyCode::Enter if app.has_deployable_pipeline_config_draft() => {
+                let Some((group_id, pipeline_id)) = app.selected_pipeline_target() else {
+                    return EventOutcome::Continue;
+                };
+                return EventOutcome::Execute(UiAction::PipelineDeployDraft {
+                    group_id,
+                    pipeline_id,
+                });
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') => EventOutcome::Quit,
         KeyCode::Char('?') => {
-            app.show_command_overlay = false;
-            app.show_help = !app.show_help;
+            app.toggle_help();
             EventOutcome::Continue
         }
         KeyCode::Esc => {
-            if app.show_help {
-                app.show_help = false;
-                EventOutcome::Continue
-            } else if app.show_command_overlay {
-                app.show_command_overlay = false;
+            if app.show_help() || app.show_command_overlay() {
+                app.hide_modal();
                 EventOutcome::Continue
             } else if !app.filter_query.is_empty() {
                 app.clear_filter();
@@ -223,21 +568,24 @@ fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             }
         }
         KeyCode::Char('/') => {
-            app.show_command_overlay = false;
-            app.show_help = false;
             app.start_filter_input();
             EventOutcome::Continue
         }
         KeyCode::Char('c') => {
-            app.show_help = false;
-            app.show_command_overlay = !app.show_command_overlay;
+            app.toggle_command_overlay();
+            EventOutcome::Continue
+        }
+        KeyCode::Char('a') => {
+            let _ = app.open_action_menu();
             EventOutcome::Continue
         }
         KeyCode::Tab => {
+            app.hide_modal();
             app.cycle_view(1);
             EventOutcome::Refresh
         }
         KeyCode::BackTab => {
+            app.hide_modal();
             app.cycle_view(-1);
             EventOutcome::Refresh
         }
@@ -320,6 +668,149 @@ fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     }
 }
 
+fn handle_action_menu_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('a') => {
+            app.hide_modal();
+            EventOutcome::Continue
+        }
+        KeyCode::Char('q') => EventOutcome::Quit,
+        KeyCode::Char('?') => {
+            app.toggle_help();
+            EventOutcome::Continue
+        }
+        KeyCode::Char('/') => {
+            app.start_filter_input();
+            EventOutcome::Continue
+        }
+        KeyCode::Char('c') => {
+            app.toggle_command_overlay();
+            EventOutcome::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(menu) = app.action_menu_mut() {
+                menu.selected = menu.selected.saturating_sub(1);
+            }
+            EventOutcome::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(menu) = app.action_menu_mut() {
+                menu.selected = (menu.selected + 1).min(menu.entries.len().saturating_sub(1));
+            }
+            EventOutcome::Continue
+        }
+        KeyCode::Enter => {
+            let selected = app
+                .action_menu()
+                .and_then(|menu| menu.entries.get(menu.selected))
+                .filter(|entry| entry.enabled)
+                .map(|entry| entry.action.clone());
+
+            match selected {
+                Some(UiAction::PipelineEditAndRedeploy {
+                    group_id,
+                    pipeline_id,
+                }) => {
+                    app.hide_modal();
+                    EventOutcome::OpenPipelineEditor {
+                        group_id,
+                        pipeline_id,
+                    }
+                }
+                Some(UiAction::PipelineSetCoreCount {
+                    group_id,
+                    pipeline_id,
+                    current_cores,
+                }) => {
+                    app.open_scale_editor(group_id, pipeline_id, current_cores);
+                    EventOutcome::Continue
+                }
+                Some(action @ UiAction::PipelineShutdown { .. })
+                | Some(action @ UiAction::GroupShutdown { .. }) => {
+                    app.open_shutdown_confirm(action);
+                    EventOutcome::Continue
+                }
+                Some(action) => {
+                    app.hide_modal();
+                    EventOutcome::Execute(action)
+                }
+                None => EventOutcome::Continue,
+            }
+        }
+        _ => EventOutcome::Continue,
+    }
+}
+
+fn handle_shutdown_confirm_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('n') => {
+            app.hide_modal();
+            EventOutcome::Continue
+        }
+        KeyCode::Char('q') => EventOutcome::Quit,
+        KeyCode::Enter | KeyCode::Char('y') => {
+            let action = app.shutdown_confirm().map(|confirm| confirm.action.clone());
+            if let Some(action) = action {
+                app.hide_modal();
+                EventOutcome::Execute(action)
+            } else {
+                EventOutcome::Continue
+            }
+        }
+        _ => EventOutcome::Continue,
+    }
+}
+
+fn handle_scale_editor_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    match key.code {
+        KeyCode::Esc => {
+            app.hide_modal();
+            EventOutcome::Continue
+        }
+        KeyCode::Backspace => {
+            if let Some(editor) = app.scale_editor_mut() {
+                let _ = editor.input.pop();
+            }
+            EventOutcome::Continue
+        }
+        KeyCode::Enter => {
+            let Some(editor) = app.scale_editor() else {
+                return EventOutcome::Continue;
+            };
+            match editor.input.parse::<usize>() {
+                Ok(target_cores) if target_cores > 0 => {
+                    let action = UiAction::PipelineScale {
+                        group_id: editor.group_id.clone(),
+                        pipeline_id: editor.pipeline_id.clone(),
+                        target_cores,
+                    };
+                    app.hide_modal();
+                    EventOutcome::Execute(action)
+                }
+                _ => {
+                    app.last_error = Some("core count must be a positive integer".to_string());
+                    EventOutcome::Continue
+                }
+            }
+        }
+        KeyCode::Char(character)
+            if character.is_ascii_digit()
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            if let Some(editor) = app.scale_editor_mut() {
+                if editor.input == "0" {
+                    editor.input.clear();
+                }
+                editor.input.push(character);
+            }
+            EventOutcome::Continue
+        }
+        _ => EventOutcome::Continue,
+    }
+}
+
 fn handle_filter_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     match key.code {
         KeyCode::Esc => {
@@ -344,6 +835,277 @@ fn handle_filter_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             EventOutcome::Continue
         }
         _ => EventOutcome::Continue,
+    }
+}
+
+async fn execute_ui_action(
+    client: &AdminClient,
+    app: &mut AppState,
+    _args: &UiArgs,
+    action: UiAction,
+) -> Result<(), CliError> {
+    match action {
+        UiAction::PipelineEditAndRedeploy { .. } => Err(CliError::invalid_usage(
+            "edit and redeploy must be opened through the editor flow",
+        )),
+        UiAction::PipelineDeployDraft {
+            group_id,
+            pipeline_id,
+        } => submit_pipeline_config_draft(client, app, &group_id, &pipeline_id).await,
+        UiAction::PipelineScale {
+            group_id,
+            pipeline_id,
+            target_cores,
+        } => submit_pipeline_scale(client, app, &group_id, &pipeline_id, target_cores).await,
+        UiAction::PipelineSetCoreCount { .. } => Err(CliError::invalid_usage(
+            "set core count must be confirmed through the scale editor",
+        )),
+        UiAction::PipelineShutdown {
+            group_id,
+            pipeline_id,
+        } => submit_pipeline_shutdown(client, app, &group_id, &pipeline_id).await,
+        UiAction::GroupShutdown {
+            group_id,
+            pipelines,
+        } => submit_group_shutdown(client, app, &group_id, &pipelines).await,
+    }
+}
+
+async fn submit_pipeline_scale(
+    client: &AdminClient,
+    app: &mut AppState,
+    group_id: &str,
+    pipeline_id: &str,
+    target_cores: usize,
+) -> Result<(), CliError> {
+    if target_cores == 0 {
+        return Err(CliError::invalid_usage(
+            "pipeline core count must be greater than 0",
+        ));
+    }
+
+    let details = load_pipeline_details(client, app, group_id, pipeline_id).await?;
+    submit_pipeline_reconfigure(
+        client,
+        app,
+        group_id,
+        pipeline_id,
+        resize_pipeline_config(details.pipeline, target_cores)?,
+    )
+    .await
+}
+
+async fn submit_pipeline_config_draft(
+    client: &AdminClient,
+    app: &mut AppState,
+    group_id: &str,
+    pipeline_id: &str,
+) -> Result<(), CliError> {
+    let Some(draft) = app.pipelines.config_draft.as_ref() else {
+        return Err(CliError::invalid_usage(
+            "no staged pipeline config draft is available",
+        ));
+    };
+    let Some(pipeline) = draft.parsed.clone() else {
+        return Err(CliError::invalid_usage(
+            "the staged pipeline config draft is not valid",
+        ));
+    };
+
+    submit_pipeline_reconfigure(client, app, group_id, pipeline_id, pipeline).await?;
+    app.pipelines.config_draft = None;
+    Ok(())
+}
+
+async fn submit_pipeline_reconfigure(
+    client: &AdminClient,
+    app: &mut AppState,
+    group_id: &str,
+    pipeline_id: &str,
+    pipeline: PipelineConfig,
+) -> Result<(), CliError> {
+    let request = pipelines::ReconfigureRequest {
+        pipeline,
+        step_timeout_secs: 60,
+        drain_timeout_secs: 60,
+    };
+    let outcome = client
+        .pipelines()
+        .reconfigure(
+            group_id,
+            pipeline_id,
+            &request,
+            &ui_operation_options(false),
+        )
+        .await?;
+
+    let status = match outcome {
+        pipelines::ReconfigureOutcome::Accepted(status)
+        | pipelines::ReconfigureOutcome::Completed(status)
+        | pipelines::ReconfigureOutcome::Failed(status)
+        | pipelines::ReconfigureOutcome::TimedOut(status) => status,
+    };
+
+    app.view = View::Pipelines;
+    app.pipeline_selected = Some(format!("{group_id}:{pipeline_id}"));
+    app.pipeline_tab = PipelineTab::Rollout;
+    app.focus = FocusArea::Detail;
+    app.reset_scroll();
+    app.pipelines.active_rollout_id = Some(status.rollout_id);
+    Ok(())
+}
+
+async fn submit_pipeline_shutdown(
+    client: &AdminClient,
+    app: &mut AppState,
+    group_id: &str,
+    pipeline_id: &str,
+) -> Result<(), CliError> {
+    let outcome = client
+        .pipelines()
+        .shutdown(group_id, pipeline_id, &ui_operation_options(false))
+        .await?;
+
+    let status = match outcome {
+        pipelines::ShutdownOutcome::Accepted(status)
+        | pipelines::ShutdownOutcome::Completed(status)
+        | pipelines::ShutdownOutcome::Failed(status)
+        | pipelines::ShutdownOutcome::TimedOut(status) => status,
+    };
+
+    app.view = View::Pipelines;
+    app.pipeline_selected = Some(format!("{group_id}:{pipeline_id}"));
+    app.pipeline_tab = PipelineTab::Shutdown;
+    app.focus = FocusArea::Detail;
+    app.reset_scroll();
+    app.pipelines.active_shutdown_id = Some(status.shutdown_id);
+    Ok(())
+}
+
+async fn submit_group_shutdown(
+    client: &AdminClient,
+    app: &mut AppState,
+    group_id: &str,
+    pipeline_keys: &[String],
+) -> Result<(), CliError> {
+    if pipeline_keys.is_empty() {
+        return Err(CliError::invalid_usage(
+            "the selected group has no pipelines to shut down",
+        ));
+    }
+
+    let mut submission_errors = Vec::new();
+    for key in pipeline_keys {
+        let Some((pipeline_group_id, pipeline_id)) = key.split_once(':') else {
+            submission_errors.push(format!("invalid pipeline key '{key}'"));
+            continue;
+        };
+        match client
+            .pipelines()
+            .shutdown(pipeline_group_id, pipeline_id, &ui_operation_options(false))
+            .await
+        {
+            Ok(
+                pipelines::ShutdownOutcome::Accepted(_) | pipelines::ShutdownOutcome::Completed(_),
+            ) => {}
+            Ok(pipelines::ShutdownOutcome::Failed(status)) => {
+                submission_errors.push(format!(
+                    "{pipeline_group_id}/{pipeline_id}: shutdown '{}' ended in state {}",
+                    status.shutdown_id, status.state
+                ));
+            }
+            Ok(pipelines::ShutdownOutcome::TimedOut(status)) => {
+                submission_errors.push(format!(
+                    "{pipeline_group_id}/{pipeline_id}: shutdown '{}' timed out in state {}",
+                    status.shutdown_id, status.state
+                ));
+            }
+            Err(err) => {
+                submission_errors.push(format!("{pipeline_group_id}/{pipeline_id}: {err}"));
+            }
+        }
+    }
+
+    app.view = View::Groups;
+    app.group_selected = Some(group_id.to_string());
+    app.group_tab = GroupTab::Shutdown;
+    app.focus = FocusArea::Detail;
+    app.reset_scroll();
+    app.groups.active_shutdown = Some(app::ActiveGroupShutdown {
+        group_id: group_id.to_string(),
+        pipeline_count: pipeline_keys.len(),
+        started_at: std::time::SystemTime::now(),
+        wait_timeout: Duration::from_secs(60),
+        submission_errors,
+        request_count: pipeline_keys.len(),
+    });
+    Ok(())
+}
+
+async fn load_pipeline_details(
+    client: &AdminClient,
+    app: &AppState,
+    group_id: &str,
+    pipeline_id: &str,
+) -> Result<pipelines::PipelineDetails, CliError> {
+    if let Some(describe) = app.pipelines.describe.as_ref()
+        && describe.details.pipeline_group_id.as_ref() == group_id
+        && describe.details.pipeline_id.as_ref() == pipeline_id
+    {
+        return Ok(describe.details.clone());
+    }
+
+    client
+        .pipelines()
+        .details(group_id, pipeline_id)
+        .await?
+        .ok_or_else(|| {
+            CliError::not_found(format!("pipeline '{group_id}/{pipeline_id}' was not found"))
+        })
+}
+
+fn resize_pipeline_config(
+    pipeline: PipelineConfig,
+    target_cores: usize,
+) -> Result<PipelineConfig, CliError> {
+    let mut value = serde_json::to_value(&pipeline).map_err(|err| {
+        CliError::config(format!(
+            "failed to serialize pipeline config for resize: {err}"
+        ))
+    })?;
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| CliError::config("failed to edit pipeline config: root is not an object"))?;
+    let policies = root
+        .entry("policies".to_string())
+        .or_insert_with(|| json!({}));
+    let policies = policies.as_object_mut().ok_or_else(|| {
+        CliError::config("failed to edit pipeline config: policies is not an object")
+    })?;
+    let resources = policies
+        .entry("resources".to_string())
+        .or_insert_with(|| json!({}));
+    let resources = resources.as_object_mut().ok_or_else(|| {
+        CliError::config("failed to edit pipeline config: resources is not an object")
+    })?;
+    let _ = resources.insert(
+        "core_allocation".to_string(),
+        json!({
+            "type": "core_count",
+            "count": target_cores,
+        }),
+    );
+    serde_json::from_value(value).map_err(|err| {
+        CliError::config(format!(
+            "failed to rebuild pipeline config after resizing to {target_cores} cores: {err}"
+        ))
+    })
+}
+
+fn ui_operation_options(wait: bool) -> OperationOptions {
+    OperationOptions {
+        wait,
+        timeout_secs: 60,
     }
 }
 
@@ -519,7 +1281,23 @@ async fn refresh_pipelines_view(
     }
 
     let describe = super::fetch_pipeline_describe(client, &pipeline_group_id, &pipeline_id).await?;
+    app.pipelines.describe = Some(describe.clone());
     let header = pipeline_header(&describe);
+    let config_yaml = serialize_pipeline_config_yaml(&describe.details.pipeline)?;
+    app.pipelines.config_yaml = Some(config_yaml.clone());
+    let rollout_status = refresh_active_rollout(client, app, &describe).await?;
+    let shutdown_status =
+        refresh_active_shutdown(client, app, &pipeline_group_id, &pipeline_id).await?;
+
+    app.pipelines.rollout = build_rollout_pane(&describe, rollout_status.as_ref());
+    app.pipelines.shutdown = build_shutdown_pane(&describe, shutdown_status.as_ref());
+    app.pipelines.config = build_config_pane(
+        &header,
+        &pipeline_group_id,
+        &pipeline_id,
+        &config_yaml,
+        app.pipelines.config_draft.as_ref(),
+    );
 
     app.pipelines.summary = build_pipeline_summary_pane(&describe, header.clone());
     app.pipelines.events = EventPane {
@@ -536,7 +1314,11 @@ async fn refresh_pipelines_view(
     };
 
     match app.pipeline_tab {
-        PipelineTab::Summary | PipelineTab::Events => {}
+        PipelineTab::Summary
+        | PipelineTab::Config
+        | PipelineTab::Events
+        | PipelineTab::Rollout
+        | PipelineTab::Shutdown => {}
         PipelineTab::Logs => {
             let filters = LogFilters {
                 pipeline_group_id: Some(pipeline_group_id.clone()),
@@ -581,10 +1363,6 @@ async fn refresh_pipelines_view(
                 add_header_chip(header.clone(), chip("scope", "pipeline", Tone::Muted)),
             );
         }
-        PipelineTab::Rollout => {
-            let rollout_status = maybe_fetch_rollout(client, &describe).await?;
-            app.pipelines.rollout = build_rollout_pane(&describe, rollout_status.as_ref());
-        }
         PipelineTab::Diagnose => {
             let logs = filter_logs(
                 &super::fetch_logs(client, None, Some(args.logs_tail)).await?,
@@ -605,12 +1383,11 @@ async fn refresh_pipelines_view(
                     ..MetricsFilters::default()
                 },
             );
-            let diagnosis =
-                if let Some(rollout_status) = maybe_fetch_rollout(client, &describe).await? {
-                    diagnose_pipeline_rollout(&describe, Some(&rollout_status), &logs, &metrics)
-                } else {
-                    diagnose_pipeline_shutdown(&describe, None, &logs, &metrics)
-                };
+            let diagnosis = if let Some(rollout_status) = rollout_status.as_ref() {
+                diagnose_pipeline_rollout(&describe, Some(rollout_status), &logs, &metrics)
+            } else {
+                diagnose_pipeline_shutdown(&describe, shutdown_status.as_ref(), &logs, &metrics)
+            };
             app.pipelines.diagnosis = build_diagnosis_pane(
                 diagnosis,
                 add_header_chip(header.clone(), chip("scope", "pipeline", Tone::Muted)),
@@ -636,18 +1413,17 @@ async fn refresh_pipelines_view(
                     ..MetricsFilters::default()
                 },
             );
-            let rollout_status = maybe_fetch_rollout(client, &describe).await?;
             let diagnosis = if let Some(status) = rollout_status.as_ref() {
                 diagnose_pipeline_rollout(&describe, Some(status), &logs, &metrics)
             } else {
-                diagnose_pipeline_shutdown(&describe, None, &logs, &metrics)
+                diagnose_pipeline_shutdown(&describe, shutdown_status.as_ref(), &logs, &metrics)
             };
             let bundle = PipelineBundle {
                 metadata: super::bundle_metadata(args.logs_tail, MetricsShape::Compact),
                 describe,
                 diagnosis,
                 rollout_status,
-                shutdown_status: None,
+                shutdown_status,
                 logs,
                 metrics: BundleMetrics::Compact(metrics),
             };
@@ -688,6 +1464,12 @@ async fn refresh_groups_view(
     );
     let describe = describe_groups(subset.clone());
     let header = group_header(&group_id, &describe);
+    app.groups.shutdown = build_group_shutdown_pane(
+        &group_id,
+        &subset,
+        &header,
+        app.groups.active_shutdown.as_ref(),
+    );
 
     app.groups.summary = build_group_summary_pane(&group_id, &describe, header.clone());
     let events = extract_events_from_group_status(
@@ -707,7 +1489,7 @@ async fn refresh_groups_view(
     };
 
     match app.group_tab {
-        GroupTab::Summary | GroupTab::Events => {}
+        GroupTab::Summary | GroupTab::Events | GroupTab::Shutdown => {}
         GroupTab::Logs => {
             refresh_log_feed(
                 client,
@@ -931,24 +1713,78 @@ async fn refresh_log_feed(
     Ok(())
 }
 
-async fn maybe_fetch_rollout(
+async fn refresh_active_rollout(
     client: &AdminClient,
+    app: &mut AppState,
     describe: &PipelineDescribeReport,
 ) -> Result<Option<pipelines::RolloutStatus>, CliError> {
-    let Some(summary) = &describe.status.rollout else {
+    let rollout_id = app.pipelines.active_rollout_id.clone().or_else(|| {
+        describe
+            .status
+            .rollout
+            .as_ref()
+            .filter(|rollout| !rollout_is_terminal(rollout.state))
+            .map(|rollout| rollout.rollout_id.clone())
+    });
+    let Some(rollout_id) = rollout_id else {
+        app.pipelines.active_rollout_id = None;
         return Ok(None);
     };
-    match super::fetch_rollout(
-        client,
-        &describe.details.pipeline_group_id,
-        &describe.details.pipeline_id,
-        &summary.rollout_id,
-    )
-    .await
+
+    match client
+        .pipelines()
+        .rollout_status(
+            describe.details.pipeline_group_id.as_ref(),
+            describe.details.pipeline_id.as_ref(),
+            &rollout_id,
+        )
+        .await?
     {
-        Ok(status) => Ok(Some(status)),
-        Err(CliError::Message { exit_code: 3, .. }) => Ok(None),
-        Err(err) => Err(err),
+        Some(status) => {
+            if rollout_is_terminal(status.state) {
+                app.pipelines.active_rollout_id = None;
+            } else {
+                app.pipelines.active_rollout_id = Some(status.rollout_id.clone());
+            }
+            Ok(Some(status))
+        }
+        None => {
+            if describe
+                .status
+                .rollout
+                .as_ref()
+                .is_none_or(|rollout| rollout_is_terminal(rollout.state))
+            {
+                app.pipelines.active_rollout_id = None;
+            }
+            Ok(None)
+        }
+    }
+}
+
+async fn refresh_active_shutdown(
+    client: &AdminClient,
+    app: &mut AppState,
+    pipeline_group_id: &str,
+    pipeline_id: &str,
+) -> Result<Option<pipelines::ShutdownStatus>, CliError> {
+    let Some(shutdown_id) = app.pipelines.active_shutdown_id.clone() else {
+        return Ok(None);
+    };
+
+    match client
+        .pipelines()
+        .shutdown_status(pipeline_group_id, pipeline_id, &shutdown_id)
+        .await?
+    {
+        Some(status) => {
+            app.pipelines.active_shutdown_id = Some(status.shutdown_id.clone());
+            Ok(Some(status))
+        }
+        None => {
+            app.pipelines.active_shutdown_id = None;
+            Ok(None)
+        }
     }
 }
 
@@ -1252,6 +2088,200 @@ fn build_rollout_pane(
     }
 }
 
+fn build_shutdown_pane(
+    describe: &PipelineDescribeReport,
+    shutdown_status: Option<&pipelines::ShutdownStatus>,
+) -> OperationPane {
+    let Some(status) = shutdown_status else {
+        return OperationPane {
+            header: Some(add_header_chip(
+                pipeline_header(describe),
+                chip("shutdown", "none", Tone::Muted),
+            )),
+            stats: Vec::new(),
+            rows: Vec::new(),
+            empty_message: "No active shutdown for the selected pipeline.".to_string(),
+        };
+    };
+
+    OperationPane {
+        header: Some(DetailHeader {
+            title: format!("Shutdown {}", status.shutdown_id),
+            subtitle: Some(format!(
+                "{}/{}",
+                status.pipeline_group_id, status.pipeline_id
+            )),
+            chips: vec![
+                chip("state", status.state.clone(), state_tone(&status.state)),
+                chip("cores", status.cores.len().to_string(), Tone::Accent),
+            ],
+        }),
+        stats: vec![
+            card("Started", status.started_at.clone(), Tone::Muted),
+            card("Updated", status.updated_at.clone(), Tone::Muted),
+            card(
+                "Failure",
+                status
+                    .failure_reason
+                    .clone()
+                    .unwrap_or_else(|| "none".to_string()),
+                if status.failure_reason.is_some() {
+                    Tone::Failure
+                } else {
+                    Tone::Muted
+                },
+            ),
+        ],
+        rows: status
+            .cores
+            .iter()
+            .map(|core| OperationRow {
+                core: core.core_id.to_string(),
+                state: core.state.clone(),
+                current_generation: core.deployment_generation.to_string(),
+                previous_generation: "n/a".to_string(),
+                updated_at: core.updated_at.clone(),
+                detail: core.detail.clone().unwrap_or_default(),
+                tone: state_tone(&core.state),
+            })
+            .collect(),
+        empty_message: "No shutdown core state is available.".to_string(),
+    }
+}
+
+fn build_group_shutdown_pane(
+    group_id: &str,
+    status: &groups::Status,
+    base_header: &DetailHeader,
+    active_shutdown: Option<&app::ActiveGroupShutdown>,
+) -> GroupShutdownPane {
+    let tracker = active_shutdown.filter(|shutdown| shutdown.group_id == group_id);
+    let snapshot = tracker.map(|shutdown| {
+        group_shutdown_snapshot(
+            groups::ShutdownStatus::Accepted,
+            status,
+            shutdown.started_at,
+        )
+    });
+
+    let (state_label, state_tone, note) = match (tracker, snapshot.as_ref()) {
+        (None, _) => (
+            "idle".to_string(),
+            Tone::Muted,
+            Some(
+                "No shutdown has been submitted from the UI for this group.".to_string(),
+            ),
+        ),
+        (Some(shutdown), Some(_snapshot)) if !shutdown.submission_errors.is_empty() => (
+            "failed".to_string(),
+            Tone::Failure,
+            Some(format!(
+                "{} request errors: {}",
+                shutdown.submission_errors.len(),
+                shutdown.submission_errors.join(" | ")
+            )),
+        ),
+        (Some(shutdown), Some(snapshot))
+            if shutdown.started_at.elapsed().unwrap_or_default() >= shutdown.wait_timeout
+                && !snapshot.all_terminal =>
+        (
+            "timed_out".to_string(),
+            Tone::Failure,
+            Some(format!(
+                "The client-side group shutdown watch exceeded {}s.",
+                shutdown.wait_timeout.as_secs()
+            )),
+        ),
+        (_, Some(snapshot)) if snapshot.all_terminal => (
+            "completed".to_string(),
+            Tone::Success,
+            Some(
+                "Group shutdown in the UI is implemented client-side by submitting one pipeline shutdown per pipeline."
+                    .to_string(),
+            ),
+        ),
+        (Some(_), Some(_)) => (
+            "running".to_string(),
+            Tone::Warning,
+            Some(
+                "Group shutdown in the UI is implemented client-side by submitting one pipeline shutdown per pipeline."
+                    .to_string(),
+            ),
+        ),
+        _ => (
+            "unknown".to_string(),
+            Tone::Muted,
+            Some("No current shutdown snapshot is available.".to_string()),
+        ),
+    };
+
+    let mut header = base_header.clone();
+    header.title = group_id.to_string();
+    header.subtitle = Some("Group Shutdown".to_string());
+    header.chips.push(chip("state", state_label, state_tone));
+    if let Some(snapshot) = snapshot.as_ref() {
+        header.chips.push(chip(
+            "terminal",
+            snapshot.terminal_pipelines.to_string(),
+            Tone::Accent,
+        ));
+    }
+
+    let rows = snapshot
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .pipelines
+                .iter()
+                .map(|pipeline| GroupShutdownRow {
+                    pipeline: pipeline
+                        .pipeline
+                        .split_once(':')
+                        .map_or_else(|| pipeline.pipeline.clone(), |(_, value)| value.to_string()),
+                    running: format!("{}/{}", pipeline.running_cores, pipeline.total_cores),
+                    terminal: bool_label(pipeline.terminal),
+                    phases: pipeline.phases.join(", "),
+                    tone: group_shutdown_tone(pipeline),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let stats = if let (Some(tracker), Some(snapshot)) = (tracker, snapshot.as_ref()) {
+        vec![
+            card(
+                "Pipelines",
+                tracker.pipeline_count.to_string(),
+                Tone::Accent,
+            ),
+            card(
+                "Terminal",
+                format!(
+                    "{}/{}",
+                    snapshot.terminal_pipelines, snapshot.total_pipelines
+                ),
+                if snapshot.all_terminal {
+                    Tone::Success
+                } else {
+                    Tone::Warning
+                },
+            ),
+            card("Elapsed", format!("{}ms", snapshot.elapsed_ms), Tone::Muted),
+            card("Requests", tracker.request_count.to_string(), Tone::Muted),
+        ]
+    } else {
+        Vec::new()
+    };
+
+    GroupShutdownPane {
+        header: Some(header),
+        stats,
+        rows,
+        empty_message: "No shutdown data is available for the selected group.".to_string(),
+        note,
+    }
+}
+
 fn build_diagnosis_pane(diagnosis: DiagnosisReport, header: DetailHeader) -> DiagnosisPane {
     let mut evidence = Vec::<EvidenceRow>::new();
     for finding in &diagnosis.findings {
@@ -1271,6 +2301,103 @@ fn build_diagnosis_pane(diagnosis: DiagnosisReport, header: DetailHeader) -> Dia
         findings: diagnosis.findings.iter().map(finding_row).collect(),
         evidence,
         next_steps: diagnosis.recommended_next_steps,
+    }
+}
+
+fn build_config_pane(
+    header: &DetailHeader,
+    pipeline_group_id: &str,
+    pipeline_id: &str,
+    committed_yaml: &str,
+    draft: Option<&app::PipelineConfigDraft>,
+) -> ConfigPane {
+    let mut preview_title = "Committed YAML".to_string();
+    let mut preview = committed_yaml.to_string();
+    let mut note = Some(
+        "Press 'e' to edit in an external editor. A valid staged draft can be deployed with Enter. Press 'd' to discard a staged draft."
+            .to_string(),
+    );
+    let mut stats = vec![
+        card("Source", "committed".to_string(), Tone::Muted),
+        card(
+            "Lines",
+            committed_yaml.lines().count().to_string(),
+            Tone::Muted,
+        ),
+    ];
+
+    if let Some(draft) = draft {
+        if let Some(error) = &draft.error {
+            preview_title = "Edited YAML".to_string();
+            preview = draft.edited_yaml.clone();
+            note = Some(format!(
+                "The edited config for {pipeline_group_id}/{pipeline_id} could not be parsed: {error}"
+            ));
+            stats = vec![
+                card("Source", "edited".to_string(), Tone::Warning),
+                card("Status", "invalid".to_string(), Tone::Failure),
+                card(
+                    "Lines",
+                    draft.edited_yaml.lines().count().to_string(),
+                    Tone::Muted,
+                ),
+            ];
+        } else if draft.is_deployable() {
+            preview_title = "Canonical Diff".to_string();
+            preview = draft.diff.clone();
+            note = Some(
+                "Review the staged config diff, press Enter to redeploy it, 'e' to reopen the editor, or 'd' to discard the draft."
+                    .to_string(),
+            );
+            stats = vec![
+                card("Source", "staged".to_string(), Tone::Accent),
+                card("Status", "deployable".to_string(), Tone::Success),
+                card(
+                    "Edited lines",
+                    draft.edited_yaml.lines().count().to_string(),
+                    Tone::Muted,
+                ),
+            ];
+        } else {
+            preview_title = "Committed YAML".to_string();
+            preview = committed_yaml.to_string();
+            note = Some(
+                "The edited config parsed successfully, but it does not change the canonical pipeline config."
+                    .to_string(),
+            );
+            stats = vec![
+                card("Source", "staged".to_string(), Tone::Accent),
+                card("Status", "no-op".to_string(), Tone::Warning),
+                card(
+                    "Edited lines",
+                    draft.edited_yaml.lines().count().to_string(),
+                    Tone::Muted,
+                ),
+            ];
+        }
+    }
+
+    ConfigPane {
+        header: Some(add_header_chip(
+            header.clone(),
+            chip(
+                "config",
+                if draft.is_some() {
+                    "draft"
+                } else {
+                    "committed"
+                },
+                if draft.as_ref().is_some_and(|draft| draft.is_deployable()) {
+                    Tone::Accent
+                } else {
+                    Tone::Muted
+                },
+            ),
+        )),
+        stats,
+        note,
+        preview_title,
+        preview,
     }
 }
 
@@ -1660,7 +2787,11 @@ fn metric_value_string(value: &telemetry::MetricValue) -> String {
 }
 
 fn classify_pipeline(status: &pipelines::Status) -> (&'static str, Tone) {
-    if status.rollout.is_some() {
+    if status
+        .rollout
+        .as_ref()
+        .is_some_and(|rollout| !rollout_is_terminal(rollout.state))
+    {
         return ("roll", Tone::Accent);
     }
     let has_failure = status.cores.values().any(|core| {
@@ -1693,6 +2824,22 @@ fn bool_label(value: bool) -> String {
         "yes".to_string()
     } else {
         "no".to_string()
+    }
+}
+
+fn group_shutdown_tone(pipeline: &crate::troubleshoot::GroupShutdownWatchPipeline) -> Tone {
+    if pipeline
+        .phases
+        .iter()
+        .any(|phase| phase.contains("failed") || phase.contains("rejected"))
+    {
+        Tone::Failure
+    } else if pipeline.terminal {
+        Tone::Muted
+    } else if pipeline.running_cores > 0 || !pipeline.phases.is_empty() {
+        Tone::Warning
+    } else {
+        Tone::Neutral
     }
 }
 
@@ -1742,6 +2889,15 @@ fn rollout_tone(state: pipelines::PipelineRolloutState) -> Tone {
         | pipelines::PipelineRolloutState::RollbackFailed => Tone::Failure,
         pipelines::PipelineRolloutState::RollingBack => Tone::Warning,
     }
+}
+
+fn rollout_is_terminal(state: pipelines::PipelineRolloutState) -> bool {
+    matches!(
+        state,
+        pipelines::PipelineRolloutState::Succeeded
+            | pipelines::PipelineRolloutState::Failed
+            | pipelines::PipelineRolloutState::RollbackFailed
+    )
 }
 
 fn diagnosis_tone(status: DiagnosisStatus) -> Tone {
@@ -1914,7 +3070,7 @@ mod tests {
             &mut app,
         );
         assert_eq!(outcome, EventOutcome::Refresh);
-        assert_eq!(app.pipeline_tab, PipelineTab::Events);
+        assert_eq!(app.pipeline_tab, PipelineTab::Config);
 
         let outcome = handle_key_event(
             KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
@@ -1922,6 +3078,50 @@ mod tests {
         );
         assert_eq!(outcome, EventOutcome::Refresh);
         assert_eq!(app.pipeline_tab, PipelineTab::Summary);
+    }
+
+    #[test]
+    fn config_tab_edit_key_opens_pipeline_editor() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.focus = FocusArea::Detail;
+        app.pipeline_tab = PipelineTab::Config;
+        app.pipeline_selected = Some("tenant-a:ingest".to_string());
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+            &mut app,
+        );
+
+        assert_eq!(
+            outcome,
+            EventOutcome::OpenPipelineEditor {
+                group_id: "tenant-a".to_string(),
+                pipeline_id: "ingest".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn config_tab_discard_key_clears_staged_draft() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.focus = FocusArea::Detail;
+        app.pipeline_tab = PipelineTab::Config;
+        app.pipeline_selected = Some("tenant-a:ingest".to_string());
+        app.stage_pipeline_config_draft(
+            "nodes: {}\n".to_string(),
+            "nodes:\n  changed: true\n".to_string(),
+            None,
+            String::new(),
+            Some("invalid".to_string()),
+        );
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::Refresh);
+        assert!(app.pipelines.config_draft.is_none());
     }
 
     #[test]
@@ -1933,11 +3133,11 @@ mod tests {
             &mut app,
         );
         assert_eq!(outcome, EventOutcome::Continue);
-        assert!(app.show_command_overlay);
+        assert!(app.show_command_overlay());
 
         let outcome = handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);
         assert_eq!(outcome, EventOutcome::Continue);
-        assert!(!app.show_command_overlay);
+        assert!(!app.show_command_overlay());
     }
 
     #[test]
@@ -1979,5 +3179,27 @@ mod tests {
             .map(str::to_string)
             .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn split_editor_command_supports_quoted_arguments() {
+        let parts = split_editor_command("code --wait \"config draft.yaml\"")
+            .expect("editor command should parse");
+        assert_eq!(
+            parts,
+            vec!["code", "--wait", "config draft.yaml"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn build_yaml_diff_marks_line_changes() {
+        let diff = build_yaml_diff("a: 1\nb: 2\n", "a: 1\nb: 3\n");
+        assert!(diff.contains("--- current"));
+        assert!(diff.contains("+++ edited"));
+        assert!(diff.contains("- b: 2"));
+        assert!(diff.contains("+ b: 3"));
     }
 }
