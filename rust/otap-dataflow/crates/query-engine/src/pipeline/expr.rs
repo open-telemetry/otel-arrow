@@ -79,7 +79,7 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
-use crate::pipeline::expr::join::join;
+use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
@@ -158,7 +158,10 @@ pub(crate) enum LogicalExprDataSource {
     /// This indicates the input to the expression data from the incoming OTAP batch
     DataSource(DataScope),
 
-    /// The input to the expression is the result of joining two child expressions
+    /// The input to the expression is the result of joining two child expressions.
+    ///
+    /// Used when there are binary expressions such as in arithmetic or comparing two columns.
+    /// The results are joined into a single record batch with columns named "left" and "right".
     Join(Box<ScopedLogicalExpr>, Box<ScopedLogicalExpr>),
 
     /// The input to the expression is the result of joining multiple child expressions.
@@ -365,9 +368,6 @@ impl ExprLogicalPlanner {
                     }
                 })?;
 
-                // Collect the scalar sub-expressions for the slice: source, start, and
-                // optionally end. We delegate to plan_function_args which handles both
-                // the same-scope and cross-scope cases.
                 let mut slice_arg_exprs: Vec<&ScalarExpression> =
                     vec![slice_scalar_expr.get_source(), start_scalar_expr];
 
@@ -590,13 +590,11 @@ impl ExprLogicalPlanner {
         arg_exprs: impl Iterator<Item = &'a ScalarExpression>,
         functions: &[PipelineFunction],
     ) -> Result<(Vec<Expr>, LogicalExprDataSource, bool)> {
-        // Plan all argument expressions, collecting them as full ScopedLogicalExprs
-        // so we have both their logical_expr and source information.
-        let planned_args: Vec<ScopedLogicalExpr> = arg_exprs
+        let scoped_logical_args: Vec<ScopedLogicalExpr> = arg_exprs
             .map(|arg| self.plan_scalar_expr(arg, functions))
             .collect::<Result<Vec<_>>>()?;
 
-        if planned_args.is_empty() {
+        if scoped_logical_args.is_empty() {
             return Ok((
                 Vec::new(),
                 LogicalExprDataSource::DataSource(DataScope::StaticScalar),
@@ -609,13 +607,12 @@ impl ExprLogicalPlanner {
         let mut all_combinable = true;
         let mut requires_dict_downcast = false;
 
-        for planned_arg in &planned_args {
-            requires_dict_downcast |= planned_arg.requires_dict_downcast;
+        for scoped_logical_arg in &scoped_logical_args {
+            requires_dict_downcast |= scoped_logical_arg.requires_dict_downcast;
 
-            let arg_scope = match &planned_arg.source {
+            let arg_scope = match &scoped_logical_arg.source {
                 LogicalExprDataSource::DataSource(scope) => scope,
-                // If any arg already requires a join (e.g. it's a nested cross-scope arithmetic
-                // expr), we can't combine scopes and must use a multi-join.
+                // If any arg already requires a join, we can't combine scopes so must multi join
                 _ => {
                     all_combinable = false;
                     break;
@@ -641,22 +638,26 @@ impl ExprLogicalPlanner {
 
         if all_combinable {
             // All arguments share a compatible scope. Return their logical exprs directly.
-            let logical_exprs = planned_args.into_iter().map(|a| a.logical_expr).collect();
+            let arg_logical_exprs = scoped_logical_args
+                .into_iter()
+                .map(|a| a.logical_expr)
+                .collect();
             let scope = LogicalExprDataSource::DataSource(
                 combined_scope.unwrap_or(DataScope::StaticScalar),
             );
-            Ok((logical_exprs, scope, requires_dict_downcast))
+            Ok((arg_logical_exprs, scope, requires_dict_downcast))
         } else {
             // Arguments come from different scopes. Create a MultiJoin: each argument
             // becomes a child expression in the join, and the function's argument Exprs
             // are rewritten to reference the join result columns ("arg_0", "arg_1", ...).
-            let requires_dict_downcast = planned_args.iter().any(|a| a.requires_dict_downcast);
+            let requires_dict_downcast =
+                scoped_logical_args.iter().any(|a| a.requires_dict_downcast);
 
-            let arg_col_exprs: Vec<Expr> = (0..planned_args.len())
+            let arg_col_exprs: Vec<Expr> = (0..scoped_logical_args.len())
                 .map(|i| col(arg_column_name(i)))
                 .collect();
 
-            let source = LogicalExprDataSource::MultiJoin(planned_args);
+            let source = LogicalExprDataSource::MultiJoin(scoped_logical_args);
             Ok((arg_col_exprs, source, requires_dict_downcast))
         }
     }
@@ -954,7 +955,7 @@ impl ScopedPhysicalExpr {
                         None => return Ok(None),
                     }
                 }
-                let (joined_rb, result_data_scope) = join::multi_join(&results, otap_batch)?;
+                let (joined_rb, result_data_scope) = multi_join(&results, otap_batch)?;
                 (Some(Cow::Owned(joined_rb)), result_data_scope)
             }
         };
@@ -3666,11 +3667,20 @@ mod test {
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
     }
 
-    /// Tests that the logical planner produces a MultiJoin for InvokeFunction when args come
-    /// from different scopes. Uses sha256(attributes["k1"]) (Attributes scope) alongside a
-    /// root-scope arg, verifying the plan structure.
+    /// Verifies that InvokeFunction planning correctly produces a MultiJoin when child
+    /// InvokeFunction results come from different scopes.
+    ///
+    /// We build: encode(sha256(attributes["k1"]), "hex") which nests sha256 (Attributes scope)
+    /// inside encode with a scalar arg. Since Attributes + Scalar can combine, this should NOT
+    /// produce a MultiJoin. This serves as a sanity check that the planner doesn't over-eagerly
+    /// create MultiJoin nodes for same-scope function args.
+    ///
+    /// Note: a full end-to-end execution test for cross-scope InvokeFunction args is not
+    /// straightforward because DataFusion's built-in multi-arg functions (like encode) require
+    /// some arguments to be scalars. The concat/join_text/replace tests cover the cross-scope
+    /// MultiJoin execution path thoroughly.
     #[test]
-    fn test_function_invocation_cross_scope_produces_multi_join_plan() {
+    fn test_function_invocation_same_scope_does_not_produce_multi_join() {
         // sha256(attributes["k1"]) - Attributes scope
         let attr_sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
             QueryLocation::new_fake(),
@@ -3694,46 +3704,7 @@ mod test {
             ))],
         ));
 
-        // encode(sha256(attributes["k1"]), "hex") combined with a root-scope arg
-        // We test this by nesting the sha256 call inside another function call that
-        // also takes a root-scope argument.
-        //
-        // We'll use a simple wrapper:
-        // encode(sha256(attributes["k1"]), "hex") produces a value from Attributes scope.
-        // Then we want to combine it with severity_text (Root scope) via concat.
-        // But for InvokeFunction specifically: the planner should produce MultiJoin
-        // when an InvokeFunction's args span different scopes.
-        //
-        // So let's plan: encode(sha256(severity_text), "hex")
-        // This keeps both args in Root+Scalar scope (should combine, NOT MultiJoin).
-        // Then: encode(sha256(attributes["k1"]), "hex")
-        // This keeps both in Attributes+Scalar scope (should combine, NOT MultiJoin).
-        //
-        // The real cross-scope case would need a function that accepts multiple array args
-        // from different scopes. DataFusion's `encode` requires scalar encoding format.
-        // So we verify the planning step only: that a function call with mixed scopes
-        // correctly produces a MultiJoin plan.
-
-        // Build: some_func(sha256(attributes["k1"]), sha256(severity_text))
-        // Both sha256 calls produce values, but from different scopes.
-        let root_sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            consts::SEVERITY_TEXT,
-                        )),
-                    )]),
-                ),
-            ))],
-        ));
-
-        // encode(sha256(attributes["k1"]), "hex") - Attributes scope + Scalar
+        // encode(sha256(attributes["k1"]), "hex") - Attributes scope + Scalar = Attributes scope
         let encode_attr_expr =
             ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -3750,23 +3721,6 @@ mod test {
                 ],
             ));
 
-        // encode(sha256(severity_text), "hex") - Root scope + Scalar
-        let _encode_root_expr =
-            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-                QueryLocation::new_fake(),
-                None,
-                1,
-                vec![
-                    InvokeFunctionArgument::Scalar(root_sha_expr),
-                    InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "hex",
-                        )),
-                    )),
-                ],
-            ));
-
         let functions = [
             PipelineFunction::new_external("sha256", vec![], None),
             PipelineFunction::new_external("encode", vec![], None),
@@ -3774,67 +3728,15 @@ mod test {
 
         let planner = ExprLogicalPlanner {};
 
-        // Verify that encode(sha256(attrs), "hex") does NOT produce MultiJoin
-        // (both args combine: Attributes + Scalar = Attributes scope)
-        let single_scope = planner
+        // Attributes + Scalar should combine without needing a MultiJoin
+        let planned = planner
             .plan_scalar_expr(&encode_attr_expr, &functions)
             .unwrap();
         assert!(
-            !matches!(single_scope.source, LogicalExprDataSource::MultiJoin(_)),
-            "Expected non-MultiJoin for same-scope function args"
+            !matches!(planned.source, LogicalExprDataSource::MultiJoin(_)),
+            "Expected non-MultiJoin for same-scope function args, got {:?}",
+            planned.source
         );
-
-        // Now test an arithmetic expression that combines the two encode results,
-        // forcing a cross-scope join at the arithmetic level.
-        // This tests that the overall tree properly uses the join infrastructure.
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                // left: severity_number (Root scope)
-                ScalarExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            consts::SEVERITY_NUMBER,
-                        )),
-                    )]),
-                )),
-                // right: attributes["k1"] (Attributes scope)
-                ScalarExpression::Source(SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ATTRIBUTES_FIELD_NAME,
-                            ),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                        )),
-                    ]),
-                )),
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .severity_text("ERROR")
-                .severity_number(10)
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(5))])
-                .finish(),
-            LogRecord::build()
-                .severity_text("INFO")
-                .severity_number(20)
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(3))])
-                .finish(),
-        ]);
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        // This uses the binary join (not MultiJoin), but verifies the overall machinery works
-        let expected_col = Arc::new(Int64Array::from(vec![15, 23]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
     }
 
     /// Tests replace(severity_text, attributes["needle"], attributes["replacement"])

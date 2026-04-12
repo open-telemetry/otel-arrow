@@ -237,7 +237,33 @@ pub fn multi_join(
     results: &[PhysicalExprEvalResult],
     otap_batch: &OtapArrowRecords,
 ) -> Result<(RecordBatch, Rc<DataScope>)> {
-    assert!(results.len() >= 2, "multi_join requires at least 2 results");
+    if results.is_empty() {
+        return Err(Error::ExecutionError {
+            cause: "multi_join called with no results".into(),
+        });
+    }
+
+    // If there's only one result, produce a single-column record batch directly.
+    // This shouldn't happen in practice (the planner only creates MultiJoin when there
+    // are incompatible scopes across 2+ args), but we handle it defensively.
+    if results.len() == 1 {
+        let result = &results[0];
+        let values = result.values.to_array(
+            result
+                .parent_ids
+                .as_ref()
+                .map(|a| a.len())
+                .or_else(|| result.ids.as_ref().map(|a| a.len()))
+                .unwrap_or(1),
+        )?;
+        let schema = Schema::new(vec![Field::new(
+            arg_column_name(0),
+            values.data_type().clone(),
+            true,
+        )]);
+        let rb = RecordBatch::try_new(Arc::new(schema), vec![values])?;
+        return Ok((rb, result.data_scope.clone()));
+    }
 
     // Start with the first result as the accumulator.
     let first = &results[0];
