@@ -22,7 +22,6 @@ use otap_df_otap::otap_grpc::otlp::server_new::{
     LogsServiceServer, MetricsServiceServer, OtlpServerSettings, TraceServiceServer,
 };
 use otap_df_otap::pdata::OtapPdata;
-#[cfg(feature = "experimental-tls")]
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
 
 use async_trait::async_trait;
@@ -571,7 +570,6 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 .add_service(metrics_server.expect("gRPC enabled but metrics_server is None"))
                 .add_service(traces_server.expect("gRPC enabled but traces_server is None"));
 
-            #[cfg(feature = "experimental-tls")]
             let maybe_tls_acceptor =
                 build_tls_acceptor(grpc_config.tls.as_ref())
                     .await
@@ -582,33 +580,21 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         source_detail: format_error_sources(&e),
                     })?;
 
-            #[cfg(feature = "experimental-tls")]
             let handshake_timeout = grpc_config.tls.as_ref().and_then(|t| t.handshake_timeout);
 
             let task: GrpcServerTask = {
                 let grpc_shutdown = grpc_shutdown.clone();
-                #[cfg(feature = "experimental-tls")]
-                {
-                    match maybe_tls_acceptor {
-                        Some(tls_acceptor) => {
-                            let tls_stream =
-                                create_tls_stream(incoming, tls_acceptor, handshake_timeout);
-                            Box::pin(server.serve_with_incoming_shutdown(tls_stream, async move {
-                                grpc_shutdown.cancelled().await;
-                            }))
-                        }
-                        None => {
-                            Box::pin(server.serve_with_incoming_shutdown(incoming, async move {
-                                grpc_shutdown.cancelled().await;
-                            }))
-                        }
+                match maybe_tls_acceptor {
+                    Some(tls_acceptor) => {
+                        let tls_stream =
+                            create_tls_stream(incoming, tls_acceptor, handshake_timeout);
+                        Box::pin(server.serve_with_incoming_shutdown(tls_stream, async move {
+                            grpc_shutdown.cancelled().await;
+                        }))
                     }
-                }
-                #[cfg(not(feature = "experimental-tls"))]
-                {
-                    Box::pin(server.serve_with_incoming_shutdown(incoming, async move {
+                    None => Box::pin(server.serve_with_incoming_shutdown(incoming, async move {
                         grpc_shutdown.cancelled().await;
-                    }))
+                    })),
                 }
             };
 

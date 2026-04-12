@@ -6,7 +6,6 @@
 use crate::compression::{self, CompressionMethod};
 use crate::otap_grpc::otlp::server_new::OtlpServerSettings;
 use otap_df_config::byte_units;
-#[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -179,7 +178,6 @@ pub struct GrpcServerSettings {
     /// Optional TLS configuration for the gRPC server.
     ///
     /// When configured, the server will use TLS/mTLS for secure connections.
-    #[cfg(feature = "experimental-tls")]
     #[serde(default)]
     pub tls: Option<TlsServerConfig>,
 }
@@ -335,7 +333,6 @@ impl Default for GrpcServerSettings {
             max_concurrent_streams: None,
             wait_for_result: default_wait_for_result(),
             timeout: None,
-            #[cfg(feature = "experimental-tls")]
             tls: None,
         }
     }
