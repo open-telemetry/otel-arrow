@@ -24,6 +24,24 @@ pub struct OtlpExporterConfig {
     /// TLS configuration for secure communication.
     pub tls: Option<TlsConfig>,
 }
+impl OtlpExporterConfig {
+    /// Create a new OTLP exporter configuration from a JSON value.
+    ///
+    /// If the value is `null`, it is treated as an empty object so that
+    /// any fields with `#[serde(default)]` still receive their defaults.
+    pub fn from_config(config: &serde_json::Value) -> Result<Self, crate::error::Error> {
+        let effective = if config.is_null() {
+            &serde_json::Value::Object(serde_json::Map::new())
+        } else {
+            config
+        };
+        serde_json::from_value(effective.clone()).map_err(|e| {
+            crate::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })
+    }
+}
 
 /// The Otlp communication protocol to use when exporting data.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
@@ -66,5 +84,27 @@ mod tests {
         assert_eq!(config.protocol, OtlpProtocol::HttpJson);
         assert_eq!(config.endpoint, "http://localhost:4318/v1/metrics");
         assert_eq!(config.temporality, Temporality::Delta);
+    }
+
+    #[test]
+    fn test_otlp_exporter_config_from_config_invalid() {
+        let invalid = serde_json::json!({"protocol": "invalid_protocol"});
+        let result = OtlpExporterConfig::from_config(&invalid);
+        assert!(
+            result.is_err(),
+            "Expected error for invalid protocol, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_otlp_exporter_config_from_config_null() {
+        // Null is treated as an empty object; endpoint is required so this must fail.
+        let result = OtlpExporterConfig::from_config(&serde_json::Value::Null);
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("endpoint"),
+            "Expected error about missing endpoint, got: {err_msg}"
+        );
     }
 }
