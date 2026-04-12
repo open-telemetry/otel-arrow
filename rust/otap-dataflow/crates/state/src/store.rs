@@ -194,6 +194,24 @@ impl ObservedStateStore {
         status.set_active_generation(generation);
     }
 
+    /// Records the committed serving core footprint for a logical pipeline.
+    pub fn set_pipeline_active_cores<I>(&self, pipeline_key: PipelineKey, core_ids: I)
+    where
+        I: IntoIterator<Item = otap_df_config::CoreId>,
+    {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
+            );
+            poisoned.into_inner()
+        });
+        let status = pipelines
+            .entry(pipeline_key.clone())
+            .or_insert_with(|| PipelineStatus::new(self.health_policy_for_pipeline(&pipeline_key)));
+        status.set_active_cores(core_ids);
+    }
+
     /// Records which generation is serving traffic for the given logical core.
     pub fn set_pipeline_serving_generation(
         &self,

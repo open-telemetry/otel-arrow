@@ -81,6 +81,10 @@ pub struct PipelineStatus {
     /// Last committed generation for this logical pipeline.
     pub(crate) active_generation: Option<u64>,
 
+    /// Committed core footprint for the active generation when no rollout-specific
+    /// per-core serving override is active.
+    pub(crate) active_cores: HashSet<CoreId>,
+
     /// Optional rollout summary for UI/API consumers.
     pub(crate) rollout: Option<PipelineRolloutSummary>,
 
@@ -93,6 +97,7 @@ impl PipelineStatus {
             instances: HashMap::new(),
             serving_generations: HashMap::new(),
             active_generation: None,
+            active_cores: HashSet::new(),
             rollout: None,
             health_policy,
         }
@@ -133,6 +138,14 @@ impl PipelineStatus {
     /// Records the committed active generation for this logical pipeline.
     pub(crate) fn set_active_generation(&mut self, generation: u64) {
         self.active_generation = Some(generation);
+    }
+
+    /// Records the committed serving core footprint for the active generation.
+    pub(crate) fn set_active_cores<I>(&mut self, core_ids: I)
+    where
+        I: IntoIterator<Item = CoreId>,
+    {
+        self.active_cores = core_ids.into_iter().collect();
     }
 
     /// Pins the serving generation chosen for one logical core.
@@ -441,7 +454,11 @@ impl PipelineStatus {
             let selected: Vec<_> = self
                 .instances
                 .iter()
-                .filter(|(key, _)| key.deployment_generation == active_generation)
+                .filter(|(key, _)| {
+                    key.deployment_generation == active_generation
+                        && (self.active_cores.is_empty()
+                            || self.active_cores.contains(&key.core_id))
+                })
                 .map(|(key, _)| *key)
                 .collect();
             if !selected.is_empty() {
@@ -451,6 +468,9 @@ impl PipelineStatus {
 
         let mut per_core: HashMap<CoreId, RuntimeInstanceKey> = HashMap::new();
         for key in self.instances.keys() {
+            if !self.active_cores.is_empty() && !self.active_cores.contains(&key.core_id) {
+                continue;
+            }
             let replace = per_core
                 .get(&key.core_id)
                 .is_none_or(|existing| key.deployment_generation > existing.deployment_generation);
@@ -905,6 +925,7 @@ mod tests {
         insert_runtime(&mut status, 0, 0, runtime(PipelinePhase::Stopped));
         insert_runtime(&mut status, 0, 1, runtime(PipelinePhase::Stopped));
         status.set_active_generation(1);
+        status.set_active_cores([0]);
 
         status.compact_instances_to_selected();
 
@@ -919,6 +940,30 @@ mod tests {
             PipelinePhase::Stopped
         ));
         assert!(status.instance_status(0, 0).is_none());
+    }
+
+    /// Scenario: a pure resize-down retires one core without changing the
+    /// committed generation, so multiple retained instances share the same
+    /// active generation across different cores.
+    /// Guarantees: aggregated status and compaction respect the committed core
+    /// footprint instead of treating every instance on the active generation as
+    /// still serving.
+    #[test]
+    fn active_generation_selection_respects_committed_core_footprint() {
+        let mut status = new_status(HealthPolicy::default());
+        insert_runtime(&mut status, 0, 0, runtime(PipelinePhase::Running));
+        insert_runtime(&mut status, 1, 0, runtime(PipelinePhase::Stopped));
+        status.set_active_generation(0);
+        status.set_active_cores([0]);
+
+        assert_eq!(status.total_cores(), 1);
+        assert_eq!(status.running_cores(), 1);
+
+        status.compact_instances_to_selected();
+
+        assert_eq!(status.per_instance().len(), 1);
+        assert!(status.instance_status(0, 0).is_some());
+        assert!(status.instance_status(1, 0).is_none());
     }
 
     /// Scenario: a rolling cutover overlaps the old and new generations on one

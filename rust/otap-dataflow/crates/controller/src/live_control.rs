@@ -575,6 +575,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             resolved.pipeline_group_id.clone(),
             resolved.pipeline_id.clone(),
         );
+        if let Ok(active_cores) = self.assigned_cores_for_resolved(&resolved) {
+            self.observed_state_store
+                .set_pipeline_active_cores(pipeline_key.clone(), active_cores);
+        }
         self.observed_state_store
             .set_pipeline_active_generation(pipeline_key.clone(), generation);
 
@@ -1505,6 +1509,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 },
             );
         }
+        self.observed_state_store.set_pipeline_active_cores(
+            plan.pipeline_key.clone(),
+            plan.target_assigned_cores.iter().copied(),
+        );
         self.observed_state_store
             .set_pipeline_active_generation(plan.pipeline_key.clone(), active_generation);
     }

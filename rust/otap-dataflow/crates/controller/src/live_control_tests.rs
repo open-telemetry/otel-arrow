@@ -1997,6 +1997,62 @@ fn prune_pipeline_runtime_and_history_keeps_last_stopped_generation_view() {
     assert!(status.instance_status(0, 0).is_none());
 }
 
+/// Scenario: a pure resize-down retires one core without changing the active
+/// generation, and observed state still retains both core instances on that
+/// same generation.
+/// Guarantees: controller cleanup compacts observed state to the committed
+/// active core footprint so `/status` stops counting the drained core as
+/// serving after the resize completes.
+#[test]
+fn prune_pipeline_runtime_and_history_compacts_resize_down_same_generation() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+    report_stopped(&runtime, deployed_key("g1", "p1", 1, 0));
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.per_instance().len() == 2
+    });
+    assert_eq!(status.total_cores(), 2);
+    assert_eq!(status.running_cores(), 1);
+    assert!(status.instance_status(0, 0).is_some());
+    assert!(status.instance_status(1, 0).is_some());
+
+    runtime
+        .observed_state_store
+        .set_pipeline_active_cores(pipeline_key.clone(), [0]);
+    runtime.prune_pipeline_runtime_and_history(&pipeline_key);
+
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.per_instance().len() == 1
+    });
+    assert_eq!(status.total_cores(), 1);
+    assert_eq!(status.running_cores(), 1);
+    assert!(status.instance_status(0, 0).is_some());
+    assert!(status.instance_status(1, 0).is_none());
+}
+
 /// Scenario: a runtime instance exits while a shutdown operation for the same
 /// logical pipeline is still active and observed state contains overlapping
 /// generations.
