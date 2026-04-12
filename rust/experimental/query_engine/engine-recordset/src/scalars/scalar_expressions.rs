@@ -254,7 +254,7 @@ where
         ScalarExpression::Slice(s) => {
             let inner_value = execute_scalar_expression(execution_context, s.get_source())?;
 
-            let range_start_inclusive = match s.get_range_start_inclusive() {
+            let range_start_inclusive = match s.get_range_start() {
                 Some(start) => SliceScalarExpression::validate_resolved_range_value(
                     start.get_query_location(),
                     "start",
@@ -262,11 +262,11 @@ where
                 )?,
                 None => 0,
             };
-            let range_end_exclusive = match s.get_range_length() {
-                Some(end) => Some(SliceScalarExpression::validate_resolved_range_value(
-                    end.get_query_location(),
-                    "end",
-                    execute_scalar_expression(execution_context, end)?.to_value(),
+            let length = match s.get_range_length() {
+                Some(length) => Some(SliceScalarExpression::validate_resolved_range_value(
+                    length.get_query_location(),
+                    "length",
+                    execute_scalar_expression(execution_context, length)?.to_value(),
                 )?),
                 None => None,
             };
@@ -278,7 +278,7 @@ where
                         "String",
                         string_value.get_value().chars().count(),
                         range_start_inclusive,
-                        range_end_exclusive,
+                        length,
                     )?;
 
                     ResolvedValue::Slice(Slice::String(StringSlice::from_char_range(
@@ -294,7 +294,7 @@ where
                             "Array",
                             array_value.len(),
                             range_start_inclusive,
-                            range_end_exclusive,
+                            length,
                         )?;
 
                         ResolvedValue::Slice(Slice::Array(ArraySlice::new(
