@@ -122,7 +122,7 @@ impl DataScope {
     /// Rules:
     /// - Any scope can combine with StaticScalar (constants)
     /// - Same scopes can combine (e.g., Root + Root), because the row order is the same.
-    fn can_combine(&self, other: &Self) -> bool {
+    pub(crate) fn can_combine(&self, other: &Self) -> bool {
         self.is_scalar() || other.is_scalar() || (self == other)
     }
 
@@ -144,7 +144,7 @@ impl From<&ColumnAccessor> for DataScope {
 }
 
 /// Identifier of the incoming source data for some scoped expression.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LogicalExprDataSource {
     /// This indicates the input to the expression data from the incoming OTAP batch
     DataSource(DataScope),
@@ -157,7 +157,7 @@ pub(crate) enum LogicalExprDataSource {
 ///
 /// This combines a DataFusion logical expression with data source, result type and input type
 /// coercion information
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ScopedLogicalExpr {
     /// the definition of the datafusion that should be applied to the input data
     pub(crate) logical_expr: Expr,
@@ -186,7 +186,7 @@ pub struct ScopedLogicalExpr {
     // TODO: it would be cleaner to just have custom expression impl we could add to the plan to
     // remove dictionary encoding from some column, instead of passing this flag down and doing it
     // during projection.
-    requires_dict_downcast: bool,
+    pub(crate) requires_dict_downcast: bool,
 }
 
 impl ScopedLogicalExpr {
@@ -1097,10 +1097,10 @@ pub(crate) struct PhysicalExprEvalResult {
     pub data_scope: Rc<DataScope>,
 
     // ID columns populated from the source data
-    ids: Option<ArrayRef>,
-    parent_ids: Option<ArrayRef>,
-    scope_ids: Option<ArrayRef>,
-    resource_ids: Option<ArrayRef>,
+    pub(crate) ids: Option<ArrayRef>,
+    pub(crate) parent_ids: Option<ArrayRef>,
+    pub(crate) scope_ids: Option<ArrayRef>,
+    pub(crate) resource_ids: Option<ArrayRef>,
 }
 
 impl PhysicalExprEvalResult {
