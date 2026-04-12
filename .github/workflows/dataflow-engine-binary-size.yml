@@ -104,9 +104,8 @@ jobs:
           echo "|----------|------|"
           for json in all-reports/*.json; do
             PLATFORM=$(jq -r '.[0].name' "$json" | sed 's/-binary-size//')
-            SIZE_BYTES=$(jq -r '.[0].value' "$json")
-            SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE_BYTES)
-            echo "| $PLATFORM | $SIZE_HR |"
+            SIZE_MB=$(jq -r '.[0].value' "$json")
+            echo "| $PLATFORM | ${SIZE_MB} MB |"
           done
 
       - name: Update binary size benchmarks
