@@ -335,7 +335,7 @@ impl ExprLogicalPlanner {
             },
             ScalarExpression::Slice(slice_scalar_expr) => {
                 let mut num_args = 2;
-                if slice_scalar_expr.get_range_start_inclusive().is_some() {
+                if slice_scalar_expr.get_range_start().is_some() {
                     num_args = 3;
                 }
                 let mut arg_exprs = Vec::with_capacity(num_args);
@@ -381,7 +381,7 @@ impl ExprLogicalPlanner {
                 // plan the expression for substring start
                 let start_scalar_expr =
                     slice_scalar_expr
-                        .get_range_start_inclusive()
+                        .get_range_start()
                         .ok_or_else(|| Error::InvalidPipelineError {
                             cause: "start index is required for substring".into(),
                             query_location: Some(slice_scalar_expr.get_query_location().clone()),
@@ -389,8 +389,8 @@ impl ExprLogicalPlanner {
                 source_scope = plan_range_index_expr(start_scalar_expr, source_scope)?;
 
                 // plan the expression for substring end
-                if let Some(end_scalar_expr) = slice_scalar_expr.get_range_end_exclusive() {
-                    source_scope = plan_range_index_expr(end_scalar_expr, source_scope)?;
+                if let Some(length_scalar_expr) = slice_scalar_expr.get_range_length() {
+                    source_scope = plan_range_index_expr(length_scalar_expr, source_scope)?;
                 }
 
                 Ok(ScopedLogicalExpr {
