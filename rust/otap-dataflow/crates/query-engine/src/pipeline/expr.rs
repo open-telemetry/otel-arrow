@@ -379,13 +379,12 @@ impl ExprLogicalPlanner {
                 };
 
                 // plan the expression for substring start
-                let start_scalar_expr =
-                    slice_scalar_expr
-                        .get_range_start()
-                        .ok_or_else(|| Error::InvalidPipelineError {
-                            cause: "start index is required for substring".into(),
-                            query_location: Some(slice_scalar_expr.get_query_location().clone()),
-                        })?;
+                let start_scalar_expr = slice_scalar_expr.get_range_start().ok_or_else(|| {
+                    Error::InvalidPipelineError {
+                        cause: "start index is required for substring".into(),
+                        query_location: Some(slice_scalar_expr.get_query_location().clone()),
+                    }
+                })?;
                 source_scope = plan_range_index_expr(start_scalar_expr, source_scope)?;
 
                 // plan the expression for substring end
