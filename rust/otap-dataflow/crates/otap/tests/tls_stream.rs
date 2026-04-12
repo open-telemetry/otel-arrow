@@ -3,7 +3,6 @@
 
 #![allow(missing_docs)]
 
-#[cfg(feature = "experimental-tls")]
 mod tests {
     use futures::StreamExt;
     use otap_df_otap::tls_utils::create_tls_stream;

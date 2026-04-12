@@ -50,11 +50,12 @@ use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, Field, Schema};
 use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, BooleanValue, CollectionScalarExpression,
-    CombineScalarExpression, DoubleValue, Expression, IntegerValue, InvokeFunctionArgument,
-    InvokeFunctionScalarExpression, JoinTextScalarExpression, MathScalarExpression,
-    PipelineFunction, PipelineFunctionImplementation, ReplaceTextScalarExpression,
-    ScalarExpression, StaticScalarExpression, StringValue, TextScalarExpression,
+    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
+    CollectionScalarExpression, CombineScalarExpression, DoubleValue, Expression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
+    ReplaceTextScalarExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
+    StringValue, TextScalarExpression,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
@@ -65,7 +66,6 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
 };
-use datafusion::logical_expr_common::signature::Arity;
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
@@ -77,13 +77,13 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::functions::substring;
+use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -122,7 +122,7 @@ impl DataScope {
     /// Rules:
     /// - Any scope can combine with StaticScalar (constants)
     /// - Same scopes can combine (e.g., Root + Root), because the row order is the same.
-    fn can_combine(&self, other: &Self) -> bool {
+    pub(crate) fn can_combine(&self, other: &Self) -> bool {
         self.is_scalar() || other.is_scalar() || (self == other)
     }
 
@@ -144,7 +144,7 @@ impl From<&ColumnAccessor> for DataScope {
 }
 
 /// Identifier of the incoming source data for some scoped expression.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LogicalExprDataSource {
     /// This indicates the input to the expression data from the incoming OTAP batch
     DataSource(DataScope),
@@ -157,7 +157,7 @@ pub(crate) enum LogicalExprDataSource {
 ///
 /// This combines a DataFusion logical expression with data source, result type and input type
 /// coercion information
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ScopedLogicalExpr {
     /// the definition of the datafusion that should be applied to the input data
     pub(crate) logical_expr: Expr,
@@ -186,7 +186,7 @@ pub struct ScopedLogicalExpr {
     // TODO: it would be cleaner to just have custom expression impl we could add to the plan to
     // remove dictionary encoding from some column, instead of passing this flag down and doing it
     // during projection.
-    requires_dict_downcast: bool,
+    pub(crate) requires_dict_downcast: bool,
 }
 
 impl ScopedLogicalExpr {
@@ -289,6 +289,9 @@ impl ExprLogicalPlanner {
                     }
                     StaticScalarExpression::String(string_expr) => {
                         (lit(string_expr.get_value()), ExprLogicalType::String)
+                    }
+                    StaticScalarExpression::Null(_) => {
+                        (Expr::default(), ExprLogicalType::AnyValue) // default is lit(null)
                     }
                     _ => {
                         return Err(Error::NotYetSupportedError {
@@ -537,11 +540,16 @@ impl ExprLogicalPlanner {
         // check that we've been passed the correct number of arguments.
         //
         // TODO: in future we could also do some additional checking here on the types
-        if let Arity::Fixed(num_params) = df_udf.scalar_udf.signature().type_signature.arity() {
-            if num_args != num_params {
+        if let Some(arity_range) = arity_range(&df_udf.scalar_udf.signature().type_signature) {
+            if !arity_range.contains(&num_args) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
-                        "function '{func_name}' expects {num_params} arguments. Received {num_args}"
+                        "function '{func_name}' expects {} arguments. Received {num_args}",
+                        if arity_range.len() > 1 {
+                            format!("{}-{}", arity_range.start, arity_range.end - 1)
+                        } else {
+                            format!("{}", arity_range.start)
+                        }
                     ),
                     query_location: Some(invoke_function_expression.get_query_location().clone()),
                 });
@@ -689,6 +697,53 @@ impl ExprLogicalPlanner {
         }
     }
 
+    fn plan_regex_capture_text_expr(
+        &self,
+        capture_text_expr: &CaptureTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let capture_scalar_expr = match capture_text_expr.get_pattern() {
+            ScalarExpression::Static(StaticScalarExpression::Regex(regexp_expr)) => {
+                // the datafusion UDF for this expects a string, so if the arg is a scalar regex
+                // convert it into a string so it will be planed as a scalar string literal
+                Cow::Owned(ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(
+                        regexp_expr.get_query_location().clone(),
+                        regexp_expr.get_value().as_str(),
+                    ),
+                )))
+            }
+            other => Cow::Borrowed(other),
+        };
+
+        let (mut df_udf_args, source_scope, requires_dict_downcast) = self.plan_function_args(
+            [
+                capture_text_expr.get_haystack(),
+                &capture_scalar_expr,
+                capture_text_expr.get_capture_group(),
+            ]
+            .into_iter(),
+            functions,
+        )?;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                regexp_substr(),
+                vec![
+                    df_udf_args.remove(0), // source
+                    df_udf_args.remove(0), // pattern
+                    lit(1),                // start
+                    lit(1),                // occurrence
+                    Expr::default(),       // flags = literal Null
+                    df_udf_args.remove(0), // group
+                ],
+            )),
+            expr_type: ExprLogicalType::String,
+            source: source_scope,
+            requires_dict_downcast,
+        })
+    }
+
     fn plan_replace_text_expr(
         &self,
         replace_text_expr: &ReplaceTextScalarExpression,
@@ -727,9 +782,9 @@ impl ExprLogicalPlanner {
             TextScalarExpression::Replace(replace_text_expr) => {
                 self.plan_replace_text_expr(replace_text_expr, functions)
             }
-            other_expr => Err(Error::NotYetSupportedError {
-                message: format!("text expression not yet supported {other_expr:?}"),
-            }),
+            TextScalarExpression::Capture(capture_text_expr) => {
+                self.plan_regex_capture_text_expr(capture_text_expr, functions)
+            }
         }
     }
 }
@@ -765,6 +820,9 @@ impl DataFusionFunctionDef {
         // upstream in datafusion_functions)
         Some(match func_name {
             ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            REGEXP_SUBSTR_FUNC_NAME => {
+                Self::new(regexp_substr(), ExprLogicalType::String, false, None)
+            }
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
             _ => return None,
         })
@@ -1097,10 +1155,10 @@ pub(crate) struct PhysicalExprEvalResult {
     pub data_scope: Rc<DataScope>,
 
     // ID columns populated from the source data
-    ids: Option<ArrayRef>,
-    parent_ids: Option<ArrayRef>,
-    scope_ids: Option<ArrayRef>,
-    resource_ids: Option<ArrayRef>,
+    pub(crate) ids: Option<ArrayRef>,
+    pub(crate) parent_ids: Option<ArrayRef>,
+    pub(crate) scope_ids: Option<ArrayRef>,
+    pub(crate) resource_ids: Option<ArrayRef>,
 }
 
 impl PhysicalExprEvalResult {

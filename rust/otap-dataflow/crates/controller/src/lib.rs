@@ -51,7 +51,9 @@ use otap_df_config::engine::{
 };
 use otap_df_config::node::{NodeKind, NodeUserConfig};
 use otap_df_config::policy::MemoryLimiterMode;
-use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
+use otap_df_config::policy::{
+    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,
+};
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
     TopicSpec,
@@ -1603,100 +1605,129 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
         let num_cores = available_core_ids.len();
 
-        match core_allocation {
-            CoreAllocation::AllCores => Ok(available_core_ids),
-            CoreAllocation::CoreCount { count } => {
-                if *count == 0 {
-                    Ok(available_core_ids)
-                } else if *count > num_cores {
-                    Err(Error::InvalidCoreAllocation {
-                        alloc: core_allocation.clone(),
-                        message: format!(
-                            "Requested {} cores but only {} cores available on this system",
-                            count, num_cores
-                        ),
-                        available: available_core_ids.iter().map(|c| c.id).collect(),
-                    })
-                } else {
-                    Ok(available_core_ids.into_iter().take(*count).collect())
-                }
-            }
-            CoreAllocation::CoreSet { set } => {
-                // Validate all ranges first
-                for r in set.iter() {
-                    if r.start > r.end {
-                        return Err(Error::InvalidCoreAllocation {
-                            alloc: core_allocation.clone(),
-                            message: format!(
-                                "Invalid core range: start ({}) is greater than end ({})",
-                                r.start, r.end
-                            ),
-                            available: available_core_ids.iter().map(|c| c.id).collect(),
-                        });
-                    }
-                    if r.start > max_core_id {
-                        return Err(Error::InvalidCoreAllocation {
-                            alloc: core_allocation.clone(),
-                            message: format!(
-                                "Core ID {} exceeds available cores (system has cores 0-{})",
-                                r.start, max_core_id
-                            ),
-                            available: available_core_ids.iter().map(|c| c.id).collect(),
-                        });
-                    }
-                    if r.end > max_core_id {
-                        return Err(Error::InvalidCoreAllocation {
-                            alloc: core_allocation.clone(),
-                            message: format!(
-                                "Core ID {} exceeds available cores (system has cores 0-{})",
-                                r.end, max_core_id
-                            ),
-                            available: available_core_ids.iter().map(|c| c.id).collect(),
-                        });
-                    }
-                }
-
-                // Check for overlapping ranges
-                for (i, r1) in set.iter().enumerate() {
-                    for r2 in set.iter().skip(i + 1) {
-                        // Two ranges overlap if they share any common cores
-                        if r1.start <= r2.end && r2.start <= r1.end {
-                            let overlap_start = r1.start.max(r2.start);
-                            let overlap_end = r1.end.min(r2.end);
-                            return Err(Error::InvalidCoreAllocation {
+        match core_allocation.strategy {
+            CoreAllocationStrategy::AllCores => Ok(available_core_ids),
+            CoreAllocationStrategy::CoreCount => {
+                match core_allocation.count {
+                    Some(count) => {
+                        if count == 0 {
+                            Ok(available_core_ids)
+                        } else if count > num_cores {
+                            Err(Error::InvalidCoreAllocation {
                                 alloc: core_allocation.clone(),
                                 message: format!(
-                                    "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
-                                    r1.start, r1.end, r2.start, r2.end, overlap_start, overlap_end
+                                    "Requested {} cores but only {} cores available on this system",
+                                    count, num_cores
                                 ),
                                 available: available_core_ids.iter().map(|c| c.id).collect(),
-                            });
+                            })
+                        } else {
+                            Ok(available_core_ids.into_iter().take(count).collect())
                         }
                     }
+                    None => {
+                        // Treat no count supplied the same as count: 0
+                        Ok(available_core_ids)
+                    }
                 }
+            }
+            CoreAllocationStrategy::CoreSet => {
+                match &core_allocation.set {
+                    Some(set) => {
+                        // Validate all ranges first
+                        for r in set.iter() {
+                            if r.start > r.end {
+                                return Err(Error::InvalidCoreAllocation {
+                                    alloc: core_allocation.clone(),
+                                    message: format!(
+                                        "Invalid core range: start ({}) is greater than end ({})",
+                                        r.start, r.end
+                                    ),
+                                    available: available_core_ids.iter().map(|c| c.id).collect(),
+                                });
+                            }
+                            if r.start > max_core_id {
+                                return Err(Error::InvalidCoreAllocation {
+                                    alloc: core_allocation.clone(),
+                                    message: format!(
+                                        "Core ID {} exceeds available cores (system has cores 0-{})",
+                                        r.start, max_core_id
+                                    ),
+                                    available: available_core_ids.iter().map(|c| c.id).collect(),
+                                });
+                            }
+                            if r.end > max_core_id {
+                                return Err(Error::InvalidCoreAllocation {
+                                    alloc: core_allocation.clone(),
+                                    message: format!(
+                                        "Core ID {} exceeds available cores (system has cores 0-{})",
+                                        r.end, max_core_id
+                                    ),
+                                    available: available_core_ids.iter().map(|c| c.id).collect(),
+                                });
+                            }
+                        }
 
-                // Filter cores in range
-                let selected: Vec<_> = available_core_ids
-                    .into_iter()
-                    // Naively check if each interval contains the point
-                    // This problem is known as the "Interval Stabbing Problem"
-                    // and has more efficient but more complex solutions
-                    .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
-                    .collect();
+                        // Check for overlapping ranges
+                        for (i, r1) in set.iter().enumerate() {
+                            for r2 in set.iter().skip(i + 1) {
+                                // Two ranges overlap if they share any common cores
+                                if r1.start <= r2.end && r2.start <= r1.end {
+                                    let overlap_start = r1.start.max(r2.start);
+                                    let overlap_end = r1.end.min(r2.end);
+                                    return Err(Error::InvalidCoreAllocation {
+                                        alloc: core_allocation.clone(),
+                                        message: format!(
+                                            "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
+                                            r1.start,
+                                            r1.end,
+                                            r2.start,
+                                            r2.end,
+                                            overlap_start,
+                                            overlap_end
+                                        ),
+                                        available: available_core_ids
+                                            .iter()
+                                            .map(|c| c.id)
+                                            .collect(),
+                                    });
+                                }
+                            }
+                        }
 
-                if selected.is_empty() {
-                    return Err(Error::InvalidCoreAllocation {
+                        // Filter cores in range
+                        let selected: Vec<_> = available_core_ids
+                            .into_iter()
+                            // Naively check if each interval contains the point
+                            // This problem is known as the "Interval Stabbing Problem"
+                            // and has more efficient but more complex solutions
+                            .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
+                            .collect();
+
+                        if selected.is_empty() {
+                            return Err(Error::InvalidCoreAllocation {
+                                alloc: core_allocation.clone(),
+                                message: "No available cores in the specified ranges".to_owned(),
+                                available: core_affinity::get_core_ids()
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(|c| c.id)
+                                    .collect(),
+                            });
+                        }
+
+                        Ok(selected)
+                    }
+                    None => Err(Error::InvalidCoreAllocation {
                         alloc: core_allocation.clone(),
-                        message: "No available cores in the specified ranges".to_owned(),
+                        message: "No range of cores supplied for allocation".to_owned(),
                         available: core_affinity::get_core_ids()
                             .unwrap_or_default()
                             .iter()
                             .map(|c| c.id)
                             .collect(),
-                    });
+                    }),
                 }
-
-                Ok(selected)
             }
         }
     }
@@ -2106,7 +2137,7 @@ connections:
 
     #[test]
     fn select_all_cores_by_default() {
-        let core_allocation = CoreAllocation::AllCores;
+        let core_allocation = CoreAllocation::all_cores();
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
         let result =
@@ -2117,7 +2148,7 @@ connections:
 
     #[test]
     fn select_limited_by_num_cores() {
-        let core_allocation = CoreAllocation::CoreCount { count: 4 };
+        let core_allocation = CoreAllocation::core_count(4);
         let available_core_ids = available_core_ids();
         let result = Controller::<()>::select_cores_for_allocation(
             available_core_ids.clone(),
@@ -2137,12 +2168,10 @@ connections:
     fn select_with_valid_single_core_range() {
         let available_core_ids = available_core_ids();
         let first_id = available_core_ids[0].id;
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![CoreRange {
-                start: first_id,
-                end: first_id,
-            }],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange {
+            start: first_id,
+            end: first_id,
+        }]);
         let result =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
                 .unwrap();
@@ -2151,12 +2180,10 @@ connections:
 
     #[test]
     fn select_with_valid_multi_core_range() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 2, end: 5 },
-                CoreRange { start: 6, end: 6 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 2, end: 5 },
+            CoreRange { start: 6, end: 6 },
+        ]);
         let available_core_ids = available_core_ids();
         let result =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2166,9 +2193,7 @@ connections:
 
     #[test]
     fn select_with_inverted_range_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![CoreRange { start: 2, end: 1 }],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange { start: 2, end: 1 }]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2185,9 +2210,7 @@ connections:
     fn select_with_out_of_bounds_range_errors() {
         let start = 100;
         let end = 110;
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![CoreRange { start, end }],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange { start, end }]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2202,7 +2225,7 @@ connections:
 
     #[test]
     fn select_with_zero_count_uses_all_cores() {
-        let core_allocation = CoreAllocation::CoreCount { count: 0 };
+        let core_allocation = CoreAllocation::core_count(0);
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
         let result =
@@ -2213,12 +2236,10 @@ connections:
 
     #[test]
     fn select_with_overlapping_ranges_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 2, end: 5 },
-                CoreRange { start: 4, end: 7 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 2, end: 5 },
+            CoreRange { start: 4, end: 7 },
+        ]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2238,12 +2259,10 @@ connections:
 
     #[test]
     fn select_with_fully_overlapping_ranges_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 2, end: 6 },
-                CoreRange { start: 3, end: 5 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 2, end: 6 },
+            CoreRange { start: 3, end: 5 },
+        ]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2263,12 +2282,10 @@ connections:
 
     #[test]
     fn select_with_identical_ranges_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 3, end: 5 },
-                CoreRange { start: 3, end: 5 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 3, end: 5 },
+            CoreRange { start: 3, end: 5 },
+        ]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2289,12 +2306,10 @@ connections:
     #[test]
     fn select_with_adjacent_ranges_succeeds() {
         // Adjacent but non-overlapping ranges should work
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 2, end: 3 },
-                CoreRange { start: 4, end: 5 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 2, end: 3 },
+            CoreRange { start: 4, end: 5 },
+        ]);
         let available_core_ids = available_core_ids();
         let result =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2304,13 +2319,11 @@ connections:
 
     #[test]
     fn select_with_multiple_overlapping_ranges_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 1, end: 3 },
-                CoreRange { start: 2, end: 4 },
-                CoreRange { start: 5, end: 6 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 1, end: 3 },
+            CoreRange { start: 2, end: 4 },
+            CoreRange { start: 5, end: 6 },
+        ]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2331,20 +2344,14 @@ connections:
     #[test]
     fn preflight_fails_fast_when_later_pipeline_allocation_is_invalid() {
         let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::CoreCount { count: 2 },
-            ),
+            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(2)),
             resolved_pipeline_with_core_allocation(
                 "g1",
                 "p2",
-                CoreAllocation::CoreSet {
-                    set: vec![CoreRange {
-                        start: 999,
-                        end: 999,
-                    }],
-                },
+                CoreAllocation::core_set(vec![CoreRange {
+                    start: 999,
+                    end: 999,
+                }]),
             ),
         ];
 
@@ -2365,16 +2372,12 @@ connections:
             resolved_pipeline_with_core_allocation(
                 "g1",
                 "p1",
-                CoreAllocation::CoreSet {
-                    set: vec![CoreRange { start: 1, end: 2 }],
-                },
+                CoreAllocation::core_set(vec![CoreRange { start: 1, end: 2 }]),
             ),
             resolved_pipeline_with_core_allocation(
                 "g1",
                 "p2",
-                CoreAllocation::CoreSet {
-                    set: vec![CoreRange { start: 2, end: 3 }],
-                },
+                CoreAllocation::core_set(vec![CoreRange { start: 2, end: 3 }]),
             ),
         ];
 
