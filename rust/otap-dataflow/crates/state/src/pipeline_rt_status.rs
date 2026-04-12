@@ -391,6 +391,9 @@ impl PipelineRuntimeStatus {
             (PipelinePhase::Draining, EventType::Error(ErrEv::DrainError(_))) => {
                 self.goto(PipelinePhase::Failed(FailReason::DrainError))
             }
+            (PipelinePhase::Draining, EventType::Error(ErrEv::RuntimeError(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::RuntimeError))
+            }
             (PipelinePhase::Draining, EventType::Request(Req::DeleteRequested)) => {
                 if !self.delete_pending {
                     self.delete_pending = true;
@@ -687,6 +690,29 @@ mod tests {
             )))
             .unwrap();
         assert_eq!(p2.phase, PipelinePhase::Failed(FailReason::DeleteError));
+    }
+
+    #[test]
+    fn draining_runtime_error_becomes_terminal_failure() {
+        let mut p = PipelineRuntimeStatus::default();
+        p.apply_many([
+            EventType::Success(OkEv::Admitted),
+            EventType::Success(OkEv::Ready),
+            EventType::Request(Req::ShutdownRequested),
+        ])
+        .unwrap();
+
+        _ = p
+            .apply(EventType::Error(ErrEv::RuntimeError(
+                ErrorSummary::Pipeline {
+                    error_kind: "".to_string(),
+                    message: "late send failed during shutdown".to_string(),
+                    source: None,
+                },
+            )))
+            .unwrap();
+
+        assert_eq!(p.phase, PipelinePhase::Failed(FailReason::RuntimeError));
     }
 
     #[test]
