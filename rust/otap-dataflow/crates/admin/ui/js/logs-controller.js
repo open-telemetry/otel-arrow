@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+import { setToggleVisualState } from "./control-utils.js";
+
 // Live log-stream controller for the embedded admin UI.
 //
 // Connects to GET /api/v1/telemetry/logs/stream over WebSocket and renders
@@ -84,6 +86,68 @@ export function appendToBuffer(buffer, entries, maxRows) {
 }
 
 /**
+ * Advance a cursor monotonically. Missing or non-finite values leave it
+ * unchanged.
+ * @param {number} currentCursor
+ * @param {number|null|undefined} nextCursor
+ * @returns {number}
+ */
+export function advanceCursor(currentCursor, nextCursor) {
+  if (!Number.isFinite(nextCursor)) {
+    return currentCursor;
+  }
+  return Math.max(currentCursor, nextCursor);
+}
+
+/**
+ * Preserve the earliest lag boundary across repeated lag notifications.
+ * @param {number|null} currentLagBeforeSeq
+ * @param {number|null|undefined} nextLagBeforeSeq
+ * @returns {number|null}
+ */
+export function mergeLagBeforeSeq(currentLagBeforeSeq, nextLagBeforeSeq) {
+  if (!Number.isFinite(nextLagBeforeSeq)) {
+    return currentLagBeforeSeq;
+  }
+  if (!Number.isFinite(currentLagBeforeSeq)) {
+    return nextLagBeforeSeq;
+  }
+  return Math.min(currentLagBeforeSeq, nextLagBeforeSeq);
+}
+
+/**
+ * Apply show/hide state for the logs panel body while keeping the header
+ * controls visible.
+ * @param {object} opts
+ * @param {HTMLElement|null} opts.panelBodyEl
+ * @param {HTMLInputElement|null} [opts.toggleEl]
+ * @param {HTMLElement|null} [opts.toggleWrapEl]
+ * @param {HTMLElement|null} [opts.toggleTrackEl]
+ * @param {boolean} opts.visible
+ */
+export function setLogsPanelVisibility({
+  panelBodyEl,
+  toggleEl = null,
+  toggleWrapEl = null,
+  toggleTrackEl = null,
+  visible,
+}) {
+  panelBodyEl?.classList.toggle("hidden", !visible);
+  panelBodyEl?.setAttribute?.("aria-hidden", String(!visible));
+
+  if (toggleEl) {
+    toggleEl.checked = visible;
+    toggleEl.setAttribute("aria-expanded", String(visible));
+  }
+
+  setToggleVisualState({
+    wrapEl: toggleWrapEl,
+    trackEl: toggleTrackEl,
+    active: visible,
+  });
+}
+
+/**
  * Create and manage the live log-stream controller.
  *
  * @param {object} opts
@@ -95,6 +159,10 @@ export function createLogsController({ containerEl }) {
   // -------------------------------------------------------------------------
   // DOM refs (all within containerEl so the controller is self-contained).
   // -------------------------------------------------------------------------
+  const panelToggleWrap = containerEl.querySelector("#logs-panel-toggle-wrap");
+  const panelToggleTrack = containerEl.querySelector("#logs-panel-toggle-track");
+  const panelToggle = containerEl.querySelector("#logs-panel-toggle");
+  const panelBody = containerEl.querySelector("#logs-panel-body");
   const connectBtn = containerEl.querySelector("#logs-connect-btn");
   const pauseBtn = containerEl.querySelector("#logs-pause-btn");
   const clearBtn = containerEl.querySelector("#logs-clear-btn");
@@ -124,6 +192,7 @@ export function createLogsController({ containerEl }) {
   let lagBeforeSeq = null;
   /** Browser-side ring buffer: newest at the end, bounded to MAX_LOG_ROWS. */
   const logBuffer = [];
+  let panelVisible = panelToggle ? panelToggle.checked : true;
   let filterDebounceTimer = null;
   let reconnectTimer = null;
   /** AbortController whose signal is passed to every DOM addEventListener so
@@ -224,19 +293,19 @@ export function createLogsController({ containerEl }) {
       case "snapshot":
         hideDropBanner();
         appendEntries(msg.logs || []);
-        serverCursor = msg.next_seq ?? serverCursor;
+        serverCursor = advanceCursor(serverCursor, msg.next_seq);
         setStatus(`Live — ${logBuffer.length} entries`, false);
         break;
       case "log":
         appendEntries([msg]);
-        serverCursor = msg.seq;
+        serverCursor = advanceCursor(serverCursor, msg.seq);
         if (!paused) {
           setStatus(`Live — ${logBuffer.length} entries`, false);
         }
         break;
       case "state":
         paused = msg.paused ?? paused;
-        serverCursor = msg.next_seq ?? serverCursor;
+        serverCursor = advanceCursor(serverCursor, msg.next_seq);
         if (paused) {
           setStatus(`Paused — cursor ${serverCursor}`, false);
         } else {
@@ -248,7 +317,7 @@ export function createLogsController({ containerEl }) {
         // If the server reports a lag gap it includes the cursor from just
         // before the dropped region so Resync can fetch the missing events.
         if (msg.lag_before_seq != null) {
-          lagBeforeSeq = msg.lag_before_seq;
+          lagBeforeSeq = mergeLagBeforeSeq(lagBeforeSeq, msg.lag_before_seq);
         }
         showDropBanner(msg.message || "server error");
         break;
@@ -418,9 +487,26 @@ export function createLogsController({ containerEl }) {
     backfillBtn.disabled = !isConnected;
   }
 
+  function applyPanelVisibility(visible) {
+    panelVisible = visible;
+    setLogsPanelVisibility({
+      panelBodyEl: panelBody,
+      toggleEl: panelToggle,
+      toggleWrapEl: panelToggleWrap,
+      toggleTrackEl: panelToggleTrack,
+      visible,
+    });
+  }
+
   // ---- Event wiring --------------------------------------------------------
   // All listeners carry `signal` so destroy() can remove them all at once
   // via listenerAbort.abort() without needing to keep individual references.
+
+  if (panelToggle) {
+    panelToggle.addEventListener("change", () => {
+      applyPanelVisibility(panelToggle.checked);
+    }, { signal });
+  }
 
   connectBtn.addEventListener("click", () => {
     if (ws && connected) {
@@ -455,7 +541,13 @@ export function createLogsController({ containerEl }) {
   filterInput.addEventListener("input", () => {
     clearTimeout(filterDebounceTimer);
     filterDebounceTimer = setTimeout(() => {
-      if (connected) sendFilter();
+      if (!connected) return;
+      // Match the level-filter behavior: drop stale rows from the old filter,
+      // then ask the server for a fresh retained snapshot under the new query.
+      logBuffer.length = 0;
+      tableBody.textContent = "";
+      sendFilter();
+      requestBackfill();
     }, FILTER_DEBOUNCE_MS);
   }, { signal });
 
@@ -472,6 +564,7 @@ export function createLogsController({ containerEl }) {
   }
 
   // ---- Initial button state ------------------------------------------------
+  applyPanelVisibility(panelVisible);
   updateButtons();
   setStatus("Disconnected", false);
 

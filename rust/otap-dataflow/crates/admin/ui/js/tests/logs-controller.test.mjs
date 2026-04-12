@@ -6,14 +6,42 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  advanceCursor,
   LEVEL_CLASSES,
   LEVEL_SEVERITY,
   levelSeverity,
+  mergeLagBeforeSeq,
   resolveLevelClass,
   formatTimestamp,
   appendToBuffer,
   MAX_LOG_ROWS,
+  setLogsPanelVisibility,
 } from "../logs-controller.js";
+
+function createClassList() {
+  const set = new Set();
+  return {
+    add: (...items) => items.forEach((item) => set.add(item)),
+    remove: (...items) => items.forEach((item) => set.delete(item)),
+    contains: (item) => set.has(item),
+    toggle: (item, force) => {
+      if (force === true) {
+        set.add(item);
+        return true;
+      }
+      if (force === false) {
+        set.delete(item);
+        return false;
+      }
+      if (set.has(item)) {
+        set.delete(item);
+        return false;
+      }
+      set.add(item);
+      return true;
+    },
+  };
+}
 
 // ---- resolveLevelClass ------------------------------------------------------
 
@@ -101,6 +129,104 @@ test("appendToBuffer correctly trims a large batch that exceeds maxRows", () => 
   // Only the last MAX entries should be retained.
   assert.equal(buf[0].seq, 3);
   assert.equal(buf[2].seq, 5);
+});
+
+// ---- cursor / lag helpers --------------------------------------------------
+
+test("advanceCursor keeps the cursor monotonic", () => {
+  assert.equal(advanceCursor(10, 12), 12);
+  assert.equal(advanceCursor(10, 10), 10);
+  assert.equal(advanceCursor(10, 8), 10);
+});
+
+test("advanceCursor ignores missing or invalid next values", () => {
+  assert.equal(advanceCursor(10, null), 10);
+  assert.equal(advanceCursor(10, undefined), 10);
+});
+
+test("mergeLagBeforeSeq preserves the earliest lag boundary", () => {
+  assert.equal(mergeLagBeforeSeq(null, 20), 20);
+  assert.equal(mergeLagBeforeSeq(20, 25), 20);
+  assert.equal(mergeLagBeforeSeq(20, 15), 15);
+});
+
+test("mergeLagBeforeSeq ignores missing lag updates", () => {
+  assert.equal(mergeLagBeforeSeq(null, null), null);
+  assert.equal(mergeLagBeforeSeq(20, undefined), 20);
+});
+
+// ---- panel visibility ------------------------------------------------------
+
+test("setLogsPanelVisibility hides the panel body and syncs toggle state", () => {
+  const panelBodyEl = {
+    classList: createClassList(),
+    attrs: new Map(),
+    setAttribute(name, value) {
+      this.attrs.set(name, value);
+    },
+  };
+  const toggleEl = {
+    checked: true,
+    attrs: new Map(),
+    setAttribute(name, value) {
+      this.attrs.set(name, value);
+    },
+  };
+  const toggleWrapEl = { classList: createClassList() };
+  const toggleTrackEl = { classList: createClassList() };
+
+  setLogsPanelVisibility({
+    panelBodyEl,
+    toggleEl,
+    toggleWrapEl,
+    toggleTrackEl,
+    visible: false,
+  });
+
+  assert.equal(panelBodyEl.classList.contains("hidden"), true);
+  assert.equal(panelBodyEl.attrs.get("aria-hidden"), "true");
+  assert.equal(toggleEl.checked, false);
+  assert.equal(toggleEl.attrs.get("aria-expanded"), "false");
+  assert.equal(toggleTrackEl.classList.contains("toggle-track-active"), false);
+  assert.equal(toggleWrapEl.classList.contains("text-slate-300"), true);
+});
+
+test("setLogsPanelVisibility shows the panel body and syncs toggle visuals", () => {
+  const panelBodyEl = {
+    classList: createClassList(),
+    attrs: new Map(),
+    setAttribute(name, value) {
+      this.attrs.set(name, value);
+    },
+  };
+  panelBodyEl.classList.add("hidden");
+
+  const toggleEl = {
+    checked: false,
+    attrs: new Map(),
+    setAttribute(name, value) {
+      this.attrs.set(name, value);
+    },
+  };
+  const toggleWrapEl = { classList: createClassList() };
+  toggleWrapEl.classList.add("text-slate-300");
+  const toggleTrackEl = { classList: createClassList() };
+
+  setLogsPanelVisibility({
+    panelBodyEl,
+    toggleEl,
+    toggleWrapEl,
+    toggleTrackEl,
+    visible: true,
+  });
+
+  assert.equal(panelBodyEl.classList.contains("hidden"), false);
+  assert.equal(panelBodyEl.attrs.get("aria-hidden"), "false");
+  assert.equal(toggleEl.checked, true);
+  assert.equal(toggleEl.attrs.get("aria-expanded"), "true");
+  assert.equal(toggleTrackEl.classList.contains("toggle-track-active"), true);
+  assert.equal(toggleWrapEl.classList.contains("text-slate-200"), true);
+  assert.equal(toggleWrapEl.classList.contains("text-slate-300"), false);
 });
 
 // ---- MAX_LOG_ROWS -----------------------------------------------------------

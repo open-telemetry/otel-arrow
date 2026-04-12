@@ -48,7 +48,7 @@ pub struct RetainedLogEvent {
 
 #[derive(Debug)]
 struct RetainedLogSlot {
-    event: Arc<RetainedLogEvent>,
+    event: RetainedLogEvent,
     estimated_bytes: usize,
 }
 
@@ -74,23 +74,21 @@ impl LogRetention {
         }
     }
 
-    /// Push a new log event into the ring buffer and return an `Arc` of the
-    /// retained entry.  The caller can cheaply broadcast this `Arc` to
-    /// subscribers without cloning the underlying event data per-subscriber.
-    fn push(&mut self, event: LogEvent) -> Arc<RetainedLogEvent> {
+    fn next_seq(&mut self) -> u64 {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
-        let estimated_bytes = estimate_event_size(&event);
-        let retained = Arc::new(RetainedLogEvent { seq, event });
+        seq
+    }
+
+    /// Push a new retained log event into the ring buffer.
+    fn push(&mut self, retained: RetainedLogEvent, estimated_bytes: usize) {
         let slot = RetainedLogSlot {
-            // Share ownership with the broadcast channel — no LogEvent clone.
-            event: Arc::clone(&retained),
+            event: retained,
             estimated_bytes,
         };
         self.retained_bytes = self.retained_bytes.saturating_add(slot.estimated_bytes);
         self.entries.push_back(slot);
         self.enforce_limits();
-        retained
     }
 
     fn enforce_limits(&mut self) {
@@ -159,12 +157,17 @@ impl InternalLogTapHandle {
     /// holding the lock is safe.
     pub fn record(&self, event: LogEvent) {
         let mut state = self.state.write();
-        let retained = state.push(event);
+        let seq = state.next_seq();
+        let estimated_bytes = estimate_event_size(&event);
         // Skip the send when nobody is listening (benign race: a subscriber
         // that connects between the check and the send picks up the event
         // from the snapshot query instead).
         if self.subscribers.receiver_count() > 0 {
-            let _ = self.subscribers.send(retained);
+            let retained = RetainedLogEvent { seq, event };
+            state.push(retained.clone(), estimated_bytes);
+            let _ = self.subscribers.send(Arc::new(retained));
+        } else {
+            state.push(RetainedLogEvent { seq, event }, estimated_bytes);
         }
         // Write lock released here — after the send, preserving seq order.
     }
@@ -205,7 +208,7 @@ impl InternalLogTapHandle {
                 .iter()
                 .filter(|entry| entry.event.seq > after)
                 .take(query.limit)
-                .map(|entry| (*entry.event).clone())
+                .map(|entry| entry.event.clone())
                 .collect()
         } else {
             let start = state.entries.len().saturating_sub(query.limit);
@@ -213,7 +216,7 @@ impl InternalLogTapHandle {
                 .entries
                 .iter()
                 .skip(start)
-                .map(|entry| (*entry.event).clone())
+                .map(|entry| entry.event.clone())
                 .collect()
         };
         let next_seq = logs
