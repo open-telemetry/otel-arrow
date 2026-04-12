@@ -43,6 +43,7 @@ Each component lives in its own subfolder within a category:
         otlp_receiver/
         syslog_cef_receiver/
         topic_receiver/
+        userevents_receiver/
       lib.rs
 
 ## Components
@@ -212,6 +213,7 @@ Each component lives in its own subfolder within a category:
 | otlp_receiver | `urn:otel:receiver:otlp` | `src/receivers/otlp_receiver/` |
 | syslog_cef_receiver | `urn:otel:receiver:syslog_cef` | `src/receivers/syslog_cef_receiver/` |
 | topic_receiver | `urn:otel:receiver:topic` | `src/receivers/topic_receiver/` |
+| userevents_receiver | `urn:otel:receiver:userevents` | `src/receivers/userevents_receiver/` |
 
 #### fake_data_generator
 
@@ -246,3 +248,9 @@ Each component lives in its own subfolder within a category:
 
 - Subscribes to runtime topics and forwards messages into the pipeline
 - Supports broadcast/balanced subscription modes and topic ack/nack bridging
+
+#### userevents_receiver
+
+- Reads Linux `user_events` tracepoints through per-CPU perf sessions
+- Supports single-tracepoint and multi-tracepoint configuration
+- Supports configurable decode modes including raw and Common Schema-oriented paths

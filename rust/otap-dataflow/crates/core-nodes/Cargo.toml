@@ -27,6 +27,7 @@ otap-df-telemetry-macros = { workspace = true }
 
 arrow = { workspace = true }
 async-trait.workspace = true
+base64.workspace = true
 blake3.workspace = true
 byte-unit.workspace = true
 bytes.workspace = true
@@ -38,6 +39,8 @@ futures.workspace = true
 futures-timer.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
+memmap2.workspace = true
+nix.workspace = true
 object_store = {workspace = true, features = ["fs"]}
 parquet.workspace = true
 prost.workspace = true
@@ -48,6 +51,7 @@ slotmap.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracepoint_decode = "0.5.0"
 tower.workspace = true
 tonic-middleware.workspace = true
 tonic.workspace = true
