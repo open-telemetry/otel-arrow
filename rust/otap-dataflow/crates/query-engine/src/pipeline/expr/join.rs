@@ -1229,3 +1229,50 @@ impl IdJoinLookup {
         self.lookup[outer].as_ref().and_then(|page| page[inner])
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use arrow::array::Int64Array;
+    use otap_df_pdata::otap::Logs;
+
+    fn empty_otap_batch() -> OtapArrowRecords {
+        OtapArrowRecords::Logs(Logs::default())
+    }
+
+    /// Helper to build a minimal PhysicalExprEvalResult with the given values and scope.
+    fn make_result(values: ArrayRef, scope: DataScope) -> PhysicalExprEvalResult {
+        PhysicalExprEvalResult {
+            values: ColumnarValue::Array(values),
+            data_scope: Rc::new(scope),
+            ids: None,
+            parent_ids: None,
+            scope_ids: None,
+            resource_ids: None,
+        }
+    }
+
+    #[test]
+    fn test_multi_join_empty_results_returns_error() {
+        let otap_batch = empty_otap_batch();
+        let err = multi_join(&[], &otap_batch);
+        assert!(err.is_err(), "expected error for empty results");
+    }
+
+    #[test]
+    fn test_multi_join_single_result_returns_single_column() {
+        let otap_batch = empty_otap_batch();
+        let values: ArrayRef = Arc::new(Int64Array::from(vec![10, 20, 30]));
+        let result = make_result(values, DataScope::Root);
+
+        let (rb, scope) = multi_join(&[result], &otap_batch).unwrap();
+
+        assert_eq!(*scope, DataScope::Root);
+        assert_eq!(rb.num_columns(), 1);
+        assert_eq!(rb.num_rows(), 3);
+        assert_eq!(rb.schema().field(0).name(), "arg_0");
+
+        let col = rb.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.values(), &[10, 20, 30]);
+    }
+}
