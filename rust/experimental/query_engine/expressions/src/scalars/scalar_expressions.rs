@@ -2632,7 +2632,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "Range end for a slice expression cannot be a negative value".into(),
+                "Range length for a slice expression cannot be a negative value".into(),
             ),
         );
 
@@ -2647,7 +2647,7 @@ mod tests {
             ),
             ExpressionError::TypeMismatch(
                 QueryLocation::new_fake(),
-                "Range end for a slice expression should be an integer type".into(),
+                "Range length for a slice expression should be an integer type".into(),
             ),
         );
     }
