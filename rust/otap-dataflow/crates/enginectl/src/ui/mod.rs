@@ -6,12 +6,13 @@ mod view;
 
 use self::app::{
     AppState, BundlePane, ConditionRow, ConfigPane, CoreRow, DetailHeader, DiagnosisPane,
-    EngineSummaryPane, EngineTab, EventPane, EvidenceRow, FindingRow, FocusArea, GroupShutdownPane,
-    GroupShutdownRow, GroupSummaryPane, GroupTab, LogFeedState, LogRow, MetricRow, MetricsPane,
-    OperationPane, OperationRow, PipelineInventoryRow, PipelineSummaryPane, PipelineTab,
-    ProbeFailureRow, StatCard, StatusChip, TimelineRow, Tone, UiAction, UiCommandContext, View,
+    EngineSummaryPane, EngineTab, EngineVitals, EventPane, EvidenceRow, FindingRow, FocusArea,
+    GroupShutdownPane, GroupShutdownRow, GroupSummaryPane, GroupTab, LogFeedState, LogRow,
+    MetricRow, MetricsPane, OperationPane, OperationRow, PipelineInventoryRow, PipelineSummaryPane,
+    PipelineTab, ProbeFailureRow, StatCard, StatusChip, TimelineRow, Tone, UiAction,
+    UiCommandContext, View,
 };
-use self::view::draw_ui;
+use self::view::{compute_ui_layout, draw_ui, tab_hit_index};
 use crate::args::{ColorChoice, MetricsShape, UiArgs};
 use crate::error::CliError;
 use crate::style::HumanStyle;
@@ -25,7 +26,10 @@ use crate::troubleshoot::{
 };
 use crate::{parse_pipeline_config_content, serialize_pipeline_config_yaml};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -35,6 +39,7 @@ use otap_df_admin_api::{
     telemetry,
 };
 use otap_df_config::pipeline::PipelineConfig;
+use ratatui::layout::Rect;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -74,7 +79,7 @@ pub(crate) async fn run_ui(
     let _ = refresh.tick().await;
 
     let result = loop {
-        session.draw(&app)?;
+        session.draw(&mut app)?;
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break Ok(()),
@@ -156,27 +161,39 @@ impl TerminalSession {
     fn new() -> Result<Self, io::Error> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = ratatui::backend::CrosstermBackend::new(stdout);
         let terminal = ratatui::Terminal::new(backend)?;
         Ok(Self { terminal })
     }
 
-    fn draw(&mut self, app: &AppState) -> Result<(), CliError> {
-        let _ = self.terminal.draw(|frame| draw_ui(frame, app))?;
+    fn draw(&mut self, app: &mut AppState) -> Result<(), CliError> {
+        let _ = self.terminal.draw(|frame| {
+            let area = frame.area();
+            app.set_terminal_size(area.width, area.height);
+            draw_ui(frame, app);
+        })?;
         Ok(())
     }
 
     fn suspend(&mut self) -> Result<(), io::Error> {
         disable_raw_mode()?;
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        )?;
         self.terminal.show_cursor()?;
         Ok(())
     }
 
     fn resume(&mut self) -> Result<(), io::Error> {
         enable_raw_mode()?;
-        execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
+        execute!(
+            self.terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
         self.terminal.hide_cursor()?;
         self.terminal.clear()?;
         Ok(())
@@ -186,7 +203,11 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }
@@ -476,9 +497,68 @@ fn longest_common_subsequence_lengths<'a>(left: &[&'a str], right: &[&'a str]) -
 fn handle_event(event: Event, app: &mut AppState) -> EventOutcome {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(key, app),
-        Event::Resize(_, _) => EventOutcome::Continue,
+        Event::Mouse(mouse) => handle_mouse_event(mouse, app),
+        Event::Resize(width, height) => {
+            app.set_terminal_size(width, height);
+            EventOutcome::Continue
+        }
         _ => EventOutcome::Continue,
     }
+}
+
+fn handle_mouse_event(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
+    if app.is_filter_mode()
+        || app.scale_editor().is_some()
+        || app.shutdown_confirm().is_some()
+        || app.action_menu().is_some()
+        || app.show_help()
+        || app.show_command_overlay()
+    {
+        return EventOutcome::Continue;
+    }
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => handle_left_click(mouse.column, mouse.row, app),
+        MouseEventKind::ScrollUp => handle_vertical_motion(app, -3),
+        MouseEventKind::ScrollDown => handle_vertical_motion(app, 3),
+        _ => EventOutcome::Continue,
+    }
+}
+
+fn handle_left_click(column: u16, row: u16, app: &mut AppState) -> EventOutcome {
+    let Some((width, height)) = app.terminal_size else {
+        return EventOutcome::Continue;
+    };
+    let Some(layout) = compute_ui_layout(Rect::new(0, 0, width, height)) else {
+        return EventOutcome::Continue;
+    };
+
+    let view_titles = View::ALL
+        .iter()
+        .map(|view| view.title())
+        .collect::<Vec<_>>();
+    if let Some(index) = tab_hit_index(layout.top_tabs, &view_titles, column, row) {
+        let view = View::ALL[index];
+        if app.view != view {
+            app.hide_modal();
+            app.select_view(view);
+            return EventOutcome::Refresh;
+        }
+        return EventOutcome::Continue;
+    }
+
+    let detail_titles = app.current_tab_titles();
+    if let Some(index) = tab_hit_index(layout.detail_tabs, &detail_titles, column, row) {
+        let changed = index != app.current_tab_index() || app.focus != FocusArea::Detail;
+        app.select_current_tab(index);
+        return if changed {
+            EventOutcome::Refresh
+        } else {
+            EventOutcome::Continue
+        };
+    }
+
+    EventOutcome::Continue
 }
 
 fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcome {
@@ -1245,10 +1325,48 @@ fn select_detail_tab(app: &mut AppState, jump: DetailJump) {
 }
 
 async fn refresh_view(client: &AdminClient, app: &mut AppState, args: &UiArgs) {
+    let compact_metrics = client
+        .telemetry()
+        .metrics_compact(&telemetry::MetricsOptions::default())
+        .await;
+    let compact_metrics_error = compact_metrics.as_ref().err().map(ToString::to_string);
+    update_engine_vitals(
+        app,
+        compact_metrics.as_ref().ok(),
+        compact_metrics_error.as_deref(),
+    );
+
     let result = match app.view {
-        View::Pipelines => refresh_pipelines_view(client, app, args).await,
-        View::Groups => refresh_groups_view(client, app, args).await,
-        View::Engine => refresh_engine_view(client, app, args).await,
+        View::Pipelines => {
+            refresh_pipelines_view(
+                client,
+                app,
+                args,
+                compact_metrics.as_ref().ok(),
+                compact_metrics_error.as_deref(),
+            )
+            .await
+        }
+        View::Groups => {
+            refresh_groups_view(
+                client,
+                app,
+                args,
+                compact_metrics.as_ref().ok(),
+                compact_metrics_error.as_deref(),
+            )
+            .await
+        }
+        View::Engine => {
+            refresh_engine_view(
+                client,
+                app,
+                args,
+                compact_metrics.as_ref().ok(),
+                compact_metrics_error.as_deref(),
+            )
+            .await
+        }
     };
 
     match result {
@@ -1266,6 +1384,8 @@ async fn refresh_pipelines_view(
     client: &AdminClient,
     app: &mut AppState,
     args: &UiArgs,
+    compact_metrics: Option<&telemetry::CompactMetricsResponse>,
+    compact_metrics_error: Option<&str>,
 ) -> Result<(), CliError> {
     let groups_status = client.groups().status().await?;
     app.groups_status = Some(groups_status);
@@ -1347,17 +1467,15 @@ async fn refresh_pipelines_view(
             ));
         }
         PipelineTab::Metrics => {
-            let metrics = filter_metrics_compact(
-                &client
-                    .telemetry()
-                    .metrics_compact(&telemetry::MetricsOptions::default())
-                    .await?,
+            let metrics = require_filtered_metrics(
+                compact_metrics,
+                compact_metrics_error,
                 &MetricsFilters {
                     pipeline_group_id: Some(pipeline_group_id.clone()),
                     pipeline_id: Some(pipeline_id.clone()),
                     ..MetricsFilters::default()
                 },
-            );
+            )?;
             app.pipelines.metrics = build_metrics_pane(
                 metrics,
                 add_header_chip(header.clone(), chip("scope", "pipeline", Tone::Muted)),
@@ -1372,17 +1490,15 @@ async fn refresh_pipelines_view(
                     ..LogFilters::default()
                 },
             );
-            let metrics = filter_metrics_compact(
-                &client
-                    .telemetry()
-                    .metrics_compact(&telemetry::MetricsOptions::default())
-                    .await?,
+            let metrics = require_filtered_metrics(
+                compact_metrics,
+                compact_metrics_error,
                 &MetricsFilters {
                     pipeline_group_id: Some(pipeline_group_id.clone()),
                     pipeline_id: Some(pipeline_id.clone()),
                     ..MetricsFilters::default()
                 },
-            );
+            )?;
             let diagnosis = if let Some(rollout_status) = rollout_status.as_ref() {
                 diagnose_pipeline_rollout(&describe, Some(rollout_status), &logs, &metrics)
             } else {
@@ -1402,17 +1518,15 @@ async fn refresh_pipelines_view(
                     ..LogFilters::default()
                 },
             );
-            let metrics = filter_metrics_compact(
-                &client
-                    .telemetry()
-                    .metrics_compact(&telemetry::MetricsOptions::default())
-                    .await?,
+            let metrics = require_filtered_metrics(
+                compact_metrics,
+                compact_metrics_error,
                 &MetricsFilters {
                     pipeline_group_id: Some(pipeline_group_id.clone()),
                     pipeline_id: Some(pipeline_id.clone()),
                     ..MetricsFilters::default()
                 },
-            );
+            )?;
             let diagnosis = if let Some(status) = rollout_status.as_ref() {
                 diagnose_pipeline_rollout(&describe, Some(status), &logs, &metrics)
             } else {
@@ -1443,6 +1557,8 @@ async fn refresh_groups_view(
     client: &AdminClient,
     app: &mut AppState,
     args: &UiArgs,
+    compact_metrics: Option<&telemetry::CompactMetricsResponse>,
+    compact_metrics_error: Option<&str>,
 ) -> Result<(), CliError> {
     let groups_status = client.groups().status().await?;
     app.groups_status = Some(groups_status);
@@ -1516,16 +1632,14 @@ async fn refresh_groups_view(
             ));
         }
         GroupTab::Metrics => {
-            let metrics = filter_metrics_compact(
-                &client
-                    .telemetry()
-                    .metrics_compact(&telemetry::MetricsOptions::default())
-                    .await?,
+            let metrics = require_filtered_metrics(
+                compact_metrics,
+                compact_metrics_error,
                 &MetricsFilters {
                     pipeline_group_id: Some(group_id.clone()),
                     ..MetricsFilters::default()
                 },
-            );
+            )?;
             app.groups.metrics = build_metrics_pane(
                 metrics,
                 add_header_chip(header.clone(), chip("scope", "group", Tone::Muted)),
@@ -1539,16 +1653,14 @@ async fn refresh_groups_view(
                     ..LogFilters::default()
                 },
             );
-            let metrics = filter_metrics_compact(
-                &client
-                    .telemetry()
-                    .metrics_compact(&telemetry::MetricsOptions::default())
-                    .await?,
+            let metrics = require_filtered_metrics(
+                compact_metrics,
+                compact_metrics_error,
                 &MetricsFilters {
                     pipeline_group_id: Some(group_id.clone()),
                     ..MetricsFilters::default()
                 },
-            );
+            )?;
             let diagnosis = diagnose_group_shutdown(&subset, &logs, &metrics);
             app.groups.diagnosis = build_diagnosis_pane(
                 diagnosis,
@@ -1563,16 +1675,14 @@ async fn refresh_groups_view(
                     ..LogFilters::default()
                 },
             );
-            let metrics = filter_metrics_compact(
-                &client
-                    .telemetry()
-                    .metrics_compact(&telemetry::MetricsOptions::default())
-                    .await?,
+            let metrics = require_filtered_metrics(
+                compact_metrics,
+                compact_metrics_error,
                 &MetricsFilters {
                     pipeline_group_id: Some(group_id.clone()),
                     ..MetricsFilters::default()
                 },
-            );
+            )?;
             let diagnosis = diagnose_group_shutdown(&subset, &logs, &metrics);
             let bundle = GroupsBundle {
                 metadata: super::bundle_metadata(args.logs_tail, MetricsShape::Compact),
@@ -1597,6 +1707,8 @@ async fn refresh_engine_view(
     client: &AdminClient,
     app: &mut AppState,
     args: &UiArgs,
+    compact_metrics: Option<&telemetry::CompactMetricsResponse>,
+    compact_metrics_error: Option<&str>,
 ) -> Result<(), CliError> {
     let status = client.engine().status().await?;
     let livez = client.engine().livez().await?;
@@ -1634,12 +1746,9 @@ async fn refresh_engine_view(
             ));
         }
         EngineTab::Metrics => {
-            let metrics = client
-                .telemetry()
-                .metrics_compact(&telemetry::MetricsOptions::default())
-                .await?;
+            let metrics = require_compact_metrics(compact_metrics, compact_metrics_error)?;
             app.engine.metrics = build_metrics_pane(
-                metrics,
+                metrics.clone(),
                 add_header_chip(header, chip("scope", "engine", Tone::Muted)),
             );
         }
@@ -1711,6 +1820,163 @@ async fn refresh_log_feed(
     }
 
     Ok(())
+}
+
+fn update_engine_vitals(
+    app: &mut AppState,
+    compact_metrics: Option<&telemetry::CompactMetricsResponse>,
+    compact_metrics_error: Option<&str>,
+) {
+    if let Some(metrics) = compact_metrics {
+        app.engine_vitals = extract_engine_vitals(metrics);
+    } else {
+        app.engine_vitals.stale = true;
+        if app.engine_vitals.pressure_detail.is_none() {
+            app.engine_vitals.pressure_detail =
+                compact_metrics_error.map(|error| format!("metrics unavailable: {error}"));
+        }
+    }
+}
+
+fn extract_engine_vitals(metrics: &telemetry::CompactMetricsResponse) -> EngineVitals {
+    let Some(metric_set) = metrics
+        .metric_sets
+        .iter()
+        .find(|set| set.name == "engine.metrics")
+    else {
+        return EngineVitals {
+            stale: false,
+            pressure_detail: Some("engine.metrics set not present".to_string()),
+            ..EngineVitals::default()
+        };
+    };
+
+    let cpu = metric_value_f64_any(metric_set, &["cpu.utilization", "cpu_utilization"])
+        .map(|value| format!("{:.1}%", value.clamp(0.0, 1.0) * 100.0))
+        .unwrap_or_else(|| "n/a".to_string());
+    let rss = metric_value_u64_any(metric_set, &["memory.rss", "memory_rss"])
+        .map(format_bytes_iec)
+        .unwrap_or_else(|| "n/a".to_string());
+    let pressure_raw = metric_value_u64_any(
+        metric_set,
+        &["memory.pressure.state", "memory_pressure_state"],
+    );
+    let (pressure_state, pressure_tone) = match pressure_raw {
+        Some(0) => ("normal".to_string(), Tone::Success),
+        Some(1) => ("soft".to_string(), Tone::Warning),
+        Some(2) => ("hard".to_string(), Tone::Failure),
+        Some(value) => (format!("unknown({value})"), Tone::Muted),
+        None => ("n/a".to_string(), Tone::Muted),
+    };
+    let pressure_detail = match (
+        metric_value_u64_any(
+            metric_set,
+            &["process.memory.usage.bytes", "process_memory_usage_bytes"],
+        ),
+        metric_value_u64_any(
+            metric_set,
+            &[
+                "process.memory.soft.limit.bytes",
+                "process_memory_soft_limit_bytes",
+            ],
+        ),
+        metric_value_u64_any(
+            metric_set,
+            &[
+                "process.memory.hard.limit.bytes",
+                "process_memory_hard_limit_bytes",
+            ],
+        ),
+    ) {
+        (Some(0), Some(0), Some(0)) => None,
+        (Some(usage), Some(soft), Some(hard)) => Some(format!(
+            "usage/limits {} / {} / {}",
+            format_bytes_iec(usage),
+            format_bytes_iec(soft),
+            format_bytes_iec(hard)
+        )),
+        (Some(usage), _, _) => Some(format!("usage {}", format_bytes_iec(usage))),
+        _ => None,
+    };
+
+    EngineVitals {
+        cpu_utilization: cpu,
+        cpu_tone: Tone::Accent,
+        memory_rss: rss,
+        memory_tone: Tone::Accent,
+        pressure_state,
+        pressure_tone,
+        pressure_detail,
+        stale: false,
+    }
+}
+
+fn require_compact_metrics<'a>(
+    compact_metrics: Option<&'a telemetry::CompactMetricsResponse>,
+    compact_metrics_error: Option<&str>,
+) -> Result<&'a telemetry::CompactMetricsResponse, CliError> {
+    compact_metrics.ok_or_else(|| CliError::Message {
+        exit_code: 6,
+        message: compact_metrics_error
+            .map(|error| format!("failed to fetch compact metrics: {error}"))
+            .unwrap_or_else(|| "failed to fetch compact metrics".to_string()),
+        print: true,
+    })
+}
+
+fn require_filtered_metrics(
+    compact_metrics: Option<&telemetry::CompactMetricsResponse>,
+    compact_metrics_error: Option<&str>,
+    filters: &MetricsFilters,
+) -> Result<telemetry::CompactMetricsResponse, CliError> {
+    Ok(filter_metrics_compact(
+        require_compact_metrics(compact_metrics, compact_metrics_error)?,
+        filters,
+    ))
+}
+
+fn metric_value_u64(metric_set: &telemetry::MetricSet, name: &str) -> Option<u64> {
+    match metric_set.metrics.get(name) {
+        Some(telemetry::MetricValue::U64(value)) => Some(*value),
+        Some(telemetry::MetricValue::F64(value)) => Some(value.max(0.0) as u64),
+        Some(telemetry::MetricValue::Mmsc(_)) | None => None,
+    }
+}
+
+fn metric_value_f64(metric_set: &telemetry::MetricSet, name: &str) -> Option<f64> {
+    match metric_set.metrics.get(name) {
+        Some(telemetry::MetricValue::F64(value)) => Some(*value),
+        Some(telemetry::MetricValue::U64(value)) => Some(*value as f64),
+        Some(telemetry::MetricValue::Mmsc(_)) | None => None,
+    }
+}
+
+fn metric_value_u64_any(metric_set: &telemetry::MetricSet, names: &[&str]) -> Option<u64> {
+    names
+        .iter()
+        .find_map(|name| metric_value_u64(metric_set, name))
+}
+
+fn metric_value_f64_any(metric_set: &telemetry::MetricSet, names: &[&str]) -> Option<f64> {
+    names
+        .iter()
+        .find_map(|name| metric_value_f64(metric_set, name))
+}
+
+fn format_bytes_iec(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+
+    let mut value = bytes as f64;
+    let mut unit_index = 0usize;
+    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+
+    format!("{value:.1} {}", UNITS[unit_index])
 }
 
 async fn refresh_active_rollout(
@@ -2985,7 +3251,10 @@ fn pipeline_is_terminal(status: &pipelines::Status) -> bool {
 mod tests {
     use super::*;
     use crate::args::UiStartView;
-    use otap_df_admin_api::{AdminEndpoint, HttpAdminClientSettings};
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use otap_df_admin_api::{AdminEndpoint, HttpAdminClientSettings, telemetry};
+    use ratatui::layout::Rect;
+    use std::collections::BTreeMap;
     use std::time::Duration;
 
     #[test]
@@ -3141,6 +3410,62 @@ mod tests {
     }
 
     #[test]
+    fn mouse_click_on_view_tabs_switches_views() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.set_terminal_size(140, 40);
+        let layout = compute_ui_layout(Rect::new(0, 0, 140, 40)).expect("layout should exist");
+        let titles = View::ALL
+            .iter()
+            .map(|view| view.title())
+            .collect::<Vec<_>>();
+        let groups_tab = view::tab_regions(layout.top_tabs, &titles)
+            .get(1)
+            .copied()
+            .expect("groups tab region should exist");
+
+        let outcome = handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: groups_tab.x + 1,
+                row: groups_tab.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::Refresh);
+        assert_eq!(app.view, View::Groups);
+        assert_eq!(app.focus, FocusArea::List);
+    }
+
+    #[test]
+    fn mouse_click_on_detail_tabs_switches_focus_and_tab() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.set_terminal_size(140, 40);
+        app.focus = FocusArea::List;
+        let layout = compute_ui_layout(Rect::new(0, 0, 140, 40)).expect("layout should exist");
+        let titles = app.current_tab_titles();
+        let metrics_tab = view::tab_regions(layout.detail_tabs, &titles)
+            .get(4)
+            .copied()
+            .expect("metrics tab region should exist");
+
+        let outcome = handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: metrics_tab.x + 1,
+                row: metrics_tab.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::Refresh);
+        assert_eq!(app.pipeline_tab, PipelineTab::Metrics);
+        assert_eq!(app.focus, FocusArea::Detail);
+    }
+
+    #[test]
     fn build_command_context_emits_canonical_prefix() {
         let endpoint =
             AdminEndpoint::from_url("https://admin.example.com:8443/engine-a").expect("endpoint");
@@ -3201,5 +3526,108 @@ mod tests {
         assert!(diff.contains("+++ edited"));
         assert!(diff.contains("- b: 2"));
         assert!(diff.contains("+ b: 3"));
+    }
+
+    #[test]
+    fn extract_engine_vitals_maps_cpu_rss_and_pressure() {
+        let metrics = telemetry::CompactMetricsResponse {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            metric_sets: vec![telemetry::MetricSet {
+                name: "engine.metrics".to_string(),
+                attributes: BTreeMap::new(),
+                metrics: BTreeMap::from([
+                    (
+                        "cpu.utilization".to_string(),
+                        telemetry::MetricValue::F64(0.234),
+                    ),
+                    (
+                        "memory.rss".to_string(),
+                        telemetry::MetricValue::U64(512 * 1024 * 1024),
+                    ),
+                    (
+                        "memory.pressure.state".to_string(),
+                        telemetry::MetricValue::U64(1),
+                    ),
+                    (
+                        "process.memory.usage.bytes".to_string(),
+                        telemetry::MetricValue::U64(768 * 1024 * 1024),
+                    ),
+                    (
+                        "process.memory.soft.limit.bytes".to_string(),
+                        telemetry::MetricValue::U64(1024 * 1024 * 1024),
+                    ),
+                    (
+                        "process.memory.hard.limit.bytes".to_string(),
+                        telemetry::MetricValue::U64(2 * 1024 * 1024 * 1024),
+                    ),
+                ]),
+            }],
+        };
+
+        let vitals = extract_engine_vitals(&metrics);
+
+        assert_eq!(vitals.cpu_utilization, "23.4%");
+        assert_eq!(vitals.memory_rss, "512.0 MiB");
+        assert_eq!(vitals.pressure_state, "soft");
+        assert_eq!(vitals.pressure_tone, Tone::Warning);
+        assert!(
+            vitals
+                .pressure_detail
+                .expect("pressure detail should be present")
+                .contains("usage/limits 768.0 MiB / 1.0 GiB / 2.0 GiB")
+        );
+        assert!(!vitals.stale);
+    }
+
+    #[test]
+    fn extract_engine_vitals_accepts_legacy_underscore_names() {
+        let metrics = telemetry::CompactMetricsResponse {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            metric_sets: vec![telemetry::MetricSet {
+                name: "engine.metrics".to_string(),
+                attributes: BTreeMap::new(),
+                metrics: BTreeMap::from([
+                    (
+                        "cpu_utilization".to_string(),
+                        telemetry::MetricValue::F64(0.125),
+                    ),
+                    (
+                        "memory_rss".to_string(),
+                        telemetry::MetricValue::U64(256 * 1024 * 1024),
+                    ),
+                    (
+                        "memory_pressure_state".to_string(),
+                        telemetry::MetricValue::U64(0),
+                    ),
+                ]),
+            }],
+        };
+
+        let vitals = extract_engine_vitals(&metrics);
+
+        assert_eq!(vitals.cpu_utilization, "12.5%");
+        assert_eq!(vitals.memory_rss, "256.0 MiB");
+        assert_eq!(vitals.pressure_state, "normal");
+    }
+
+    #[test]
+    fn update_engine_vitals_marks_previous_snapshot_stale_when_metrics_fail() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.engine_vitals = EngineVitals {
+            cpu_utilization: "12.5%".to_string(),
+            cpu_tone: Tone::Accent,
+            memory_rss: "256.0 MiB".to_string(),
+            memory_tone: Tone::Accent,
+            pressure_state: "normal".to_string(),
+            pressure_tone: Tone::Success,
+            pressure_detail: Some("usage/limits 200.0 MiB / 1.0 GiB / 2.0 GiB".to_string()),
+            stale: false,
+        };
+
+        update_engine_vitals(&mut app, None, Some("connection reset"));
+
+        assert!(app.engine_vitals.stale);
+        assert_eq!(app.engine_vitals.cpu_utilization, "12.5%");
+        assert_eq!(app.engine_vitals.memory_rss, "256.0 MiB");
     }
 }

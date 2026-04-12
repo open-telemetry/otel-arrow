@@ -312,6 +312,33 @@ pub(crate) struct StatCard {
     pub(crate) tone: Tone,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EngineVitals {
+    pub(crate) cpu_utilization: String,
+    pub(crate) cpu_tone: Tone,
+    pub(crate) memory_rss: String,
+    pub(crate) memory_tone: Tone,
+    pub(crate) pressure_state: String,
+    pub(crate) pressure_tone: Tone,
+    pub(crate) pressure_detail: Option<String>,
+    pub(crate) stale: bool,
+}
+
+impl Default for EngineVitals {
+    fn default() -> Self {
+        Self {
+            cpu_utilization: "n/a".to_string(),
+            cpu_tone: Tone::Muted,
+            memory_rss: "n/a".to_string(),
+            memory_tone: Tone::Muted,
+            pressure_state: "n/a".to_string(),
+            pressure_tone: Tone::Muted,
+            pressure_detail: None,
+            stale: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ConditionRow {
     pub(crate) kind: String,
@@ -686,12 +713,14 @@ pub(crate) struct AppState {
     pub(crate) pipeline_selected: Option<String>,
     pub(crate) group_selected: Option<String>,
     pub(crate) engine_selected: Option<String>,
+    pub(crate) terminal_size: Option<(u16, u16)>,
     pub(crate) last_refresh: Option<Instant>,
     pub(crate) last_error: Option<String>,
     pub(crate) groups_status: Option<groups::Status>,
     pub(crate) engine_status: Option<engine::Status>,
     pub(crate) engine_livez: Option<engine::ProbeResponse>,
     pub(crate) engine_readyz: Option<engine::ProbeResponse>,
+    pub(crate) engine_vitals: EngineVitals,
     pub(crate) command_context: UiCommandContext,
     pub(crate) pipelines: PipelinePaneState,
     pub(crate) groups: GroupPaneState,
@@ -714,12 +743,14 @@ impl AppState {
             pipeline_selected: None,
             group_selected: None,
             engine_selected: None,
+            terminal_size: None,
             last_refresh: None,
             last_error: None,
             groups_status: None,
             engine_status: None,
             engine_livez: None,
             engine_readyz: None,
+            engine_vitals: EngineVitals::default(),
             command_context: UiCommandContext::local_default(logs_tail),
             pipelines: PipelinePaneState::default(),
             groups: GroupPaneState::default(),
@@ -729,6 +760,10 @@ impl AppState {
 
     pub(crate) fn set_command_context(&mut self, command_context: UiCommandContext) {
         self.command_context = command_context;
+    }
+
+    pub(crate) fn set_terminal_size(&mut self, width: u16, height: u16) {
+        self.terminal_size = Some((width, height));
     }
 
     pub(crate) fn pipeline_items(&self) -> Vec<PipelineItem> {
@@ -990,7 +1025,11 @@ impl AppState {
             .position(|view| view == &self.view)
             .unwrap_or(0);
         let next = wrap_index(current_index, View::ALL.len(), delta);
-        self.view = View::ALL[next];
+        self.select_view(View::ALL[next]);
+    }
+
+    pub(crate) fn select_view(&mut self, view: View) {
+        self.view = view;
         self.focus = FocusArea::List;
         self.detail_scroll = 0;
     }
@@ -1019,6 +1058,28 @@ impl AppState {
                     .position(|tab| tab == &self.engine_tab)
                     .unwrap_or(0);
                 self.engine_tab = EngineTab::ALL[wrap_index(index, EngineTab::ALL.len(), delta)];
+            }
+        }
+    }
+
+    pub(crate) fn select_current_tab(&mut self, index: usize) {
+        self.detail_scroll = 0;
+        self.focus = FocusArea::Detail;
+        match self.view {
+            View::Pipelines => {
+                if let Some(tab) = PipelineTab::ALL.get(index).copied() {
+                    self.pipeline_tab = tab;
+                }
+            }
+            View::Groups => {
+                if let Some(tab) = GroupTab::ALL.get(index).copied() {
+                    self.group_tab = tab;
+                }
+            }
+            View::Engine => {
+                if let Some(tab) = EngineTab::ALL.get(index).copied() {
+                    self.engine_tab = tab;
+                }
             }
         }
     }

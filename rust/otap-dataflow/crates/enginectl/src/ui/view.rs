@@ -3,50 +3,110 @@
 
 use super::app::{
     ActionMenuState, AppState, BundlePane, ConditionRow, ConfigPane, CoreRow, DiagnosisPane,
-    EngineSummaryPane, EventPane, FindingRow, FocusArea, GroupShutdownPane, GroupShutdownRow,
-    GroupSummaryPane, LogFeedState, LogRow, MetricRow, MetricsPane, OperationPane,
-    PipelineInventoryRow, PipelineSummaryPane, ProbeFailureRow, StatCard, TimelineRow, Tone,
-    UI_TITLE, View,
+    EngineSummaryPane, EngineVitals, EventPane, FindingRow, FocusArea, GroupShutdownPane,
+    GroupShutdownRow, GroupSummaryPane, LogFeedState, LogRow, MetricRow, MetricsPane,
+    OperationPane, PipelineInventoryRow, PipelineSummaryPane, ProbeFailureRow, StatCard,
+    TimelineRow, Tone, UI_TITLE, View,
 };
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
-const MIN_TERMINAL_WIDTH: u16 = 100;
-const MIN_TERMINAL_HEIGHT: u16 = 25;
+pub(crate) const MIN_TERMINAL_WIDTH: u16 = 100;
+pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 25;
+const HEADER_HEIGHT: u16 = 4;
+const STATUS_BAR_HEIGHT: u16 = 2;
+const DETAIL_HEADER_HEIGHT: u16 = 2;
+const DETAIL_TABS_HEIGHT: u16 = 1;
+const ENGINE_VITALS_WIDTH: u16 = 38;
+const TAB_GAP: u16 = 2;
 
-pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
-    let area = frame.area();
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UiLayout {
+    pub(crate) header: Rect,
+    pub(crate) title_bar: Rect,
+    pub(crate) top_tabs: Rect,
+    pub(crate) engine_vitals: Rect,
+    pub(crate) list: Rect,
+    pub(crate) detail: Rect,
+    pub(crate) detail_tabs: Rect,
+    pub(crate) status: Rect,
+}
+
+pub(crate) fn compute_ui_layout(area: Rect) -> Option<UiLayout> {
     if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
-        draw_resize_required(frame, area, app);
-        return;
+        return None;
     }
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(HEADER_HEIGHT),
             Constraint::Min(10),
-            Constraint::Length(2),
+            Constraint::Length(STATUS_BAR_HEIGHT),
         ])
         .split(area);
-
-    draw_title_bar(frame, sections[0], app);
-    draw_top_tabs(frame, sections[1], app);
-
     let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
+        .split(sections[1]);
+    let header = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(39), Constraint::Percentage(61)])
-        .split(sections[2]);
+        .constraints([Constraint::Min(0), Constraint::Length(ENGINE_VITALS_WIDTH)])
+        .split(sections[0]);
+    let header_left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Length(1)])
+        .split(header[0]);
+    let detail = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(DETAIL_HEADER_HEIGHT),
+            Constraint::Length(DETAIL_TABS_HEIGHT),
+            Constraint::Min(6),
+        ])
+        .split(body[1]);
 
-    draw_left_list(frame, body[0], app);
-    draw_detail(frame, body[1], app);
-    draw_status_bar(frame, sections[3], app);
+    Some(UiLayout {
+        header: sections[0],
+        title_bar: header_left[0],
+        top_tabs: header_left[1],
+        engine_vitals: header[1],
+        list: body[0],
+        detail: body[1],
+        detail_tabs: detail[1],
+        status: sections[2],
+    })
+}
+
+pub(crate) fn tab_hit_index(area: Rect, labels: &[&str], column: u16, row: u16) -> Option<usize> {
+    if area.height == 0 || row < area.y || row >= area.y + area.height {
+        return None;
+    }
+
+    tab_regions(area, labels)
+        .into_iter()
+        .enumerate()
+        .find_map(|(index, region)| {
+            (column >= region.x && column < region.x.saturating_add(region.width)).then_some(index)
+        })
+}
+
+pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
+    let area = frame.area();
+    let Some(layout) = compute_ui_layout(area) else {
+        draw_resize_required(frame, area, app);
+        return;
+    };
+
+    draw_header(frame, layout.header, app);
+    draw_left_list(frame, layout.list, app);
+    draw_detail(frame, layout.detail, app);
+    draw_status_bar(frame, layout.status, app);
 
     if app.show_help() {
         draw_help_overlay(frame, area, app);
@@ -68,6 +128,21 @@ pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     }
 }
 
+fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let sections = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(ENGINE_VITALS_WIDTH)])
+        .split(area);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Length(1)])
+        .split(sections[0]);
+
+    draw_title_bar(frame, left[0], app);
+    draw_top_tabs(frame, left[1], app);
+    draw_engine_vitals_panel(frame, sections[1], &app.engine_vitals, app);
+}
+
 fn draw_resize_required(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let message = Paragraph::new(format!(
         "dfctl ui needs at least {MIN_TERMINAL_WIDTH}x{MIN_TERMINAL_HEIGHT}\ncurrent size: {}x{}\n\nResize the terminal and try again.",
@@ -83,53 +158,73 @@ fn draw_resize_required(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 fn draw_top_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let titles = View::ALL
-        .iter()
-        .map(|view| Line::from(view.title()))
-        .collect::<Vec<_>>();
     let selected = View::ALL
         .iter()
         .position(|view| view == &app.view)
         .unwrap_or(0);
-
-    let tabs = Tabs::new(titles)
-        .block(block_with_title("Views", false, app.color_enabled))
-        .select(selected)
-        .highlight_style(selected_style(app.color_enabled))
-        .style(body_style(app.color_enabled));
-    frame.render_widget(tabs, area);
+    let titles = View::ALL
+        .iter()
+        .map(|view| view.title())
+        .collect::<Vec<_>>();
+    draw_tab_bar(frame, area, &titles, selected, app.color_enabled);
 }
 
 fn draw_title_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let sections = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-        .split(area);
-
-    let title = Paragraph::new(Line::from(vec![Span::styled(
-        UI_TITLE,
-        title_style(app.color_enabled),
-    )]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style(app.color_enabled)),
-    )
-    .alignment(Alignment::Left);
-    frame.render_widget(title, sections[0]);
-
-    let target = Paragraph::new(Line::from(vec![
+    let line = Line::from(vec![
+        Span::styled(UI_TITLE, title_style(app.color_enabled)),
+        Span::styled(" | ", muted_style(app.color_enabled)),
         Span::styled("target ", muted_style(app.color_enabled)),
         Span::styled(app.target_url(), header_style(app.color_enabled)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style(app.color_enabled)),
-    )
-    .alignment(Alignment::Right)
-    .wrap(Wrap { trim: true });
-    frame.render_widget(target, sections[1]);
+    ]);
+    let title = Paragraph::new(line)
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: true });
+    frame.render_widget(title, area);
+}
+
+fn draw_engine_vitals_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    vitals: &EngineVitals,
+    app: &AppState,
+) {
+    let title = if vitals.stale {
+        "Engine Vitals (stale)"
+    } else {
+        "Engine Vitals"
+    };
+    let details = vitals
+        .pressure_detail
+        .as_deref()
+        .unwrap_or("limits unavailable");
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("CPU ", muted_style(app.color_enabled)),
+            Span::styled(
+                vitals.cpu_utilization.clone(),
+                tone_style(vitals.cpu_tone, app.color_enabled),
+            ),
+            Span::raw("  "),
+            Span::styled("RSS ", muted_style(app.color_enabled)),
+            Span::styled(
+                vitals.memory_rss.clone(),
+                tone_style(vitals.memory_tone, app.color_enabled),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Pressure ", muted_style(app.color_enabled)),
+            Span::styled(
+                vitals.pressure_state.clone(),
+                tone_style(vitals.pressure_tone, app.color_enabled),
+            ),
+            Span::raw("  "),
+            Span::styled(details.to_string(), muted_style(app.color_enabled)),
+        ]),
+    ];
+    let widget = Paragraph::new(lines)
+        .block(block_with_title(title, false, app.color_enabled))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(widget, area);
 }
 
 fn draw_left_list(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -279,9 +374,9 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Length(3),
-            Constraint::Min(8),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(6),
         ])
         .split(area);
 
@@ -292,13 +387,13 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 fn draw_detail_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let Some(header) = app.active_header() else {
-        let placeholder = Paragraph::new("Loading current selection…")
-            .block(block_with_title(
-                &app.current_detail_title(),
-                app.focus == FocusArea::Detail,
-                app.color_enabled,
-            ))
-            .style(muted_style(app.color_enabled));
+        let placeholder = Paragraph::new(Line::from(vec![
+            Span::styled(app.current_detail_title(), header_style(app.color_enabled)),
+            Span::raw("  "),
+            Span::styled("Loading current selection…", muted_style(app.color_enabled)),
+        ]))
+        .style(muted_style(app.color_enabled))
+        .wrap(Wrap { trim: true });
         frame.render_widget(placeholder, area);
         return;
     };
@@ -327,6 +422,11 @@ fn draw_detail_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
     let lines = vec![
         Line::from(vec![
+            Span::styled(
+                format!("{} ", app.current_detail_title()),
+                header_style(app.color_enabled),
+            ),
+            Span::raw("  "),
             Span::styled(title, title_style(app.color_enabled)),
             Span::raw("  "),
             Span::styled(subtitle, muted_style(app.color_enabled)),
@@ -334,28 +434,19 @@ fn draw_detail_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         chips,
     ];
 
-    let header_widget = Paragraph::new(lines)
-        .block(block_with_title(
-            &app.current_detail_title(),
-            app.focus == FocusArea::Detail,
-            app.color_enabled,
-        ))
-        .wrap(Wrap { trim: false });
+    let header_widget = Paragraph::new(lines).wrap(Wrap { trim: true });
     frame.render_widget(header_widget, area);
 }
 
 fn draw_detail_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let tabs = Tabs::new(
-        app.current_tab_titles()
-            .into_iter()
-            .map(Line::from)
-            .collect::<Vec<_>>(),
-    )
-    .block(block_with_title("Tabs", false, app.color_enabled))
-    .select(app.current_tab_index())
-    .highlight_style(selected_style(app.color_enabled))
-    .style(body_style(app.color_enabled));
-    frame.render_widget(tabs, area);
+    let titles = app.current_tab_titles();
+    draw_tab_bar(
+        frame,
+        area,
+        &titles,
+        app.current_tab_index(),
+        app.color_enabled,
+    );
 }
 
 fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -455,24 +546,38 @@ fn draw_pipeline_summary(
     pane: &PipelineSummaryPane,
     app: &AppState,
 ) {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Length(9),
-            Constraint::Min(8),
-        ])
-        .split(area);
+    let sections = if area.height >= 16 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(4),
+                Constraint::Length(4),
+                Constraint::Min(4),
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(2),
+            ])
+            .split(area)
+    };
     draw_stat_cards(frame, sections[0], &pane.stats, app.color_enabled);
-
-    let middle = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-        .split(sections[1]);
-    draw_condition_table(frame, middle[0], &pane.conditions, app.color_enabled, None);
+    draw_condition_table(
+        frame,
+        sections[1],
+        &pane.conditions,
+        app.color_enabled,
+        None,
+    );
     draw_timeline_table(
         frame,
-        middle[1],
+        sections[2],
         &pane.events,
         app.color_enabled,
         0,
@@ -481,7 +586,7 @@ fn draw_pipeline_summary(
     );
     draw_core_table(
         frame,
-        sections[2],
+        sections[3],
         &pane.cores,
         app.color_enabled,
         usize::from(app.detail_scroll),
@@ -491,23 +596,31 @@ fn draw_pipeline_summary(
 }
 
 fn draw_group_summary(frame: &mut Frame<'_>, area: Rect, pane: &GroupSummaryPane, app: &AppState) {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Length(9),
-            Constraint::Min(8),
-        ])
-        .split(area);
+    let sections = if area.height >= 16 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(4),
+                Constraint::Length(4),
+                Constraint::Min(4),
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(2),
+            ])
+            .split(area)
+    };
     draw_stat_cards(frame, sections[0], &pane.stats, app.color_enabled);
-
-    let middle = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
-        .split(sections[1]);
     draw_pipeline_inventory_table(
         frame,
-        middle[0],
+        sections[1],
         &pane.problem_pipelines,
         app.color_enabled,
         0,
@@ -521,7 +634,7 @@ fn draw_group_summary(frame: &mut Frame<'_>, area: Rect, pane: &GroupSummaryPane
     );
     draw_timeline_table(
         frame,
-        middle[1],
+        sections[2],
         &pane.events,
         app.color_enabled,
         0,
@@ -530,7 +643,7 @@ fn draw_group_summary(frame: &mut Frame<'_>, area: Rect, pane: &GroupSummaryPane
     );
     draw_pipeline_inventory_table(
         frame,
-        sections[2],
+        sections[3],
         &pane.pipelines,
         app.color_enabled,
         usize::from(app.detail_scroll),
@@ -546,14 +659,25 @@ fn draw_engine_summary(
     pane: &EngineSummaryPane,
     app: &AppState,
 ) {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Length(8),
-            Constraint::Min(8),
-        ])
-        .split(area);
+    let sections = if area.height >= 12 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(4),
+                Constraint::Min(4),
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(2),
+            ])
+            .split(area)
+    };
     draw_stat_cards(frame, sections[0], &pane.stats, app.color_enabled);
 
     draw_probe_failures(frame, sections[1], &pane.failing, app.color_enabled);
@@ -805,6 +929,22 @@ fn draw_stat_cards(frame: &mut Frame<'_>, area: Rect, cards: &[StatCard], color_
         .direction(Direction::Horizontal)
         .constraints(constraints)
         .split(area);
+
+    if area.height < 5 {
+        for (chunk, card) in chunks.iter().zip(cards.iter()) {
+            let widget = Paragraph::new(Line::from(vec![
+                Span::styled(format!("{} ", card.label), muted_style(color_enabled)),
+                Span::styled(
+                    card.value.clone(),
+                    tone_style(card.tone, color_enabled).add_modifier(Modifier::BOLD),
+                ),
+            ]))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+            frame.render_widget(widget, *chunk);
+        }
+        return;
+    }
 
     for (chunk, card) in chunks.iter().zip(cards.iter()) {
         let widget = Paragraph::new(vec![
@@ -1669,6 +1809,57 @@ fn draw_scale_editor_overlay(
     frame.render_widget(widget, overlay);
 }
 
+fn draw_tab_bar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    labels: &[&str],
+    selected: usize,
+    color_enabled: bool,
+) {
+    let mut spans = Vec::new();
+    for (index, label) in labels.iter().enumerate() {
+        let style = if index == selected {
+            selected_style(color_enabled)
+        } else {
+            header_style(color_enabled)
+        };
+        spans.push(Span::styled(format!(" {label} "), style));
+        if index + 1 < labels.len() {
+            spans.push(Span::styled(
+                " ".repeat(TAB_GAP as usize),
+                muted_style(color_enabled),
+            ));
+        }
+    }
+
+    let widget = Paragraph::new(Line::from(spans))
+        .style(body_style(color_enabled))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(widget, area);
+}
+
+pub(crate) fn tab_regions(area: Rect, labels: &[&str]) -> Vec<Rect> {
+    if area.height == 0 || labels.is_empty() {
+        return Vec::new();
+    }
+
+    let mut x = area.x;
+    let right = area.x.saturating_add(area.width);
+    let mut regions = Vec::with_capacity(labels.len());
+    for label in labels {
+        let width = (label.chars().count() as u16).saturating_add(2);
+        if x >= right {
+            break;
+        }
+        let capped_width = width.min(right.saturating_sub(x));
+        if capped_width > 0 {
+            regions.push(Rect::new(x, area.y, capped_width, 1));
+        }
+        x = x.saturating_add(width).saturating_add(TAB_GAP);
+    }
+    regions
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -1872,7 +2063,8 @@ mod tests {
     use super::*;
     use crate::args::UiStartView;
     use crate::ui::app::{
-        ConfigPane, DetailHeader, PipelineSummaryPane, StatCard, StatusChip, Tone, UiCommandContext,
+        ConfigPane, DetailHeader, EngineVitals, PipelineSummaryPane, StatCard, StatusChip, Tone,
+        UiCommandContext,
     };
     use ratatui::{Terminal, backend::TestBackend};
     use std::time::Duration;
@@ -1969,6 +2161,38 @@ mod tests {
         assert!(rendered.contains("Equivalent CLI"));
         assert!(rendered.contains("telemetry logs watch"));
         assert!(rendered.contains("https://admin.example.com:8443/engine-a"));
+    }
+
+    #[test]
+    fn header_renders_engine_vitals_panel() {
+        let backend = TestBackend::new(140, 40);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.engine_vitals = EngineVitals {
+            cpu_utilization: "23.4%".to_string(),
+            cpu_tone: Tone::Accent,
+            memory_rss: "512.0 MiB".to_string(),
+            memory_tone: Tone::Accent,
+            pressure_state: "soft".to_string(),
+            pressure_tone: Tone::Warning,
+            pressure_detail: Some("usage/limits 768.0 MiB / 1.0 GiB / 2.0 GiB".to_string()),
+            stale: false,
+        };
+
+        let _ = terminal
+            .draw(|frame| draw_ui(frame, &app))
+            .expect("draw should succeed");
+
+        let buffer = terminal.backend().buffer().clone();
+        let rendered = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Engine Vitals"));
+        assert!(rendered.contains("23.4%"));
+        assert!(rendered.contains("512.0 MiB"));
+        assert!(rendered.contains("soft"));
     }
 
     #[test]
