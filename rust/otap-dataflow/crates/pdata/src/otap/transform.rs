@@ -1304,39 +1304,74 @@ pub fn transform_attributes_impl(
             column_encoding != Some(metadata::encodings::PLAIN),
         )
     };
-    let attrs_record_batch = attrs_record_batch_cow.as_ref();
-    let schema = attrs_record_batch.schema();
 
     // Compute collision delete ranges if renames exist.
     // When renaming key "a" -> "b", any existing row with key "b" sharing a parent_id
     // with a row having key "a" would become a duplicate. We proactively identify these
     // collisions and generate Delete ranges that are merged into the transform pipeline.
-    // Only when parent_ids are plain-encoded (not transport-optimized) — quasi-delta
-    // encoded values don't represent actual parent IDs.
-    let collision_delete_ranges = if has_renames && !is_transport_optimized {
+    //
+    // For transport-optimized (delta-encoded) parent_ids, we first do a cheap check: if
+    // any new_key actually exists in the keys column, we materialize the parent_ids to
+    // resolve the actual values before running full collision detection.
+    let (attrs_record_batch_cow, is_transport_optimized, collision_delete_ranges) = if has_renames {
         let rename = transform
             .rename
             .as_ref()
             .expect("has_renames guard ensures this is Some");
-        let parent_ids_vec = attrs_record_batch
-            .column_by_name(consts::PARENT_ID)
-            .map(read_parent_ids_as_u32)
-            .transpose()?;
-        if let Some(parent_ids) = parent_ids_vec.as_ref() {
-            let key_col = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
-            let key_accessor = StringArrayAccessor::try_new(key_col)?;
-            find_rename_collisions_to_delete_ranges(
-                attrs_record_batch.num_rows(),
-                &key_accessor,
-                parent_ids,
-                rename,
-            )
+
+        let key_col = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
+
+        // parent_id is required by the OTAP spec for attributes batches. When
+        // present, use it for collision detection; when absent (e.g. in
+        // unit-test fixtures), skip collision detection since we can't
+        // determine which rows share a parent.
+        let parent_id_col = attrs_record_batch
+            .schema()
+            .column_with_name(consts::PARENT_ID)
+            .map(|(idx, _)| attrs_record_batch.column(idx).clone());
+
+        if let Some(parent_id_col) = parent_id_col {
+            // If transport-optimized, check if any new_key exists before materializing.
+            // This avoids the expensive materialization when no collision is possible.
+            let needs_materialization = if is_transport_optimized {
+                rename_has_target_key_in_column(key_col, rename)?
+            } else {
+                false
+            };
+
+            if needs_materialization {
+                // Materialize the delta-encoded parent_ids so we get actual values
+                let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
+                let parent_id_col = get_required_array(&rb, consts::PARENT_ID)?;
+                let key_col = get_required_array(&rb, consts::ATTRIBUTE_KEY)?;
+                let ranges = dispatch_find_rename_collisions(
+                    rb.num_rows(),
+                    key_col,
+                    parent_id_col,
+                    rename,
+                )?;
+                (Cow::Owned(rb), false, ranges)
+            } else if !is_transport_optimized {
+                let ranges = dispatch_find_rename_collisions(
+                    attrs_record_batch.num_rows(),
+                    key_col,
+                    &parent_id_col,
+                    rename,
+                )?;
+                (attrs_record_batch_cow, is_transport_optimized, ranges)
+            } else {
+                // Transport-optimized but no target key exists — no collision possible
+                (attrs_record_batch_cow, is_transport_optimized, Vec::new())
+            }
         } else {
-            Vec::new()
+            // No parent_id column — cannot detect collisions
+            (attrs_record_batch_cow, is_transport_optimized, Vec::new())
         }
     } else {
-        Vec::new()
+        (attrs_record_batch_cow, is_transport_optimized, Vec::new())
     };
+    let attrs_record_batch = attrs_record_batch_cow.as_ref();
+    let schema = attrs_record_batch.schema();
 
     let (mut rb, mut stats) = match key_column.data_type() {
         DataType::Utf8 => {
@@ -1633,7 +1668,12 @@ fn transform_keys(
         .transpose()?;
 
     // check if we can return early because there are no modifications to be made
-    let total_deletions = delete_plan.as_ref().map(|d| d.total_deletions).unwrap_or(0);
+    let total_deletions = delete_plan.as_ref().map(|d| d.total_deletions).unwrap_or(0)
+        + collision_delete_ranges
+            .iter()
+            .map(|r| r.range.len())
+            .sum::<usize>();
+
     let total_replacements = replacement_plan
         .as_ref()
         .map(|r| r.total_replacements)
@@ -1653,15 +1693,35 @@ fn transform_keys(
     // we're going to pass over both the values and the offsets, taking any ranges that weren't
     // that are unmodified, while either transforming or omitting ranges that were either replaced
     // or deleted. To get the sorted list of how to handle each range, we merge the plans' ranges
-    let mut transform_ranges =
-        merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref()).into_owned();
-
-    // Merge collision delete ranges into the transform plan
-    if !collision_delete_ranges.is_empty() {
-        transform_ranges.extend_from_slice(collision_delete_ranges);
-        transform_ranges.sort_by_key(|r| r.start());
-    }
-    let transform_ranges: Cow<'_, [KeyTransformRange]> = Cow::Owned(transform_ranges);
+    let transform_ranges = if collision_delete_ranges.is_empty() {
+        merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref())
+    } else {
+        // Sorted merge of the plan ranges with the collision delete ranges.
+        // Both inputs are already sorted, so we merge in O(n+m) without
+        // materializing an intermediate Vec + sort.
+        let plan_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref());
+        let mut merged = Vec::with_capacity(plan_ranges.len() + collision_delete_ranges.len());
+        let mut plan_idx = 0;
+        let mut coll_idx = 0;
+        while plan_idx < plan_ranges.len() && coll_idx < collision_delete_ranges.len() {
+            if plan_ranges[plan_idx].start() <= collision_delete_ranges[coll_idx].start() {
+                merged.push(plan_ranges[plan_idx].clone());
+                plan_idx += 1;
+            } else {
+                merged.push(collision_delete_ranges[coll_idx].clone());
+                coll_idx += 1;
+            }
+        }
+        while plan_idx < plan_ranges.len() {
+            merged.push(plan_ranges[plan_idx].clone());
+            plan_idx += 1;
+        }
+        while coll_idx < collision_delete_ranges.len() {
+            merged.push(collision_delete_ranges[coll_idx].clone());
+            coll_idx += 1;
+        }
+        Cow::Owned(merged)
+    };
 
     // create buffer to contain the new values
     let mut new_values = MutableBuffer::with_capacity(calculate_new_keys_buffer_len(
@@ -1684,10 +1744,13 @@ fn transform_keys(
         match transform_range.range_type {
             KeyTransformRangeType::Replace => {
                 // insert the replaced values into the new_values buffer
+                let plan_idx = transform_range
+                    .idx
+                    .expect("replace ranges always have an idx");
                 let replacement_bytes = &replacement_plan
                     .as_ref()
                     .expect("replacement plan should be initialized")
-                    .replacement_bytes[transform_range.idx];
+                    .replacement_bytes[plan_idx];
                 for _ in transform_range.start()..transform_range.end() {
                     new_values.extend_from_slice(replacement_bytes);
                 }
@@ -1748,10 +1811,13 @@ fn transform_keys(
             match transform_range.range_type {
                 KeyTransformRangeType::Replace => {
                     // append offsets for values that were replaced, but add the offset adjustment
+                    let plan_idx = transform_range
+                        .idx
+                        .expect("replace ranges always have an idx");
                     let replacement_bytes = &replacement_plan
                         .as_ref()
                         .expect("replacement plan should be initialized")
-                        .replacement_bytes[transform_range.idx];
+                        .replacement_bytes[plan_idx];
                     let mut offset =
                         offsets[transform_range.start()] + curr_total_offset_adjustment;
                     for _ in transform_range.start()..transform_range.end() {
@@ -1764,27 +1830,21 @@ fn transform_keys(
                     let val_len_diff = replacement_plan
                         .as_ref()
                         .expect("replacement plan should be initialized")
-                        .replacement_byte_len_diffs[transform_range.idx];
+                        .replacement_byte_len_diffs[plan_idx];
                     curr_total_offset_adjustment +=
                         val_len_diff * transform_range.range.len() as i32;
                 }
                 KeyTransformRangeType::Delete => {
                     // for deleted ranges we don't need to append any offsets to the buffer, so we
                     // just decrement by how many total bytes were deleted from this range.
-                    let deleted_val_len = if let Some(ref dp) = delete_plan {
-                        if transform_range.idx < dp.target_keys.len() {
-                            dp.target_keys[transform_range.idx].len()
-                        } else {
+                    let deleted_val_len = match (transform_range.idx, delete_plan.as_ref()) {
+                        (Some(plan_idx), Some(dp)) => dp.target_keys[plan_idx].len(),
+                        _ => {
                             // collision-delete range: compute byte length from offsets
                             let s = offsets[transform_range.start()] as usize;
                             let e = offsets[transform_range.end()] as usize;
                             (e - s) / transform_range.range.len()
                         }
-                    } else {
-                        // collision-delete range without a delete plan
-                        let s = offsets[transform_range.start()] as usize;
-                        let e = offsets[transform_range.end()] as usize;
-                        (e - s) / transform_range.range.len()
                     };
                     curr_total_offset_adjustment -=
                         (deleted_val_len * transform_range.range.len()) as i32;
@@ -1874,30 +1934,117 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     renamed_rows: usize,
 }
 
+/// Check whether any of the rename target (new) keys exist in the attribute keys column.
+/// This is a cheap pre-check used to decide if we need to materialize delta-encoded parent_ids.
+fn rename_has_target_key_in_column(key_col: &ArrayRef, rename: &RenameTransform) -> Result<bool> {
+    for new_key in rename.map.values() {
+        let scalar = StringArray::new_scalar(new_key);
+        let mask = eq(key_col, &scalar).map_err(|e| Error::UnexpectedRecordBatchState {
+            reason: format!("eq kernel failed on attribute keys: {e}"),
+        })?;
+        if mask.true_count() > 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Downcast the `parent_id` column to the appropriate `PrimitiveArray` type and
+/// dispatch to the generic [`find_rename_collisions_to_delete_ranges`].
+///
+/// For dictionary-encoded parent_ids, the dictionary keys are passed directly —
+/// their ordinal values still partition rows by parent identity, which is
+/// sufficient for collision detection.
+fn dispatch_find_rename_collisions(
+    num_rows: usize,
+    key_col: &ArrayRef,
+    parent_id_col: &ArrayRef,
+    rename: &RenameTransform,
+) -> Result<Vec<KeyTransformRange>> {
+    match parent_id_col.data_type() {
+        DataType::UInt16 => {
+            let parent_ids = parent_id_col
+                .as_any()
+                .downcast_ref::<PrimitiveArray<UInt16Type>>()
+                .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                    reason: "expected UInt16 parent_id column".into(),
+                })?;
+            find_rename_collisions_to_delete_ranges(num_rows, key_col, parent_ids, rename)
+        }
+        DataType::UInt32 => {
+            let parent_ids = parent_id_col
+                .as_any()
+                .downcast_ref::<PrimitiveArray<UInt32Type>>()
+                .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                    reason: "expected UInt32 parent_id column".into(),
+                })?;
+            find_rename_collisions_to_delete_ranges(num_rows, key_col, parent_ids, rename)
+        }
+        DataType::Dictionary(key_type, _) => match key_type.as_ref() {
+            DataType::UInt8 => {
+                let dict = parent_id_col
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                        reason: "expected Dict<UInt8, _> parent_id column".into(),
+                    })?;
+                find_rename_collisions_to_delete_ranges(num_rows, key_col, dict.keys(), rename)
+            }
+            DataType::UInt16 => {
+                let dict = parent_id_col
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                        reason: "expected Dict<UInt16, _> parent_id column".into(),
+                    })?;
+                find_rename_collisions_to_delete_ranges(num_rows, key_col, dict.keys(), rename)
+            }
+            other => Err(Error::UnexpectedRecordBatchState {
+                reason: format!("unsupported dictionary key type for parent_id: {other:?}"),
+            }),
+        },
+        other => Err(Error::UnexpectedRecordBatchState {
+            reason: format!("unsupported parent_id data type: {other:?}"),
+        }),
+    }
+}
+
 /// Identify rows that would become duplicates after a rename and return them as
 /// `KeyTransformRange::Delete` entries. When renaming key `x` to `y`, any existing
 /// row with key `y` whose `parent_id` also has a row with key `x` would become a
-/// duplicate. Uses [`IdBitmap`] for efficient parent-id set intersection.
+/// duplicate.
 ///
-/// Returns a list of `KeyTransformRange` with `range_type = Delete` that can
-/// be merged into the existing transformation plans, removing the row cleanly.
-fn find_rename_collisions_to_delete_ranges(
+/// Generic over `K` so the caller can pass the parent_id column as a typed
+/// `&PrimitiveArray<K>` directly, avoiding per-row type dispatch.
+///
+/// Uses the arrow `eq` kernel for key matching and `BitSliceIterator` for efficient
+/// iteration over matching rows. [`IdBitmap`] allocation is reused across rename
+/// entries.
+fn find_rename_collisions_to_delete_ranges<K: ArrowPrimitiveType>(
     num_rows: usize,
-    key_accessor: &StringArrayAccessor<'_>,
-    parent_ids: &[u32],
+    key_col: &ArrayRef,
+    parent_ids: &PrimitiveArray<K>,
     rename: &RenameTransform,
-) -> Vec<KeyTransformRange> {
-    let mut collision_delete_rows = vec![false; num_rows];
-    let mut has_collisions = false;
+) -> Result<Vec<KeyTransformRange>>
+where
+    K::Native: Into<u64>,
+{
+    let mut ranges = Vec::new();
+    let mut source_parents = IdBitmap::new();
 
     for (old_key, new_key) in &rename.map {
-        // Build IdBitmap of parent_ids that have the source key (old_key).
-        let mut source_parents = IdBitmap::new();
-        for (i, &pid) in parent_ids.iter().enumerate() {
-            if let Some(k) = key_accessor.str_at(i) {
-                if k == old_key.as_str() {
-                    source_parents.insert(pid);
-                }
+        source_parents.clear();
+
+        let old_key_mask = eq(key_col, &StringArray::new_scalar(old_key)).map_err(|e| {
+            Error::UnexpectedRecordBatchState {
+                reason: format!("eq kernel failed for old_key: {e}"),
+            }
+        })?;
+
+        for (start, end) in BitSliceIterator::new(old_key_mask.values().inner(), 0, num_rows) {
+            for i in start..end {
+                let pid: u64 = parent_ids.value(i).into();
+                source_parents.insert(pid as u32);
             }
         }
 
@@ -1905,94 +2052,39 @@ fn find_rename_collisions_to_delete_ranges(
             continue;
         }
 
-        // Mark target-key rows whose parent_id overlaps with source_parents.
-        for (i, &pid) in parent_ids.iter().enumerate() {
-            if let Some(k) = key_accessor.str_at(i) {
-                if k == new_key.as_str() && source_parents.contains(pid) {
-                    collision_delete_rows[i] = true;
-                    has_collisions = true;
+        let new_key_mask = eq(key_col, &StringArray::new_scalar(new_key)).map_err(|e| {
+            Error::UnexpectedRecordBatchState {
+                reason: format!("eq kernel failed for new_key: {e}"),
+            }
+        })?;
+
+        let mut range_start: Option<usize> = None;
+        for (start, end) in BitSliceIterator::new(new_key_mask.values().inner(), 0, num_rows) {
+            for i in start..end {
+                let pid: u64 = parent_ids.value(i).into();
+                if source_parents.contains(pid as u32) {
+                    if range_start.is_none() {
+                        range_start = Some(i);
+                    }
+                } else if let Some(s) = range_start.take() {
+                    ranges.push(KeyTransformRange {
+                        range: s..i,
+                        idx: None,
+                        range_type: KeyTransformRangeType::Delete,
+                    });
                 }
+            }
+            if let Some(s) = range_start.take() {
+                ranges.push(KeyTransformRange {
+                    range: s..end,
+                    idx: None,
+                    range_type: KeyTransformRangeType::Delete,
+                });
             }
         }
     }
 
-    if !has_collisions {
-        return Vec::new();
-    }
-
-    // Convert per-row booleans into contiguous KeyTransformRange::Delete entries
-    let mut ranges = Vec::new();
-    let mut start = None;
-    for (i, &should_delete) in collision_delete_rows.iter().enumerate() {
-        if should_delete {
-            if start.is_none() {
-                start = Some(i);
-            }
-        } else if let Some(s) = start.take() {
-            ranges.push(KeyTransformRange {
-                range: s..i,
-                idx: 0,
-                range_type: KeyTransformRangeType::Delete,
-            });
-        }
-    }
-    if let Some(s) = start {
-        ranges.push(KeyTransformRange {
-            range: s..num_rows,
-            idx: 0,
-            range_type: KeyTransformRangeType::Delete,
-        });
-    }
-    ranges
-}
-
-/// Read the parent_id column into a flat `Vec<u32>`, handling UInt16, UInt32,
-/// and dictionary-encoded variants.
-fn read_parent_ids_as_u32(col: &ArrayRef) -> Result<Vec<u32>> {
-    let n = col.len();
-    let mut result = Vec::with_capacity(n);
-    match col.data_type() {
-        DataType::UInt16 => {
-            let arr = col.as_any().downcast_ref::<UInt16Array>().ok_or_else(|| {
-                Error::UnexpectedRecordBatchState {
-                    reason: "expected UInt16 for parent_id".into(),
-                }
-            })?;
-            for i in 0..n {
-                result.push(arr.value(i) as u32);
-            }
-        }
-        DataType::UInt32 => {
-            let arr = col.as_any().downcast_ref::<UInt32Array>().ok_or_else(|| {
-                Error::UnexpectedRecordBatchState {
-                    reason: "expected UInt32 for parent_id".into(),
-                }
-            })?;
-            for i in 0..n {
-                result.push(arr.value(i));
-            }
-        }
-        DataType::Dictionary(key_type, _) => {
-            let arr =
-                cast(col, &DataType::UInt32).map_err(|e| Error::UnexpectedRecordBatchState {
-                    reason: format!("cannot cast dict({key_type:?}) parent_id to u32: {e}"),
-                })?;
-            let u32_arr = arr.as_any().downcast_ref::<UInt32Array>().ok_or_else(|| {
-                Error::UnexpectedRecordBatchState {
-                    reason: "cast to UInt32 failed".into(),
-                }
-            })?;
-            for i in 0..n {
-                result.push(u32_arr.value(i));
-            }
-        }
-        other => {
-            return Err(Error::UnexpectedRecordBatchState {
-                reason: format!("unsupported parent_id data type: {other:?}"),
-            });
-        }
-    }
-    Ok(result)
+    Ok(ranges)
 }
 
 /// Transforms the keys for the dictionary array.
@@ -2049,11 +2141,33 @@ where
     };
 
     // Merge collision delete ranges (row-level) into the dict key transform ranges
-    let mut dict_key_transform_ranges = dict_key_transform_ranges;
-    if !collision_delete_ranges.is_empty() {
-        dict_key_transform_ranges.extend_from_slice(collision_delete_ranges);
-        dict_key_transform_ranges.sort_by_key(|r| r.start());
-    }
+    // using a sorted merge since both inputs are already in order.
+    let dict_key_transform_ranges = if collision_delete_ranges.is_empty() {
+        dict_key_transform_ranges
+    } else {
+        let mut merged =
+            Vec::with_capacity(dict_key_transform_ranges.len() + collision_delete_ranges.len());
+        let mut left = 0;
+        let mut right = 0;
+        while left < dict_key_transform_ranges.len() && right < collision_delete_ranges.len() {
+            if dict_key_transform_ranges[left].start() <= collision_delete_ranges[right].start() {
+                merged.push(dict_key_transform_ranges[left].clone());
+                left += 1;
+            } else {
+                merged.push(collision_delete_ranges[right].clone());
+                right += 1;
+            }
+        }
+        while left < dict_key_transform_ranges.len() {
+            merged.push(dict_key_transform_ranges[left].clone());
+            left += 1;
+        }
+        while right < collision_delete_ranges.len() {
+            merged.push(collision_delete_ranges[right].clone());
+            right += 1;
+        }
+        merged
+    };
 
     // If we're tracking statistics on how many rows were transformed, it's less expensive to
     // compute these statistics from the ranges of transformed dictionary keys. However, if these
@@ -2149,13 +2263,15 @@ where
         })
         .collect::<Vec<_>>();
 
-    for i in 0..dict_arr.len() {
-        let dict_key = dict_keys.value(i).as_usize();
-        let kept_in_dict_values_range_idx = dict_key_kept_in_values_range
-            .get(dict_key)
-            .expect("dict keys values range lookup not properly initialized");
-        if let Some(kept_in_dict_values_range_idx) = kept_in_dict_values_range_idx {
-            let new_dict_key = dict_key - dict_key_adjustments[*kept_in_dict_values_range_idx];
+    for range in key_keep_ranges.iter() {
+        for i in range.start..range.end {
+            let dict_key = dict_keys.value(i).as_usize();
+            let kept_in_dict_values_range_idx = dict_key_kept_in_values_range
+                .get(dict_key)
+                .expect("dict keys values range lookup not properly initialized")
+                .expect("kept row cannot have a deleted dictionary value");
+
+            let new_dict_key = dict_key - dict_key_adjustments[kept_in_dict_values_range_idx];
             let new_dict_key = K::Native::from_usize(new_dict_key).expect("dict_key_overflow");
 
             // safety: we've already allocated the correct capacity for this buffer, so we can use
@@ -2323,7 +2439,8 @@ struct KeyTransformRange {
 
     /// Index of the specified transformation. For example if the transformation was a rename,
     /// there would be a list of key replacements, and this would be the index into that list.
-    idx: usize,
+    /// `None` for collision-delete ranges that don't map to a plan entry.
+    idx: Option<usize>,
 
     /// The type of transformation applied to this range (either Rename or Delete).
     range_type: KeyTransformRangeType,
@@ -2616,7 +2733,7 @@ fn find_matching_key_ranges(
                 // close current range
                 ranges.push(KeyTransformRange {
                     range: Range { start: s, end: i },
-                    idx: target_idx,
+                    idx: Some(target_idx),
                     range_type,
                 });
             }
@@ -2629,7 +2746,7 @@ fn find_matching_key_ranges(
                     start: s,
                     end: array_len,
                 },
-                idx: target_idx,
+                idx: Some(target_idx),
                 range_type,
             });
         }
@@ -2752,7 +2869,7 @@ fn should_remove_transport_optimized_encoding(
                         prev,
                         &MaybeReplacedKey {
                             index: curr_range.start(),
-                            replacement_idx: Some(curr_range.idx),
+                            replacement_idx: curr_range.idx,
                         },
                     )?;
                     if replacement_joins_prev {
@@ -2767,7 +2884,7 @@ fn should_remove_transport_optimized_encoding(
                         replacement_bytes,
                         &MaybeReplacedKey {
                             index: curr_range.end() - 1,
-                            replacement_idx: Some(curr_range.idx),
+                            replacement_idx: curr_range.idx,
                         },
                         next,
                     )?;
@@ -2847,7 +2964,7 @@ fn find_previous_neighbour_post_transform(
             KeyTransformRangeType::Replace => {
                 return Some(MaybeReplacedKey {
                     index: index - 1,
-                    replacement_idx: Some(range.idx),
+                    replacement_idx: range.idx,
                 });
             }
             KeyTransformRangeType::Delete => {
@@ -2909,7 +3026,7 @@ fn find_next_neighbour_post_transform(
             KeyTransformRangeType::Replace => {
                 return Some(MaybeReplacedKey {
                     index: index + 1,
-                    replacement_idx: Some(range.idx),
+                    replacement_idx: range.idx,
                 });
             }
             KeyTransformRangeType::Delete => {
@@ -5215,6 +5332,8 @@ mod test {
     #[test]
     fn test_materialize_parent_ids_when_rename_merges_runs() {
         // This test covers the rename-only case where quasi-delta parent ID encoding can become invalid.
+        // Additionally, renaming k2→k1 creates a collision at parent_id=1 (row 2 with k2 → k1
+        // would duplicate existing k1 rows at rows 0 and 3), so those colliding k1 rows are removed.
         let schema = Arc::new(Schema::new(vec![
             // note: absence of encoding metadata means we assume it's quasi-delta encoded
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
@@ -5223,9 +5342,8 @@ mod test {
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
         ]));
 
-        // After rename k2 -> k1, keys become all k1, if we didn't materialize first, the
-        // quasi-delta decoding would incorrectly yield 1,2,3,4,5 but we want the correct plain
-        // IDs to remain 1,2,1,1,2 and the parent_id column to be marked as plain.
+        // After rename k2→k1, quasi-delta parent_ids are materialized to [1,2,1,1,2].
+        // Collision detection removes rows 0 and 3 (pid=1, key=k1), leaving rows 1,2,4.
         let expected_schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -5252,16 +5370,14 @@ mod test {
         let expected = RecordBatch::try_new(
             expected_schema,
             vec![
-                // Must remain the correct plain IDs after rename (i.e., materialized before rename):
-                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 1, 1, 2])),
+                // Rows 1,2,4 kept after collision removal (materialized parent_ids)
+                Arc::new(UInt16Array::from_iter_values(vec![2, 1, 2])),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
-                    5,
+                    3,
                 ))),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "k1", "k1", "k1", "k1", "k1",
-                ])),
-                Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a"])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k1", "k1"])),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "a"])),
             ],
         )
         .unwrap();
@@ -5289,6 +5405,8 @@ mod test {
     #[test]
     fn test_materialize_parent_ids_when_rename_merges_runs_dict_keys() {
         // Same as the above test, but with dictionary-encoded keys.
+        // Renaming k2→k1 triggers materialization, then collision detection removes
+        // rows 0 and 3 (pid=1, key=k1) that would conflict with renamed row 2 (pid=1, k2→k1).
         let schema = Arc::new(Schema::new(vec![
             // note: absence of encoding metadata means we assume it's quasi-delta encoded
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
@@ -5330,19 +5448,20 @@ mod test {
         )
         .unwrap();
 
+        // After materialization + collision removal, rows 1,2,4 remain.
         let expected = RecordBatch::try_new(
             expected_schema,
             vec![
-                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 1, 1, 2])),
+                Arc::new(UInt16Array::from_iter_values(vec![2, 1, 2])),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
-                    5,
+                    3,
                 ))),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values(vec![0, 0, 1, 0, 0]),
+                    UInt8Array::from_iter_values(vec![0, 1, 0]),
                     Arc::new(StringArray::from_iter_values(vec!["k1", "k1"])),
                 )),
-                Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a"])),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "a"])),
             ],
         )
         .unwrap();
@@ -5376,7 +5495,7 @@ mod test {
 
         let dict_value_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 2 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5405,7 +5524,7 @@ mod test {
 
         let dict_value_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 1 },
-            idx: 5,
+            idx: Some(5),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5415,7 +5534,7 @@ mod test {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].start(), 0);
         assert_eq!(result[0].end(), 3);
-        assert_eq!(result[0].idx, 5);
+        assert_eq!(result[0].idx, Some(5));
         assert!(matches!(
             result[0].range_type,
             KeyTransformRangeType::Replace
@@ -5434,17 +5553,17 @@ mod test {
         let dict_value_ranges = vec![
             KeyTransformRange {
                 range: Range { start: 0, end: 1 },
-                idx: 10,
+                idx: Some(10),
                 range_type: KeyTransformRangeType::Replace,
             },
             KeyTransformRange {
                 range: Range { start: 1, end: 2 },
-                idx: 20,
+                idx: Some(20),
                 range_type: KeyTransformRangeType::Delete,
             },
             KeyTransformRange {
                 range: Range { start: 2, end: 3 },
-                idx: 30,
+                idx: Some(30),
                 range_type: KeyTransformRangeType::Replace,
             },
         ];
@@ -5457,7 +5576,7 @@ mod test {
         // First range: keys 0-1 point to value 0 (rename)
         assert_eq!(result[0].start(), 0);
         assert_eq!(result[0].end(), 2);
-        assert_eq!(result[0].idx, 10);
+        assert_eq!(result[0].idx, Some(10));
         assert!(matches!(
             result[0].range_type,
             KeyTransformRangeType::Replace
@@ -5466,7 +5585,7 @@ mod test {
         // Second range: keys 2-3 point to value 1 (delete)
         assert_eq!(result[1].start(), 2);
         assert_eq!(result[1].end(), 4);
-        assert_eq!(result[1].idx, 20);
+        assert_eq!(result[1].idx, Some(20));
         assert!(matches!(
             result[1].range_type,
             KeyTransformRangeType::Delete
@@ -5475,7 +5594,7 @@ mod test {
         // Third range: keys 4-5 point to value 2 (rename)
         assert_eq!(result[2].start(), 4);
         assert_eq!(result[2].end(), 6);
-        assert_eq!(result[2].idx, 30);
+        assert_eq!(result[2].idx, Some(30));
         assert!(matches!(
             result[2].range_type,
             KeyTransformRangeType::Replace
@@ -5493,7 +5612,7 @@ mod test {
 
         let dict_value_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 1 },
-            idx: 42,
+            idx: Some(42),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5504,15 +5623,15 @@ mod test {
 
         assert_eq!(result[0].start(), 0);
         assert_eq!(result[0].end(), 1);
-        assert_eq!(result[0].idx, 42);
+        assert_eq!(result[0].idx, Some(42));
 
         assert_eq!(result[1].start(), 2);
         assert_eq!(result[1].end(), 3);
-        assert_eq!(result[1].idx, 42);
+        assert_eq!(result[1].idx, Some(42));
 
         assert_eq!(result[2].start(), 4);
         assert_eq!(result[2].end(), 5);
-        assert_eq!(result[2].idx, 42);
+        assert_eq!(result[2].idx, Some(42));
     }
 
     #[test]
@@ -5526,7 +5645,7 @@ mod test {
 
         let dict_value_ranges = vec![KeyTransformRange {
             range: Range { start: 2, end: 3 },
-            idx: 99,
+            idx: Some(99),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -5545,7 +5664,7 @@ mod test {
 
         let dict_value_ranges = vec![KeyTransformRange {
             range: Range { start: 1, end: 2 },
-            idx: 7,
+            idx: Some(7),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5554,7 +5673,7 @@ mod test {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].start(), 2);
         assert_eq!(result[0].end(), 4);
-        assert_eq!(result[0].idx, 7);
+        assert_eq!(result[0].idx, Some(7));
         assert!(matches!(
             result[0].range_type,
             KeyTransformRangeType::Replace
@@ -5571,7 +5690,7 @@ mod test {
 
         let dict_value_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 1 },
-            idx: 1,
+            idx: Some(1),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -5581,7 +5700,7 @@ mod test {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].start(), 0);
         assert_eq!(result[0].end(), 5);
-        assert_eq!(result[0].idx, 1);
+        assert_eq!(result[0].idx, Some(1));
         assert!(matches!(
             result[0].range_type,
             KeyTransformRangeType::Delete
@@ -5594,12 +5713,12 @@ mod test {
         let transform_ranges = vec![
             KeyTransformRange {
                 range: Range { start: 0, end: 5 },
-                idx: 0,
+                idx: Some(0),
                 range_type: KeyTransformRangeType::Replace,
             },
             KeyTransformRange {
                 range: Range { start: 5, end: 10 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Replace,
             },
         ];
@@ -5621,7 +5740,7 @@ mod test {
         // Delete range at the beginning: delete [0, 3), keep [3, 10)
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 3 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -5638,7 +5757,7 @@ mod test {
         // Delete range in the middle: keep [0, 5), delete [5, 8), keep [8, 10)
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 5, end: 8 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -5657,7 +5776,7 @@ mod test {
         // Delete range at the end: keep [0, 7), delete [7, 10)
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 7, end: 10 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -5679,12 +5798,12 @@ mod test {
         let transform_ranges = vec![
             KeyTransformRange {
                 range: Range { start: 2, end: 4 },
-                idx: 0,
+                idx: Some(0),
                 range_type: KeyTransformRangeType::Delete,
             },
             KeyTransformRange {
                 range: Range { start: 7, end: 9 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Delete,
             },
         ];
@@ -5707,22 +5826,22 @@ mod test {
         let transform_ranges = vec![
             KeyTransformRange {
                 range: Range { start: 0, end: 2 },
-                idx: 0,
+                idx: Some(0),
                 range_type: KeyTransformRangeType::Replace,
             },
             KeyTransformRange {
                 range: Range { start: 2, end: 5 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Delete,
             },
             KeyTransformRange {
                 range: Range { start: 5, end: 8 },
-                idx: 2,
+                idx: Some(2),
                 range_type: KeyTransformRangeType::Replace,
             },
             KeyTransformRange {
                 range: Range { start: 8, end: 10 },
-                idx: 3,
+                idx: Some(3),
                 range_type: KeyTransformRangeType::Delete,
             },
         ];
@@ -5747,12 +5866,12 @@ mod test {
         let transform_ranges = vec![
             KeyTransformRange {
                 range: Range { start: 0, end: 3 },
-                idx: 0,
+                idx: Some(0),
                 range_type: KeyTransformRangeType::Delete,
             },
             KeyTransformRange {
                 range: Range { start: 3, end: 6 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Delete,
             },
         ];
@@ -5775,7 +5894,7 @@ mod test {
         // Delete the entire range: delete [0, 10)
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 10 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -5797,7 +5916,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 1 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5815,7 +5934,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 1 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -5836,7 +5955,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 1 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5860,12 +5979,12 @@ mod test {
         let transform_ranges = vec![
             KeyTransformRange {
                 range: Range { start: 0, end: 1 },
-                idx: 0,
+                idx: Some(0),
                 range_type: KeyTransformRangeType::Replace,
             },
             KeyTransformRange {
                 range: Range { start: 2, end: 3 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Replace,
             },
         ];
@@ -5884,7 +6003,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 3 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5902,7 +6021,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 2, end: 3 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5921,17 +6040,17 @@ mod test {
         let transform_ranges = vec![
             KeyTransformRange {
                 range: Range { start: 0, end: 1 },
-                idx: 0,
+                idx: Some(0),
                 range_type: KeyTransformRangeType::Replace,
             },
             KeyTransformRange {
                 range: Range { start: 1, end: 2 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Delete,
             },
             KeyTransformRange {
                 range: Range { start: 2, end: 3 },
-                idx: 2,
+                idx: Some(2),
                 range_type: KeyTransformRangeType::Replace,
             },
         ];
@@ -5953,7 +6072,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 1, end: 2 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -5972,7 +6091,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 5, end: 10 }, // Out of bounds
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -6174,7 +6293,7 @@ mod test {
             5,
             &[KeyTransformRange {
                 range: Range { start: 2, end: 3 },
-                idx: 0,
+                idx: Some(0),
                 range_type: KeyTransformRangeType::Replace,
             }],
         );
@@ -6191,7 +6310,7 @@ mod test {
             5,
             &[KeyTransformRange {
                 range: Range { start: 2, end: 5 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Replace,
             }],
         );
@@ -6208,7 +6327,7 @@ mod test {
             5,
             &[KeyTransformRange {
                 range: Range { start: 2, end: 5 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Delete,
             }],
         );
@@ -6226,12 +6345,12 @@ mod test {
             &[
                 KeyTransformRange {
                     range: Range { start: 1, end: 2 },
-                    idx: 2,
+                    idx: Some(2),
                     range_type: KeyTransformRangeType::Replace,
                 },
                 KeyTransformRange {
                     range: Range { start: 2, end: 5 },
-                    idx: 1,
+                    idx: Some(1),
                     range_type: KeyTransformRangeType::Delete,
                 },
             ],
@@ -6249,7 +6368,7 @@ mod test {
             5,
             &[KeyTransformRange {
                 range: Range { start: 0, end: 5 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Delete,
             }],
         );
@@ -6261,17 +6380,17 @@ mod test {
             &[
                 KeyTransformRange {
                     range: Range { start: 2, end: 3 },
-                    idx: 1,
+                    idx: Some(1),
                     range_type: KeyTransformRangeType::Delete,
                 },
                 KeyTransformRange {
                     range: Range { start: 3, end: 4 },
-                    idx: 2,
+                    idx: Some(2),
                     range_type: KeyTransformRangeType::Delete,
                 },
                 KeyTransformRange {
                     range: Range { start: 4, end: 5 },
-                    idx: 3,
+                    idx: Some(3),
                     range_type: KeyTransformRangeType::Delete,
                 },
             ],
@@ -6960,7 +7079,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 1, end: 3 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -7005,7 +7124,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 2 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -7055,7 +7174,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 1, end: 3 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -7097,7 +7216,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 0, end: 1 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Replace,
         }];
 
@@ -7140,7 +7259,7 @@ mod test {
 
         let transform_ranges = vec![KeyTransformRange {
             range: Range { start: 1, end: 2 },
-            idx: 0,
+            idx: Some(0),
             range_type: KeyTransformRangeType::Delete,
         }];
 
@@ -7190,12 +7309,12 @@ mod test {
         let transform_ranges = vec![
             KeyTransformRange {
                 range: Range { start: 1, end: 2 },
-                idx: 0,
+                idx: Some(0),
                 range_type: KeyTransformRangeType::Replace,
             },
             KeyTransformRange {
                 range: Range { start: 2, end: 3 },
-                idx: 1,
+                idx: Some(1),
                 range_type: KeyTransformRangeType::Replace,
             },
         ];
