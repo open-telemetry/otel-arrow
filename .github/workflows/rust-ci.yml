@@ -411,6 +411,9 @@ jobs:
       - name: cargo check benchmarks --no-default-features
         run: cargo check -p benchmarks --benches --no-default-features
         working-directory: ./rust/${{ matrix.folder }}
+      - name: cargo test otap integration targets --no-run
+        run: cargo test -p otap-df-otap --tests --no-run
+        working-directory: ./rust/${{ matrix.folder }}
 
   # Required builds for otap-dataflow: compile once per OS, create nextest archive.
   # Test binaries are uploaded as artifacts so test partitions don't re-compile.

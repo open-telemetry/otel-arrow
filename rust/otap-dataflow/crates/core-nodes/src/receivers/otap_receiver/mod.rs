@@ -9,7 +9,6 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-#[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::compression::CompressionMethod;
@@ -20,7 +19,6 @@ use otap_df_otap::otap_grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings,
 };
 use otap_df_otap::pdata::OtapPdata;
-#[cfg(feature = "experimental-tls")]
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
 
 use async_trait::async_trait;
@@ -95,7 +93,6 @@ pub struct Config {
     pub timeout: Option<Duration>,
 
     /// TLS configuration
-    #[cfg(feature = "experimental-tls")]
     pub tls: Option<TlsServerConfig>,
 }
 
@@ -364,7 +361,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             server_builder = server_builder.timeout(timeout);
         }
 
-        #[cfg(feature = "experimental-tls")]
         let maybe_tls_acceptor =
             build_tls_acceptor(self.config.tls.as_ref())
                 .await
@@ -375,7 +371,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     source_detail: format_error_sources(&e),
                 })?;
 
-        #[cfg(feature = "experimental-tls")]
         let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
 
         let server = server_builder
@@ -399,7 +394,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let server_task = {
             let grpc_shutdown = grpc_shutdown.clone();
             async {
-                #[cfg(feature = "experimental-tls")]
                 match maybe_tls_acceptor {
                     Some(tls_acceptor) => {
                         let tls_stream =
@@ -417,14 +411,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             })
                             .await
                     }
-                }
-                #[cfg(not(feature = "experimental-tls"))]
-                {
-                    server
-                        .serve_with_incoming_shutdown(listener_stream, async move {
-                            grpc_shutdown.cancelled().await;
-                        })
-                        .await
                 }
             }
         };

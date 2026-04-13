@@ -1,5 +1,7 @@
 # Validation Framework
 
+<!-- markdownlint-disable MD013 -->
+
 End-to-end harness for standing up a **system-under-validation (SUV)**
 pipeline, driving OTLP/OTAP traffic into it, capturing the output, and
 asserting invariants.
@@ -178,7 +180,7 @@ e.g. `receiver`, `exporter`.
   - default: 2-2
 - `with_tls(TlsConfig)` - enable TLS on the generator's exporter
   - optional; see [TLS / mTLS](#tls--mtls) for details
-  - requires the `experimental-tls` feature flag
+  - uses the built-in TLS support
 - `to_container(ContainerConnection)` - use a custom exporter that sends to a
   test container instead of directly to the SUV pipeline receiver
   - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
@@ -189,7 +191,7 @@ the keys under `nodes:` in your pipeline YAML.
 
 ### TLS / mTLS
 
-> Requires the `experimental-tls` feature flag.
+> Uses the built-in TLS support.
 
 TLS support is configured on the **Generator** side. The generator's exporter
 connects to a TLS-enabled receiver in the SUV pipeline. Use `${VAR}` placeholders
