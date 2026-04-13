@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776089245921,
+  "lastUpdate": 1776090272258,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "321966624790711de81afae226b1f8106d30cf8c",
-          "message": "Ignore flaky again (#2232)",
-          "timestamp": "2026-03-09T15:31:16Z",
-          "tree_id": "c7ba4e0a66a2e23cc7c8f12fab5ac4c20e3834d1",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/321966624790711de81afae226b1f8106d30cf8c"
-        },
-        "date": 1773074843861,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.0523096323013306,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.66615117142177,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.08928644012694,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 52.817057291666664,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 54.53515625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 474360.218097242,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 479351.95661333937,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003143,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10948518.251410605,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10886515.500522578,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 17053827.903452415,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "caa18736ab59255d459edc034c5d95147478e573",
+          "message": "Update Rust crate hashbrown to 0.17 (#2639)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [hashbrown](https://redirect.github.com/rust-lang/hashbrown) |\nworkspace.dependencies | minor | `0.16` → `0.17` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>rust-lang/hashbrown (hashbrown)</summary>\n\n###\n[`v0.17.0`](https://redirect.github.com/rust-lang/hashbrown/blob/HEAD/CHANGELOG.md#0170---2026-04-06)\n\n[Compare\nSource](https://redirect.github.com/rust-lang/hashbrown/compare/v0.16.1...v0.17.0)\n\n##### Added\n\n- Added `hash_table::OccupiedEntry::replace_entry_with`\n([#&#8203;669](https://redirect.github.com/rust-lang/hashbrown/issues/669))\n- Added `hash_map::{OccupiedEntry::into_entry,\nVacantEntryRef::insert_entry_with_key}`\n([#&#8203;670](https://redirect.github.com/rust-lang/hashbrown/issues/670))\n- Added `hash_table::UnsafeIter`\n([#&#8203;667](https://redirect.github.com/rust-lang/hashbrown/issues/667))\n- Added `iter` methods to various `HashTable` iterators\n([#&#8203;667](https://redirect.github.com/rust-lang/hashbrown/issues/667))\n- Added\n`HashMap::{replace_key,replace_key_unchecked,insert_with_key_unchecked}`\n([#&#8203;681](https://redirect.github.com/rust-lang/hashbrown/issues/681))\n- Added `into_map` methods to all `HashMap` entry types\n([#&#8203;686](https://redirect.github.com/rust-lang/hashbrown/issues/686))\n- Added `into_table` methods to all `HashTable` entry types\n([#&#8203;686](https://redirect.github.com/rust-lang/hashbrown/issues/686))\n- Added `#[must_use]` to constructors\n([#&#8203;697](https://redirect.github.com/rust-lang/hashbrown/issues/697))\n- `TryReserveError` now implements `Error`\n([#&#8203;698](https://redirect.github.com/rust-lang/hashbrown/issues/698))\n\n##### Changed\n\n- Changed `EntryRef` to use `ToOwned`\n([#&#8203;670](https://redirect.github.com/rust-lang/hashbrown/issues/670))\n- Bumped MSRV to 1.85 (2024 edition)\n([#&#8203;676](https://redirect.github.com/rust-lang/hashbrown/issues/676))\n\n##### Fixed\n\n- `HashTable:clone_from` now forwards to `RawTable::clone_from` instead\nof using the default implementation\n([#&#8203;668](https://redirect.github.com/rust-lang/hashbrown/issues/668))\n- Fixed potential UB in `RawTableInner::fallible_with_capacity`\n([#&#8203;692](https://redirect.github.com/rust-lang/hashbrown/issues/692))\n- Fixed incorrect length if a hasher panics during rehash\n([#&#8203;710](https://redirect.github.com/rust-lang/hashbrown/issues/710))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4xMTAuMiIsInVwZGF0ZWRJblZlciI6IjQzLjExMC4yIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-04-13T11:48:18Z",
+          "tree_id": "78f949bc7b299d809c28683fd108d510fdf8686f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/caa18736ab59255d459edc034c5d95147478e573"
+        },
+        "date": 1776090271261,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.0477747917175293,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.15806897459922,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.53323364485982,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 28.653645833333332,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 30.0625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 641742.527177989,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 648466.5437112406,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002232,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16959793.159753762,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 16968517.531107083,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
