@@ -330,6 +330,10 @@ impl AttributesProcessor {
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for AttributesProcessor {
+    fn is_chainable(&self) -> bool {
+        true
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,

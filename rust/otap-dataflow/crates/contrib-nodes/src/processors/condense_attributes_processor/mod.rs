@@ -581,6 +581,10 @@ impl CondenseAttributesProcessor {
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
+    fn is_chainable(&self) -> bool {
+        true
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,

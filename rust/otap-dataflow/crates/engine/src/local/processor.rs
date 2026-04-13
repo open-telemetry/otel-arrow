@@ -114,6 +114,15 @@ pub trait Processor<PData> {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         ProcessorRuntimeRequirements::none()
     }
+
+    /// Whether this processor can run inside a `processor_chain:inlined`.
+    ///
+    /// Chainable processors must be pure compute/transform processors with
+    /// no dependency on timers, wakeups, ack/nack subscriptions, named
+    /// output ports, or fan-out. Defaults to `false`.
+    fn is_chainable(&self) -> bool {
+        false
+    }
 }
 
 /// A `!Send` implementation of the EffectHandler.

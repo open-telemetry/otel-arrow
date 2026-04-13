@@ -9,6 +9,21 @@
 //! passing through all sub-processors.  Each sub-processor can still report
 //! its own individual `compute.success.duration` if it uses `ComputeDuration`
 //! internally.
+//!
+//! # Scheduling fairness
+//!
+//! The chain inserts `yield_now().await` between stages so the executor can
+//! schedule other tasks (receiver accepts, exporter flushes, timer ticks)
+//! between each sub-processor.  This bounds uninterrupted CPU time to a
+//! single sub-processor's work rather than the sum of the chain.
+//!
+//! # Buffer capacity
+//!
+//! Intermediate `Vec`-backed buffers are capped at the pipeline's configured
+//! `pdata_channel_capacity`.  If a sub-processor produces more outputs than
+//! that limit, the chain yields and drains before continuing.  This gives
+//! intermediate buffers the same backpressure ceiling as bounded channels
+//! in the normal pipeline model.
 
 use crate::Interests;
 use crate::control::NodeControlMsg;
@@ -74,6 +89,11 @@ pub struct ProcessorChainNode<PData> {
     /// Swapped between `stage_a` and `stage_b` on each stage.
     stage_a: Vec<PData>,
     stage_b: Vec<PData>,
+    /// Maximum number of items an intermediate buffer may hold before
+    /// the chain yields and drains.  Derived from the pipeline's
+    /// `pdata_channel_capacity` so intermediate buffers have the same
+    /// backpressure ceiling as bounded channels in the normal model.
+    buffer_capacity: usize,
 }
 
 /// A sub-processor with its own processor implementation.
@@ -121,6 +141,7 @@ impl<PData> ProcessorChainNode<PData> {
             composite_duration,
             stage_a: Vec::new(),
             stage_b: Vec::new(),
+            buffer_capacity,
         }
     }
 }
@@ -261,6 +282,14 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                         .zip(self.buffer_handlers.iter_mut())
                         .enumerate()
                     {
+                        // Yield between stages so the executor can schedule
+                        // other tasks (receiver accepts, exporter flushes,
+                        // timer ticks).  This bounds uninterrupted CPU time
+                        // to a single sub-processor's work.
+                        if i > 0 {
+                            tokio::task::yield_now().await;
+                        }
+
                         slot.effect_handler.core.set_node_interests(interests);
                         let data = single
                             .take()
@@ -298,6 +327,9 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                             .iter_mut()
                             .zip(self.buffer_handlers[start..].iter_mut())
                         {
+                            // Yield between stages for scheduling fairness.
+                            tokio::task::yield_now().await;
+
                             slot.effect_handler.core.set_node_interests(interests);
                             next.clear();
 
@@ -305,6 +337,17 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                                 sub.processor
                                     .process(Message::PData(data), &mut slot.effect_handler)
                                     .await?;
+
+                                // Enforce buffer capacity: if the sub-processor
+                                // produced more outputs than the pipeline's
+                                // pdata_channel_capacity, yield and drain into
+                                // `next` before continuing.  This gives
+                                // intermediate buffers the same backpressure
+                                // ceiling as bounded channels.
+                                if slot.buffer.borrow().len() >= self.buffer_capacity {
+                                    next.append(&mut slot.buffer.borrow_mut());
+                                    tokio::task::yield_now().await;
+                                }
                             }
                             next.append(&mut slot.buffer.borrow_mut());
 
@@ -314,6 +357,9 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                             }
                         }
 
+                        // Yield before the last sub-processor.
+                        tokio::task::yield_now().await;
+
                         // Last sub-processor with staging vecs.
                         let last = self.sub_processors.last_mut().expect("checked non-empty");
                         for data in current.drain(..) {
@@ -322,6 +368,9 @@ impl<PData: Clone + 'static> Processor<PData> for ProcessorChainNode<PData> {
                                 .await?;
                         }
                     } else {
+                        // Yield before the last sub-processor.
+                        tokio::task::yield_now().await;
+
                         // Fast path completed — process last sub-processor
                         // directly with the single item.
                         let last = self.sub_processors.last_mut().expect("checked non-empty");

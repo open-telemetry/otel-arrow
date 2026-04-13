@@ -30,7 +30,7 @@ groups:
                   key: pre_chain
                   value: A
           chain:
-            type: processor_chain:composite
+            type: processor_chain:inlined
             config:
               processors:
                 insert_B:

@@ -1591,7 +1591,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .get_processor_factory_map()
                 .get(sub_urn.as_str())
                 .ok_or(Error::UnknownProcessor {
-                    plugin_urn: sub_urn,
+                    plugin_urn: sub_urn.clone(),
                 })?;
 
             // Run the factory within the sub-processor's telemetry scope so
@@ -1610,6 +1610,20 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             // Extract just the processor implementation; the chain manages its
             // own channels and control flow.
             let processor = wrapper.into_local_processor();
+
+            if !processor.is_chainable() {
+                return Err(Error::ConfigError(Box::new(
+                    otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "processor `{}` (urn: {}) is not chainable and cannot be used \
+                             inside a processor_chain. Only processors that implement \
+                             `is_chainable() -> true` are supported.",
+                            sub_name_key,
+                            sub_urn.as_str(),
+                        ),
+                    },
+                )));
+            }
 
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);

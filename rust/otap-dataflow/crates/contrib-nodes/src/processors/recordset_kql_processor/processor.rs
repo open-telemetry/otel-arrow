@@ -215,6 +215,10 @@ impl RecordsetKqlProcessor {
 
 #[async_trait(?Send)]
 impl Processor<OtapPdata> for RecordsetKqlProcessor {
+    fn is_chainable(&self) -> bool {
+        true
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
