@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// OpenTelemetry Metrics View configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ViewConfig {
     /// Selector to match instruments for this view transformation.
     pub selector: MetricSelector,
@@ -17,7 +17,7 @@ pub struct ViewConfig {
 }
 
 /// OpenTelemetry Metric Selector configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct MetricSelector {
     /// The name of the instrument to match.
     pub instrument_name: Option<String>,
@@ -27,7 +27,7 @@ pub struct MetricSelector {
 }
 
 /// OpenTelemetry Metric Stream configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct MetricStream {
     /// The new name of the instrument matching the selector.
     pub name: Option<String>,
