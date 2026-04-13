@@ -39,7 +39,6 @@ otap-df-otap.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true
-tracing.workspace = true
 mimalloc = { workspace = true, optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
