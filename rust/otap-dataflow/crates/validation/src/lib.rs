@@ -308,6 +308,68 @@ mod tests {
             .expect("log sampling passthrough traces validation failed");
     }
 
+    /// Validates that the log sampling processor passes metric signals through
+    /// unchanged. The sampler only operates on logs; metrics should be forwarded
+    /// with no modifications.
+    #[test]
+    fn validation_log_sampling_passthrough_metrics() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::metrics()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("log sampling passthrough metrics validation failed");
+    }
+
+    /// Validates the log sampling processor with a full passthrough ratio policy
+    /// (emit 1 out of 1 = 100% sampling). All log signals should pass through
+    /// unchanged.
+    #[test]
+    fn validation_log_sampling_full_passthrough() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file(
+                    "./validation_pipelines/log-sampling-full-passthrough-processor.yaml",
+                )
+                .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("log sampling full passthrough validation failed");
+    }
+
     /// Validates the transform processor with a negated KQL filter that drops
     /// INFO-severity logs and keeps WARN + ERROR. Static log signals have ~80%
     /// INFO so roughly 80% should be dropped.
@@ -374,6 +436,210 @@ mod tests {
             )
             .run()
             .expect("transform processor attribute set validation failed");
+    }
+
+    /// Validates that the transform processor passes non-matching signal types
+    /// through unchanged. The query is scoped to `logs |`, so trace signals
+    /// should be forwarded with no modifications.
+    #[test]
+    fn validation_transform_processor_passthrough_traces() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::traces()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor passthrough traces validation failed");
+    }
+
+    /// Validates the transform processor with an OPL exclude query that removes
+    /// the `thread.id` attribute from every log record. The `thread.name`
+    /// attribute should still be present after the transform.
+    #[test]
+    fn validation_transform_processor_attribute_exclude() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/transform-exclude-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::AttributeDeny {
+                            domains: vec![AttributeDomain::Signal],
+                            keys: vec!["thread.id".into()],
+                        },
+                        ValidationInstructions::AttributeRequireKey {
+                            domains: vec![AttributeDomain::Signal],
+                            keys: vec!["thread.name".into()],
+                        },
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor attribute exclude validation failed");
+    }
+
+    /// Validates that the temporal reaggregation processor passes log signals
+    /// through unchanged. The processor only operates on metrics; logs should
+    /// be forwarded with no modifications.
+    #[test]
+    fn validation_temporal_reaggregation_passthrough_logs() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("temporal reaggregation passthrough logs validation failed");
+    }
+
+    /// Validates that the temporal reaggregation processor passes trace signals
+    /// through unchanged. The processor only operates on metrics; traces should
+    /// be forwarded with no modifications.
+    #[test]
+    fn validation_temporal_reaggregation_passthrough_traces() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::traces()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("temporal reaggregation passthrough traces validation failed");
+    }
+
+    /// Validates the temporal reaggregation processor with metric signals.
+    /// Static metrics (cumulative sums and gauges) are buffered and flushed
+    /// periodically. Since all data points share the same stream identity
+    /// attributes, temporal downsampling occurs (last-value-wins per stream),
+    /// resulting in signal reduction.
+    #[test]
+    fn validation_temporal_reaggregation_metrics() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::metrics()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::SignalDrop {
+                            min_drop_ratio: Some(0.95),
+                            max_drop_ratio: Some(1.0),
+                        },
+                        ValidationInstructions::AttributeNoDuplicate,
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("temporal reaggregation metrics validation failed");
+    }
+
+    /// Validates that the temporal reaggregation processor preserves resource
+    /// attributes when passing log signals through. The static signal generator
+    /// sets `service.name` to `"load-generator"` on all resources, and this
+    /// must be present in the output.
+    #[test]
+    fn validation_temporal_reaggregation_resource_preservation() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::AttributeRequireKeyValue {
+                        domains: vec![AttributeDomain::Resource],
+                        pairs: vec![KeyValue::new(
+                            "service.name".into(),
+                            AnyValue::String("load-generator".into()),
+                        )],
+                    }])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("temporal reaggregation resource preservation validation failed");
     }
 
     #[test]
