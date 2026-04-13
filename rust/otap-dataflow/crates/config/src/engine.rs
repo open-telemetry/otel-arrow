@@ -33,7 +33,7 @@ pub const ENGINE_CONFIG_VERSION_V1: &str = "otel_dataflow/v1";
 
 /// Root configuration for the pipeline engine.
 /// Contains engine-level settings and all pipeline groups.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct OtelDataflowSpec {
     /// Version of the engine configuration schema.
@@ -56,7 +56,7 @@ pub struct OtelDataflowSpec {
 }
 
 /// Top-level engine configuration section.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     /// Optional HTTP admin server configuration.
@@ -89,7 +89,7 @@ pub struct EngineTopicsConfig {
 }
 
 /// Engine observability declarations.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityConfig {
     /// Optional dedicated observability pipeline for the engine.
@@ -98,7 +98,7 @@ pub struct EngineObservabilityConfig {
 }
 
 /// Configuration for the dedicated engine observability pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPipelineConfig {
     /// Optional policy set for this observability pipeline.
@@ -132,7 +132,7 @@ impl EngineObservabilityPipelineConfig {
 /// Policy declarations allowed on the dedicated engine observability pipeline.
 ///
 /// Note: `resources` is intentionally not supported yet for observability.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPolicies {
     /// Channel capacity policy.
@@ -165,7 +165,7 @@ impl EngineObservabilityPolicies {
 }
 
 /// Configuration for the HTTP admin endpoints.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HttpAdminSettings {
     /// The address to bind the HTTP server to (e.g., "127.0.0.1:8080").
@@ -1832,5 +1832,56 @@ groups:
         let from_yaml: OtelDataflowCrd =
             serde_yaml::from_str(&yaml_str).expect("deserialize from YAML");
         assert_eq!(from_yaml.spec.version, original.version);
+    }
+
+    #[test]
+    fn configs_with_different_values_are_not_equal() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let mut config1 = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        let config2 = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+
+        config1.version = "v999".to_string();
+        assert_ne!(config1, config2);
+    }
+
+    #[test]
+    fn nested_config_changes_are_not_equal() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let config1 = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        let mut config2 = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+
+        // Mutate something buried a few levels deep
+        _ = config2
+            .groups
+            .values_mut()
+            .next()
+            .unwrap()
+            .topics
+            .insert("fake_topic".into(), TopicSpec::default());
+
+        assert_ne!(config1, config2);
+    }
+
+    #[test]
+    fn yaml_field_ordering_does_not_affect_equality() {
+        // Same logical config, different YAML key ordering
+        let yaml1 = format!(
+            r#"
+            version: "{ENGINE_CONFIG_VERSION_V1}"
+            engine: {{}}
+            groups: {{}}
+        "#
+        );
+        let yaml2 = format!(
+            r#"
+            groups: {{}}
+            version: "{ENGINE_CONFIG_VERSION_V1}"
+            engine: {{}}
+        "#
+        );
+
+        let config1 = OtelDataflowSpec::from_yaml(&yaml1).expect("should parse");
+        let config2 = OtelDataflowSpec::from_yaml(&yaml2).expect("should parse");
+        assert_eq!(config1, config2);
     }
 }

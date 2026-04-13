@@ -27,7 +27,7 @@ use std::sync::Arc;
 ///
 /// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
 /// deserializing directly with serde to ensure plugin URNs are normalized.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
@@ -71,7 +71,7 @@ const fn default_pipeline_type() -> PipelineType {
 
 /// The type of pipeline, which can be either OTLP (OpenTelemetry Protocol) or
 /// OTAP (OpenTelemetry with Apache Arrow Protocol).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineType {
     /// OpenTelemetry Protocol (OTLP) pipeline.
@@ -348,7 +348,7 @@ pub enum DispatchPolicy {
 ///
 /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
 /// across multiple cores/threads without cloning the entire configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(transparent)]
 pub struct PipelineNodes(HashMap<NodeId, Arc<NodeUserConfig>>);
 
