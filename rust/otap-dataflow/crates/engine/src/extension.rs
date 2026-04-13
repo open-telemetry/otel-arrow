@@ -172,6 +172,10 @@ pub struct Active<E>(pub E);
 /// Wraps an extension type to signal it is passive (no lifecycle).
 ///
 /// No task is spawned, no control channel is created.
+///
+/// TODO: In this PR the wrapped value is consumed by `decompose()` and
+/// only its `TypeId` is retained for the same-type guard. The value itself
+/// will be stored in a later PR when the capability system is added.
 pub struct Passive<E>(pub E);
 
 /// Decomposed result of a shared extension provider.
@@ -205,7 +209,9 @@ mod sealed_provider {
     pub trait SealedLocal {}
 }
 
-// Active<E> shared: requires Extension + Clone + Send
+// Active<E> shared: Clone is required by the capability system to produce a
+// `Box<dyn CloneAnySend>` for type-erased capability registration alongside
+// the lifecycle `Box<dyn Extension>`.
 impl<E: shared_ext::Extension + Clone + Send + 'static> sealed_provider::SealedShared
     for Active<E>
 {
@@ -221,7 +227,8 @@ impl<E: shared_ext::Extension + Clone + Send + 'static> SharedProvider for Activ
     }
 }
 
-// Passive<E> shared: no Extension bound needed
+// Passive<E> shared: Clone + Send required for capability registration
+// (the value is stored as `Box<dyn CloneAnySend>` in the capability system).
 impl<E: Clone + Send + 'static> sealed_provider::SealedShared for Passive<E> {}
 
 impl<E: Clone + Send + 'static> SharedProvider for Passive<E> {
@@ -246,7 +253,8 @@ impl<E: local_ext::Extension + 'static> LocalProvider for Active<std::rc::Rc<E>>
     }
 }
 
-// Passive<Rc<E>> local: no Extension bound needed
+// Passive<Rc<E>> local: the value is stored as `Rc<dyn Any>` for local
+// capability registration in the capability system.
 impl<E: 'static> sealed_provider::SealedLocal for Passive<std::rc::Rc<E>> {}
 
 impl<E: 'static> LocalProvider for Passive<std::rc::Rc<E>> {
@@ -362,7 +370,9 @@ impl ExtensionWrapperBuilder {
             (None, None)
         };
 
-        // Dual control channels when both variants have active lifecycles.
+        // When both local and shared variants are active, each gets its own
+        // independent control channel so they can be started and shut down
+        // separately by the engine.
         let (shared_control_sender, shared_control_receiver) = if has_both_lifecycles {
             let (tx, rx) = tokio::sync::mpsc::channel(self.runtime_config.control_channel.capacity);
             (Some(SharedSender::mpsc(tx)), Some(SharedReceiver::mpsc(rx)))
@@ -513,14 +523,15 @@ impl ExtensionWrapper {
 
         match (self.local_extension, self.shared_extension) {
             (Some(_), Some(_)) => {
-                // The engine starts each active lifecycle independently — it
-                // should never call start() on a wrapper that still holds both.
-                // The runtime pipeline will take each variant separately.
-                unreachable!(
-                    "extension `{}` has both active lifecycles — the engine must \
-                     start each variant independently, not through a single start() call",
-                    node_name
-                );
+                // TODO(PR5): The engine will take each variant from the wrapper
+                // and start them as separate tasks. Until then, return an error.
+                Err(Error::InternalError {
+                    message: format!(
+                        "extension `{}`: dual-active start() not yet supported — \
+                         this support will be added in a follow-up PR.",
+                        node_name,
+                    ),
+                })
             }
             (Some(local_ext), None) => {
                 otel_debug!("extension.start.local", node_id = node_name.as_ref(),);
@@ -805,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extension_control_senders_dual_active() {
+    fn test_dual_active_different_types_builds_with_two_control_channels() {
         // Use a genuinely different local type to satisfy the TypeId guard.
         #[derive(Clone)]
         struct LocalTestExtension;
@@ -835,13 +846,13 @@ mod tests {
         ));
         let config = ExtensionConfig::new("ctrl_dual");
 
-        // Different types: Rc<LocalTestExtension> (local) vs TestExtension (shared)
-        // Both active -> two control senders
+        // Both active with different types — valid, gets two control senders.
         let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
             .with_local(Active(std::rc::Rc::new(LocalTestExtension)))
             .with_shared(Active(ext))
             .build();
 
+        assert!(!wrapper.is_passive());
         let senders = wrapper.extension_control_senders();
         assert_eq!(senders.len(), 2);
     }
