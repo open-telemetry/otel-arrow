@@ -171,111 +171,143 @@ mod tests {
     }
 
     /// Validates the log sampling processor with a ratio policy (emit 1 out of
-    /// 10). Static log signals are generated and passed through the sampler,
-    /// which should drop approximately 90% of log records.
+    /// 10) across a range of input sizes. The sampler should drop approximately
+    /// 90% of log records regardless of how many signals are sent.
     #[test]
     fn validation_log_sampling_ratio_pipeline() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::logs()
-                    .fixed_count(500)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.80),
-                            max_drop_ratio: Some(0.99),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("log sampling ratio validation failed");
+        for signal_count in [10, 100, 500] {
+            let min_drop = if signal_count <= 10 { 0.70 } else { 0.80 };
+
+            Scenario::new()
+                .pipeline(
+                    Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                        .expect("failed to read pipeline yaml"),
+                )
+                .add_generator(
+                    "traffic_gen",
+                    Generator::logs()
+                        .fixed_count(signal_count)
+                        .otlp_grpc("receiver")
+                        .core_range(1, 1)
+                        .static_signals(),
+                )
+                .add_capture(
+                    "validate",
+                    Capture::default()
+                        .otap_grpc("exporter")
+                        .validate(vec![
+                            ValidationInstructions::SignalDrop {
+                                min_drop_ratio: Some(min_drop),
+                                max_drop_ratio: Some(0.99),
+                            },
+                            ValidationInstructions::AttributeNoDuplicate,
+                        ])
+                        .control_streams(["traffic_gen"])
+                        .core_range(2, 2),
+                )
+                .run()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "log sampling ratio validation failed for signal_count={signal_count}: {e}"
+                    )
+                });
+        }
     }
 
     /// Validates the transform processor with a KQL filter query that keeps
-    /// only ERROR-severity logs. Static log signals have ~5% ERROR, ~15% WARN,
-    /// and ~80% INFO, so the vast majority should be dropped.
+    /// only ERROR-severity logs across a range of input sizes. Static log
+    /// signals have ~5% ERROR, ~15% WARN, and ~80% INFO. Severity assignment
+    /// cycles every 20 records, so inputs below 20 may contain zero ERROR
+    /// records.
     #[test]
     fn validation_transform_processor_filter_pipeline() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::logs()
-                    .fixed_count(500)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.80),
-                            max_drop_ratio: Some(0.99),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("transform processor filter validation failed");
+        for signal_count in [10, 100, 500] {
+            // With < 20 signals the severity cycle may yield zero ERROR logs,
+            // resulting in 100% drop.
+            let max_drop = if signal_count < 20 { 1.0 } else { 0.99 };
+
+            Scenario::new()
+                .pipeline(
+                    Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
+                        .expect("failed to read pipeline yaml"),
+                )
+                .add_generator(
+                    "traffic_gen",
+                    Generator::logs()
+                        .fixed_count(signal_count)
+                        .otlp_grpc("receiver")
+                        .core_range(1, 1)
+                        .static_signals(),
+                )
+                .add_capture(
+                    "validate",
+                    Capture::default()
+                        .otap_grpc("exporter")
+                        .validate(vec![
+                            ValidationInstructions::SignalDrop {
+                                min_drop_ratio: Some(0.80),
+                                max_drop_ratio: Some(max_drop),
+                            },
+                            ValidationInstructions::AttributeNoDuplicate,
+                        ])
+                        .control_streams(["traffic_gen"])
+                        .core_range(2, 2),
+                )
+                .run()
+                .unwrap_or_else(|e| {
+                    panic!("transform processor filter validation failed for signal_count={signal_count}: {e}")
+                });
+        }
     }
 
     /// Validates the log sampling processor with a zip policy (max 50 items per
-    /// 60-second window). All 500 static log signals arrive well within the
-    /// window, so at most 50 are kept and the rest are dropped.
+    /// 60-second window) across a range of input sizes. When input is within
+    /// the budget (≤50), all signals pass through. When input exceeds the
+    /// budget, only 50 are kept.
     #[test]
     fn validation_log_sampling_zip_pipeline() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/log-sampling-zip-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::logs()
-                    .fixed_count(500)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.85),
-                            max_drop_ratio: Some(0.99),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("log sampling zip validation failed");
+        for signal_count in [10, 100, 500] {
+            // Zip budget is 50 items. Signals within budget pass through unchanged.
+            let validations = if signal_count <= 50 {
+                vec![ValidationInstructions::Equivalence]
+            } else {
+                vec![
+                    ValidationInstructions::SignalDrop {
+                        min_drop_ratio: Some(0.30),
+                        max_drop_ratio: Some(0.99),
+                    },
+                    ValidationInstructions::AttributeNoDuplicate,
+                ]
+            };
+
+            Scenario::new()
+                .pipeline(
+                    Pipeline::from_file("./validation_pipelines/log-sampling-zip-processor.yaml")
+                        .expect("failed to read pipeline yaml"),
+                )
+                .add_generator(
+                    "traffic_gen",
+                    Generator::logs()
+                        .fixed_count(signal_count)
+                        .otlp_grpc("receiver")
+                        .core_range(1, 1)
+                        .static_signals(),
+                )
+                .add_capture(
+                    "validate",
+                    Capture::default()
+                        .otap_grpc("exporter")
+                        .validate(validations)
+                        .control_streams(["traffic_gen"])
+                        .core_range(2, 2),
+                )
+                .run()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "log sampling zip validation failed for signal_count={signal_count}: {e}"
+                    )
+                });
+        }
     }
 
     /// Validates that the log sampling processor passes non-log signals through
@@ -371,39 +403,48 @@ mod tests {
     }
 
     /// Validates the transform processor with a negated KQL filter that drops
-    /// INFO-severity logs and keeps WARN + ERROR. Static log signals have ~80%
-    /// INFO so roughly 80% should be dropped.
+    /// INFO-severity logs and keeps WARN + ERROR across a range of input sizes.
+    /// Static log signals have ~80% INFO. Severity assignment cycles every 20
+    /// records, so inputs below 20 may contain only INFO records.
     #[test]
     fn validation_transform_processor_not_filter_pipeline() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-not-filter-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::logs()
-                    .fixed_count(500)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.70),
-                            max_drop_ratio: Some(0.90),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("transform processor not-filter validation failed");
+        for signal_count in [10, 100, 500] {
+            // With < 20 signals the severity cycle may yield only INFO logs,
+            // resulting in 100% drop.
+            let max_drop = if signal_count < 20 { 1.0 } else { 0.90 };
+
+            Scenario::new()
+                .pipeline(
+                    Pipeline::from_file("./validation_pipelines/transform-not-filter-processor.yaml")
+                        .expect("failed to read pipeline yaml"),
+                )
+                .add_generator(
+                    "traffic_gen",
+                    Generator::logs()
+                        .fixed_count(signal_count)
+                        .otlp_grpc("receiver")
+                        .core_range(1, 1)
+                        .static_signals(),
+                )
+                .add_capture(
+                    "validate",
+                    Capture::default()
+                        .otap_grpc("exporter")
+                        .validate(vec![
+                            ValidationInstructions::SignalDrop {
+                                min_drop_ratio: Some(0.70),
+                                max_drop_ratio: Some(max_drop),
+                            },
+                            ValidationInstructions::AttributeNoDuplicate,
+                        ])
+                        .control_streams(["traffic_gen"])
+                        .core_range(2, 2),
+                )
+                .run()
+                .unwrap_or_else(|e| {
+                    panic!("transform processor not-filter validation failed for signal_count={signal_count}: {e}")
+                });
+        }
     }
 
     /// Validates the transform processor with an OPL set query that adds a new
@@ -567,42 +608,52 @@ mod tests {
             .expect("temporal reaggregation passthrough traces validation failed");
     }
 
-    /// Validates the temporal reaggregation processor with metric signals.
-    /// Static metrics (cumulative sums and gauges) are buffered and flushed
-    /// periodically. Since all data points share the same stream identity
-    /// attributes, temporal downsampling occurs (last-value-wins per stream),
-    /// resulting in signal reduction.
+    /// Validates the temporal reaggregation processor with metric signals across
+    /// a range of input sizes. Static metrics (cumulative sums and gauges) share
+    /// the same stream identity, so all data points collapse to ~2 outputs (one
+    /// per metric name) regardless of input size. Drop ratio scales with input.
     #[test]
     fn validation_temporal_reaggregation_metrics() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
+        for signal_count in [10, 100, 500] {
+            // Output is ~2 data points (one per metric name). Drop ratio = 1 - 2/n.
+            // With 10 signals: 80% drop. With 100: 98%. With 500: 99.6%.
+            // Use a formula with tolerance: min_drop = 1 - 4/n (allowing 2x output).
+            let min_drop = (1.0 - 4.0 / signal_count as f64).max(0.30);
+
+            Scenario::new()
+                .pipeline(
+                    Pipeline::from_file(
+                        "./validation_pipelines/temporal-reaggregation-processor.yaml",
+                    )
                     .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::metrics()
-                    .fixed_count(500)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.95),
-                            max_drop_ratio: Some(1.0),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("temporal reaggregation metrics validation failed");
+                )
+                .add_generator(
+                    "traffic_gen",
+                    Generator::metrics()
+                        .fixed_count(signal_count)
+                        .otlp_grpc("receiver")
+                        .core_range(1, 1)
+                        .static_signals(),
+                )
+                .add_capture(
+                    "validate",
+                    Capture::default()
+                        .otap_grpc("exporter")
+                        .validate(vec![
+                            ValidationInstructions::SignalDrop {
+                                min_drop_ratio: Some(min_drop),
+                                max_drop_ratio: Some(1.0),
+                            },
+                            ValidationInstructions::AttributeNoDuplicate,
+                        ])
+                        .control_streams(["traffic_gen"])
+                        .core_range(2, 2),
+                )
+                .run()
+                .unwrap_or_else(|e| {
+                    panic!("temporal reaggregation metrics validation failed for signal_count={signal_count}: {e}")
+                });
+        }
     }
 
     /// Validates that the temporal reaggregation processor preserves resource
