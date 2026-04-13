@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776014944120,
+  "lastUpdate": 1776046227257,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2754,6 +2754,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.6779,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5868ff15d7307129796bf35ba0f322a08a8d3586",
+          "message": " feat: Remove experimental-tls feature flag and make TLS always available  (#2624)\n\n### Summary                                 \n                                          \nRemove the `experimental-tls` feature gate and make TLS support\navailable by\ndefault across OTAP Dataflow.\n   \n### What changed\n                  \n- Removed the `experimental-tls` feature wiring from the workspace and\nall\n    affected crates\n  - Made the core TLS dependencies in `otap-df-otap` unconditional\n  - Removed feature-gated TLS fallback paths and the obsolete\n    `TlsFeatureDisabled` error variant    \n  - Made existing TLS tests compile and run by default\n- Updated configs, scripts, and docs to stop referring to\n`experimental-tls`\n- Added a binary-level compile-time guard in `df_engine` so normal\nbuilds must\nenable exactly one crypto provider:\n    - `crypto-ring`\n- `crypto-aws-lc`\n    - `crypto-openssl`                        \n  ### Notes       \n- This change does not alter the existing `crypto-*` feature flags; it\nonly\nremoves the compile-time gate around TLS availability.\n- `tonic/tls-native-roots` was intentionally not made unconditional.\nNative\ntrust anchors are loaded directly via `rustls_native_certs` in the TLS\nhelper\n    paths, so this is not an omission.",
+          "timestamp": "2026-04-12T06:29:36Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5868ff15d7307129796bf35ba0f322a08a8d3586"
+        },
+        "date": 1776046226811,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 1.0017,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.7252,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.9061,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.6241,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.8143,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
