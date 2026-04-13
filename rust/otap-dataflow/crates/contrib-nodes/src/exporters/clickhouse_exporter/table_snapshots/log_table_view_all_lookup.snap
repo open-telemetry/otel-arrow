@@ -1,0 +1,38 @@
+---
+source: example-data-plane/crates/exporters/src/clickhouse_exporter/tables.rs
+expression: view_sql
+---
+
+CREATE VIEW IF NOT EXISTS otap.otel_logs AS
+SELECT
+    signal.Timestamp as Timestamp,
+    signal.TimestampTime,
+    signal.ResourceSchemaUrl,
+    ra.attributes as ResourceAttributes,
+    signal.ScopeSchemaUrl,
+    signal.ScopeName,
+    signal.ScopeVersion,
+    sa.attributes as ScopeAttributes,
+    la.attributes as LogAttributes,
+    signal.TraceId,
+    signal.SpanId,
+    signal.SeverityText,
+    signal.SeverityNumber,
+    signal.ServiceName,
+    signal.Body,
+    signal.EventName
+FROM otap.otel_logs_raw AS signal
+
+LEFT JOIN otap.otel_resource_attributes AS ra
+    ON signal.part_id     = ra.part_id
+    AND signal.resource_id = ra.parent_id
+
+
+LEFT JOIN otap.otel_scope_attributes AS sa
+    ON signal.part_id     = sa.part_id
+    AND signal.scope_id = sa.parent_id
+
+
+LEFT JOIN otap.otel_log_attributes AS la
+    ON signal.part_id     = la.part_id
+    AND signal.id = la.parent_id

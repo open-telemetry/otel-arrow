@@ -1,0 +1,21 @@
+---
+source: example-data-plane/crates/exporters/src/clickhouse_exporter/tables.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS otap.otel_trace_attributes_raw (
+    `part_id` FixedString(32) CODEC(ZSTD(1)),
+    `parent_id` UInt32 CODEC(ZSTD(1)),
+    `insert_time` DateTime DEFAULT now(),
+    `key` String CODEC(ZSTD(1)),
+    `type` UInt8,
+    `str` String NULL CODEC(ZSTD(1)),
+    `int` Int64 NULL CODEC(ZSTD(1)),
+    `double` Float64 NULL CODEC(ZSTD(1)),
+    `bool` UInt8 NULL,
+    `bytes` String NULL CODEC(ZSTD(1)),
+    `ser` String NULL CODEC(ZSTD(1))
+) ENGINE = MergeTree
+PARTITION BY (toDate(insert_time))
+PRIMARY KEY (part_id, parent_id)
+ORDER BY (part_id, parent_id, insert_time)
+;
