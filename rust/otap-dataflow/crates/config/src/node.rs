@@ -59,7 +59,7 @@ where
 }
 
 /// User configuration for a node in the pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NodeUserConfig {
     /// The node type URN identifying the plugin (factory) to use for this node.
@@ -348,7 +348,7 @@ impl NodeUserConfig {
 
 /// Entity configuration for a node, aligned with the semantic conventions model.
 /// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NodeEntity {
     /// Extensions to the entity's attribute sets.
@@ -358,7 +358,7 @@ pub struct NodeEntity {
 
 /// Node entity extensions, including user-provided identifying attributes.
 /// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExtendedNodeEntity {
     /// Attributes that identify this node in telemetry emitted

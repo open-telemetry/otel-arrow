@@ -99,7 +99,7 @@ futures-core = "0.3.32"
 futures-channel = "0.3.32"
 futures-timer = "3.0.3"
 async-channel = { version = "2.5.0" }
-hashbrown = { version = "0.16", features = ["equivalent"] }
+hashbrown = { version = "0.17", features = ["equivalent"] }
 http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
@@ -206,7 +206,7 @@ weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git",
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = "=4.2.0"
+zip = "=4.6.1"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
@@ -252,9 +252,6 @@ unchecked-arithmetic = []
 
 # Dev/test tooling (fake data generator).
 dev-tools = ["otap-df-core-nodes/dev-tools"]
-
-# Experimental features
-experimental-tls = ["otap-df-otap/experimental-tls", "otap-df-core-nodes/experimental-tls"]
 
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).

@@ -33,11 +33,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
 
-#[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
-#[cfg(feature = "experimental-tls")]
 use otap_df_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
-#[cfg(feature = "experimental-tls")]
 use otap_df_telemetry::otel_debug;
 
 /// Arrow records encoder for syslog messages
@@ -79,7 +76,6 @@ struct TcpConfig {
     /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
     ///
     /// When configured, TCP connections will require TLS.
-    #[cfg(feature = "experimental-tls")]
     tls: Option<TlsServerConfig>,
 }
 
@@ -143,7 +139,6 @@ impl Config {
         Self {
             protocol: Protocol::Tcp(TcpConfig {
                 listening_addr,
-                #[cfg(feature = "experimental-tls")]
                 tls: None,
             }),
             batch: None,
@@ -332,7 +327,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
 
                 // Build TLS acceptor if TLS is configured
-                #[cfg(feature = "experimental-tls")]
                 let maybe_tls_acceptor = build_tls_acceptor(tcp_config.tls.as_ref())
                     .await
                     .map_err(|e| Error::ReceiverError {
@@ -343,13 +337,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                     })?;
 
                 // Extract handshake timeout from TLS config (if present)
-                #[cfg(feature = "experimental-tls")]
                 let maybe_handshake_timeout = tcp_config
                     .tls
                     .as_ref()
                     .and_then(|tls| tls.handshake_timeout);
 
-                #[cfg(feature = "experimental-tls")]
                 if maybe_tls_acceptor.is_some() {
                     otel_info!(
                         "syslog_cef_receiver.tls_enabled",
@@ -447,9 +439,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let admission_state = self.admission_state.clone();
 
                                     // Clone TLS acceptor for the spawned task
-                                    #[cfg(feature = "experimental-tls")]
                                     let tls_acceptor = maybe_tls_acceptor.clone();
-                                    #[cfg(feature = "experimental-tls")]
                                     let tls_handshake_timeout = maybe_handshake_timeout;
 
                                     // Clone shutdown flag for the spawned task
@@ -470,7 +460,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         task_active_count.set(task_active_count.get() + 1);
 
                                         // Perform TLS handshake if configured, creating a unified reader type
-                                        #[cfg(feature = "experimental-tls")]
                                         let mut reader: Box<dyn AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
                                             // Use configured timeout or fall back to 10 seconds (the serde default)
                                             let timeout = tls_handshake_timeout
@@ -500,9 +489,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         } else {
                                             Box::new(BufReader::new(socket))
                                         };
-
-                                        #[cfg(not(feature = "experimental-tls"))]
-                                        let mut reader = BufReader::new(socket);
 
                                         // Suppress unused variable warning when TLS is disabled
                                         let _ = peer_addr;
@@ -1023,7 +1009,6 @@ pub struct SyslogCefReceiverMetrics {
     pub tcp_connections_active: UpDownCounter<u64>,
 
     /// Number of TLS handshake failures
-    #[cfg(feature = "experimental-tls")]
     #[metric(unit = "{error}")]
     pub tls_handshake_failures: Counter<u64>,
 
@@ -1915,7 +1900,6 @@ mod config_tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn valid_tcp_with_tls() {
         let json = serde_json::json!({
@@ -1936,7 +1920,6 @@ mod config_tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn valid_tcp_with_tls_and_client_ca() {
         let json = serde_json::json!({
@@ -1958,7 +1941,6 @@ mod config_tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn valid_tcp_with_tls_handshake_timeout() {
         let json = serde_json::json!({
@@ -1980,7 +1962,6 @@ mod config_tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn udp_with_tls_rejected() {
         let json = serde_json::json!({
