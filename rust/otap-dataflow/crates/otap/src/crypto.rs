@@ -19,6 +19,12 @@
 /// This function must be called **once**, early in `main()`, before any TLS
 /// connections are established (including via `reqwest`, `tonic`, etc.).
 ///
+/// TLS support is always compiled in, but a crypto provider is only required
+/// when the process actually uses TLS/HTTPS paths. Plaintext-only pipelines can
+/// run without a `crypto-*` feature. Any HTTPS exporter, TLS receiver, or
+/// HTTPS proxy configuration requires one of: `crypto-ring`,
+/// `crypto-aws-lc`, or `crypto-openssl`.
+///
 /// # Errors
 ///
 /// Returns `Err` if a provider was already installed (non-fatal in most cases).
@@ -71,7 +77,6 @@ pub fn install_crypto_provider() -> Result<(), String> {
 ///
 /// Uses [`std::sync::Once`] so it is safe to call from every test — the actual
 /// installation happens at most once per process.
-#[cfg(any(test, feature = "test-utils"))]
 pub fn ensure_crypto_provider() {
     use std::sync::Once;
     static INIT: Once = Once::new();

@@ -241,7 +241,8 @@ policies:
           store_as: tenant_id
     header_propagation:
       default:
-        selector: all_captured
+        selector:
+          type: all_captured
 ```
 
 For full transport header policy documentation, see

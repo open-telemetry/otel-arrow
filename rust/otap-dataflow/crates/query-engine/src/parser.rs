@@ -5,11 +5,12 @@
 //! query-engine
 
 use data_engine_expressions::{
-    PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation, ScalarExpression,
+    IntegerScalarExpression, NullScalarExpression, PipelineFunctionParameter,
+    PipelineFunctionParameterType, QueryLocation, ScalarExpression, StaticScalarExpression,
 };
 use data_engine_parser_abstractions::ParserOptions;
 
-use crate::consts::{ENCODE_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
 
 /// Create parser options that can be used when parsing an expression that will be executed with
 /// this query engine
@@ -22,8 +23,77 @@ pub fn default_parser_options() -> ParserOptions {
         // number of arguments is currently validated by the parser, but the rest of the parameter
         // definitions are left as placeholders. Additional parameter validation happens at query
         // planning time.
+        //
+        // Note that for functions that take optional parameters, we are currently explicitly
+        // filling in the default values, because our expression tree doesn't have the concept of
+        // optional parameters (signatures with different arities), even though the underlying
+        // function might support this. Eventually we may clean this up with modifications to the
+        // expression tree.
+        //
         .with_external_function(SHA256_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(ENCODE_FUNC_NAME, param_placeholders(2), None)
+        .with_external_function(
+            REGEXP_SUBSTR_FUNC_NAME,
+            vec![
+                (
+                    "",
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    None,
+                ),
+                (
+                    "",
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    None,
+                ),
+                (
+                    "start",
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    ))),
+                ),
+                (
+                    "occurrence",
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    ))),
+                ),
+                (
+                    "flags",
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    Some(ScalarExpression::Static(StaticScalarExpression::Null(
+                        NullScalarExpression::new(QueryLocation::new_fake()),
+                    ))),
+                ),
+                (
+                    "group",
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    Some(ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                    ))),
+                ),
+            ],
+            None,
+        )
 }
 
 fn param_placeholders(

@@ -33,7 +33,7 @@ pub const ENGINE_CONFIG_VERSION_V1: &str = "otel_dataflow/v1";
 
 /// Root configuration for the pipeline engine.
 /// Contains engine-level settings and all pipeline groups.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct OtelDataflowSpec {
     /// Version of the engine configuration schema.
@@ -56,7 +56,7 @@ pub struct OtelDataflowSpec {
 }
 
 /// Top-level engine configuration section.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     /// Optional HTTP admin server configuration.
@@ -89,7 +89,7 @@ pub struct EngineTopicsConfig {
 }
 
 /// Engine observability declarations.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityConfig {
     /// Optional dedicated observability pipeline for the engine.
@@ -98,7 +98,7 @@ pub struct EngineObservabilityConfig {
 }
 
 /// Configuration for the dedicated engine observability pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPipelineConfig {
     /// Optional policy set for this observability pipeline.
@@ -132,7 +132,7 @@ impl EngineObservabilityPipelineConfig {
 /// Policy declarations allowed on the dedicated engine observability pipeline.
 ///
 /// Note: `resources` is intentionally not supported yet for observability.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPolicies {
     /// Channel capacity policy.
@@ -165,7 +165,7 @@ impl EngineObservabilityPolicies {
 }
 
 /// Configuration for the HTTP admin endpoints.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HttpAdminSettings {
     /// The address to bind the HTTP server to (e.g., "127.0.0.1:8080").
@@ -188,6 +188,7 @@ fn default_bind_address() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kube::{CustomResource, CustomResourceExt};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -400,7 +401,7 @@ groups:
         );
         assert_eq!(
             defaults.resources.core_allocation,
-            crate::policy::CoreAllocation::AllCores
+            crate::policy::CoreAllocation::all_cores()
         );
     }
 
@@ -529,7 +530,7 @@ groups:
         assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
         assert_eq!(
             p1_resolved.policies.resources.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 2 }
+            crate::policy::CoreAllocation::core_count(2)
         );
         assert_eq!(
             p1_resolved.policies.health.ready_if,
@@ -565,7 +566,7 @@ groups:
         );
         assert_eq!(
             p2_resolved.policies.resources.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 5 }
+            crate::policy::CoreAllocation::core_count(5)
         );
 
         let p3_resolved = resolved
@@ -590,7 +591,7 @@ groups:
         );
         assert_eq!(
             p3_resolved.policies.resources.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 9 }
+            crate::policy::CoreAllocation::core_count(9)
         );
     }
 
@@ -1244,7 +1245,7 @@ groups:
         );
         assert_eq!(
             obs.policies.resources.core_allocation,
-            crate::policy::CoreAllocation::AllCores
+            crate::policy::CoreAllocation::all_cores()
         );
         assert_eq!(
             resolved
@@ -1604,7 +1605,8 @@ policies:
         - match_names: ["x-engine-header"]
     header_propagation:
       default:
-        selector: all_captured
+        selector:
+          type: all_captured
 engine: {}
 groups:
   default:
@@ -1643,8 +1645,8 @@ groups:
             vec!["x-engine-header"]
         );
         assert_eq!(
-            policy.header_propagation.default.selector,
-            crate::transport_headers_policy::PropagationSelector::AllCaptured
+            policy.header_propagation.default.selector.selector_type,
+            crate::transport_headers_policy::PropagationSelectorType::AllCaptured
         );
     }
 
@@ -1741,5 +1743,145 @@ groups:
                 );
             }
         }
+    }
+
+    /// Kubernetes CRD compatibility tests.
+    ///
+    /// These tests ensure `OtelDataflowSpec` remains representable as a Kubernetes
+    /// CustomResourceDefinition via kube-rs. This catches issues like:
+    ///
+    /// - Untagged enums (not representable in OpenAPI)
+    /// - `HashMap` with non-string keys
+    /// - Recursive types without `Box`
+    ///
+    /// If these tests fail after modifying config structs, see:
+    /// - https://github.com/kube-rs/kube/issues/779
+    /// - https://kube.rs/controllers/object/#extracting-the-crd
+    #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+    #[kube(
+        group = "opentelemetry.example.com",
+        version = "v1",
+        kind = "OtelDataflow",
+        namespaced
+    )]
+    pub struct OtelDataflowCrd {
+        pub spec: OtelDataflowSpec,
+    }
+
+    #[test]
+    fn crd_generation_succeeds_and_has_valid_structure() {
+        let crd = OtelDataflow::crd();
+
+        assert_eq!(crd.spec.group, "opentelemetry.example.com");
+        assert_eq!(crd.spec.names.kind, "OtelDataflow");
+
+        let version = crd.spec.versions.first().expect("must have a version");
+        let schema = version
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .expect("must have OpenAPI schema");
+
+        // `properties` is a BTreeMap<String, JSONSchemaProps> directly on the struct
+        let spec_schema = schema
+            .properties
+            .as_ref()
+            .and_then(|props| props.get("spec"))
+            .expect("CRD must have a 'spec' property");
+
+        let has_properties = spec_schema
+            .properties
+            .as_ref()
+            .is_some_and(|p| !p.is_empty());
+
+        assert!(
+            has_properties,
+            "CRD spec should have properties; empty schema may indicate unrepresentable types"
+        );
+    }
+
+    #[test]
+    fn crd_passes_validation() {
+        use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+
+        let crd = OtelDataflow::crd();
+
+        // Roundtrip through k8s-openapi's CRD type to verify compatibility
+        let json = serde_json::to_value(&crd).expect("serialize");
+        let _parsed: CustomResourceDefinition =
+            serde_json::from_value(json).expect("CRD should be valid according to k8s-openapi");
+    }
+
+    #[test]
+    fn spec_roundtrips_through_crd_serialization() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let original = OtelDataflowSpec::from_yaml(&yaml).expect("fixture should parse");
+
+        let crd_instance = OtelDataflowCrd {
+            spec: original.clone(),
+        };
+
+        // JSON roundtrip
+        let json = serde_json::to_value(&crd_instance).expect("serialize to JSON");
+        let from_json: OtelDataflowCrd =
+            serde_json::from_value(json).expect("deserialize from JSON");
+        assert_eq!(from_json.spec.version, original.version);
+
+        // YAML roundtrip (how CRDs are typically applied)
+        let yaml_str = serde_yaml::to_string(&crd_instance).expect("serialize to YAML");
+        let from_yaml: OtelDataflowCrd =
+            serde_yaml::from_str(&yaml_str).expect("deserialize from YAML");
+        assert_eq!(from_yaml.spec.version, original.version);
+    }
+
+    #[test]
+    fn configs_with_different_values_are_not_equal() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let mut config1 = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        let config2 = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+
+        config1.version = "v999".to_string();
+        assert_ne!(config1, config2);
+    }
+
+    #[test]
+    fn nested_config_changes_are_not_equal() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let config1 = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        let mut config2 = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+
+        // Mutate something buried a few levels deep
+        _ = config2
+            .groups
+            .values_mut()
+            .next()
+            .unwrap()
+            .topics
+            .insert("fake_topic".into(), TopicSpec::default());
+
+        assert_ne!(config1, config2);
+    }
+
+    #[test]
+    fn yaml_field_ordering_does_not_affect_equality() {
+        // Same logical config, different YAML key ordering
+        let yaml1 = format!(
+            r#"
+            version: "{ENGINE_CONFIG_VERSION_V1}"
+            engine: {{}}
+            groups: {{}}
+        "#
+        );
+        let yaml2 = format!(
+            r#"
+            groups: {{}}
+            version: "{ENGINE_CONFIG_VERSION_V1}"
+            engine: {{}}
+        "#
+        );
+
+        let config1 = OtelDataflowSpec::from_yaml(&yaml1).expect("should parse");
+        let config2 = OtelDataflowSpec::from_yaml(&yaml2).expect("should parse");
+        assert_eq!(config1, config2);
     }
 }

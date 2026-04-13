@@ -1,5 +1,7 @@
 # Syslog CEF Receiver Telemetry
 
+<!-- markdownlint-disable MD013 -->
+
 This document lists telemetry emitted directly by the
 `syslog_cef_receiver` component. It includes metric instruments registered
 by the component and log events emitted via `otel_*` log macros.
@@ -16,16 +18,16 @@ Metrics are registered under the metric set name `syslog_cef.receiver.metrics`.
 | `syslog_cef.receiver.metrics.received_logs_truncated` | Counter | `{item}` | Number of log records whose raw message exceeded the maximum message size and were truncated before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef.receiver.metrics.received_logs_forward_failed` | Counter | `{item}` | Number of log records refused by downstream (backpressure/unavailable). | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef.receiver.metrics.tcp_connections_active` | UpDownCounter | `{conn}` | Number of currently active TCP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef.receiver.metrics.tls_handshake_failures` | Counter | `{error}` | Number of TLS handshake failures. Only available with the `experimental-tls` feature. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef.receiver.metrics.tls_handshake_failures` | Counter | `{error}` | Number of TLS handshake failures. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 
 ## Logs
 
 | Event name | Level | Description | Produced in file |
 | --- | --- | --- | --- |
 | `syslog_cef_receiver.start` | `info` | Receiver startup with protocol (TCP or UDP) and listening address. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef_receiver.tls_enabled` | `info` | TLS has been enabled for the TCP receiver. Only emitted with the `experimental-tls` feature. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed successfully for an incoming connection. Only emitted with the `experimental-tls` feature. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed; the connection is closed. Only emitted with the `experimental-tls` feature. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.tls_enabled` | `info` | TLS has been enabled for the TCP receiver. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed successfully for an incoming connection. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed; the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timeout expired with connection tasks still active during shutdown. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Failed to build Arrow records from a parsed batch; the batch is dropped. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 
