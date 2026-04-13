@@ -41,7 +41,7 @@ pub struct MetricsPullExporterConfig {
 }
 
 /// Prometheus Exporter configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PrometheusExporterConfig {
     /// The host address where the Prometheus exporter will expose metrics.
