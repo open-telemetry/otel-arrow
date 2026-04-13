@@ -1344,12 +1344,8 @@ pub fn transform_attributes_impl(
                 let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
                 let parent_id_col = get_required_array(&rb, consts::PARENT_ID)?;
                 let key_col = get_required_array(&rb, consts::ATTRIBUTE_KEY)?;
-                let ranges = dispatch_find_rename_collisions(
-                    rb.num_rows(),
-                    key_col,
-                    parent_id_col,
-                    rename,
-                )?;
+                let ranges =
+                    dispatch_find_rename_collisions(rb.num_rows(), key_col, parent_id_col, rename)?;
                 (Cow::Owned(rb), false, ranges)
             } else if !is_transport_optimized {
                 let ranges = dispatch_find_rename_collisions(
@@ -2222,7 +2218,6 @@ where
     // deleted prior to this range.
     let mut dict_key_kept_in_values_range: Vec<Option<usize>> = vec![None; dict_values.len()];
     for (range_idx, range) in dict_values_keep_ranges.iter().enumerate() {
-        // for i in range.start..range.end {
         for k in dict_key_kept_in_values_range
             .iter_mut()
             .take(range.end)
@@ -6214,8 +6209,7 @@ mod test {
     }
 
     #[test]
-    fn test_with_stats_dict_re() {
-        // fn test_with_stats_dict_rename_and_delete() {
+    fn test_with_stats_dict_rename_and_delete() {
         // keys: [a, b, a, d, c] ; rename a->A ; delete d
         let schema = Arc::new(Schema::new(vec![
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
