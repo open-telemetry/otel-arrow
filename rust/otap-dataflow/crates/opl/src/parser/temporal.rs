@@ -81,8 +81,18 @@ fn parse_date_time(
                     format!("Invalid date {parsed_date:?}"),
                 )
             })?,
-        _ => {
-            todo!()
+        other => {
+            let format_name = match other {
+                iso8601::Date::Ordinal { .. } => "Ordinal",
+                iso8601::Date::Week { .. } => "Week",
+                // safety: this case handled by outer match statement
+                _ => unreachable!("unreachable"),
+            };
+            // Currently Week or Ordinal date format not yet supported
+            return Err(ParserError::SyntaxNotSupported(
+                query_location.clone(),
+                format!("Date format {format_name} not yet supported"),
+            ));
         }
     };
     // Convert time
@@ -236,5 +246,17 @@ mod test {
     fn test_parse_from_invalid_datetime_literal() {
         let err = run_test_failure("date_time\"halloween\""); // not a valid datetime format
         assert_eq!("Invalid datetime literal \"halloween\"", err.to_string())
+    }
+
+    /// Test some "valid" iso 8601 date formats that we don't support yet
+    #[test]
+    fn test_parse_from_ordinal_and_week_datetime_literal() {
+        // Ordinal date format = 74th day of 2024 = March 14, 2024
+        let err = run_test_failure("date_time\"2024074T00:00:00\"");
+        assert_eq!("Date format Ordinal not yet supported", err.to_string());
+
+        // Week date format = 2024, week 11, Friday = March 15, 2024
+        let err = run_test_failure("date_time\"2024-W11-5T00:00:00\"");
+        assert_eq!("Date format Week not yet supported", err.to_string());
     }
 }
