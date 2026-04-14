@@ -31,14 +31,20 @@ pub fn install_crypto_provider() -> Result<(), String> {
     {
         rustls::crypto::ring::default_provider()
             .install_default()
-            .map_err(|_| "crypto provider already installed (ring)".to_string())?;
+            .map_err(|_| {
+                "failed to install crypto provider (ring): a crypto provider is already installed"
+                    .to_string()
+            })?;
     }
 
     #[cfg(all(feature = "crypto-aws-lc", not(feature = "crypto-ring")))]
     {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
-            .map_err(|_| "crypto provider already installed (aws-lc-rs)".to_string())?;
+            .map_err(|_| {
+                "failed to install crypto provider (aws-lc-rs): a crypto provider is already installed"
+                    .to_string()
+            })?;
     }
 
     #[cfg(all(
@@ -49,7 +55,10 @@ pub fn install_crypto_provider() -> Result<(), String> {
     {
         rustls_openssl::default_provider()
             .install_default()
-            .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
+            .map_err(|_| {
+                "failed to install crypto provider (openssl): a crypto provider is already installed"
+                    .to_string()
+            })?;
     }
 
     #[cfg(all(
@@ -61,7 +70,10 @@ pub fn install_crypto_provider() -> Result<(), String> {
     {
         rustls_symcrypt::default_symcrypt_provider()
             .install_default()
-            .map_err(|_| "crypto provider already installed (symcrypt)".to_string())?;
+            .map_err(|_| {
+                "failed to install crypto provider (symcrypt): a crypto provider is already installed"
+                    .to_string()
+            })?;
     }
 
     #[cfg(not(any(
