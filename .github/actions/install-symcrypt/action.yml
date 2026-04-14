@@ -42,3 +42,4 @@ runs:
 
         "SYMCRYPT_LIB_PATH=$dllDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         $dllDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
