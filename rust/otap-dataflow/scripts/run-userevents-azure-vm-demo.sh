@@ -4,6 +4,13 @@ set -euo pipefail
 # Runs the working user-events demo on the Azure VM:
 # OTEL SDK -> user-events exporter -> kernel tracepoint ->
 # df_engine user-events receiver -> debug processor.
+#
+# Important demo behavior:
+# - the sample producer does NOT create per-CPU threads; it emits synchronously
+#   on its main thread.
+# - for multi-core demos, this script launches one producer process per CPU and
+#   pins each process with `taskset -c <cpu>` so writes land on the CPU watched
+#   by the matching receiver runtime.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTAP_DF_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -24,6 +31,10 @@ REMOTE_CARGO_HOME="${REMOTE_CARGO_HOME:-/mnt/builddisk/cargo-home}"
 REMOTE_CARGO_TARGET_DIR="${REMOTE_CARGO_TARGET_DIR:-/mnt/builddisk/cargo-target}"
 REMOTE_TMPDIR="${REMOTE_TMPDIR:-/mnt/builddisk/tmp}"
 REMOTE_DEMO_CONFIG="${REMOTE_OTAP_DF}/configs/userevents-debug-demo.yaml"
+DEMO_CORES="${DEMO_CORES:-all}"
+DEMO_ENGINE_TIMEOUT_SECS="${DEMO_ENGINE_TIMEOUT_SECS:-20}"
+DEMO_EXPORTER_TIMEOUT_SECS="${DEMO_EXPORTER_TIMEOUT_SECS:-5}"
+DEMO_SETTLE_SECS="${DEMO_SETTLE_SECS:-5}"
 
 SSH_OPTS=(
   -o StrictHostKeyChecking=no
@@ -168,12 +179,36 @@ echo "Running end-to-end demo..."
 vm_sudo_bash "
 set -euo pipefail
 cd '${REMOTE_OTAP_DF}'
-rm -f userevents-debug-output.log /mnt/builddisk/userevents-exporter-demo.log /mnt/builddisk/df-engine-demo.log
-timeout 15s '${REMOTE_CARGO_TARGET_DIR}/debug/df_engine' --num-cores 1 --config '${REMOTE_DEMO_CONFIG}' >/mnt/builddisk/df-engine-demo.log 2>&1 &
+available_cores=\$(nproc)
+requested_cores='${DEMO_CORES}'
+if [[ \"\${requested_cores}\" == 'all' ]]; then
+  producer_cores=\${available_cores}
+  engine_num_cores=0
+else
+  if ! [[ \"\${requested_cores}\" =~ ^[0-9]+$ ]] || [[ \"\${requested_cores}\" -le 0 ]]; then
+    echo \"Invalid DEMO_CORES='\${requested_cores}'. Use 'all' or a positive integer.\" >&2
+    exit 1
+  fi
+  producer_cores=\${requested_cores}
+  if (( producer_cores > available_cores )); then
+    producer_cores=\${available_cores}
+  fi
+  engine_num_cores=\${producer_cores}
+fi
+
+rm -f userevents-debug-output.log /mnt/builddisk/userevents-exporter-demo*.log /mnt/builddisk/df-engine-demo.log
+timeout '${DEMO_ENGINE_TIMEOUT_SECS}'s '${REMOTE_CARGO_TARGET_DIR}/debug/df_engine' --num-cores \${engine_num_cores} --config '${REMOTE_DEMO_CONFIG}' >/mnt/builddisk/df-engine-demo.log 2>&1 &
 engine_pid=\$!
 sleep 3
-timeout 5s taskset -c 0 '${REMOTE_CARGO_TARGET_DIR}/debug/examples/basic-logs' >/mnt/builddisk/userevents-exporter-demo.log 2>&1 || test \$? -eq 124
-sleep 5
+exporter_pids=()
+for cpu in \$(seq 0 \$((producer_cores - 1))); do
+  timeout '${DEMO_EXPORTER_TIMEOUT_SECS}'s taskset -c \${cpu} '${REMOTE_CARGO_TARGET_DIR}/debug/examples/basic-logs' >/mnt/builddisk/userevents-exporter-demo-\${cpu}.log 2>&1 &
+  exporter_pids+=(\$!)
+done
+for pid in \"\${exporter_pids[@]}\"; do
+  wait \"\${pid}\" || test \$? -eq 124
+done
+sleep '${DEMO_SETTLE_SECS}'
 kill \$engine_pid 2>/dev/null || true
 wait \$engine_pid 2>/dev/null || true
 "
@@ -187,13 +222,19 @@ if [[ -f userevents-debug-output.log ]]; then
   echo 'DEBUG_FILE_BEGIN'
   cat userevents-debug-output.log
   echo 'DEBUG_FILE_END'
+  echo 'DEBUG_CPU_VALUES_BEGIN'
+  grep -o 'linux.userevents.cpu=[0-9]\+' userevents-debug-output.log | sort -u || true
+  echo 'DEBUG_CPU_VALUES_END'
 else
   echo 'DEBUG_FILE_MISSING'
 fi
 echo 'ENGINE_TAIL_BEGIN'
 tail -n 80 /mnt/builddisk/df-engine-demo.log || true
 echo 'ENGINE_TAIL_END'
-echo 'EXPORTER_TAIL_BEGIN'
-tail -n 40 /mnt/builddisk/userevents-exporter-demo.log || true
-echo 'EXPORTER_TAIL_END'
+for log in /mnt/builddisk/userevents-exporter-demo-*.log; do
+  [[ -e \"\${log}\" ]] || continue
+  echo \"EXPORTER_TAIL_BEGIN \${log}\"
+  tail -n 20 \"\${log}\" || true
+  echo \"EXPORTER_TAIL_END \${log}\"
+done
 "
