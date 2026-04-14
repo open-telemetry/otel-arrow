@@ -287,9 +287,6 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
 
                     Ok(())
                 }
-                // Note that the timer tick processing is just for the sake of benchmarking,
-                // we don't register a timer at all in this processor.
-                NodeControlMsg::TimerTick {} => self.flush(effect_handler, None).await,
                 NodeControlMsg::Ack(msg) => self.handle_ack(effect_handler, msg).await,
                 NodeControlMsg::Nack(msg) => self.handle_nack(effect_handler, msg).await,
                 NodeControlMsg::Shutdown { .. } => self.flush(effect_handler, None).await,
