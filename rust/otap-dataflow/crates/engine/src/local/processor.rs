@@ -33,7 +33,9 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
-use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupRevision, WakeupSlot};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::control::WakeupRevision;
+use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupSlot};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
@@ -300,6 +302,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// This is intended for testing, where the inbox loop is not running and
     /// wakeups need to be manually delivered.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn pop_wakeup(&self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
         self.core.pop_wakeup()

@@ -8,7 +8,9 @@
 
 use crate::Interests;
 use crate::config::ProcessorConfig;
-use crate::control::{NodeControlMsg, runtime_ctrl_msg_channel};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::control::NodeControlMsg;
+use crate::control::runtime_ctrl_msg_channel;
 use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -148,6 +150,7 @@ impl<PData> TestContext<PData> {
     ///
     /// Returns `Ok(true)` if a wakeup was delivered, `Ok(false)` if no
     /// wakeup was pending, or `Err` if processing the wakeup message failed.
+    #[cfg(any(test, feature = "test-utils"))]
     pub async fn fire_wakeup(&mut self) -> Result<bool, Error> {
         let wakeup = match &self.runtime {
             ProcessorWrapperRuntime::Local { effect_handler, .. } => effect_handler.pop_wakeup(),
