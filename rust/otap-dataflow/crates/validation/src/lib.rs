@@ -205,7 +205,6 @@ mod tests {
 
 #[cfg(test)]
 #[cfg(validation_tests)]
-#[cfg(feature = "experimental-tls")]
 mod tls_tests {
     use crate::pipeline::Pipeline;
     use crate::scenario::Scenario;

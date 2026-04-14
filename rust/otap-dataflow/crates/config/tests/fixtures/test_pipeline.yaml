@@ -5,7 +5,7 @@ engine:
       readers:
         - periodic:
             exporter:
-              console:
+              type: console
     logs:
       level: "debug"
       processors:
