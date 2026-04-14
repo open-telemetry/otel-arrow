@@ -54,6 +54,9 @@ pub(super) enum Action {
     /// Send a message to the processor
     SendControl(NodeControlMsg<OtapPdata>),
 
+    /// Fire the next pending wakeup from the processor's local scheduler.
+    FireWakeup,
+
     /// Drain one output from the processor and apply actions to it.
     /// Use multiple `DrainPdata` in sequence to drain multiple outputs.
     DrainPdata { actions: Vec<PdataAction> },
@@ -174,6 +177,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                         ctx.process(Message::Control(ctrl))
                             .await
                             .expect("process control message");
+                    }
+                    Action::FireWakeup => {
+                        let _ = ctx.fire_wakeup().await.expect("fire wakeup");
                     }
                     Action::AssertUpstream(expectation) => {
                         // Drain any pending upstream messages first

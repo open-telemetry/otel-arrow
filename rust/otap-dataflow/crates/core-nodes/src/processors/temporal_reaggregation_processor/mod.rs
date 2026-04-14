@@ -27,7 +27,7 @@ use otap_df_engine::error::{Error, ProcessorErrorKind};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_engine::{ConsumerEffectHandlerExtension, Interests};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
@@ -198,7 +198,7 @@ const FLUSH_WAKEUP_SLOT: WakeupSlot = WakeupSlot(0);
 ///
 /// Accumulates metrics data over a collection interval, deduplicates
 /// resources/scopes/metrics by identity, and tracks the latest data point per
-/// stream. On each timer tick it flushes the accumulated state as an
+/// stream. On each wakeup it flushes the accumulated state as an
 /// [`OtapArrowRecords`] batch.
 pub struct TemporalReaggregationProcessor {
     /// Processor metrics
@@ -210,7 +210,6 @@ pub struct TemporalReaggregationProcessor {
     /// Current wakeup revision
     /// TODO: Figure out what to do if the wakeup scheduling fails. There might be
     /// cases that are just fine if we're shutting down.
-    /// TODO: Fix all the tests to use wakeups instead of sending a timer tick.
     /// TODO: Consider if the batch processors handling of scheduling failures
     /// (which is to return an engine error and crash) is correct.
     /// TODO: Write a test for accept_pdata >= 3 case
@@ -305,6 +304,10 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         };
         self.debug_assert_invariants();
         result
+    }
+
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements::with_local_wakeups(1)
     }
 
     fn accept_pdata(&self) -> bool {
@@ -1453,10 +1456,16 @@ mod tests {
     }
 
     #[test]
-    fn test_timer_tick_with_no_data() {
+    fn test_wakeup_with_no_data() {
+        // Deliver a wakeup when no data has been accumulated. The processor's
+        // wakeup_revision is None, so the wakeup should be silently ignored.
         let config = json!({});
         let actions = vec![
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::SendControl(NodeControlMsg::Wakeup {
+                slot: WakeupSlot(0),
+                when: Instant::now(),
+                revision: 0,
+            }),
             Action::AssertNoPdata,
         ];
         run_test(config, actions);
@@ -1502,7 +1511,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(batch2)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1555,7 +1564,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(batch2)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1617,7 +1626,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1682,7 +1691,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1742,7 +1751,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1800,7 +1809,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(batch2)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1836,7 +1845,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(input)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1896,7 +1905,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(batch2)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1927,7 +1936,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(input)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1960,7 +1969,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(input)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -1996,7 +2005,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(input)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2029,7 +2038,7 @@ mod tests {
             ctx.process(Message::PData(make_pdata(input)))
                 .await
                 .unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2077,10 +2086,10 @@ mod tests {
 
                 ctx.process(Message::PData(full_batch)).await.unwrap();
                 ctx.process(Message::PData(overflow_batch)).await.unwrap();
-                ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+                let _ = ctx.fire_wakeup().await.unwrap();
 
                 let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 2, "expected early flush + timer flush");
+                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
                 assert_output_metric_count(&output[0], max_metrics);
                 assert_output_metric_count(&output[1], 2);
             },
@@ -2093,7 +2102,7 @@ mod tests {
         // Send a batch with 2 streams (fills to the limit), then a second batch
         // with 1 new stream. The new stream should trigger a cardinality overflow:
         // the first batch is flushed early, then the overflowing data is retried
-        // into a fresh batch and flushed on the next timer tick.
+        // into a fresh batch and flushed on the next wakeup.
         run_processor_test(
             json!({ "max_stream_cardinality": 2 }),
             |mut ctx| async move {
@@ -2103,10 +2112,10 @@ mod tests {
 
                 ctx.process(Message::PData(batch1)).await.unwrap();
                 ctx.process(Message::PData(batch2)).await.unwrap();
-                ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+                let _ = ctx.fire_wakeup().await.unwrap();
 
                 let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 2, "expected early flush + timer flush");
+                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
                 assert_output_metric_count(&output[0], 2);
                 assert_output_metric_count(&output[1], 1);
             },
@@ -2145,7 +2154,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2189,7 +2198,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2235,7 +2244,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2282,7 +2291,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2342,7 +2351,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2376,7 +2385,7 @@ mod tests {
 
             ctx.process(Message::PData(batch1)).await.unwrap();
             ctx.process(Message::PData(batch2)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2465,7 +2474,7 @@ mod tests {
             )]);
 
             ctx.process(Message::PData(batch)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2508,7 +2517,7 @@ mod tests {
 
             ctx.process(Message::PData(otap_batch)).await.unwrap();
             ctx.process(Message::PData(otlp_batch)).await.unwrap();
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
@@ -2519,7 +2528,7 @@ mod tests {
     #[test]
     fn test_full_passthrough_delta_sum() {
         // A batch containing only a delta sum (non-aggregatable) should be
-        // passed through immediately without waiting for a timer tick.
+        // passed through immediately without waiting for a wakeup.
         run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
@@ -2548,7 +2557,7 @@ mod tests {
             let pdata = make_otlp_pdata(input_data.clone());
             ctx.process(Message::PData(pdata)).await.unwrap();
 
-            // Should get output immediately (no timer tick needed)
+            // Should get output immediately (no wakeup needed)
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "delta sum should pass through immediately");
             assert_output_otlp_equivalent(&output[0], input_data);
@@ -2670,10 +2679,10 @@ mod tests {
             )]);
             assert_output_otlp_equivalent(&output[0], expected_passthrough);
 
-            // Now trigger a timer tick to flush the aggregated metric
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            // Now trigger a wakeup to flush the aggregated metric
+            let _ = ctx.fire_wakeup().await.unwrap();
             let flushed = ctx.drain_pdata().await;
-            assert_eq!(flushed.len(), 1, "aggregated metric should flush on timer");
+            assert_eq!(flushed.len(), 1, "aggregated metric should flush on wakeup");
 
             let expected_aggregated = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
@@ -2689,7 +2698,7 @@ mod tests {
     #[test]
     fn test_passthrough_all_aggregated_no_immediate_output() {
         // When a batch contains only aggregatable metrics, nothing should be
-        // emitted until a timer tick.
+        // emitted until a wakeup.
         run_processor_test(json!({}), |mut ctx| async move {
             let pdata = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
@@ -2889,7 +2898,7 @@ mod tests {
             )]);
             assert_output_otlp_equivalent(&output[0], expected_passthrough);
 
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
             let flushed = ctx.drain_pdata().await;
             assert_eq!(flushed.len(), 1, "aggregated metric should flush on timer");
 
@@ -2953,7 +2962,7 @@ mod tests {
             assert_output_otlp_equivalent(&output[0], expected_passthrough);
 
             // Flush the aggregated gauge
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
             let flushed = ctx.drain_pdata().await;
             assert_eq!(flushed.len(), 1, "aggregated gauge should flush on timer");
         });
@@ -2984,7 +2993,7 @@ mod tests {
             );
 
             // Flush
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
             let flushed = ctx.drain_pdata().await;
             assert_eq!(flushed.len(), 1, "buffered gauge should flush on timer");
             assert_output_otlp_equivalent(&flushed[0], input_data);
@@ -3006,7 +3015,7 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert!(output.is_empty(), "gauge should be buffered");
 
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
             let flushed = ctx.drain_pdata().await;
             assert_eq!(flushed.len(), 1);
             assert_output_otlp_equivalent(&flushed[0], input_data);
@@ -3054,7 +3063,7 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert!(output.is_empty(), "gauge should be buffered");
 
-            ctx.process(Message::timer_tick_ctrl_msg()).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
             let flushed = ctx.drain_pdata().await;
             assert_eq!(flushed.len(), 1);
             assert_output_otlp_equivalent(&flushed[0], input_data);
@@ -3075,7 +3084,7 @@ mod tests {
                     PdataAction::Nack("test rejection"),
                 ],
             },
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Nack("test rejection")],
             },
@@ -3100,7 +3109,7 @@ mod tests {
             },
             // Passthrough acked but not flushed yet -> no upstream ack
             Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Ack],
             },
@@ -3125,7 +3134,7 @@ mod tests {
                 actions: vec![PdataAction::Ack],
             },
             Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Nack("downstream failure")],
             },
@@ -3149,7 +3158,7 @@ mod tests {
             Action::DrainPdata {
                 actions: vec![PdataAction::Nack("first nack")],
             },
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Nack("second nack")],
             },
@@ -3177,7 +3186,7 @@ mod tests {
                 payload,
             },
             Action::AssertNoPdata,
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Ack],
             },
@@ -3204,7 +3213,7 @@ mod tests {
                 payload,
             },
             Action::AssertNoPdata,
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Nack("aggregated nack")],
             },
@@ -3227,7 +3236,7 @@ mod tests {
             Action::DrainPdata {
                 actions: vec![PdataAction::AssertSubscribers(false)],
             },
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             // Flushed aggregated batch also has no subscribers
             Action::DrainPdata {
                 actions: vec![PdataAction::AssertSubscribers(false)],
@@ -3253,7 +3262,7 @@ mod tests {
                 actions: vec![PdataAction::Nack("test rejection")],
             },
             Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Ack],
             },
@@ -3285,7 +3294,7 @@ mod tests {
                 actions: vec![PdataAction::Ack],
             },
             Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Ack],
             },
@@ -3315,7 +3324,7 @@ mod tests {
             Action::DrainPdata {
                 actions: vec![PdataAction::Ack],
             },
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::DrainPdata {
                 actions: vec![PdataAction::Nack("downstream failure")],
             },
@@ -3335,7 +3344,7 @@ mod tests {
                 payload: make_otlp_payload_from_metrics(make_n_gauge_metrics(too_many)),
             },
             Action::AssertNoPdata,
-            Action::SendControl(NodeControlMsg::TimerTick {}),
+            Action::FireWakeup,
             Action::AssertUpstream(UpstreamExpectation::AckCount(0)),
             Action::AssertUpstream(UpstreamExpectation::NackCount(1)),
         ];
@@ -3410,5 +3419,159 @@ mod tests {
             Action::AssertUpstream(UpstreamExpectation::NackCount(0)),
         ];
         run_test(config, actions);
+    }
+
+    // ---- Wakeup-specific tests ----
+
+    /// Deliver a wakeup with the wrong slot (not FLUSH_WAKEUP_SLOT). The
+    /// processor's `process()` match falls through to the `_ => Ok(())` arm,
+    /// so no flush occurs and buffered data remains intact.
+    #[test]
+    fn test_wakeup_wrong_slot_ignored() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            let batch = make_otlp_pdata(make_n_gauge_metrics(1));
+            ctx.process(Message::PData(batch)).await.unwrap();
+
+            // Foreign slot — should be silently ignored.
+            ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                slot: WakeupSlot(99),
+                when: Instant::now(),
+                revision: 0,
+            }))
+            .await
+            .unwrap();
+            assert!(
+                ctx.drain_pdata().await.is_empty(),
+                "foreign wakeup slot should not trigger a flush"
+            );
+
+            // The real wakeup still flushes.
+            let _ = ctx.fire_wakeup().await.unwrap();
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+        });
+    }
+
+    /// Deliver a wakeup with the correct slot but a mismatched revision. The
+    /// processor compares `self.wakeup_revision` against the delivered revision
+    /// and ignores stale/unknown revisions.
+    #[test]
+    fn test_wakeup_mismatched_revision_ignored() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            let batch = make_otlp_pdata(make_n_gauge_metrics(1));
+            ctx.process(Message::PData(batch)).await.unwrap();
+
+            // Wrong revision — should be silently ignored.
+            ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                slot: FLUSH_WAKEUP_SLOT,
+                when: Instant::now(),
+                revision: 999,
+            }))
+            .await
+            .unwrap();
+            assert!(
+                ctx.drain_pdata().await.is_empty(),
+                "mismatched revision should not trigger a flush"
+            );
+
+            // The real wakeup still flushes.
+            let _ = ctx.fire_wakeup().await.unwrap();
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1);
+        });
+    }
+
+    /// After a metric-id overflow triggers an early flush, the old wakeup
+    /// revision is cancelled. Delivering a wakeup with the stale revision
+    /// should be a no-op. The wakeup for the new batch (scheduled during
+    /// the retry of the overflowing data) should still flush successfully.
+    #[test]
+    fn test_stale_wakeup_after_overflow_ignored() {
+        let max_metrics = (u16::MAX - 1) as usize;
+        run_processor_test(
+            json!({ "max_stream_cardinality": u16::MAX }),
+            move |mut ctx| async move {
+                let full_batch = make_otlp_bytes_pdata(make_n_gauge_metrics(max_metrics));
+                let overflow_batch =
+                    make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(2, max_metrics));
+
+                ctx.process(Message::PData(full_batch)).await.unwrap();
+                // This triggers an overflow flush internally.
+                ctx.process(Message::PData(overflow_batch)).await.unwrap();
+
+                // Drain the early-flush output.
+                let early_output = ctx.drain_pdata().await;
+                assert_eq!(early_output.len(), 1, "expected early overflow flush");
+                assert_output_metric_count(&early_output[0], max_metrics);
+
+                // Deliver a stale wakeup with revision 0 — should be ignored
+                // because the overflow flush cancelled it.
+                ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                    slot: FLUSH_WAKEUP_SLOT,
+                    when: Instant::now(),
+                    revision: 0,
+                }))
+                .await
+                .unwrap();
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "stale wakeup should not trigger a flush"
+                );
+
+                // The real wakeup (scheduled when the overflow data was retried)
+                // flushes the remaining data.
+                let _ = ctx.fire_wakeup().await.unwrap();
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 1);
+                assert_output_metric_count(&output[0], 2);
+            },
+        );
+    }
+
+    /// After a shutdown flush, delivering the pre-flush wakeup should be a
+    /// no-op (wakeup_revision was cleared by the flush).
+    #[test]
+    fn test_flush_via_shutdown_ignores_subsequent_wakeup() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            let batch = make_otlp_pdata(make_n_gauge_metrics(2));
+            ctx.process(Message::PData(batch)).await.unwrap();
+
+            // Shutdown triggers a flush and cancels the wakeup.
+            ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(5),
+                reason: "test shutdown".to_string(),
+            }))
+            .await
+            .unwrap();
+            let output = ctx.drain_pdata().await;
+            assert_eq!(output.len(), 1, "shutdown should flush accumulated data");
+
+            // The stale wakeup should be a no-op.
+            ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                slot: FLUSH_WAKEUP_SLOT,
+                when: Instant::now(),
+                revision: 0,
+            }))
+            .await
+            .unwrap();
+            assert!(
+                ctx.drain_pdata().await.is_empty(),
+                "wakeup after shutdown flush should produce no output"
+            );
+        });
+    }
+
+    /// When the processor is idle (no data), `fire_wakeup` should return
+    /// `Ok(false)` because no wakeup was ever scheduled.
+    #[test]
+    fn test_no_wakeup_scheduled_when_idle() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            let fired = ctx.fire_wakeup().await.unwrap();
+            assert!(
+                !fired,
+                "fire_wakeup should return false when no data has been sent"
+            );
+            assert!(ctx.drain_pdata().await.is_empty());
+        });
     }
 }

@@ -8,7 +8,7 @@
 
 use crate::Interests;
 use crate::config::ProcessorConfig;
-use crate::control::runtime_ctrl_msg_channel;
+use crate::control::{NodeControlMsg, runtime_ctrl_msg_channel};
 use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -140,6 +140,29 @@ impl<PData> TestContext<PData> {
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_sender);
             }
+        }
+    }
+
+    /// Pop the next scheduled wakeup from the processor's local scheduler
+    /// and deliver it as a [`NodeControlMsg::Wakeup`] via [`Self::process`].
+    ///
+    /// Returns `Ok(true)` if a wakeup was delivered, `Ok(false)` if no
+    /// wakeup was pending, or `Err` if processing the wakeup message failed.
+    pub async fn fire_wakeup(&mut self) -> Result<bool, Error> {
+        let wakeup = match &self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => effect_handler.pop_wakeup(),
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => effect_handler.pop_wakeup(),
+        };
+        if let Some((slot, when, revision)) = wakeup {
+            self.process(Message::Control(NodeControlMsg::Wakeup {
+                slot,
+                when,
+                revision,
+            }))
+            .await?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 }
