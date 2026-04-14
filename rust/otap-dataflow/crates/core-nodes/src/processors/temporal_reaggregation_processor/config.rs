@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_PERIOD_SECONDS: u64 = 60;
 const MIN_PERIOD_MILLIS: u64 = 100;
 const MIN_INBOUND_REQUEST_LIMIT: usize = 1;
-const MIN_OUTBOUND_REQUEST_LIMIT: usize = 2;
+const MIN_OUTBOUND_REQUEST_LIMIT: usize = 3;
 
 /// Configuration for the temporal reaggregation processor.
 #[derive(Debug, Clone, Serialize, Deserialize)]

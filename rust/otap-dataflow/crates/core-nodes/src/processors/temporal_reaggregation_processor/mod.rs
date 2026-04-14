@@ -7,7 +7,7 @@
 //! at a higher frequency into a lower one.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use hashbrown::HashMap;
@@ -20,8 +20,10 @@ use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::ProducerEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, CallData, NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
+use otap_df_engine::control::{
+    AckMsg, CallData, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot,
+};
+use otap_df_engine::error::{Error, ProcessorErrorKind};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
@@ -190,6 +192,8 @@ impl IdentityState {
     }
 }
 
+const FLUSH_WAKEUP_SLOT: WakeupSlot = WakeupSlot(0);
+
 /// The temporal reaggregation processor.
 ///
 /// Accumulates metrics data over a collection interval, deduplicates
@@ -203,11 +207,11 @@ pub struct TemporalReaggregationProcessor {
     /// The collection period for aggregating metrics before emitting a batch
     collection_period: Duration,
 
+    /// Current wakeup revision
+    wakeup_revision: Option<WakeupRevision>,
+
     /// Maximum number of unique streams allowed in a single aggregating batch.
     max_stream_cardinality: u16,
-
-    /// Whether the periodic flush timer has been started.
-    timer_started: bool,
 
     // Reusable byte buffer for computing attribute hashes.
     hash_buf: HashBuffer,
@@ -258,7 +262,6 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         self.debug_assert_invariants();
-        self.ensure_timer_started(effect_handler).await?;
         let result = match msg {
             Message::PData(pdata) => {
                 match pdata.signal_type() {
@@ -273,9 +276,13 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 Ok(())
             }
             Message::Control(ctrl) => match ctrl {
-                NodeControlMsg::TimerTick {} => {
-                    self.flush(effect_handler, None).await?;
-                    self.metrics.flushes_timer.add(1);
+                NodeControlMsg::Wakeup { revision, .. } => {
+                    if self.wakeup_revision == Some(revision) {
+                        self.wakeup_revision = None;
+                        self.flush(effect_handler, None).await?;
+                        self.metrics.flushes_timer.inc();
+                    }
+
                     Ok(())
                 }
                 NodeControlMsg::Ack(msg) => self.handle_ack(effect_handler, msg).await,
@@ -307,7 +314,10 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         //
         // A second outbound slot may be needed for the passthrough portion
         // of the inbound data, if any.
-        self.inbound_batches.has_capacity() && self.outbound_batches.remaining_capacity() >= 2
+        //
+        // We reserve a third to prevent cases where a flush signal comes in and
+        // we have no outbound slot available.
+        self.inbound_batches.has_capacity() && self.outbound_batches.remaining_capacity() >= 3
     }
 }
 
@@ -326,8 +336,8 @@ impl TemporalReaggregationProcessor {
         Ok(Self {
             metrics,
             collection_period: config.period,
+            wakeup_revision: None,
             max_stream_cardinality: config.max_stream_cardinality.get(),
-            timer_started: false,
             hash_buf: HashBuffer::new(),
             identities: IdentityState::new(),
             builder: MetricSignalBuilder::new(),
@@ -504,18 +514,55 @@ impl TemporalReaggregationProcessor {
         Ok(())
     }
 
-    /// Starts the periodic flush timer if it has not already been started.
-    async fn ensure_timer_started(
+    /// Record a tracker for a new inbound batch by allocating a slot for the tracker,
+    /// updating the pending_flush batches, and scheduling a wakeup if needed.
+    fn record_pending_and_handle_wakeup(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        tracker: InboundTracker,
+    ) -> Result<CallData, Error> {
+        // safety: See [`TemporalReaggregationProcessor::accept_pdata`]
+        // We always expect one inbound slot and two outbound slots to
+        // be available before accepting pdata.
+        let inbound_slot = self.inbound_batches.reserve().expect("available");
+        let inbound_key = inbound_slot.insert(tracker);
+        let inbound_calldata: CallData = inbound_key.into();
+
+        // If this is the first chunk of data in the current aggregating batch
+        // then we schedule a new wakeup
+        if self.pending_flush.is_empty() {
+            self.reset_wakeup(effect_handler)?;
+        }
+
+        self.pending_flush.push(inbound_calldata.clone());
+        Ok(inbound_calldata)
+    }
+
+    /// Cancels the current wakeup, if any, and schedules a new one
+    fn reset_wakeup(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        if !self.timer_started {
-            let _handle = effect_handler
-                .start_periodic_timer(self.collection_period)
-                .await?;
-            self.timer_started = true;
-        }
+        self.cancel_current_wakeup(effect_handler);
+
+        let wakeup_time = Instant::now() + self.collection_period;
+        let revision = effect_handler
+            .set_wakeup(FLUSH_WAKEUP_SLOT, wakeup_time)
+            .map_err(|_| Error::ProcessorError {
+                processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Other,
+                error: "could not set wakeup".into(),
+                source_detail: "".into(),
+            })?
+            .revision();
+        self.wakeup_revision = Some(revision);
         Ok(())
+    }
+
+    // Cancel current wakeup, if any
+    fn cancel_current_wakeup(&mut self, effect_handler: &local::EffectHandler<OtapPdata>) {
+        self.wakeup_revision = None;
+        _ = effect_handler.cancel_wakeup(FLUSH_WAKEUP_SLOT);
     }
 
     /// Parse and process a metrics pdata payload.
@@ -578,17 +625,14 @@ impl TemporalReaggregationProcessor {
                         flushed: false,
                     };
 
+                    let inbound_calldata: CallData =
+                        self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
+                    self.pending_flush.push(inbound_calldata.clone());
+
                     // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
                     // We always expect one inbound and two outbound slots available
                     // before accepting pdata.
-                    let inbound_slot = self.inbound_batches.reserve().expect("available");
                     let outbound_slot = self.outbound_batches.reserve().expect("available");
-
-                    // Track this inbound as a part of the current aggregating set
-                    // and as a part of the passthrough batch
-                    let inbound_key = inbound_slot.insert(tracker);
-                    let inbound_calldata: CallData = inbound_key.into();
-                    self.pending_flush.push(inbound_calldata.clone());
                     let outbound_key = outbound_slot.insert(vec![inbound_calldata]);
 
                     // Subscribe to the outbound
@@ -623,15 +667,7 @@ impl TemporalReaggregationProcessor {
                         flushed: false,
                     };
 
-                    // safety: See [`TemporalReaggregationProcessor::accept_pdata`]
-                    // We always expect one inbound slot and two outbound slots to
-                    // be available before accepting pdata.
-                    let inbound_slot = self.inbound_batches.reserve().expect("available");
-
-                    // Track the inbound as a part of the pending aggregation
-                    let inbound_key = inbound_slot.insert(tracker);
-                    let inbound_calldata: CallData = inbound_key.into();
-                    self.pending_flush.push(inbound_calldata.clone());
+                    _ = self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
 
                     Ok(())
                 }
@@ -669,6 +705,9 @@ impl TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
         self.clear_state();
+        // Whenever we flush we cancel the current wakeup. Wakeups are scheduled
+        // whenever we start aggregating a new batch
+        self.cancel_current_wakeup(effect_handler);
 
         if records.is_empty() {
             return Ok(());
