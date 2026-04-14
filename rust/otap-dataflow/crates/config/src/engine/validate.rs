@@ -41,6 +41,10 @@ impl OtelDataflowSpec {
             );
         }
 
+        if let Err(e) = self.engine.telemetry.validate() {
+            errors.push(e);
+        }
+
         if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
             if let Some(policies) = &observability_pipeline.policies {
                 errors.extend(

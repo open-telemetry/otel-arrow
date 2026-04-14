@@ -16,7 +16,7 @@ use crate::pipeline::telemetry::metrics::readers::{
 };
 
 /// OpenTelemetry Metrics Reader configuration.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricsReaderConfig {
     /// Periodic reader that exports metrics at regular intervals.
@@ -25,8 +25,18 @@ pub enum MetricsReaderConfig {
     Pull(MetricsReaderPullConfig),
 }
 
+impl MetricsReaderConfig {
+    /// Validates the exporter configuration for this reader.
+    pub fn validate(&self) -> Result<(), crate::error::Error> {
+        match self {
+            MetricsReaderConfig::Periodic(periodic) => periodic.exporter.validate(),
+            MetricsReaderConfig::Pull(pull) => pull.exporter.validate(),
+        }
+    }
+}
+
 /// OpenTelemetry Metrics Periodic Reader configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct MetricsReaderPeriodicConfig {
     /// The metrics exporter to use.
     pub exporter: MetricsPeriodicExporterConfig,
@@ -76,7 +86,7 @@ impl<'de> Deserialize<'de> for MetricsReaderConfig {
 }
 
 /// OpenTelemetry Metrics Pull Reader configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct MetricsReaderPullConfig {
     /// The metrics exporter to use.
     pub exporter: MetricsPullExporterConfig,
@@ -95,6 +105,10 @@ pub enum Temporality {
 
 #[cfg(test)]
 mod tests {
+    use crate::pipeline::telemetry::metrics::readers::{
+        periodic::MetricsPeriodicExporterType, pull::PrometheusExporterConfig,
+    };
+
     use super::*;
 
     #[test]
@@ -102,13 +116,13 @@ mod tests {
         let yaml_str = r#"
             periodic:
                 exporter:
-                    console:
+                    type: console
                 interval: "10s"
             "#;
         let config: MetricsReaderConfig = serde_yaml::from_str(yaml_str).unwrap();
 
         if let MetricsReaderConfig::Periodic(periodic_config) = config {
-            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
+            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
                 panic!("Expected console exporter");
             }
             assert_eq!(periodic_config.interval.as_secs(), 10);
@@ -122,14 +136,17 @@ mod tests {
         let yaml_str = r#"
             pull:
                 exporter:
-                    prometheus:
+                    type: prometheus
+                    config:
                         host: "0.0.0.0"
                         port: 9090
             "#;
         let config: MetricsReaderConfig = serde_yaml::from_str(yaml_str).unwrap();
 
         if let MetricsReaderConfig::Pull(pull_config) = config {
-            let MetricsPullExporterConfig::Prometheus(prometheus_config) = pull_config.exporter;
+            let prometheus_config =
+                PrometheusExporterConfig::from_config(&pull_config.exporter.config)
+                    .expect("Valid prometheus exporter config");
             assert_eq!(prometheus_config.host, "0.0.0.0");
             assert_eq!(prometheus_config.port, 9090);
         } else {

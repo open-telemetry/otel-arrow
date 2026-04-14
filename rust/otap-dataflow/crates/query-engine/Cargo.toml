@@ -17,8 +17,8 @@ datafusion = { workspace = true, features = [
 ] }
 futures-core = { workspace = true }
 memchr = { workspace = true }
+paste = { workspace = true }
 parking_lot = { workspace = true }
-roaring = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }

@@ -27,7 +27,7 @@ use std::sync::Arc;
 ///
 /// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
 /// deserializing directly with serde to ensure plugin URNs are normalized.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
@@ -71,7 +71,7 @@ const fn default_pipeline_type() -> PipelineType {
 
 /// The type of pipeline, which can be either OTLP (OpenTelemetry Protocol) or
 /// OTAP (OpenTelemetry with Apache Arrow Protocol).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineType {
     /// OpenTelemetry Protocol (OTLP) pipeline.
@@ -348,7 +348,7 @@ pub enum DispatchPolicy {
 ///
 /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
 /// across multiple cores/threads without cloning the entire configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(transparent)]
 pub struct PipelineNodes(HashMap<NodeId, Arc<NodeUserConfig>>);
 
@@ -1331,7 +1331,7 @@ mod tests {
     use crate::node::NodeKind;
     use crate::pipeline::DispatchPolicy;
     use crate::pipeline::telemetry::metrics::MetricsConfig;
-    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
+    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterType;
     use crate::pipeline::telemetry::metrics::readers::{
         MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
@@ -1741,7 +1741,7 @@ mod tests {
                 - periodic:
                     interval: "15s"
                     exporter:
-                      console: {}
+                      type: console
             "#;
         let config: TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.reporting_channel_size, 200);
@@ -1764,7 +1764,7 @@ mod tests {
         assert_eq!(readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 15);
-            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
+            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1779,13 +1779,13 @@ mod tests {
               - periodic:
                   interval: "10s"
                   exporter:
-                    console:
+                    type: console
             "#;
         let config: MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 10);
-            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
+            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1798,12 +1798,14 @@ mod tests {
         let yaml_data = r#"
             interval: "20s"
             exporter:
-              console:
+              type: console
             "#;
         let metrics_reader_periodic_config: MetricsReaderPeriodicConfig =
             serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(metrics_reader_periodic_config.interval.as_secs(), 20);
-        if MetricsPeriodicExporterConfig::Console != metrics_reader_periodic_config.exporter {
+        if MetricsPeriodicExporterType::Console
+            != metrics_reader_periodic_config.exporter.exporter_type
+        {
             panic!("Expected Console exporter config");
         }
     }
@@ -1813,7 +1815,7 @@ mod tests {
         let yaml_data = r#"
             interval: "20s"
             exporter:
-              unknown: {}
+              type: unknown
             "#;
         let metrics_reader_periodic_config_result: Result<
             MetricsReaderPeriodicConfig,
@@ -1821,7 +1823,7 @@ mod tests {
         > = serde_yaml::from_str(yaml_data);
         if let Err(e) = metrics_reader_periodic_config_result {
             let err_msg = e.to_string();
-            assert!(err_msg.contains("unknown field `unknown`"));
+            assert!(err_msg.contains("unknown variant `unknown`"));
         } else {
             panic!("Expected deserialization to fail due to unknown exporter");
         }
@@ -2589,7 +2591,8 @@ sink:
                 type: "receiver:otap"
                 header_propagation:
                   default:
-                    selector: all_captured
+                    selector:
+                        type: all_captured
                 config: {}
               exp:
                 type: "exporter:otap"
@@ -2633,7 +2636,8 @@ sink:
                 type: "exporter:otap"
                 header_propagation:
                   default:
-                    selector: all_captured
+                    selector:
+                        type: all_captured
                 config: {}
             connections:
               - from: recv

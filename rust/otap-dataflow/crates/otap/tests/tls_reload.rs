@@ -4,7 +4,6 @@
 #![allow(missing_docs)]
 #![allow(unused_results)]
 
-#[cfg(feature = "experimental-tls")]
 mod tests {
     use otap_df_config::tls::{TlsConfig, TlsServerConfig};
     use otap_df_otap::tls_utils::build_reloadable_server_config;

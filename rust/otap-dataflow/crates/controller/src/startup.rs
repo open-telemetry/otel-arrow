@@ -34,7 +34,7 @@ use sysinfo::System;
 /// [`CoreAllocation`] value, if any override was provided.
 ///
 /// Priority: an explicit core-ID range takes precedence over a plain count.
-/// A count of `0` is interpreted as [`CoreAllocation::AllCores`].
+/// A count of `0` is interpreted as "all cores" (`CoreAllocation::all_cores()`).
 #[must_use]
 pub fn core_allocation_override(
     num_cores: Option<usize>,
@@ -42,8 +42,8 @@ pub fn core_allocation_override(
 ) -> Option<CoreAllocation> {
     match (core_id_range, num_cores) {
         (Some(range), _) => Some(range),
-        (None, Some(0)) => Some(CoreAllocation::AllCores),
-        (None, Some(count)) => Some(CoreAllocation::CoreCount { count }),
+        (None, Some(0)) => Some(CoreAllocation::all_cores()),
+        (None, Some(count)) => Some(CoreAllocation::core_count(count)),
         (None, None) => None,
     }
 }
@@ -348,7 +348,7 @@ Example configuration files can be found in the configs/ directory.{}",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::policy::Policies;
+    use otap_df_config::policy::{CoreRange, Policies};
 
     fn minimal_engine_yaml() -> &'static str {
         r#"
@@ -375,9 +375,7 @@ groups:
 
     #[test]
     fn core_allocation_override_prefers_range() {
-        let range = CoreAllocation::CoreSet {
-            set: vec![otap_df_config::policy::CoreRange { start: 2, end: 4 }],
-        };
+        let range = CoreAllocation::core_set(vec![CoreRange { start: 2, end: 4 }]);
         let resolved = core_allocation_override(Some(3), Some(range.clone()));
         assert_eq!(resolved, Some(range));
     }
@@ -386,11 +384,11 @@ groups:
     fn core_allocation_override_maps_num_cores() {
         assert_eq!(
             core_allocation_override(Some(5), None),
-            Some(CoreAllocation::CoreCount { count: 5 })
+            Some(CoreAllocation::core_count(5))
         );
         assert_eq!(
             core_allocation_override(Some(0), None),
-            Some(CoreAllocation::AllCores)
+            Some(CoreAllocation::all_cores())
         );
         assert_eq!(core_allocation_override(None, None), None);
     }
@@ -417,7 +415,7 @@ groups:
 
         assert_eq!(
             Policies::resolve([&cfg.policies]).resources.core_allocation,
-            CoreAllocation::CoreCount { count: 3 }
+            CoreAllocation::core_count(3)
         );
         assert_eq!(
             cfg.engine
@@ -435,7 +433,7 @@ groups:
             .expect("default/main should exist");
         assert_eq!(
             main.policies.resources.core_allocation,
-            CoreAllocation::CoreCount { count: 3 }
+            CoreAllocation::core_count(3)
         );
     }
 
@@ -475,7 +473,7 @@ groups:
         // CLI updates top-level/global policy.
         assert_eq!(
             Policies::resolve([&cfg.policies]).resources.core_allocation,
-            CoreAllocation::CoreCount { count: 2 }
+            CoreAllocation::core_count(2)
         );
 
         // Pipeline resolution keeps precedence (group-level over top-level).
@@ -487,7 +485,7 @@ groups:
             .expect("default/main should exist");
         assert_eq!(
             main.policies.resources.core_allocation,
-            CoreAllocation::CoreCount { count: 5 }
+            CoreAllocation::core_count(5)
         );
     }
 
@@ -525,7 +523,7 @@ groups:
             .expect("default/main should exist");
         assert_eq!(
             main.policies.resources.core_allocation,
-            CoreAllocation::CoreCount { count: 4 },
+            CoreAllocation::core_count(4),
             "--num-cores 4 must not be shadowed by an implicit group-level resources default"
         );
     }

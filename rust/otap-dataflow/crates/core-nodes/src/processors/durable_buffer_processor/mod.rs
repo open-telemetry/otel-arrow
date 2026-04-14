@@ -1467,6 +1467,7 @@ impl DurableBuffer {
                         drop(handle);
                         ProcessBundleResult::Error(Error::ChannelSendError {
                             error: "downstream channel closed".to_string(),
+                            closed: true,
                         })
                     }
                     Err(otap_df_engine::error::TypedError::Error(e)) => {
