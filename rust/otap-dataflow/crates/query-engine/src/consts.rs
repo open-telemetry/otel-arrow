@@ -7,4 +7,5 @@ pub(crate) const SCOPE_FIELD_NAME: &str = "instrumentation_scope";
 pub(crate) const VALUE_FIELD_NAME: &str = "value";
 
 pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
+pub(crate) const REGEXP_SUBSTR_FUNC_NAME: &str = "regexp_substr";
 pub(crate) const SHA256_FUNC_NAME: &str = "sha256";

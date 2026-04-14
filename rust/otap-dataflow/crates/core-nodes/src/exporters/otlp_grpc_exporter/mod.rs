@@ -862,6 +862,8 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
 
+    #[cfg(not(windows))]
+    use otap_df_config::transport_headers_policy::PropagationSelectorType;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::PipelineCompletionMsg;
@@ -1489,7 +1491,10 @@ mod tests {
     fn propagate_all_policy() -> HeaderPropagationPolicy {
         HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             vec![],
@@ -1558,7 +1563,10 @@ mod tests {
     fn test_build_grpc_metadata_drops_filtered_headers() {
         let policy = HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             vec![PropagationOverride {
@@ -1689,7 +1697,10 @@ mod tests {
         // Policy that drops everything (selector = None means no headers are selected).
         let policy = HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::None,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::None,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             vec![],

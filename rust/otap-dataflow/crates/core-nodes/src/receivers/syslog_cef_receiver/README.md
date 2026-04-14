@@ -1,5 +1,7 @@
 # Syslog and CEF Receiver
 
+<!-- markdownlint-disable MD013 -->
+
 **URN:** `urn:otel:receiver:syslog_cef`
 
 A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424)
@@ -27,7 +29,7 @@ receivers:
       tcp:
         listening_addr: "0.0.0.0:514"
 
-        # Optional: TLS configuration (requires "experimental-tls" feature)
+        # Optional: TLS configuration
         tls:
           cert_file: "/path/to/server.crt"
           key_file: "/path/to/server.key"
@@ -90,7 +92,7 @@ receivers:
 
 ### TCP with TLS (RFC 5425)
 
-When the `experimental-tls` feature is enabled, the receiver supports
+The receiver supports
 Syslog over TLS:
 
 - Encrypted transport for sensitive log data
@@ -439,4 +441,4 @@ pipelines:
 
 | Feature | Description |
 | ------- | ----------- |
-| `experimental-tls` | Enables TLS support for secure TCP connections |
+| Built-in TLS support | Enables TLS support for secure TCP connections |

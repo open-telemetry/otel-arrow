@@ -601,14 +601,10 @@ where
     };
 
     let _ = shutdown_handle.join();
-    // Accept either Ok or a "Channel is closed" error during shutdown.
-    // When an always-NACK exporter races with shutdown, the exporter may try to
-    // send a NACK after the control channel has closed. This is expected behavior
-    // for this test scenario (error_exporter + time-based shutdown).
-    let is_acceptable_shutdown = match &run_result {
-        Ok(_) => true,
-        Err(e) => e.to_string().contains("Channel is closed"),
-    };
+    // Accept either Ok or a channel-send shutdown race.
+    // When an always-NACK exporter races with shutdown, the pipeline can return
+    // a ChannelSendError depending on where closure is observed.
+    let is_acceptable_shutdown = is_acceptable_shutdown_result(&run_result);
     assert!(
         is_acceptable_shutdown,
         "pipeline failed to shut down cleanly: {:?}",
@@ -633,6 +629,20 @@ where
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Return true when pipeline shutdown completed cleanly or hit an expected
+/// shutdown-time channel close race.
+///
+/// Only the closed-channel case is accepted; other `ChannelSendError`
+/// reasons (e.g. "full") would indicate a real bug.
+fn is_acceptable_shutdown_result(
+    run_result: &Result<Vec<()>, otap_df_engine::error::Error>,
+) -> bool {
+    matches!(
+        run_result,
+        Ok(_) | Err(otap_df_engine::error::Error::ChannelSendError { closed: true, .. })
+    )
+}
 
 /// Wait for a condition to become true, with timeout.
 ///
@@ -900,10 +910,7 @@ where
 
     let snapshot = shutdown_handle.join().expect("shutdown thread panicked");
 
-    let is_acceptable_shutdown = match &run_result {
-        Ok(_) => true,
-        Err(e) => e.to_string().contains("Channel is closed"),
-    };
+    let is_acceptable_shutdown = is_acceptable_shutdown_result(&run_result);
     assert!(
         is_acceptable_shutdown,
         "pipeline failed to shut down cleanly: {:?}",

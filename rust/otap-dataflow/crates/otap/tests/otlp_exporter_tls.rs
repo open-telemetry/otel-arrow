@@ -3,7 +3,6 @@
 
 //! Integration test validating exporter-side TLS/mTLS for the OTLP exporter.
 
-#![cfg(feature = "experimental-tls")]
 #![allow(missing_docs)]
 
 use otap_df_config::tls::{TlsClientConfig, TlsConfig};
