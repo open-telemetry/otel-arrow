@@ -213,7 +213,7 @@ pub struct TemporalReaggregationProcessor {
     /// TODO: Fix all the tests to use wakeups instead of sending a timer tick.
     /// TODO: Consider if the batch processors handling of scheduling failures
     /// (which is to return an engine error and crash) is correct.
-    /// TODO: Think about this PR more
+    /// TODO: Write a test for accept_pdata >= 3 case
     wakeup_revision: Option<WakeupRevision>,
 
     /// Maximum number of unique streams allowed in a single aggregating batch.
