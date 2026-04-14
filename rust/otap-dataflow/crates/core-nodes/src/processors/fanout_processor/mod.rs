@@ -1266,6 +1266,9 @@ mod tests {
                 "await_ack": await_ack,
                 "destinations": destinations_cfg,
             }),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
 
         let pipeline_ctx =
@@ -1322,6 +1325,9 @@ mod tests {
                 ],
                 "await_ack": "primary"
             }),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         }
     }
 
@@ -1370,6 +1376,9 @@ mod tests {
             outputs: (0..65).map(|i| PortName::from(format!("p{i}"))).collect(),
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1407,6 +1416,9 @@ mod tests {
             outputs: vec!["p1".into(), "p2".into()],
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1437,6 +1449,9 @@ mod tests {
             outputs: vec!["p1".into(), "p2".into()],
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1459,6 +1474,9 @@ mod tests {
             entity: None,
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1492,6 +1510,9 @@ mod tests {
             outputs: vec!["primary".into(), "backup".into()],
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1524,6 +1545,9 @@ mod tests {
             outputs: vec!["dest".into()],
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1569,6 +1593,9 @@ mod tests {
             outputs: vec!["primary".into(), "a".into(), "b".into()],
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1610,6 +1637,9 @@ mod tests {
             outputs: vec!["primary".into(), "fb1".into(), "fb2".into()],
             default_output: None,
             config: json!({}),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1660,6 +1690,9 @@ mod tests {
                 ],
                 "await_ack": "primary"
             }),
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
 
         let metrics_system = InternalTelemetrySystem::default();
@@ -2521,6 +2554,9 @@ mod tests {
             outputs: outputs.clone(),
             default_output: None,
             config,
+            capabilities: HashMap::new(),
+            header_capture: None,
+            header_propagation: None,
         };
 
         let pipeline_ctx =

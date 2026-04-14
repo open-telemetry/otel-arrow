@@ -48,14 +48,24 @@ use std::sync::{Arc, LazyLock};
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema};
 use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, BooleanValue, DoubleValue, Expression, IntegerValue,
-    MathScalarExpression, ScalarExpression, StaticScalarExpression, StringValue,
+    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
+    CollectionScalarExpression, CombineScalarExpression, DoubleValue, Expression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
+    ReplaceTextScalarExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
+    StringValue, TextScalarExpression,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
+use datafusion::functions::crypto::sha256;
+use datafusion::functions::encoding::encode;
+use datafusion::functions::string::{concat, concat_ws, replace};
+use datafusion::logical_expr::expr::ScalarFunction;
+use datafusion::logical_expr::{
+    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
+};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
@@ -67,11 +77,13 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
+use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
+use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -110,7 +122,7 @@ impl DataScope {
     /// Rules:
     /// - Any scope can combine with StaticScalar (constants)
     /// - Same scopes can combine (e.g., Root + Root), because the row order is the same.
-    fn can_combine(&self, other: &Self) -> bool {
+    pub(crate) fn can_combine(&self, other: &Self) -> bool {
         self.is_scalar() || other.is_scalar() || (self == other)
     }
 
@@ -132,7 +144,7 @@ impl From<&ColumnAccessor> for DataScope {
 }
 
 /// Identifier of the incoming source data for some scoped expression.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LogicalExprDataSource {
     /// This indicates the input to the expression data from the incoming OTAP batch
     DataSource(DataScope),
@@ -145,7 +157,7 @@ pub(crate) enum LogicalExprDataSource {
 ///
 /// This combines a DataFusion logical expression with data source, result type and input type
 /// coercion information
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ScopedLogicalExpr {
     /// the definition of the datafusion that should be applied to the input data
     pub(crate) logical_expr: Expr,
@@ -174,7 +186,7 @@ pub struct ScopedLogicalExpr {
     // TODO: it would be cleaner to just have custom expression impl we could add to the plan to
     // remove dictionary encoding from some column, instead of passing this flag down and doing it
     // during projection.
-    requires_dict_downcast: bool,
+    pub(crate) requires_dict_downcast: bool,
 }
 
 impl ScopedLogicalExpr {
@@ -215,6 +227,7 @@ impl ExprLogicalPlanner {
     pub fn plan_scalar_expr(
         &self,
         scalar_expression: &ScalarExpression,
+        functions: &[PipelineFunction],
     ) -> Result<ScopedLogicalExpr> {
         match scalar_expression {
             ScalarExpression::Source(source_scalar_expr) => {
@@ -277,6 +290,9 @@ impl ExprLogicalPlanner {
                     StaticScalarExpression::String(string_expr) => {
                         (lit(string_expr.get_value()), ExprLogicalType::String)
                     }
+                    StaticScalarExpression::Null(_) => {
+                        (Expr::default(), ExprLogicalType::AnyValue) // default is lit(null)
+                    }
                     _ => {
                         return Err(Error::NotYetSupportedError {
                             message: format!(
@@ -294,26 +310,99 @@ impl ExprLogicalPlanner {
                     requires_dict_downcast: false,
                 })
             }
+            ScalarExpression::InvokeFunction(invoke_function_expression) => {
+                self.plan_function_invocation(invoke_function_expression, functions)
+            }
             ScalarExpression::Math(math_scalar_expr) => match math_scalar_expr {
                 MathScalarExpression::Add(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Plus)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Plus, functions)
                 }
                 MathScalarExpression::Subtract(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Minus)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Minus, functions)
                 }
                 MathScalarExpression::Multiply(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Multiply)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Multiply, functions)
                 }
                 MathScalarExpression::Divide(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Divide)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Divide, functions)
                 }
                 MathScalarExpression::Modulus(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Modulo)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Modulo, functions)
                 }
                 other_math_expr => Err(Error::NotYetSupportedError {
                     message: format!("math expression not yet supported {other_math_expr:?}"),
                 }),
             },
+            ScalarExpression::Slice(slice_scalar_expr) => {
+                let mut num_args = 2;
+                if slice_scalar_expr.get_range_start().is_some() {
+                    num_args = 3;
+                }
+                let mut arg_exprs = Vec::with_capacity(num_args);
+
+                let start_arg_expr =
+                    self.plan_scalar_expr(slice_scalar_expr.get_source(), functions)?;
+                arg_exprs.push(start_arg_expr.logical_expr);
+                let mut source_scope = start_arg_expr.source;
+                let mut requires_dict_downcast = start_arg_expr.requires_dict_downcast;
+
+                let mut plan_range_index_expr = |scalar_expr, mut source_scope| {
+                    let arg_expr = self.plan_scalar_expr(scalar_expr, functions)?;
+                    let combined_scope = match (arg_expr.source, source_scope) {
+                        (
+                            LogicalExprDataSource::DataSource(left_scope),
+                            LogicalExprDataSource::DataSource(right_scope),
+                        ) => left_scope.can_combine(&right_scope).then_some(
+                            if !left_scope.is_scalar() {
+                                left_scope
+                            } else {
+                                right_scope
+                            },
+                        ),
+                        _ => None,
+                    };
+                    if let Some(combined_scope) = combined_scope {
+                        source_scope = LogicalExprDataSource::DataSource(combined_scope);
+                    } else {
+                        // TODO: eventually we'll create a new join expr node and invoke the function
+                        // on result of the join.
+                        return Err(Error::NotYetSupportedError {
+                            message:
+                                "Functions arguments with differing data scopes not yet supported"
+                                    .into(),
+                        });
+                    }
+                    requires_dict_downcast |= arg_expr.requires_dict_downcast;
+                    arg_exprs.push(arg_expr.logical_expr);
+
+                    Ok(source_scope)
+                };
+
+                // plan the expression for substring start
+                let start_scalar_expr = slice_scalar_expr.get_range_start().ok_or_else(|| {
+                    Error::InvalidPipelineError {
+                        cause: "start index is required for substring".into(),
+                        query_location: Some(slice_scalar_expr.get_query_location().clone()),
+                    }
+                })?;
+                source_scope = plan_range_index_expr(start_scalar_expr, source_scope)?;
+
+                // plan the expression for substring end
+                if let Some(length_scalar_expr) = slice_scalar_expr.get_range_length() {
+                    source_scope = plan_range_index_expr(length_scalar_expr, source_scope)?;
+                }
+
+                Ok(ScopedLogicalExpr {
+                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                        substring(),
+                        arg_exprs,
+                    )),
+                    expr_type: ExprLogicalType::String,
+                    source: source_scope,
+                    requires_dict_downcast,
+                })
+            }
+            ScalarExpression::Text(text) => self.plan_text_expr(text, functions),
             other_expr => Err(Error::NotYetSupportedError {
                 message: format!("expression not yet supported {other_expr:?}"),
             }),
@@ -324,10 +413,12 @@ impl ExprLogicalPlanner {
         &self,
         binary_math_expr: &BinaryMathematicalScalarExpression,
         operator: Operator,
+        functions: &[PipelineFunction],
     ) -> Result<ScopedLogicalExpr> {
         // Recursively plan left and right sub-expressions
-        let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
-        let mut right = self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
+        let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression(), functions)?;
+        let mut right =
+            self.plan_scalar_expr(binary_math_expr.get_right_expression(), functions)?;
 
         let expr_type = coerce_arithmetic(&mut left, &mut right).ok_or_else(|| {
             Error::InvalidPipelineError {
@@ -382,6 +473,358 @@ impl ExprLogicalPlanner {
                 requires_dict_downcast: true,
             })
         }
+    }
+
+    fn plan_concat_expr(
+        &self,
+        combine_expr: &CombineScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        match combine_expr.get_values_expression() {
+            ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
+                let (df_udf_args, source_scope, _) =
+                    self.plan_function_args(list_expr.get_value_expressions().iter(), functions)?;
+                Ok(ScopedLogicalExpr {
+                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                        concat(),
+                        df_udf_args,
+                    )),
+                    expr_type: ExprLogicalType::String,
+                    source: source_scope,
+                    requires_dict_downcast: true,
+                })
+            }
+            other => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "Unexpected scalar expression for CombineScalarExpression values {other:?}"
+                ),
+                query_location: Some(combine_expr.get_query_location().clone()),
+            }),
+        }
+    }
+
+    fn plan_function_invocation(
+        &self,
+        invoke_function_expression: &InvokeFunctionScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        // get function definition
+        let function_id = invoke_function_expression.get_function_id();
+        let function = functions
+            .get(function_id)
+            .ok_or_else(|| Error::InvalidPipelineError {
+                cause: format!("function id {function_id} not found"),
+                query_location: Some(invoke_function_expression.get_query_location().clone()),
+            })?;
+
+        // get function name
+        let PipelineFunctionImplementation::External(func_name) = function.get_implementation()
+        else {
+            return Err(Error::NotYetSupportedError {
+                message: "Only external functions currently supported in expression".into(),
+            });
+        };
+
+        // get function scalar UDF + metadata
+        let df_udf = DataFusionFunctionDef::from_func_name(func_name).ok_or_else(|| {
+            Error::InvalidPipelineError {
+                cause: format!("Unknown function '{func_name}"),
+                query_location: Some(invoke_function_expression.get_query_location().clone()),
+            }
+        })?;
+
+        let invoke_arg_exprs = invoke_function_expression.get_arguments();
+        let num_args = invoke_arg_exprs.len();
+
+        // check that we've been passed the correct number of arguments.
+        //
+        // TODO: in future we could also do some additional checking here on the types
+        if let Some(arity_range) = arity_range(&df_udf.scalar_udf.signature().type_signature) {
+            if !arity_range.contains(&num_args) {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "function '{func_name}' expects {} arguments. Received {num_args}",
+                        if arity_range.len() > 1 {
+                            format!("{}-{}", arity_range.start, arity_range.end - 1)
+                        } else {
+                            format!("{}", arity_range.start)
+                        }
+                    ),
+                    query_location: Some(invoke_function_expression.get_query_location().clone()),
+                });
+            }
+        }
+
+        if invoke_arg_exprs.is_empty() {
+            // TODO: support functions with zero arguments, such as `now()`.
+            Err(Error::NotYetSupportedError {
+                message: "Only functions with one or more arguments currently supported".into(),
+            })
+        } else {
+            let scalar_arg_exprs = invoke_arg_exprs
+                .iter()
+                .map(|arg| match arg {
+                    InvokeFunctionArgument::Scalar(scalar_expr) => Ok(scalar_expr),
+                    InvokeFunctionArgument::MutableValue(_) => Err(Error::NotYetSupportedError {
+                        message:
+                            "Mutable value as function argument not yet supported in expression"
+                                .into(),
+                    }),
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let (arg_exprs, source_scope, source_requires_dict_downcast) =
+                self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?;
+
+            let mut logical_expr =
+                Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
+
+            if let Some(data_type) = df_udf.cast_result_to {
+                logical_expr = cast(logical_expr, data_type)
+            }
+
+            // TODO: currently this will eagerly remove dictionary encoding when projecting the
+            // source if dictionary encoding is not supported by the function being invoked.
+            // However there may be cases where the overall expression may evaluate faster on
+            // dict-encoded data and we may wish to defer removing the dict encoding.
+            let requires_dict_downcast =
+                source_requires_dict_downcast | df_udf.requires_dict_downcast;
+
+            Ok(ScopedLogicalExpr {
+                logical_expr,
+                expr_type: df_udf.return_type,
+                source: source_scope,
+                requires_dict_downcast,
+            })
+        }
+    }
+
+    fn plan_function_args<'a>(
+        &self,
+        mut arg_exprs: impl Iterator<Item = &'a ScalarExpression>,
+        functions: &[PipelineFunction],
+    ) -> Result<(Vec<Expr>, LogicalExprDataSource, bool)> {
+        let mut planned_arg_exprs = Vec::new();
+
+        let first_arg = match arg_exprs.next() {
+            Some(arg) => arg,
+            None => {
+                return Ok((
+                    Vec::new(),
+                    LogicalExprDataSource::DataSource(DataScope::StaticScalar),
+                    false,
+                ));
+            }
+        };
+
+        let first_arg_expr = self.plan_scalar_expr(first_arg, functions)?;
+        planned_arg_exprs.push(first_arg_expr.logical_expr);
+        let mut source_scope = first_arg_expr.source;
+        let mut source_requires_dict_downcast = first_arg_expr.requires_dict_downcast;
+
+        for arg_expr in arg_exprs {
+            let planned_arg_expr = self.plan_scalar_expr(arg_expr, functions)?;
+            // check if the data scope of the argument can be combined without doing a join.
+            // We would need to join data from different scopes if the arguments have would
+            // require it, such as in function calls like:
+            // some_func(severity_text, attributes["x"])
+            let combined_scope = match (planned_arg_expr.source, source_scope) {
+                (
+                    LogicalExprDataSource::DataSource(left_scope),
+                    LogicalExprDataSource::DataSource(right_scope),
+                ) => left_scope
+                    .can_combine(&right_scope)
+                    .then_some(if !left_scope.is_scalar() {
+                        left_scope
+                    } else {
+                        right_scope
+                    }),
+                _ => None,
+            };
+
+            if let Some(combined_scope) = combined_scope {
+                source_scope = LogicalExprDataSource::DataSource(combined_scope);
+            } else {
+                // TODO: eventually we'll create a new join expr node and invoke the function
+                // on result of the join.
+                return Err(Error::NotYetSupportedError {
+                    message: "Functions arguments with differing data scopes not yet supported"
+                        .into(),
+                });
+            }
+            source_requires_dict_downcast |= planned_arg_expr.requires_dict_downcast;
+            planned_arg_exprs.push(planned_arg_expr.logical_expr);
+        }
+
+        Ok((
+            planned_arg_exprs,
+            source_scope,
+            source_requires_dict_downcast,
+        ))
+    }
+
+    fn plan_join_text_expr(
+        &self,
+        join_text_expr: &JoinTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        match join_text_expr.get_values_expression() {
+            ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
+                let (df_udf_args, source_scope, _) = self.plan_function_args(
+                    [join_text_expr.get_separator_expression()]
+                        .into_iter()
+                        .chain(list_expr.get_value_expressions().iter()),
+                    functions,
+                )?;
+
+                Ok(ScopedLogicalExpr {
+                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                        concat_ws(),
+                        df_udf_args,
+                    )),
+                    expr_type: ExprLogicalType::String,
+                    source: source_scope,
+                    requires_dict_downcast: true,
+                })
+            }
+            other => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "Unexpected scalar expression for JoinTextScalarExpression values {other:?}"
+                ),
+                query_location: Some(join_text_expr.get_query_location().clone()),
+            }),
+        }
+    }
+
+    fn plan_regex_capture_text_expr(
+        &self,
+        capture_text_expr: &CaptureTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let capture_scalar_expr = match capture_text_expr.get_pattern() {
+            ScalarExpression::Static(StaticScalarExpression::Regex(regexp_expr)) => {
+                // the datafusion UDF for this expects a string, so if the arg is a scalar regex
+                // convert it into a string so it will be planed as a scalar string literal
+                Cow::Owned(ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(
+                        regexp_expr.get_query_location().clone(),
+                        regexp_expr.get_value().as_str(),
+                    ),
+                )))
+            }
+            other => Cow::Borrowed(other),
+        };
+
+        let (mut df_udf_args, source_scope, requires_dict_downcast) = self.plan_function_args(
+            [
+                capture_text_expr.get_haystack(),
+                &capture_scalar_expr,
+                capture_text_expr.get_capture_group(),
+            ]
+            .into_iter(),
+            functions,
+        )?;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                regexp_substr(),
+                vec![
+                    df_udf_args.remove(0), // source
+                    df_udf_args.remove(0), // pattern
+                    lit(1),                // start
+                    lit(1),                // occurrence
+                    Expr::default(),       // flags = literal Null
+                    df_udf_args.remove(0), // group
+                ],
+            )),
+            expr_type: ExprLogicalType::String,
+            source: source_scope,
+            requires_dict_downcast,
+        })
+    }
+
+    fn plan_replace_text_expr(
+        &self,
+        replace_text_expr: &ReplaceTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let (df_udf_args, source_scope, _) = self.plan_function_args(
+            [
+                replace_text_expr.get_haystack_expression(),
+                replace_text_expr.get_needle_expression(),
+                replace_text_expr.get_replacement_expression(),
+            ]
+            .into_iter(),
+            functions,
+        )?;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(replace(), df_udf_args)),
+            expr_type: ExprLogicalType::String,
+            source: source_scope,
+            requires_dict_downcast: true,
+        })
+    }
+
+    fn plan_text_expr(
+        &self,
+        text_expr: &TextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        match text_expr {
+            TextScalarExpression::Concat(combine_expr) => {
+                self.plan_concat_expr(combine_expr, functions)
+            }
+            TextScalarExpression::Join(join_text_expr) => {
+                self.plan_join_text_expr(join_text_expr, functions)
+            }
+            TextScalarExpression::Replace(replace_text_expr) => {
+                self.plan_replace_text_expr(replace_text_expr, functions)
+            }
+            TextScalarExpression::Capture(capture_text_expr) => {
+                self.plan_regex_capture_text_expr(capture_text_expr, functions)
+            }
+        }
+    }
+}
+
+struct DataFusionFunctionDef {
+    scalar_udf: Arc<ScalarUDF>,
+    return_type: ExprLogicalType,
+    requires_dict_downcast: bool,
+    cast_result_to: Option<DataType>,
+}
+
+impl DataFusionFunctionDef {
+    fn new(
+        scalar_udf: Arc<ScalarUDF>,
+        return_type: ExprLogicalType,
+        requires_dict_downcast: bool,
+        cast_result_to: Option<DataType>,
+    ) -> Self {
+        Self {
+            scalar_udf,
+            return_type,
+            requires_dict_downcast,
+            cast_result_to,
+        }
+    }
+
+    fn from_func_name(func_name: &str) -> Option<Self> {
+        // TODO: some functions may produce different result types depending on the input type.
+        // In these cases, we may wish to not have a hard-coded return type, and instead attempt
+        // to compute the return type from the types of the input expressions.
+        // TODO: some of these functions that involve expanding to dictionary, we may wish to
+        // implement our own versions that can operate directly on dictionary arrays (or fix this
+        // upstream in datafusion_functions)
+        Some(match func_name {
+            ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            REGEXP_SUBSTR_FUNC_NAME => {
+                Self::new(regexp_substr(), ExprLogicalType::String, false, None)
+            }
+            SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
+            _ => return None,
+        })
     }
 }
 
@@ -711,10 +1154,10 @@ pub(crate) struct PhysicalExprEvalResult {
     pub data_scope: Rc<DataScope>,
 
     // ID columns populated from the source data
-    ids: Option<ArrayRef>,
-    parent_ids: Option<ArrayRef>,
-    scope_ids: Option<ArrayRef>,
-    resource_ids: Option<ArrayRef>,
+    pub(crate) ids: Option<ArrayRef>,
+    pub(crate) parent_ids: Option<ArrayRef>,
+    pub(crate) scope_ids: Option<ArrayRef>,
+    pub(crate) resource_ids: Option<ArrayRef>,
 }
 
 impl PhysicalExprEvalResult {
@@ -781,11 +1224,14 @@ impl PhysicalExprEvalResult {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Float64Array, Int32Array, Int64Array, StructArray, UInt8Array};
+    use arrow::array::{
+        BinaryArray, Float64Array, Int32Array, Int64Array, StructArray, UInt8Array,
+    };
     use arrow::compute::take;
     use data_engine_expressions::{
-        BinaryMathematicalScalarExpression, IntegerScalarExpression, QueryLocation,
-        SourceScalarExpression, StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        BinaryMathematicalScalarExpression, IntegerScalarExpression,
+        InvokeFunctionScalarExpression, QueryLocation, SourceScalarExpression,
+        StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
     use otap_df_pdata::{
         otap::Logs,
@@ -806,7 +1252,8 @@ mod test {
         input_data: &OtapArrowRecords,
     ) -> Option<ColumnarValue> {
         let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+        let functions = [];
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
         let result = physical_expr.execute(input_data, &session_ctx).unwrap();
@@ -818,7 +1265,8 @@ mod test {
         input_data: &OtapArrowRecords,
     ) -> Error {
         let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+        let functions = [];
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
         physical_expr.execute(input_data, &session_ctx).unwrap_err()
@@ -848,7 +1296,8 @@ mod test {
             IntegerScalarExpression::new(QueryLocation::new_fake(), 99),
         ));
 
-        let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
+        let functions = [];
+        let logical_expr = planner.plan_scalar_expr(&static_expr, &functions).unwrap();
 
         // Convert to physical
         let mut physical_expr = logical_expr.into_physical().unwrap();
@@ -2531,14 +2980,18 @@ mod test {
         // Check it returns an error when it detects at planning time that it won't be able to add
         // these two fields.
         let planner = ExprLogicalPlanner {};
+        let functions = [];
         let err = planner
-            .plan_scalar_expr(&ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathematicalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    left_expr.clone(),
-                    right_expr.clone(),
-                ),
-            )))
+            .plan_scalar_expr(
+                &ScalarExpression::Math(MathScalarExpression::Add(
+                    BinaryMathematicalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        left_expr.clone(),
+                        right_expr.clone(),
+                    ),
+                )),
+                &functions,
+            )
             .unwrap_err();
 
         let err_msg = err.to_string();
@@ -2552,14 +3005,18 @@ mod test {
 
         // check it with swapped left/right arguments (for good measure):
         let planner = ExprLogicalPlanner {};
+        let functions = [];
         let err = planner
-            .plan_scalar_expr(&ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathematicalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    right_expr,
-                    left_expr,
-                ),
-            )))
+            .plan_scalar_expr(
+                &ScalarExpression::Math(MathScalarExpression::Add(
+                    BinaryMathematicalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        right_expr,
+                        left_expr,
+                    ),
+                )),
+                &functions,
+            )
             .unwrap_err();
 
         let err_msg = err.to_string();
@@ -2661,5 +3118,254 @@ mod test {
             check_arithmetic_fails(left, right, &otap_batch);
             check_arithmetic_fails(right, left, &otap_batch);
         }
+    }
+
+    #[test]
+    fn test_function_invocation_sha256() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let functions = [PipelineFunction::new_external("sha256", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = BinaryArray::from_iter([
+            None,
+            Some(&[
+                41, 102, 59, 154, 50, 238, 50, 194, 202, 90, 100, 81, 23, 105, 108, 224, 136, 140,
+                132, 179, 159, 143, 217, 28, 14, 196, 235, 205, 9, 2, 93, 244,
+            ]),
+            Some(&[
+                32, 45, 143, 65, 186, 8, 115, 18, 99, 6, 214, 10, 49, 12, 91, 194, 89, 140, 109,
+                30, 102, 152, 208, 151, 71, 205, 33, 139, 40, 71, 49, 226,
+            ]),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected)
+    }
+
+    #[test]
+    fn test_function_invocation_invalid_number_of_args_handled_during_planning() {
+        let invalid_args = vec![
+            vec![], // empty args,
+            vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+            ],
+        ];
+
+        for invalid_arg_set in invalid_args {
+            let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                0,
+                invalid_arg_set,
+            ));
+
+            // expects one argument ...
+            let functions = [PipelineFunction::new_external("sha256", vec![], None)];
+
+            let planner = ExprLogicalPlanner {};
+            let err = planner
+                .plan_scalar_expr(&input_expr, &functions)
+                .unwrap_err();
+            let err_message = err.to_string();
+            assert!(
+                err_message.contains("function 'sha256' expects 1 arguments. Received "),
+                "unexpected error message: {}",
+                err_message
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_invocation_sha256_and_encode_to_hex() {
+        let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            1,
+            vec![
+                InvokeFunctionArgument::Scalar(sha_expr),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hex",
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [
+            PipelineFunction::new_external("sha256", vec![], None),
+            PipelineFunction::new_external("encode", vec![], None),
+        ];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([
+            None,
+            Some("29663b9a32ee32c2ca5a645117696ce0888c84b39f8fd91c0ec4ebcd09025df4"),
+            Some("202d8f41ba0873126306d60a310c5bc2598c6d1e6698d09747cd218b284731e2"),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_sha256_and_encode_to_base64() {
+        let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            1,
+            vec![
+                InvokeFunctionArgument::Scalar(sha_expr),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "base64",
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [
+            PipelineFunction::new_external("sha256", vec![], None),
+            PipelineFunction::new_external("encode", vec![], None),
+        ];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([
+            None,
+            Some("KWY7mjLuMsLKWmRRF2ls4IiMhLOfj9kcDsTrzQkCXfQ"),
+            Some("IC2PQboIcxJjBtYKMQxbwlmMbR5mmNCXR80hiyhHMeI"),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
     }
 }

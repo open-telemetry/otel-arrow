@@ -33,6 +33,7 @@ pub use error::ValidationError;
 pub use validation_types::ValidationInstructions;
 
 #[cfg(test)]
+#[cfg(validation_tests)]
 mod tests {
     use crate::ValidationInstructions;
     use crate::pipeline::Pipeline;
@@ -41,7 +42,7 @@ mod tests {
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
 
     #[test]
-    fn no_processor() {
+    fn validation_no_processor() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/no-processor.yaml")
@@ -63,13 +64,12 @@ mod tests {
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .expect_within(30)
             .run()
             .expect("validation scenario failed");
     }
 
     #[test]
-    fn debug_processor() {
+    fn validation_debug_processor() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/debug-processor.yaml")
@@ -91,13 +91,12 @@ mod tests {
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .expect_within(30)
             .run()
             .expect("validation scenario failed");
     }
 
     #[test]
-    fn attribute_processor_pipeline() {
+    fn validation_attribute_processor_pipeline() {
         let deny = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["ios.app.state".into()],
@@ -126,13 +125,12 @@ mod tests {
                     .validate(vec![deny, require])
                     .core_range(2, 2),
             )
-            .expect_within(30)
             .run()
             .expect("attribute processor validation failed");
     }
 
     #[test]
-    fn filter_processor_pipeline() {
+    fn validation_filter_processor_pipeline() {
         let attr_check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new(
@@ -168,13 +166,12 @@ mod tests {
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
-            .expect_within(30)
             .run()
             .expect("filter processor validation failed");
     }
 
     #[test]
-    fn multiple_input_output() {
+    fn validation_multiple_input_output() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/multiple-input-output.yaml")
@@ -201,14 +198,13 @@ mod tests {
                     .validate(vec![ValidationInstructions::Equivalence])
                     .control_streams(["traffic_gen1", "traffic_gen2"]),
             )
-            .expect_within(30)
             .run()
             .expect("validation scenario failed");
     }
 }
 
 #[cfg(test)]
-#[cfg(feature = "experimental-tls")]
+#[cfg(validation_tests)]
 mod tls_tests {
     use crate::pipeline::Pipeline;
     use crate::scenario::Scenario;
@@ -218,7 +214,7 @@ mod tls_tests {
     /// End-to-end validation: traffic flows through a TLS-enabled OTLP gRPC
     /// receiver in the SUV pipeline.
     #[test]
-    fn tls_no_processor() {
+    fn validation_tls_no_processor() {
         let _ = otap_df_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -262,7 +258,6 @@ mod tls_tests {
                     .otlp_grpc("exporter")
                     .control_streams(["traffic_gen"]),
             )
-            .expect_within(30)
             .run()
             .expect("TLS validation scenario failed");
     }
@@ -270,7 +265,7 @@ mod tls_tests {
     /// End-to-end validation: traffic flows through an mTLS-enabled OTLP gRPC
     /// receiver in the SUV pipeline, requiring client certificate authentication.
     #[test]
-    fn mtls_no_processor() {
+    fn validation_mtls_no_processor() {
         let _ = otap_df_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -326,7 +321,6 @@ mod tls_tests {
                     .otlp_grpc("exporter")
                     .control_streams(["traffic_gen"]),
             )
-            .expect_within(30)
             .run()
             .expect("mTLS validation scenario failed");
     }

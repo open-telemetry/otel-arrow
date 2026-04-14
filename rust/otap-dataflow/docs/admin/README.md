@@ -4,19 +4,24 @@ This section documents the admin surface of the OTAP Dataflow Engine:
 
 - runtime endpoints used for health, status, and telemetry;
 - embedded browser UI behavior and architecture.
+- the public Rust admin SDK.
 
 ## Document map
 
 - [Admin UI Architecture](architecture.md)
 - [Crate README (admin endpoints and crate layout)](../../crates/admin/README.md)
+- [Public Rust SDK README](../../crates/admin-api/README.md)
 
 ## Quick start
 
 Assuming the engine is running with admin HTTP enabled:
 
 - Open UI: `http://<admin-host>:<admin-port>/`
-- Metrics JSON: `http://<admin-host>:<admin-port>/telemetry/metrics?format=json`
-- Prometheus output: `http://<admin-host>:<admin-port>/metrics`
+- Metrics JSON: `http://<admin-host>:<admin-port>/api/v1/telemetry/metrics?format=json`
+- Prometheus output: `http://<admin-host>:<admin-port>/api/v1/metrics`
+
+For Rust consumers, prefer the `otap-df-admin-api` crate rather than building
+raw HTTP requests directly.
 
 For architecture details (state model, derivation rules, graph rules, testing),
 start with [Admin UI Architecture](architecture.md).

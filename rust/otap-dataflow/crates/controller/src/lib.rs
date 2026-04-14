@@ -50,11 +50,15 @@ use otap_df_config::engine::{
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otap_df_config::node::{NodeKind, NodeUserConfig};
-use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
+use otap_df_config::policy::MemoryLimiterMode;
+use otap_df_config::policy::{
+    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,
+};
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
     TopicSpec,
 };
+use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
 use otap_df_config::{
     DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, SubscriptionGroupName,
     TopicName, pipeline::PipelineConfig,
@@ -71,11 +75,15 @@ use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
+use otap_df_engine::memory_limiter::{
+    EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
+    MemoryPressureLevel,
+};
 use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
 };
-use otap_df_state::store::ObservedStateStore;
+use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -91,6 +99,8 @@ use std::thread;
 
 /// Error types and helpers for the controller module.
 pub mod error;
+/// Reusable startup helpers (validation, CLI overrides, system info).
+pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
 pub mod thread_task;
 
@@ -264,14 +274,52 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
     /// Starts the controller with the given engine configurations.
     pub fn run_forever(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
-        self.run_with_mode(engine_config, RunMode::ParkMainThread)
+        self.run_with_mode(
+            engine_config,
+            RunMode::ParkMainThread,
+            None::<fn(ObservedStateHandle)>,
+        )
+    }
+
+    /// Starts the controller and invokes `observer` with an
+    /// [`ObservedStateHandle`] as soon as the pipeline state store is ready.
+    ///
+    /// The callback fires once, before the engine blocks. Use it to obtain
+    /// zero-overhead, in-process access to pipeline liveness, readiness, and
+    /// health without going through the admin HTTP server.
+    pub fn run_forever_with_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_with_mode(engine_config, RunMode::ParkMainThread, Some(observer))
     }
 
     /// Starts the controller with the given engine configurations.
     ///
     /// Runs until pipelines are shut down, then closes telemetry/admin services.
     pub fn run_till_shutdown(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
-        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone)
+        self.run_with_mode(
+            engine_config,
+            RunMode::ShutdownWhenDone,
+            None::<fn(ObservedStateHandle)>,
+        )
+    }
+
+    /// Like [`run_till_shutdown`](Self::run_till_shutdown), but invokes
+    /// `observer` with an [`ObservedStateHandle`] before blocking.
+    pub fn run_till_shutdown_with_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone, Some(observer))
     }
 
     fn map_topic_spec_to_options(
@@ -957,11 +1005,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         Ok(set)
     }
 
-    fn run_with_mode(
+    fn run_with_mode<F>(
         &self,
         engine_config: OtelDataflowSpec,
         run_mode: RunMode,
-    ) -> Result<(), Error> {
+        observer: Option<F>,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -980,11 +1032,25 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         // Create the shared telemetry registry first - it will be used by both
         // the observed state store and the internal telemetry system.
         let telemetry_registry = TelemetryRegistryHandle::new();
+        let log_tap_handle = telemetry_config
+            .logs
+            .tap
+            .enabled
+            .then(|| otap_df_telemetry::log_tap::build(&telemetry_config.logs.tap));
 
         // Create the observed state store for the telemetry system.
-        let obs_state_store =
-            ObservedStateStore::new(&engine.observed_state, telemetry_registry.clone());
+        let obs_state_store = ObservedStateStore::new_with_log_tap(
+            &engine.observed_state,
+            telemetry_registry.clone(),
+            log_tap_handle.clone(),
+        );
         let obs_state_handle = obs_state_store.handle();
+
+        // Notify the caller with a clone of the observed-state handle, if requested.
+        if let Some(observer) = observer {
+            observer(obs_state_handle.clone());
+        }
+
         let engine_evt_reporter =
             obs_state_store.engine_reporter(engine.observed_state.engine_events);
         let console_async_reporter = telemetry_config
@@ -1001,6 +1067,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             telemetry_registry.clone(),
             console_async_reporter,
             engine_context,
+            log_tap_handle.clone(),
         )?;
 
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
@@ -1009,6 +1076,97 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
+        let memory_pressure_state = controller_ctx.memory_pressure_state();
+        let (memory_pressure_tx, _memory_pressure_rx) =
+            tokio::sync::watch::channel(MemoryPressureChanged::initial());
+        let mut memory_limiter_handle = None;
+        if let Some(memory_limiter_policy) = engine_config
+            .policies
+            .resources()
+            .and_then(|resources| resources.memory_limiter.as_ref())
+        {
+            memory_pressure_state.configure(MemoryPressureBehaviorConfig {
+                retry_after_secs: memory_limiter_policy.retry_after_secs,
+                fail_readiness_on_hard: memory_limiter_policy.fail_readiness_on_hard,
+                mode: memory_limiter_policy.mode,
+            });
+
+            let mut limiter = EffectiveMemoryLimiter::from_policy(memory_limiter_policy)
+                .map_err(|message| Error::MemoryLimiterError { message })?;
+            if memory_limiter_policy.mode == MemoryLimiterMode::ObserveOnly {
+                if memory_limiter_policy.purge_on_hard {
+                    otel_warn!(
+                        "process_memory_limiter.observe_only_ignored_setting",
+                        setting = "purge_on_hard",
+                        message =
+                            "purge_on_hard is ignored when memory_limiter.mode is observe_only"
+                    );
+                }
+            } else if limiter.purge_on_hard() && !limiter.purge_supported() {
+                otel_warn!(
+                    "process_memory_limiter.purge_unavailable",
+                    source = format!("{:?}", memory_limiter_policy.source),
+                    message = "purge_on_hard is enabled, but no allocator purge backend is available for this build"
+                );
+            }
+            let initial_tick = limiter
+                .tick(&memory_pressure_state)
+                .map_err(|message| Error::MemoryLimiterError { message })?;
+            let initial_transitioned = initial_tick.transitioned();
+            Self::log_memory_limiter_tick(initial_tick);
+            let mut transition_generation = 0_u64;
+            if initial_transitioned {
+                transition_generation += 1;
+                let _ = memory_pressure_tx
+                    .send(memory_pressure_state.current_update(transition_generation));
+            }
+
+            let limiter_state = memory_pressure_state.clone();
+            let limiter_updates = memory_pressure_tx.clone();
+            memory_limiter_handle = Some(spawn_thread_local_task(
+                "process-memory-limiter",
+                admin_tracing_setup.clone(),
+                move |cancellation_token| async move {
+                    use tokio::time::{Instant, MissedTickBehavior, interval_at};
+
+                    let mut ticker = interval_at(
+                        Instant::now() + limiter.check_interval(),
+                        limiter.check_interval(),
+                    );
+                    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+                    loop {
+                        tokio::select! {
+                            _ = cancellation_token.cancelled() => {
+                                return Ok::<(), otap_df_telemetry::error::Error>(());
+                            }
+                            _ = ticker.tick() => {
+                                match limiter.tick(&limiter_state) {
+                                    Ok(tick) => {
+                                        if tick.transitioned() {
+                                            transition_generation += 1;
+                                            let _ = limiter_updates.send(MemoryPressureChanged {
+                                                generation: transition_generation,
+                                                level: tick.current_level,
+                                                retry_after_secs: limiter_state.retry_after_secs(),
+                                                usage_bytes: tick.sample.usage_bytes,
+                                            });
+                                        }
+                                        Self::log_memory_limiter_tick(tick)
+                                    }
+                                    Err(err) => {
+                                        otel_warn!(
+                                            "process_memory_limiter.sample_failed",
+                                            error = err.as_str()
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            )?);
+        }
         // Declare all topics up front before any pipeline thread starts.
         let declared_topics = Self::declare_topics(&engine_config)?;
 
@@ -1057,6 +1215,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             &engine_evt_reporter,
             &metrics_reporter,
             telemetry_reporting_interval,
+            &memory_pressure_tx,
             internal_tracing_setup,
         )?;
 
@@ -1117,6 +1276,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let engine_entity_key = controller_ctx.register_engine_entity();
         let engine_registry = controller_ctx.telemetry_registry();
         let engine_reporter = metrics_reporter.clone();
+        let engine_metrics_memory_pressure_state = memory_pressure_state.clone();
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",
             admin_tracing_setup.clone(),
@@ -1128,8 +1288,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 // TODO: Make this interval configurable via engine config.
                 const ENGINE_METRICS_INTERVAL: Duration = Duration::from_secs(5);
 
-                let mut monitor =
-                    EngineMetricsMonitor::new(engine_registry, engine_entity_key, engine_reporter);
+                let mut monitor = EngineMetricsMonitor::new(
+                    engine_registry,
+                    engine_entity_key,
+                    engine_reporter,
+                    engine_metrics_memory_pressure_state.clone(),
+                );
 
                 let mut ticker = interval(ENGINE_METRICS_INTERVAL);
                 ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1174,6 +1338,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 .to_string();
             let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
             let telemetry_policy = pipeline_entry.policies.telemetry;
+            let transport_headers_policy = pipeline_entry.policies.transport_headers;
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
             let pipeline_id = pipeline_entry.pipeline_id;
             let pipeline = pipeline_entry.pipeline;
@@ -1231,6 +1396,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 let engine_evt_reporter = engine_evt_reporter.clone();
                 let effective_channel_capacity_policy = channel_capacity_policy.clone();
                 let effective_telemetry_policy = telemetry_policy.clone();
+                let pipeline_memory_pressure_rx = memory_pressure_tx.subscribe();
+                let effective_transport_headers_policy = transport_headers_policy.clone();
                 let handle = thread::Builder::new()
                     .name(thread_name.clone())
                     .spawn(move || {
@@ -1240,6 +1407,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             pipeline_config,
                             effective_channel_capacity_policy,
                             effective_telemetry_policy,
+                            effective_transport_headers_policy,
                             telemetry_reporting_interval,
                             pipeline_factory,
                             pipeline_handle,
@@ -1249,6 +1417,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                             runtime_ctrl_msg_rx,
                             pipeline_completion_msg_tx,
                             pipeline_completion_msg_rx,
+                            pipeline_memory_pressure_rx,
                             engine_tracing_setup,
                             None,
                         )
@@ -1285,6 +1454,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     obs_state_handle,
                     admin_senders,
                     telemetry_registry,
+                    memory_pressure_state,
+                    log_tap_handle,
                     cancellation_token,
                 )
             },
@@ -1341,6 +1512,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         engine_metrics_handle.shutdown_and_join()?;
+        if let Some(handle) = memory_limiter_handle {
+            handle.shutdown_and_join()?;
+        }
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
         if let Some(handle) = metrics_dispatcher_handle {
@@ -1350,6 +1524,75 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         telemetry_system.shutdown_otel()?;
 
         Ok(())
+    }
+
+    fn log_memory_limiter_tick(tick: MemoryLimiterTick) {
+        if let Some(purge_error) = tick.purge_error.as_deref() {
+            otel_warn!(
+                "process_memory_limiter.purge_failed",
+                source = tick.sample.source.as_str(),
+                pre_purge_usage_bytes = tick
+                    .pre_purge_usage_bytes
+                    .unwrap_or(tick.sample.usage_bytes),
+                usage_bytes = tick.sample.usage_bytes,
+                error = purge_error
+            );
+        }
+
+        if let Some(purge_duration) = tick.purge_duration {
+            otel_info!(
+                "process_memory_limiter.purge",
+                source = tick.sample.source.as_str(),
+                pre_purge_usage_bytes = tick
+                    .pre_purge_usage_bytes
+                    .unwrap_or(tick.sample.usage_bytes),
+                post_purge_usage_bytes = tick.sample.usage_bytes,
+                purge_duration_ms = purge_duration.as_millis() as u64,
+                current = format!("{:?}", tick.current_level)
+            );
+        }
+
+        if !tick.transitioned() {
+            return;
+        }
+
+        let usage_bytes = tick.sample.usage_bytes;
+        let source = tick.sample.source.as_str();
+        match tick.current_level {
+            MemoryPressureLevel::Hard => {
+                otel_warn!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = format!("{:?}", tick.current_level),
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+            MemoryPressureLevel::Soft => {
+                otel_info!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = "Soft",
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+            MemoryPressureLevel::Normal => {
+                otel_info!(
+                    "process_memory_limiter.transition",
+                    previous = format!("{:?}", tick.previous_level),
+                    current = "Normal",
+                    source = source,
+                    usage_bytes = usage_bytes,
+                    soft_limit_bytes = tick.soft_limit_bytes,
+                    hard_limit_bytes = tick.hard_limit_bytes
+                );
+            }
+        }
     }
 
     /// Selects which CPU cores to use based on the given allocation.
@@ -1362,100 +1605,129 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
         let num_cores = available_core_ids.len();
 
-        match core_allocation {
-            CoreAllocation::AllCores => Ok(available_core_ids),
-            CoreAllocation::CoreCount { count } => {
-                if *count == 0 {
-                    Ok(available_core_ids)
-                } else if *count > num_cores {
-                    Err(Error::InvalidCoreAllocation {
-                        alloc: core_allocation.clone(),
-                        message: format!(
-                            "Requested {} cores but only {} cores available on this system",
-                            count, num_cores
-                        ),
-                        available: available_core_ids.iter().map(|c| c.id).collect(),
-                    })
-                } else {
-                    Ok(available_core_ids.into_iter().take(*count).collect())
-                }
-            }
-            CoreAllocation::CoreSet { set } => {
-                // Validate all ranges first
-                for r in set.iter() {
-                    if r.start > r.end {
-                        return Err(Error::InvalidCoreAllocation {
-                            alloc: core_allocation.clone(),
-                            message: format!(
-                                "Invalid core range: start ({}) is greater than end ({})",
-                                r.start, r.end
-                            ),
-                            available: available_core_ids.iter().map(|c| c.id).collect(),
-                        });
-                    }
-                    if r.start > max_core_id {
-                        return Err(Error::InvalidCoreAllocation {
-                            alloc: core_allocation.clone(),
-                            message: format!(
-                                "Core ID {} exceeds available cores (system has cores 0-{})",
-                                r.start, max_core_id
-                            ),
-                            available: available_core_ids.iter().map(|c| c.id).collect(),
-                        });
-                    }
-                    if r.end > max_core_id {
-                        return Err(Error::InvalidCoreAllocation {
-                            alloc: core_allocation.clone(),
-                            message: format!(
-                                "Core ID {} exceeds available cores (system has cores 0-{})",
-                                r.end, max_core_id
-                            ),
-                            available: available_core_ids.iter().map(|c| c.id).collect(),
-                        });
-                    }
-                }
-
-                // Check for overlapping ranges
-                for (i, r1) in set.iter().enumerate() {
-                    for r2 in set.iter().skip(i + 1) {
-                        // Two ranges overlap if they share any common cores
-                        if r1.start <= r2.end && r2.start <= r1.end {
-                            let overlap_start = r1.start.max(r2.start);
-                            let overlap_end = r1.end.min(r2.end);
-                            return Err(Error::InvalidCoreAllocation {
+        match core_allocation.strategy {
+            CoreAllocationStrategy::AllCores => Ok(available_core_ids),
+            CoreAllocationStrategy::CoreCount => {
+                match core_allocation.count {
+                    Some(count) => {
+                        if count == 0 {
+                            Ok(available_core_ids)
+                        } else if count > num_cores {
+                            Err(Error::InvalidCoreAllocation {
                                 alloc: core_allocation.clone(),
                                 message: format!(
-                                    "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
-                                    r1.start, r1.end, r2.start, r2.end, overlap_start, overlap_end
+                                    "Requested {} cores but only {} cores available on this system",
+                                    count, num_cores
                                 ),
                                 available: available_core_ids.iter().map(|c| c.id).collect(),
-                            });
+                            })
+                        } else {
+                            Ok(available_core_ids.into_iter().take(count).collect())
                         }
                     }
+                    None => {
+                        // Treat no count supplied the same as count: 0
+                        Ok(available_core_ids)
+                    }
                 }
+            }
+            CoreAllocationStrategy::CoreSet => {
+                match &core_allocation.set {
+                    Some(set) => {
+                        // Validate all ranges first
+                        for r in set.iter() {
+                            if r.start > r.end {
+                                return Err(Error::InvalidCoreAllocation {
+                                    alloc: core_allocation.clone(),
+                                    message: format!(
+                                        "Invalid core range: start ({}) is greater than end ({})",
+                                        r.start, r.end
+                                    ),
+                                    available: available_core_ids.iter().map(|c| c.id).collect(),
+                                });
+                            }
+                            if r.start > max_core_id {
+                                return Err(Error::InvalidCoreAllocation {
+                                    alloc: core_allocation.clone(),
+                                    message: format!(
+                                        "Core ID {} exceeds available cores (system has cores 0-{})",
+                                        r.start, max_core_id
+                                    ),
+                                    available: available_core_ids.iter().map(|c| c.id).collect(),
+                                });
+                            }
+                            if r.end > max_core_id {
+                                return Err(Error::InvalidCoreAllocation {
+                                    alloc: core_allocation.clone(),
+                                    message: format!(
+                                        "Core ID {} exceeds available cores (system has cores 0-{})",
+                                        r.end, max_core_id
+                                    ),
+                                    available: available_core_ids.iter().map(|c| c.id).collect(),
+                                });
+                            }
+                        }
 
-                // Filter cores in range
-                let selected: Vec<_> = available_core_ids
-                    .into_iter()
-                    // Naively check if each interval contains the point
-                    // This problem is known as the "Interval Stabbing Problem"
-                    // and has more efficient but more complex solutions
-                    .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
-                    .collect();
+                        // Check for overlapping ranges
+                        for (i, r1) in set.iter().enumerate() {
+                            for r2 in set.iter().skip(i + 1) {
+                                // Two ranges overlap if they share any common cores
+                                if r1.start <= r2.end && r2.start <= r1.end {
+                                    let overlap_start = r1.start.max(r2.start);
+                                    let overlap_end = r1.end.min(r2.end);
+                                    return Err(Error::InvalidCoreAllocation {
+                                        alloc: core_allocation.clone(),
+                                        message: format!(
+                                            "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
+                                            r1.start,
+                                            r1.end,
+                                            r2.start,
+                                            r2.end,
+                                            overlap_start,
+                                            overlap_end
+                                        ),
+                                        available: available_core_ids
+                                            .iter()
+                                            .map(|c| c.id)
+                                            .collect(),
+                                    });
+                                }
+                            }
+                        }
 
-                if selected.is_empty() {
-                    return Err(Error::InvalidCoreAllocation {
+                        // Filter cores in range
+                        let selected: Vec<_> = available_core_ids
+                            .into_iter()
+                            // Naively check if each interval contains the point
+                            // This problem is known as the "Interval Stabbing Problem"
+                            // and has more efficient but more complex solutions
+                            .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
+                            .collect();
+
+                        if selected.is_empty() {
+                            return Err(Error::InvalidCoreAllocation {
+                                alloc: core_allocation.clone(),
+                                message: "No available cores in the specified ranges".to_owned(),
+                                available: core_affinity::get_core_ids()
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(|c| c.id)
+                                    .collect(),
+                            });
+                        }
+
+                        Ok(selected)
+                    }
+                    None => Err(Error::InvalidCoreAllocation {
                         alloc: core_allocation.clone(),
-                        message: "No available cores in the specified ranges".to_owned(),
+                        message: "No range of cores supplied for allocation".to_owned(),
                         available: core_affinity::get_core_ids()
                             .unwrap_or_default()
                             .iter()
                             .map(|c| c.id)
                             .collect(),
-                    });
+                    }),
                 }
-
-                Ok(selected)
             }
         }
     }
@@ -1503,6 +1775,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         engine_evt_reporter: &ObservedEventReporter,
         metrics_reporter: &MetricsReporter,
         telemetry_reporting_interval: std::time::Duration,
+        memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
     ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
         let (internal_config, channel_capacity_policy, telemetry_policy): (
@@ -1566,6 +1839,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         let internal_metrics_reporter = metrics_reporter.clone();
         let internal_channel_capacity_policy = channel_capacity_policy;
         let internal_telemetry_policy = telemetry_policy;
+        let internal_memory_pressure_rx = memory_pressure_tx.subscribe();
 
         let handle = thread::Builder::new()
             .name(thread_name.clone())
@@ -1576,6 +1850,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     internal_config,
                     internal_channel_capacity_policy,
                     internal_telemetry_policy,
+                    None, // no transport headers for the internal observability pipeline
                     telemetry_reporting_interval,
                     pipeline_factory,
                     internal_pipeline_ctx,
@@ -1585,6 +1860,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     internal_ctrl_rx,
                     internal_return_tx,
                     internal_return_rx,
+                    internal_memory_pressure_rx,
                     tracing_setup,
                     Some((its_settings, startup_tx)),
                 )
@@ -1626,6 +1902,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        transport_headers_policy: Option<TransportHeadersPolicy>,
         telemetry_reporting_interval: std::time::Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -1635,6 +1912,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         runtime_ctrl_msg_rx: RuntimeCtrlMsgReceiver<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
+        memory_pressure_rx: tokio::sync::watch::Receiver<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
@@ -1679,6 +1957,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
+                    transport_headers_policy,
                     its_settings,
                 )
                 .map_err(|e| {
@@ -1717,6 +1996,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     obs_evt_reporter,
                     metrics_reporter,
                     telemetry_reporting_interval,
+                    memory_pressure_rx,
                     runtime_ctrl_msg_tx,
                     runtime_ctrl_msg_rx,
                     pipeline_completion_msg_tx,
@@ -1812,7 +2092,10 @@ connections:
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy { core_allocation },
+                resources: ResourcesPolicy {
+                    core_allocation,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             role: ResolvedPipelineRole::Regular,
@@ -1854,7 +2137,7 @@ connections:
 
     #[test]
     fn select_all_cores_by_default() {
-        let core_allocation = CoreAllocation::AllCores;
+        let core_allocation = CoreAllocation::all_cores();
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
         let result =
@@ -1865,7 +2148,7 @@ connections:
 
     #[test]
     fn select_limited_by_num_cores() {
-        let core_allocation = CoreAllocation::CoreCount { count: 4 };
+        let core_allocation = CoreAllocation::core_count(4);
         let available_core_ids = available_core_ids();
         let result = Controller::<()>::select_cores_for_allocation(
             available_core_ids.clone(),
@@ -1885,12 +2168,10 @@ connections:
     fn select_with_valid_single_core_range() {
         let available_core_ids = available_core_ids();
         let first_id = available_core_ids[0].id;
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![CoreRange {
-                start: first_id,
-                end: first_id,
-            }],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange {
+            start: first_id,
+            end: first_id,
+        }]);
         let result =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
                 .unwrap();
@@ -1899,12 +2180,10 @@ connections:
 
     #[test]
     fn select_with_valid_multi_core_range() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 2, end: 5 },
-                CoreRange { start: 6, end: 6 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 2, end: 5 },
+            CoreRange { start: 6, end: 6 },
+        ]);
         let available_core_ids = available_core_ids();
         let result =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -1914,9 +2193,7 @@ connections:
 
     #[test]
     fn select_with_inverted_range_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![CoreRange { start: 2, end: 1 }],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange { start: 2, end: 1 }]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -1933,9 +2210,7 @@ connections:
     fn select_with_out_of_bounds_range_errors() {
         let start = 100;
         let end = 110;
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![CoreRange { start, end }],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange { start, end }]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -1950,7 +2225,7 @@ connections:
 
     #[test]
     fn select_with_zero_count_uses_all_cores() {
-        let core_allocation = CoreAllocation::CoreCount { count: 0 };
+        let core_allocation = CoreAllocation::core_count(0);
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
         let result =
@@ -1961,12 +2236,10 @@ connections:
 
     #[test]
     fn select_with_overlapping_ranges_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 2, end: 5 },
-                CoreRange { start: 4, end: 7 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 2, end: 5 },
+            CoreRange { start: 4, end: 7 },
+        ]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -1986,12 +2259,10 @@ connections:
 
     #[test]
     fn select_with_fully_overlapping_ranges_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 2, end: 6 },
-                CoreRange { start: 3, end: 5 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 2, end: 6 },
+            CoreRange { start: 3, end: 5 },
+        ]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2011,12 +2282,10 @@ connections:
 
     #[test]
     fn select_with_identical_ranges_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 3, end: 5 },
-                CoreRange { start: 3, end: 5 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 3, end: 5 },
+            CoreRange { start: 3, end: 5 },
+        ]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2037,12 +2306,10 @@ connections:
     #[test]
     fn select_with_adjacent_ranges_succeeds() {
         // Adjacent but non-overlapping ranges should work
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 2, end: 3 },
-                CoreRange { start: 4, end: 5 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 2, end: 3 },
+            CoreRange { start: 4, end: 5 },
+        ]);
         let available_core_ids = available_core_ids();
         let result =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2052,13 +2319,11 @@ connections:
 
     #[test]
     fn select_with_multiple_overlapping_ranges_errors() {
-        let core_allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 1, end: 3 },
-                CoreRange { start: 2, end: 4 },
-                CoreRange { start: 5, end: 6 },
-            ],
-        };
+        let core_allocation = CoreAllocation::core_set(vec![
+            CoreRange { start: 1, end: 3 },
+            CoreRange { start: 2, end: 4 },
+            CoreRange { start: 5, end: 6 },
+        ]);
         let available_core_ids = available_core_ids();
         let err =
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
@@ -2079,20 +2344,14 @@ connections:
     #[test]
     fn preflight_fails_fast_when_later_pipeline_allocation_is_invalid() {
         let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::CoreCount { count: 2 },
-            ),
+            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(2)),
             resolved_pipeline_with_core_allocation(
                 "g1",
                 "p2",
-                CoreAllocation::CoreSet {
-                    set: vec![CoreRange {
-                        start: 999,
-                        end: 999,
-                    }],
-                },
+                CoreAllocation::core_set(vec![CoreRange {
+                    start: 999,
+                    end: 999,
+                }]),
             ),
         ];
 
@@ -2113,16 +2372,12 @@ connections:
             resolved_pipeline_with_core_allocation(
                 "g1",
                 "p1",
-                CoreAllocation::CoreSet {
-                    set: vec![CoreRange { start: 1, end: 2 }],
-                },
+                CoreAllocation::core_set(vec![CoreRange { start: 1, end: 2 }]),
             ),
             resolved_pipeline_with_core_allocation(
                 "g1",
                 "p2",
-                CoreAllocation::CoreSet {
-                    set: vec![CoreRange { start: 2, end: 3 }],
-                },
+                CoreAllocation::core_set(vec![CoreRange { start: 2, end: 3 }]),
             ),
         ];
 

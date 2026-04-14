@@ -35,26 +35,27 @@
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
-use crate::message::{Message, SharedExporterMessageChannel};
+use crate::message::{Message, SharedExporterInbox};
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
 use crate::{Interests, ReceivedAtNode};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
+use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::time::Duration;
 
-/// Send-friendly exporter message channel for shared exporter runtimes.
-pub struct ExporterMessageChannel<PData> {
-    inner: SharedExporterMessageChannel<PData>,
+/// Send-friendly exporter inbox for shared exporter runtimes.
+pub struct ExporterInbox<PData> {
+    inner: SharedExporterInbox<PData>,
 }
 
-impl<PData> ExporterMessageChannel<PData> {
-    /// Creates a new shared exporter message channel.
+impl<PData> ExporterInbox<PData> {
+    /// Creates a new shared exporter inbox.
     #[must_use]
     pub(crate) fn new(
         control_rx: SharedReceiver<NodeControlMsg<PData>>,
@@ -63,14 +64,12 @@ impl<PData> ExporterMessageChannel<PData> {
         interests: Interests,
     ) -> Self {
         Self {
-            inner: SharedExporterMessageChannel::new_internal(
-                control_rx, pdata_rx, node_id, interests,
-            ),
+            inner: SharedExporterInbox::new_internal(control_rx, pdata_rx, node_id, interests),
         }
     }
 }
 
-impl<PData: ReceivedAtNode> ExporterMessageChannel<PData> {
+impl<PData: ReceivedAtNode> ExporterInbox<PData> {
     /// Receives the next message with pdata admission enabled.
     pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
         self.inner.recv_internal().await
@@ -89,7 +88,7 @@ pub trait Exporter<PData> {
     /// Similar to local::exporter::Exporter::start, but operates in a Send context.
     async fn start(
         self: Box<Self>,
-        msg_chan: ExporterMessageChannel<PData>,
+        inbox: ExporterInbox<PData>,
         effect_handler: EffectHandler<PData>,
     ) -> Result<TerminalState, Error>;
 }
@@ -99,6 +98,9 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
+    /// Propagation policy for filtering captured headers on egress.
+    /// `None` when no propagation policy is configured (zero overhead).
+    propagation_policy: Option<HeaderPropagationPolicy>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -109,6 +111,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
+            propagation_policy: None,
         }
     }
 
@@ -122,6 +125,19 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         self.core.node_interests()
+    }
+
+    /// Returns the propagation policy if a header propagation policy is configured.
+    ///
+    /// Returns `None` when no propagation policy is active (zero overhead).
+    #[must_use]
+    pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
+        self.propagation_policy.as_ref()
+    }
+
+    /// Sets the propagation policy for transport header filtering.
+    pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
+        self.propagation_policy = policy;
     }
 
     /// Print an info message to stdout.
@@ -151,22 +167,6 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the runtime control manager for context unwinding.
-    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_ack(ack).await
-    }
-
-    /// Send a Nack to the runtime control manager for context unwinding.
-    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_nack(nack).await
-    }
-
     /// Reports metrics collected by the exporter.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
@@ -177,4 +177,27 @@ impl<PData> EffectHandler<PData> {
     }
 
     // More methods will be added in the future as needed.
+
+    /// Sets the pipeline result message sender for this effect handler.
+    ///
+    /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
+    /// the engine wiring sets this automatically in `prepare_runtime`.
+    pub fn set_pipeline_completion_msg_sender(
+        &mut self,
+        pipeline_completion_msg_sender: crate::control::PipelineCompletionMsgSender<PData>,
+    ) {
+        self.core
+            .set_pipeline_completion_msg_sender(pipeline_completion_msg_sender);
+    }
+}
+
+#[async_trait(?Send)]
+impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for EffectHandler<PData> {
+    async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+        self.core.route_ack(ack).await
+    }
+
+    async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+        self.core.route_nack(nack).await
+    }
 }

@@ -1,0 +1,43 @@
+[package]
+name = "otap-df-admin-api"
+description = "Public admin API and SDK for the OTAP dataflow engine"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["http-client", "crypto-ring"]
+http-client = ["dep:async-trait", "dep:reqwest"]
+crypto-ring = ["dep:rustls", "rustls/ring"]
+crypto-aws-lc = ["dep:rustls", "rustls/aws_lc_rs"]
+crypto-openssl = ["dep:rustls", "dep:rustls-openssl"]
+
+[dependencies]
+otap-df-admin-types = { workspace = true }
+otap-df-config = { workspace = true }
+
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+async-trait = { workspace = true, optional = true }
+reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2"], optional = true }
+rustls = { workspace = true, optional = true }
+rustls-openssl = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+wiremock = { workspace = true }
+otap-test-tls-certs = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+tempfile = { workspace = true }
+tokio-rustls = { workspace = true }

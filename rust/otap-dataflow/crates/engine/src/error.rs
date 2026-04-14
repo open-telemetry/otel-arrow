@@ -150,9 +150,13 @@ impl<T: Sized> From<TypedError<T>> for Error {
     /// This drops the SendError<T> field yielding an untyped error.
     fn from(value: TypedError<T>) -> Self {
         match value {
-            TypedError::ChannelSendError(e) => Error::ChannelSendError {
-                error: e.to_string(),
-            },
+            TypedError::ChannelSendError(e) => {
+                let closed = matches!(e, SendError::Closed(_));
+                Error::ChannelSendError {
+                    error: e.to_string(),
+                    closed,
+                }
+            }
             TypedError::RuntimeMsgError(e) => Error::RuntimeMsgError {
                 error: e.to_string(),
             },
@@ -181,8 +185,11 @@ pub enum Error {
     /// A wrapper for the channel errors.
     #[error("A data channel error occurred: {error}")]
     ChannelSendError {
-        /// The reason (e.g., channel full)
+        /// The reason (e.g., channel full or closed).
         error: String,
+        /// `true` when the channel was closed (receiver dropped), `false` when
+        /// the channel was merely full (backpressure).
+        closed: bool,
     },
 
     /// A wrapper for send errors on the runtime channels.
@@ -321,6 +328,13 @@ pub enum Error {
     UnknownExporter {
         /// The name of the unknown exporter plugin.
         plugin_urn: NodeUrn,
+    },
+
+    /// An extension was placed in the `nodes` section instead of `extensions`.
+    #[error("Extension `{node}` was placed in `nodes` but belongs in the `extensions` section")]
+    ExtensionInNodesSection {
+        /// The node name that was misconfigured.
+        node: NodeName,
     },
 
     /// Unknown node.
@@ -503,6 +517,7 @@ impl Error {
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
+            Error::ExtensionInNodesSection { .. } => "ExtensionInNodesSection",
             Error::UnknownNode { .. } => "UnknownNode",
             Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",

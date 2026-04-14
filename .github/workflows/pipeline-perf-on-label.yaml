@@ -44,9 +44,38 @@ jobs:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: audit
+
+      - name: Disk usage diagnostics
+        run: |
+          echo "=== Overall disk usage ==="
+          df -h
+          echo ""
+          echo "=== Largest directories under / (top 20) ==="
+          sudo du -h --max-depth=3 / 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== Docker disk usage ==="
+          docker system df -v 2>/dev/null || echo "Docker not running or not available"
+          echo ""
+          echo "=== Docker images ==="
+          docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' 2>/dev/null || true
+          echo ""
+          echo "=== Docker volumes ==="
+          docker volume ls 2>/dev/null || true
+          echo ""
+          echo "=== Docker containers (all) ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Size}}\t{{.Status}}' 2>/dev/null || true
+          echo ""
+          echo "=== /home usage ==="
+          sudo du -h --max-depth=2 /home 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== /var usage ==="
+          sudo du -h --max-depth=2 /var 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== /tmp usage ==="
+          sudo du -h --max-depth=1 /tmp 2>/dev/null | sort -rh | head -10
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -56,7 +85,7 @@ jobs:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Set up Python (non-OL8)
         if: ${{ steps.detect_os.outputs.id != 'ol' }}
@@ -65,7 +94,7 @@ jobs:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Build dataflow_engine
         run: |
@@ -85,6 +114,15 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
+      - name: Post-run disk usage diagnostics
+        if: always()
+        run: |
+          echo "=== Overall disk usage ==="
+          df -h
+          echo ""
+          echo "=== Docker disk usage ==="
+          docker system df -v 2>/dev/null || true
+
   # Run on ubuntu-latest for basic validation when no label is present
   pipeline-perf-test-basic:
     needs: label-check
@@ -92,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: audit
 
@@ -104,7 +142,7 @@ jobs:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Build dataflow_engine
         run: |

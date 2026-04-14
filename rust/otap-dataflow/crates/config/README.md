@@ -46,11 +46,32 @@ The engine binary loads this root spec via `--config`.
 `pipeline::PipelineConfig` parsing APIs remain available for in-memory parsing
 and tests, but are not a runtime root format for the engine process.
 
+## Config URI Resolution
+
+The engine binary resolves the `--config` argument through the
+`config_provider` module before passing content to the parsing APIs
+below. The resolver supports three URI forms:
+
+| URI | Source |
+| --- | --- |
+| `file:/path/to/config.yaml` | Local file |
+| `env:MY_VAR` | Environment variable (full config content) |
+| `/path/to/config.yaml` | Bare path, treated as `file:` |
+
+When `--config` is omitted the resolver falls back to `config.yaml`
+in the current working directory.
+
+The top-level entry point is `config_provider::resolve_config`.
+`ResolvedConfig` carries both the original source URI and the loaded
+content string, so callers can detect format (YAML vs JSON) from the
+source without re-parsing it.
+
 ## Parsing and Validation Entry Points
 
 Runtime/root APIs:
 
-- `OtelDataflowSpec::from_file`
+- `OtelDataflowSpec::from_file` (used internally; prefer
+  `config_provider::resolve_config` in the binary)
 - `OtelDataflowSpec::from_yaml`
 - `OtelDataflowSpec::from_json`
 
@@ -89,6 +110,7 @@ Policy families:
 - `policies.telemetry.tokio_metrics`
 - `policies.telemetry.runtime_metrics`
 - `policies.resources.core_allocation`
+- `policies.resources.memory_limiter`
 
 Defaults:
 
@@ -126,6 +148,17 @@ Observability note:
 
 - `engine.observability.pipeline.policies.resources` is intentionally
   unsupported and rejected.
+
+Memory limiter policy:
+
+- `policies.resources.memory_limiter` is an optional process-wide policy.
+- If configured, `mode` must be explicitly set to either `enforce` or
+  `observe_only`.
+- This policy is supported only at top-level `policies.resources`.
+  Group/pipeline placements are rejected.
+- In Phase 1, `Soft` is informational only; `Hard` is the enforcement threshold.
+- For full runtime behavior, metrics, and operational guidance, see
+  [`docs/memory-limiter-phase1.md`](../../docs/memory-limiter-phase1.md).
 
 Resolution semantics:
 

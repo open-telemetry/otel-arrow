@@ -12,7 +12,7 @@ use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
-use otap_df_pdata::proto_encode_len_delimited_unknown_size;
+use otap_df_pdata::proto_encode_len_delimited_small;
 use std::collections::HashMap;
 use std::time::SystemTime;
 use tracing::Level;
@@ -71,7 +71,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
 /// Encode the event name from callsite metadata.
 /// Format: "target::name (file:line)" or "target::name" if no file/line.
 fn encode_event_name(buf: &mut ProtoBuffer, callsite: SavedCallsite) {
-    proto_encode_len_delimited_unknown_size!(
+    proto_encode_len_delimited_small!(
         LOG_RECORD_EVENT_NAME,
         {
             super::formatter::write_event_name_to(buf, &callsite);
@@ -94,11 +94,11 @@ impl<'buf> DirectFieldVisitor<'buf> {
     /// Encode an attribute (KeyValue message) with a string value.
     #[inline]
     pub fn encode_string_attribute(&mut self, key: &str, value: &str) {
-        proto_encode_len_delimited_unknown_size!(
+        proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
                 self.buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_unknown_size!(
+                proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
                     {
                         self.buf.encode_string(ANY_VALUE_STRING_VALUE, value);
@@ -113,11 +113,11 @@ impl<'buf> DirectFieldVisitor<'buf> {
     /// Encode an attribute with an i64 value.
     #[inline]
     pub fn encode_int_attribute(&mut self, key: &str, value: i64) {
-        proto_encode_len_delimited_unknown_size!(
+        proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
                 self.buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_unknown_size!(
+                proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
                     {
                         self.buf
@@ -134,11 +134,11 @@ impl<'buf> DirectFieldVisitor<'buf> {
     /// Encode an attribute with a bool value.
     #[inline]
     pub fn encode_bool_attribute(&mut self, key: &str, value: bool) {
-        proto_encode_len_delimited_unknown_size!(
+        proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
                 self.buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_unknown_size!(
+                proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
                     {
                         self.buf
@@ -155,11 +155,11 @@ impl<'buf> DirectFieldVisitor<'buf> {
     /// Encode an attribute with a double value.
     #[inline]
     pub fn encode_double_attribute(&mut self, key: &str, value: f64) {
-        proto_encode_len_delimited_unknown_size!(
+        proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
                 self.buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_unknown_size!(
+                proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
                     {
                         self.buf
@@ -174,9 +174,17 @@ impl<'buf> DirectFieldVisitor<'buf> {
     }
 
     /// Encode the body (AnyValue message) as a string.
+    /// Empty strings are skipped to avoid encoding a semantically absent body.
+    /// The `otel_*!` macros pass `""` as a message when invoked without fields
+    /// (tracing macros require at least a format string). This guard ensures
+    /// that empty message does not produce an OTLP body or a trailing `:` in
+    /// console output.
     #[inline]
     pub fn encode_body_string(&mut self, value: &str) {
-        proto_encode_len_delimited_unknown_size!(
+        if value.is_empty() {
+            return;
+        }
+        proto_encode_len_delimited_small!(
             LOG_RECORD_BODY,
             {
                 self.buf.encode_string(ANY_VALUE_STRING_VALUE, value);
@@ -188,7 +196,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
     /// Encode the body (AnyValue message) from a Debug value without allocation.
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
-        proto_encode_len_delimited_unknown_size!(
+        proto_encode_len_delimited_small!(
             LOG_RECORD_BODY,
             {
                 encode_debug_string(self.buf, value);
@@ -200,11 +208,11 @@ impl<'buf> DirectFieldVisitor<'buf> {
     /// Encode an attribute with a Debug value without allocation.
     #[inline]
     pub fn encode_debug_attribute(&mut self, key: &str, value: &dyn std::fmt::Debug) {
-        proto_encode_len_delimited_unknown_size!(
+        proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
                 self.buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_unknown_size!(
+                proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
                     {
                         encode_debug_string(self.buf, value);
@@ -222,7 +230,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
 #[inline]
 fn encode_debug_string(buf: &mut ProtoBuffer, value: &dyn std::fmt::Debug) {
     use std::io::Write;
-    proto_encode_len_delimited_unknown_size!(
+    proto_encode_len_delimited_small!(
         ANY_VALUE_STRING_VALUE,
         {
             let _ = write!(buf, "{:?}", value);
@@ -305,7 +313,7 @@ where
     I: Iterator<Item = (&'a opentelemetry::Key, &'a opentelemetry::Value)>,
 {
     // ResourceLogs.resource (field 1, Resource message)
-    proto_encode_len_delimited_unknown_size!(
+    proto_encode_len_delimited_small!(
         RESOURCE_LOGS_RESOURCE,
         {
             // Encode each attribute as a KeyValue
@@ -335,11 +343,11 @@ pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> Bytes
 fn encode_resource_attribute(buf: &mut ProtoBuffer, key: &str, value: &opentelemetry::Value) {
     use opentelemetry::Value;
 
-    proto_encode_len_delimited_unknown_size!(
+    proto_encode_len_delimited_small!(
         RESOURCE_ATTRIBUTES,
         {
             buf.encode_string(KEY_VALUE_KEY, key);
-            proto_encode_len_delimited_unknown_size!(
+            proto_encode_len_delimited_small!(
                 KEY_VALUE_VALUE,
                 {
                     match value {
@@ -452,11 +460,11 @@ fn encode_key_value(
     key: &str,
     value: &crate::attributes::AttributeValue,
 ) {
-    proto_encode_len_delimited_unknown_size!(
+    proto_encode_len_delimited_small!(
         outer_field,
         {
             buf.encode_string(KEY_VALUE_KEY, key);
-            proto_encode_len_delimited_unknown_size!(
+            proto_encode_len_delimited_small!(
                 KEY_VALUE_VALUE,
                 {
                     encode_any_value(buf, value);
@@ -496,7 +504,7 @@ fn encode_any_value(buf: &mut ProtoBuffer, value: &crate::attributes::AttributeV
         AttributeValue::Map(m) => {
             // Encode as kvlist: AnyValue.kvlist_value (field 6) containing
             // KeyValueList with repeated KeyValue entries (field 1).
-            proto_encode_len_delimited_unknown_size!(
+            proto_encode_len_delimited_small!(
                 ANY_VALUE_KVLIST_VALUE,
                 {
                     for (k, v) in m {
@@ -523,7 +531,7 @@ pub fn encode_export_logs_request(
     buf.clear();
 
     // ExportLogsServiceRequest.resource_logs (field 1, repeated ResourceLogs)
-    proto_encode_len_delimited_unknown_size!(
+    proto_encode_len_delimited_small!(
         EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
         {
             // ResourceLogs.resource (field 1, Resource message)
@@ -531,12 +539,12 @@ pub fn encode_export_logs_request(
             buf.extend_from_slice(resource_bytes);
 
             // ResourceLogs.scope_logs (field 2, repeated ScopeLogs)
-            proto_encode_len_delimited_unknown_size!(
+            proto_encode_len_delimited_small!(
                 RESOURCE_LOGS_SCOPE_LOGS,
                 {
                     // ScopeLogs.scope (field 1, InstrumentationScope message)
                     // Encode scope with attributes from entity context
-                    proto_encode_len_delimited_unknown_size!(
+                    proto_encode_len_delimited_small!(
                         SCOPE_LOG_SCOPE,
                         {
                             // For each entity key in the log context, append its pre-encoded attributes
@@ -549,7 +557,7 @@ pub fn encode_export_logs_request(
                     );
 
                     // ScopeLogs.log_records (field 2, repeated LogRecord)
-                    proto_encode_len_delimited_unknown_size!(
+                    proto_encode_len_delimited_small!(
                         SCOPE_LOGS_LOG_RECORDS,
                         {
                             // Encode the LogRecord fields

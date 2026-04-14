@@ -45,6 +45,9 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 /// - Optimizing by group operations into efficient stages
 pub struct PipelinePlanner {
     plan_for_attributes: bool,
+
+    /// Whether to consider  attribute keys case sensitive in filtering pipeline stages
+    filter_attribute_keys_case_sensitive: bool,
 }
 
 impl PipelinePlanner {
@@ -52,13 +55,20 @@ impl PipelinePlanner {
     pub const fn new() -> Self {
         Self {
             plan_for_attributes: false,
+            filter_attribute_keys_case_sensitive: true,
         }
     }
 
     pub const fn new_for_attributes() -> Self {
         Self {
             plan_for_attributes: true,
+            filter_attribute_keys_case_sensitive: true,
         }
+    }
+
+    pub const fn with_filter_attribute_keys_case_sensitive(mut self, val: bool) -> Self {
+        self.filter_attribute_keys_case_sensitive = val;
+        self
     }
 
     /// Create pipeline stages from the pipeline definition.
@@ -165,9 +175,12 @@ impl PipelinePlanner {
                 // `logs | where severity_text == "ERROR"` would be a discard expr discarding
                 // everything where not(severity_text == "ERROR"). we use the inner predicate to
                 // build the filter.
-                Some(LogicalExpression::Not(not_expr)) => {
-                    self.plan_filter(not_expr.get_inner_expression(), session_ctx, otap_batch)
-                }
+                Some(LogicalExpression::Not(not_expr)) => self.plan_filter(
+                    not_expr.get_inner_expression(),
+                    functions,
+                    session_ctx,
+                    otap_batch,
+                ),
 
                 // the discard expression's `not` statement may get folded into a static constant
                 // filter in which case we don't produce logical expression as `not(true)`, instead
@@ -180,7 +193,7 @@ impl PipelinePlanner {
                                 !bool_expr.get_value(),
                             )),
                         ));
-                        self.plan_filter(&keep_plan, session_ctx, otap_batch)
+                        self.plan_filter(&keep_plan, functions, session_ctx, otap_batch)
                     }
                     invalid => Err(Error::InvalidPipelineError {
                         cause: format!(
@@ -199,7 +212,7 @@ impl PipelinePlanner {
                             false,
                         )),
                     ));
-                    self.plan_filter(&predicate, session_ctx, otap_batch)
+                    self.plan_filter(&predicate, functions, session_ctx, otap_batch)
                 }
                 invalid => Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -231,8 +244,12 @@ impl PipelinePlanner {
             DataExpression::Conditional(conditional_expr) => {
                 let mut pipeline_branches = vec![];
                 for branch in conditional_expr.get_branches() {
-                    let predicate =
-                        self.plan_filter_exec(branch.get_condition(), session_ctx, otap_batch)?;
+                    let predicate = self.plan_filter_exec(
+                        branch.get_condition(),
+                        functions,
+                        session_ctx,
+                        otap_batch,
+                    )?;
 
                     let pipeline_stages = self.plan_data_exprs(
                         branch.get_expressions(),
@@ -275,10 +292,12 @@ impl PipelinePlanner {
     fn plan_filter(
         &self,
         logical_expr: &LogicalExpression,
+        functions: &[PipelineFunction],
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let filter_exec = self.plan_filter_exec(logical_expr, session_ctx, otap_batch)?;
+        let filter_exec =
+            self.plan_filter_exec(logical_expr, functions, session_ctx, otap_batch)?;
         let filter_stage = FilterPipelineStage::new(filter_exec);
 
         Ok(vec![Box::new(filter_stage)])
@@ -288,10 +307,15 @@ impl PipelinePlanner {
     fn plan_filter_exec(
         &self,
         logical_expr: &LogicalExpression,
+        functions: &[PipelineFunction],
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Composite<FilterExec>> {
-        let filter_plan = Composite::<FilterPlan>::try_from(logical_expr)?;
+        let filter_plan = Composite::<FilterPlan>::try_from(
+            logical_expr,
+            self.filter_attribute_keys_case_sensitive,
+            functions,
+        )?;
 
         // optimize the to the plan
         let filter_plan = if self.plan_for_attributes {
@@ -687,15 +711,6 @@ impl PipelinePlanner {
             // its name or some additional metadata. For now, we just know this is the only type
             // of function invocation supported.
             if let ScalarExpression::InvokeFunction(func) = set_expr.get_source() {
-                // create a pipeline stage to execute any previous assignments before executing
-                // this nested pipeline
-                if !assignments.is_empty() {
-                    let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
-                    results.push(Box::new(pipeline_stage));
-                    assignments.clear();
-                    cols_or_keys_referenced.clear();
-                }
-
                 let function_id = func.get_function_id();
                 let function =
                     functions
@@ -705,65 +720,71 @@ impl PipelinePlanner {
                             query_location: Some(func.get_query_location().clone()),
                         })?;
 
-                let PipelineFunctionImplementation::Expressions(function_exprs) =
+                if let PipelineFunctionImplementation::Expressions(function_exprs) =
                     function.get_implementation()
-                else {
-                    return Err(Error::NotYetSupportedError {
-                        message:"only functions with 'Expressions' implementation is currently supported".into(),
-                    });
-                };
-
-                let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
-                for func_expr in function_exprs {
-                    let data_expr = match func_expr {
-                        PipelineFunctionExpression::Conditional(c) => {
-                            DataExpression::Conditional(c.clone())
-                        }
-                        PipelineFunctionExpression::Discard(d) => {
-                            DataExpression::Discard(d.clone())
-                        }
-                        PipelineFunctionExpression::Transform(t) => {
-                            DataExpression::Transform(t.clone())
-                        }
-                        PipelineFunctionExpression::Return(_r) => {
-                            return Err(Error::NotYetSupportedError {
-                                message: "return statement in function not yet supported".into(),
-                            });
-                        }
-                    };
-                    inner_pipeline_data_exprs.push(data_expr);
-                }
-
-                let planner = Self::new_for_attributes();
-                let child_pipeline = planner.plan_data_exprs(
-                    &inner_pipeline_data_exprs,
-                    functions,
-                    session_ctx,
-                    otap_batch,
-                )?;
-
-                let attributes_id = Self::source_to_apply_attrs_id(dest).ok_or_else(|| {
-                    Error::InvalidPipelineError {
-                        cause: format!(
-                            "Invalid source for nested apply pipeline to attributes {:?}",
-                            dest,
-                        ),
-                        query_location: Some(dest.get_query_location().clone()),
+                {
+                    // create a pipeline stage to execute any previous assignments before executing
+                    // this nested pipeline
+                    if !assignments.is_empty() {
+                        let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
+                        results.push(Box::new(pipeline_stage));
+                        assignments.clear();
+                        cols_or_keys_referenced.clear();
                     }
-                })?;
 
-                results.push(Box::new(ApplyToAttributesPipelineStage::new(
-                    attributes_id,
-                    child_pipeline,
-                )));
+                    let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
+                    for func_expr in function_exprs {
+                        let data_expr = match func_expr {
+                            PipelineFunctionExpression::Conditional(c) => {
+                                DataExpression::Conditional(c.clone())
+                            }
+                            PipelineFunctionExpression::Discard(d) => {
+                                DataExpression::Discard(d.clone())
+                            }
+                            PipelineFunctionExpression::Transform(t) => {
+                                DataExpression::Transform(t.clone())
+                            }
+                            PipelineFunctionExpression::Return(_r) => {
+                                return Err(Error::NotYetSupportedError {
+                                    message: "return statement in function not yet supported"
+                                        .into(),
+                                });
+                            }
+                        };
+                        inner_pipeline_data_exprs.push(data_expr);
+                    }
 
-                continue;
+                    let planner = Self::new_for_attributes();
+                    let child_pipeline = planner.plan_data_exprs(
+                        &inner_pipeline_data_exprs,
+                        functions,
+                        session_ctx,
+                        otap_batch,
+                    )?;
+
+                    let attributes_id = Self::source_to_apply_attrs_id(dest).ok_or_else(|| {
+                        Error::InvalidPipelineError {
+                            cause: format!(
+                                "Invalid source for nested apply pipeline to attributes {:?}",
+                                dest,
+                            ),
+                            query_location: Some(dest.get_query_location().clone()),
+                        }
+                    })?;
+
+                    results.push(Box::new(ApplyToAttributesPipelineStage::new(
+                        attributes_id,
+                        child_pipeline,
+                    )));
+
+                    continue;
+                }
             }
 
             // create new assignment argument
             let assignment = Assignment {
                 dest_column: ColumnAccessor::try_from(dest.get_value_accessor())?,
-                source: logical_planner.plan_scalar_expr(set_expr.get_source())?,
+                source: logical_planner.plan_scalar_expr(set_expr.get_source(), functions)?,
                 dest_query_location: Some(dest.get_query_location()),
             };
 

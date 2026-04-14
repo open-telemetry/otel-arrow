@@ -3,20 +3,26 @@
 
 //! Telemetry endpoints.
 //!
-//! - /telemetry/live-schema - current semantic conventions registry
-//! - /telemetry/metrics - current aggregated metrics in JSON, line protocol, or Prometheus text format
-//! - /telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
+//! - /api/v1/telemetry/live-schema - current semantic conventions registry
+//! - /api/v1/telemetry/logs - retained internal logs from the in-memory log tap
+//! - /api/v1/telemetry/metrics - current aggregated metrics in JSON, line protocol, or Prometheus text format
+//! - /api/v1/telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
 
 use crate::AppState;
+use crate::convert::json_shape;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use otap_df_admin_types::telemetry as api;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
+use otap_df_telemetry::event::LogEvent;
+use otap_df_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
 use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::self_tracing::format_log_record_to_string;
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
@@ -27,6 +33,7 @@ use std::fmt::Write as _;
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/telemetry/live-schema", get(get_live_schema))
+        .route("/telemetry/logs", get(get_logs))
         .route("/telemetry/metrics", get(get_metrics))
         .route("/telemetry/metrics/aggregate", get(get_metrics_aggregate))
         .route("/metrics", get(get_metrics))
@@ -78,10 +85,11 @@ struct MetricSet {
     metrics: HashMap<String, MetricValue>,
 }
 
-/// Output format for telemetry endpoints.
+type LogsQuery = api::LogsQuery;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OutputFormat {
+enum OutputFormat {
     Json,
     JsonCompact,
     LineProtocol,
@@ -89,32 +97,38 @@ pub enum OutputFormat {
     Prometheus,
 }
 
-/// Query parameters for /telemetry/metrics
-#[derive(Debug, Default, Deserialize)]
-pub struct MetricsQuery {
-    /// When true, reset metrics after reading. Default: false.
-    #[serde(default = "default_false")]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+struct MetricsQuery {
+    #[serde(default)]
     reset: bool,
-    /// Output format: prometheus (default), json, json_compact, line_protocol
     #[serde(default)]
     format: Option<OutputFormat>,
-    /// When true, metric set which have all zero values are kept in the output. Default: false.
-    #[serde(default = "default_false")]
+    #[serde(default)]
     keep_all_zeroes: bool,
 }
 
-/// Query parameters for /telemetry/metrics/aggregate
-#[derive(Debug, Default, Deserialize)]
-pub struct AggregateQuery {
-    /// When true, reset metrics after reading. Default: false.
-    #[serde(default = "default_false")]
+impl MetricsQuery {
+    #[must_use]
+    fn output_format(&self) -> OutputFormat {
+        self.format.unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct AggregateQuery {
+    #[serde(default)]
     reset: bool,
-    /// Comma-separated list of attribute names to group by (in addition to metric set name).
     #[serde(default)]
     attrs: Option<String>,
-    /// Output format: prometheus (default), json, json_compact, line_protocol
     #[serde(default)]
     format: Option<OutputFormat>,
+}
+
+impl AggregateQuery {
+    #[must_use]
+    fn output_format(&self) -> OutputFormat {
+        self.format.unwrap_or_default()
+    }
 }
 
 /// Internal representation of an aggregated group.
@@ -129,9 +143,99 @@ struct AggregateGroup {
     metrics: HashMap<String, MetricValue>,
 }
 
-#[inline]
-const fn default_false() -> bool {
-    false
+#[derive(Serialize)]
+pub(crate) struct LogsResponse {
+    oldest_seq: Option<u64>,
+    newest_seq: Option<u64>,
+    next_seq: u64,
+    truncated_before_seq: Option<u64>,
+    dropped_on_ingest: u64,
+    dropped_on_retention: u64,
+    retained_bytes: usize,
+    logs: Vec<LogEntry>,
+}
+
+#[derive(Serialize)]
+struct LogEntry {
+    seq: u64,
+    timestamp: String,
+    level: String,
+    target: String,
+    event_name: String,
+    file: Option<String>,
+    line: Option<u32>,
+    rendered: String,
+    contexts: Vec<ResolvedLogContext>,
+}
+
+#[derive(Serialize)]
+struct ResolvedLogContext {
+    entity_key: String,
+    schema_name: Option<String>,
+    attributes: HashMap<String, AttributeValue>,
+}
+
+fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> LogsResponse {
+    LogsResponse {
+        oldest_seq: result.oldest_seq,
+        newest_seq: result.newest_seq,
+        next_seq: result.next_seq,
+        truncated_before_seq: result.truncated_before_seq,
+        dropped_on_ingest: result.dropped_on_ingest,
+        dropped_on_retention: result.dropped_on_retention,
+        retained_bytes: result.retained_bytes,
+        logs: result
+            .logs
+            .iter()
+            .map(|entry| render_log_entry(registry, entry))
+            .collect(),
+    }
+}
+
+fn render_log_entry(registry: &TelemetryRegistryHandle, entry: &RetainedLogEvent) -> LogEntry {
+    let callsite = entry.event.record.callsite();
+    LogEntry {
+        seq: entry.seq,
+        timestamp: chrono::DateTime::<chrono::Utc>::from(entry.event.time).to_rfc3339(),
+        level: callsite.level().to_string(),
+        target: callsite.target().to_string(),
+        event_name: callsite.name().to_string(),
+        file: callsite.file().map(str::to_string),
+        line: callsite.line(),
+        rendered: render_log_message(&entry.event),
+        contexts: resolve_log_contexts(registry, &entry.event),
+    }
+}
+
+fn render_log_message(event: &LogEvent) -> String {
+    format_log_record_to_string(Some(event.time), &event.record)
+}
+
+fn resolve_log_contexts(
+    registry: &TelemetryRegistryHandle,
+    event: &LogEvent,
+) -> Vec<ResolvedLogContext> {
+    event
+        .record
+        .context
+        .iter()
+        .map(|entity_key| {
+            registry
+                .visit_entity(*entity_key, |attrs| ResolvedLogContext {
+                    entity_key: format!("{entity_key:?}"),
+                    schema_name: Some(attrs.schema_name().to_string()),
+                    attributes: attrs
+                        .iter_attributes()
+                        .map(|(key, value)| (key.to_string(), value.clone()))
+                        .collect(),
+                })
+                .unwrap_or_else(|| ResolvedLogContext {
+                    entity_key: format!("{entity_key:?}"),
+                    schema_name: None,
+                    attributes: HashMap::new(),
+                })
+        })
+        .collect()
 }
 
 /// Handler for the /live-schema endpoint.
@@ -143,21 +247,40 @@ pub async fn get_live_schema(
     Ok(Json(state.metrics_registry.generate_semconv_registry()))
 }
 
-/// Handler for the `/telemetry/metrics` endpoint.
+/// Handler for the `/telemetry/logs` endpoint.
+pub async fn get_logs(
+    State(state): State<AppState>,
+    Query(q): Query<LogsQuery>,
+) -> Result<Json<api::LogsResponse>, StatusCode> {
+    let Some(log_tap) = state.log_tap.as_ref() else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+    let result = log_tap.query(LogQuery {
+        after: q.after,
+        limit,
+    });
+    Ok(Json(json_shape(&logs_response(
+        &state.metrics_registry,
+        result,
+    ))))
+}
+
+/// Handler for the `/api/v1/telemetry/metrics` endpoint.
 /// Supports multiple output formats and optional reset.
 ///
 /// Query parameters:
 /// - `reset` (bool, default false): whether to reset metrics after reading.
 /// - `format` (string, default "prometheus"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
-pub async fn get_metrics(
+async fn get_metrics(
     State(state): State<AppState>,
     Query(q): Query<MetricsQuery>,
 ) -> Result<Response, StatusCode> {
     let now = chrono::Utc::now();
     let timestamp = now.to_rfc3339();
 
-    // Resolve format (default json)
-    let fmt = q.format.unwrap_or_default();
+    let fmt = q.output_format();
 
     match fmt {
         OutputFormat::Json => {
@@ -173,7 +296,7 @@ pub async fn get_metrics(
                 metric_sets,
             };
 
-            Ok(Json(response).into_response())
+            Ok(Json(json_shape::<_, api::MetricsResponse>(&response)).into_response())
         }
         OutputFormat::JsonCompact => {
             let metric_sets = if q.reset {
@@ -186,7 +309,7 @@ pub async fn get_metrics(
                 timestamp,
                 metric_sets,
             };
-            Ok(Json(response).into_response())
+            Ok(Json(json_shape::<_, api::CompactMetricsResponse>(&response)).into_response())
         }
         OutputFormat::LineProtocol => {
             let body = if q.reset {
@@ -218,7 +341,7 @@ pub async fn get_metrics(
     }
 }
 
-/// Handler for the /telemetry/metrics/aggregate endpoint.
+/// Handler for the /api/v1/telemetry/metrics/aggregate endpoint.
 /// Aggregates metrics by metric set name and optionally by a list of attributes.
 ///
 /// Query parameters:
@@ -245,8 +368,7 @@ pub async fn get_metrics_aggregate(
     // Aggregate groups with or without reset
     let groups = aggregate_metric_groups(&state.metrics_registry, q.reset, &group_attrs);
 
-    // Resolve format (default json)
-    let fmt = q.format.unwrap_or_default();
+    let fmt = q.output_format();
 
     match fmt {
         OutputFormat::Json => {
@@ -254,14 +376,14 @@ pub async fn get_metrics_aggregate(
                 timestamp,
                 metric_sets: groups_with_metadata(&groups),
             };
-            Ok(Json(response).into_response())
+            Ok(Json(json_shape::<_, api::MetricsResponse>(&response)).into_response())
         }
         OutputFormat::JsonCompact => {
             let response = AllMetrics {
                 timestamp,
                 metric_sets: groups_without_metadata(&groups),
             };
-            Ok(Json(response).into_response())
+            Ok(Json(json_shape::<_, api::CompactMetricsResponse>(&response)).into_response())
         }
         OutputFormat::LineProtocol => {
             let body = agg_line_protocol_text(&groups, Some(now.timestamp_millis()));
@@ -1150,7 +1272,13 @@ fn escape_prom_help(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use otap_df_config::observed_state::ObservedStateSettings;
+    use otap_df_engine::memory_limiter::MemoryPressureState;
+    use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     static TEST_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test_metrics",
@@ -1185,6 +1313,50 @@ mod tests {
             value_type: MetricValueType::U64,
         }],
     };
+
+    fn test_app_state() -> AppState {
+        let metrics_registry = TelemetryRegistryHandle::new();
+        let observed_state_store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), metrics_registry.clone());
+
+        AppState {
+            observed_state_store: observed_state_store.handle(),
+            metrics_registry,
+            log_tap: None,
+            ctrl_msg_senders: Arc::new(Mutex::new(Vec::new())),
+            memory_pressure_state: MemoryPressureState::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_handler_keeps_prometheus_text_format() {
+        let response = get_metrics(
+            State(test_app_state()),
+            Query(MetricsQuery {
+                format: Some(OutputFormat::Prometheus),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("prometheus metrics should render");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static(
+                "text/plain; version=0.0.4; charset=utf-8"
+            ))
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("metrics body should collect");
+        assert!(
+            std::str::from_utf8(&body)
+                .expect("prometheus body should be utf-8")
+                .is_empty()
+        );
+    }
 
     /// Ensures aggregate group ordering is deterministic: metric-set name first,
     /// then metric count when names are equal.

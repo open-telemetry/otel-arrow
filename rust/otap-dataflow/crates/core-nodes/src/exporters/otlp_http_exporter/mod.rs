@@ -32,7 +32,7 @@ use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error as EngineError, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterMessageChannel, Message};
+use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::wiring_contract::WiringContract;
@@ -52,12 +52,9 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
-
-#[cfg(feature = "experimental-tls")]
-use otap_df_telemetry::otel_warn;
 
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
@@ -138,47 +135,44 @@ impl OtlpHttpExporter {
             })?;
         }
 
-        #[cfg(feature = "experimental-tls")]
-        {
-            if let Some(tls) = &config.http.tls {
-                // server_name not currently supported
-                if let Some(_server_name) = &tls.server_name {
-                    return Err(ConfigError::InvalidUserConfig {
-                        error: "TLS configuration error: server_name_override is not supported by \
-                        the current Rust OTLP HTTP client implementation (reqwest/rustls) remove \
-                        server_name_override."
-                            .into(),
-                    });
-                }
+        if let Some(tls) = &config.http.tls {
+            // server_name not currently supported
+            if let Some(_server_name) = &tls.server_name {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: "TLS configuration error: server_name_override is not supported by \
+                    the current Rust OTLP HTTP client implementation (reqwest/rustls) remove \
+                    server_name_override."
+                        .into(),
+                });
+            }
 
-                if let Some(true) = tls.insecure {
-                    // Keeping with the same behaviour in the golang collector: if this is
-                    // configured, but the endpoints are start with https, we still send the
-                    // request using https. Just warn about the ignored config mismatch.
-                    let wants_https = config.endpoint.starts_with("https://")
-                        || config
-                            .logs_endpoint
-                            .as_ref()
-                            .map(|e| e.starts_with("https://"))
-                            .unwrap_or(false)
-                        || config
-                            .metrics_endpoint
-                            .as_ref()
-                            .map(|e| e.starts_with("https://"))
-                            .unwrap_or(false)
-                        || config
-                            .traces_endpoint
-                            .as_ref()
-                            .map(|e| e.starts_with("https://"))
-                            .unwrap_or(false);
-                    if wants_https {
-                        otel_warn!(
-                            "otlp.exporter.http.validate_insecure_flag",
-                            message = "config setting http.tls.insecure = true is ignored. \
-                                requests will still be sent with TLS to endpoints configured \
-                                with scheme https"
-                        )
-                    }
+            if let Some(true) = tls.insecure {
+                // Keeping with the same behaviour in the golang collector: if this is
+                // configured, but the endpoints are start with https, we still send the
+                // request using https. Just warn about the ignored config mismatch.
+                let wants_https = config.endpoint.starts_with("https://")
+                    || config
+                        .logs_endpoint
+                        .as_ref()
+                        .map(|e| e.starts_with("https://"))
+                        .unwrap_or(false)
+                    || config
+                        .metrics_endpoint
+                        .as_ref()
+                        .map(|e| e.starts_with("https://"))
+                        .unwrap_or(false)
+                    || config
+                        .traces_endpoint
+                        .as_ref()
+                        .map(|e| e.starts_with("https://"))
+                        .unwrap_or(false);
+                if wants_https {
+                    otel_warn!(
+                        "otlp.exporter.http.validate_insecure_flag",
+                        message = "config setting http.tls.insecure = true is ignored. \
+                            requests will still be sent with TLS to endpoints configured \
+                            with scheme https"
+                    )
                 }
             }
         }
@@ -202,7 +196,7 @@ struct CompletedExport {
 impl Exporter<OtapPdata> for OtlpHttpExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: ExporterMessageChannel<OtapPdata>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         let logs_endpoint = Rc::new(
@@ -636,6 +630,12 @@ async fn finalize_completed_export(
     let export_and_notify_success = match err {
         None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
         Some((err_msg, retryable)) => {
+            otel_warn!(
+                "otlp.exporter.http.export_error",
+                message = err_msg,
+                retryable = retryable
+            );
+            pdata_metrics.add_failed(signal_type, 1);
             let mut nack = NackMsg::new(&err_msg, pdata);
             nack.permanent = !retryable;
             _ = effect_handler.notify_nack(nack).await;
@@ -751,7 +751,6 @@ mod test {
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
 
-    #[cfg(feature = "experimental-tls")]
     use {
         otap_df_config::tls::{TlsClientConfig, TlsConfig, TlsServerConfig},
         otap_test_tls_certs::{ExtendedKeyUsage, generate_ca},
@@ -808,6 +807,7 @@ mod test {
                 server_settings,
                 ack_registry,
                 Arc::new(Mutex::new(server_metrics)),
+                otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
                 server_cancellation_token,
             )
@@ -924,7 +924,6 @@ mod test {
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
     /// the test is finished), and a receiver that will emit any pdata that the server produces.
-    #[cfg(feature = "experimental-tls")]
     fn run_tls_server(
         tokio_rt: &Runtime,
         pipeline_ctx: &PipelineContext,
@@ -966,6 +965,7 @@ mod test {
                 server_settings,
                 ack_registry,
                 Arc::new(Mutex::new(server_metrics)),
+                otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
                 server_cancellation_token,
             )
@@ -2028,7 +2028,6 @@ mod test {
             })
     }
 
-    #[cfg(feature = "experimental-tls")]
     fn run_tls_success_test(
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
@@ -2123,7 +2122,6 @@ mod test {
             })
     }
 
-    #[cfg(feature = "experimental-tls")]
     fn run_tls_failure_test(
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
@@ -2214,7 +2212,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_from_config_validates_server_name_override_set() {
         let invalid_config = serde_json::json!({
             "endpoint": "https://localhost",
@@ -2248,7 +2245,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_str() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2296,7 +2292,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_file() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2345,7 +2340,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_insecure_skip_verify_true() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2394,7 +2388,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_no_ca_configured() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2445,7 +2438,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_invalid_ca_configured() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2496,7 +2488,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_server_name_mismatch() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2545,7 +2536,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_pem() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2598,7 +2588,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_file() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2652,7 +2641,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_failure_wrong_client_cert() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2714,7 +2702,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_cert_without_key() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2770,7 +2757,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_key_without_cert() {
         otap_df_otap::crypto::ensure_crypto_provider();
 

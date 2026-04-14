@@ -36,6 +36,7 @@ parking_lot = { workspace = true }
 prometheus = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 smallvec = { workspace = true }
 tonic = { workspace = true, optional = true }
 # TODO: Note we do not have any compression features enabled for the OTel SDK used for OTLP/Prometheus export.
