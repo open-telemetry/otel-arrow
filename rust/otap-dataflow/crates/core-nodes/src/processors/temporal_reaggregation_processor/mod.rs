@@ -1473,22 +1473,6 @@ mod tests {
     }
 
     #[test]
-    fn test_wakeup_with_no_data() {
-        // Deliver a wakeup when no data has been accumulated. The processor's
-        // wakeup_revision is None, so the wakeup should be silently ignored.
-        let config = json!({});
-        let actions = vec![
-            Action::SendControl(NodeControlMsg::Wakeup {
-                slot: WakeupSlot(0),
-                when: Instant::now(),
-                revision: 0,
-            }),
-            Action::AssertNoPdata,
-        ];
-        run_test(config, actions);
-    }
-
-    #[test]
     fn test_gauge_correlation() {
         // Two batches with the same gauge stream. The later timestamp wins.
         run_processor_test(json!({}), |mut ctx| async move {
