@@ -310,7 +310,8 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
     }
 
     fn accept_pdata(&self) -> bool {
-        // We may need up to one inbound slot and two outbound slots.
+        // We may need up to one inbound slot and two outbound slots to process
+        // one pdata.
         //
         // The inbound slot is used to track the inbound request context and is
         // needed if either there are ack/nack interests on the context OR if some of
