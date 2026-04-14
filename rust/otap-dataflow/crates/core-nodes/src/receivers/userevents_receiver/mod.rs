@@ -174,6 +174,7 @@ struct UsereventsReceiver {
     drain: DrainConfig,
     batching: BatchConfig,
     overflow: OverflowConfig,
+    cpu_id: usize,
     metrics: Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>>,
     admission_state: LocalReceiverAdmissionState,
 }
@@ -217,6 +218,7 @@ impl UsereventsReceiver {
             drain,
             batching,
             overflow,
+            cpu_id: pipeline.core_id(),
             metrics: Rc::new(RefCell::new(
                 pipeline.register_metrics::<UsereventsReceiverMetrics>(),
             )),
@@ -418,7 +420,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
 
                     _ = retry_interval.tick(), if session.is_none() && session_cfg.late_registration.enabled => {
                         self.metrics.borrow_mut().late_registration_retries.inc();
-                        match UsereventsSession::open(&self.subscriptions, &session_cfg, effect_handler.receiver_id().index) {
+                        match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                             Ok(opened) => {
                                 self.metrics.borrow_mut().sessions_started.inc();
                                 otel_info!(
@@ -494,7 +496,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                     match UsereventsSession::open(
                         &self.subscriptions,
                         &session_cfg,
-                        effect_handler.receiver_id().index,
+                        self.cpu_id,
                     ) {
                         Ok(opened) => {
                             self.metrics.borrow_mut().sessions_started.inc();
