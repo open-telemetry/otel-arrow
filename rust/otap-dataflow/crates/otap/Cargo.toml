@@ -77,12 +77,12 @@ url = { workspace = true }
 # Azure feature dependencies (for object_store)
 azure_identity = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
-rustls-native-certs = { workspace = true, optional = true }
-arc-swap = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
-rustls-pki-types = { workspace = true, optional = true }
-tokio-rustls = { workspace = true, optional = true }
-notify = { workspace = true, optional = true }
+rustls-native-certs.workspace = true
+arc-swap.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+notify.workspace = true
 rustls-openssl = { workspace = true, optional = true }
 
 # Quiver persistence engine (durable buffer processor)
@@ -91,11 +91,10 @@ blake3.workspace = true
 byte-unit.workspace = true
 
 [features]
-test-utils = ["dep:rustls", "rustls/ring", "otap-df-pdata/testing"]
-experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "dep:arc-swap", "dep:notify", "tonic/tls-native-roots"]
-crypto-ring = ["dep:rustls", "rustls/ring", "tokio-rustls?/ring"]
-crypto-aws-lc = ["dep:rustls", "rustls/aws_lc_rs", "tokio-rustls?/aws-lc-rs"]
-crypto-openssl = ["dep:rustls", "dep:rustls-openssl", "tonic/tls-native-roots"]
+test-utils = ["rustls/ring", "otap-df-pdata/testing"]
+crypto-ring = ["rustls/ring", "tokio-rustls/ring"]
+crypto-aws-lc = ["rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs"]
+crypto-openssl = ["dep:rustls-openssl", "tonic/tls-native-roots"]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 aws = ["object_store/aws", "object_store/cloud"]
 

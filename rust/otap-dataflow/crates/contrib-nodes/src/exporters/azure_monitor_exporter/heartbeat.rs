@@ -7,7 +7,6 @@ use super::client::AZURE_MONITOR_SOURCE_RESOURCEID_HEADER;
 use super::config::{ApiConfig, HeartbeatOverrides};
 use super::error::Error;
 use chrono::Utc;
-use otap_df_telemetry::otel_warn;
 use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue},
@@ -222,12 +221,6 @@ impl Heartbeat {
 
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-
-        otel_warn!(
-            "azure_monitor_exporter.heartbeat.error",
-            status = status.as_u16(),
-            message = %body
-        );
 
         match status.as_u16() {
             401 => Err(Error::unauthorized(body)),

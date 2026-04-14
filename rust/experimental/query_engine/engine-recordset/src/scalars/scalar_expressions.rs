@@ -254,7 +254,7 @@ where
         ScalarExpression::Slice(s) => {
             let inner_value = execute_scalar_expression(execution_context, s.get_source())?;
 
-            let range_start_inclusive = match s.get_range_start_inclusive() {
+            let range_start_inclusive = match s.get_range_start() {
                 Some(start) => SliceScalarExpression::validate_resolved_range_value(
                     start.get_query_location(),
                     "start",
@@ -262,11 +262,11 @@ where
                 )?,
                 None => 0,
             };
-            let range_end_exclusive = match s.get_range_end_exclusive() {
-                Some(end) => Some(SliceScalarExpression::validate_resolved_range_value(
-                    end.get_query_location(),
-                    "end",
-                    execute_scalar_expression(execution_context, end)?.to_value(),
+            let length = match s.get_range_length() {
+                Some(length) => Some(SliceScalarExpression::validate_resolved_range_value(
+                    length.get_query_location(),
+                    "length",
+                    execute_scalar_expression(execution_context, length)?.to_value(),
                 )?),
                 None => None,
             };
@@ -278,7 +278,7 @@ where
                         "String",
                         string_value.get_value().chars().count(),
                         range_start_inclusive,
-                        range_end_exclusive,
+                        length,
                     )?;
 
                     ResolvedValue::Slice(Slice::String(StringSlice::from_char_range(
@@ -294,7 +294,7 @@ where
                             "Array",
                             array_value.len(),
                             range_start_inclusive,
-                            range_end_exclusive,
+                            length,
                         )?;
 
                         ResolvedValue::Slice(Slice::Array(ArraySlice::new(
@@ -1572,7 +1572,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "Range end for a slice expression cannot be a negative value".into(),
+                "Range length for a slice expression cannot be a negative value".into(),
             ),
         );
 
@@ -1587,7 +1587,7 @@ mod tests {
             ),
             ExpressionError::TypeMismatch(
                 QueryLocation::new_fake(),
-                "Range end for a slice expression should be an integer type".into(),
+                "Range length for a slice expression should be an integer type".into(),
             ),
         );
     }
@@ -1673,7 +1673,7 @@ mod tests {
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 ))),
             ),
-            Value::String(&StringValueStorage::new("".into())),
+            Value::String(&StringValueStorage::new("ん".into())),
         );
 
         run_test_success(
@@ -1687,7 +1687,7 @@ mod tests {
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
                 ))),
             ),
-            Value::String(&StringValueStorage::new("ん".into())),
+            Value::String(&StringValueStorage::new("んに".into())),
         );
 
         run_test_success(
@@ -1719,7 +1719,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 string_source.clone(),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
                 ))),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
@@ -1727,24 +1727,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "String slice index starts at '2' but ends at '1'".into(),
-            ),
-        );
-
-        run_test_failure(
-            SliceScalarExpression::new(
-                QueryLocation::new_fake(),
-                string_source.clone(),
-                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                ))),
-                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
-                ))),
-            ),
-            ExpressionError::ValidationFailure(
-                QueryLocation::new_fake(),
-                "String slice index ends at '6' which is beyond the length of '5'".into(),
+                "String slice index starts at '5' but target ends at index '4'".into(),
             ),
         );
     }
@@ -1856,7 +1839,7 @@ mod tests {
             ),
             Value::Array(&ArrayScalarExpression::new(
                 QueryLocation::new_fake(),
-                array_values.clone().drain(1..1).collect(),
+                array_values.clone().drain(1..2).collect(),
             )),
         );
 
@@ -1873,7 +1856,7 @@ mod tests {
             ),
             Value::Array(&ArrayScalarExpression::new(
                 QueryLocation::new_fake(),
-                array_values.clone().drain(1..2).collect(),
+                array_values.clone().drain(1..3).collect(),
             )),
         );
 
@@ -1912,7 +1895,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 array_source.clone(),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
                 ))),
                 Some(ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
@@ -1920,24 +1903,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "Array slice index starts at '2' but ends at '1'".into(),
-            ),
-        );
-
-        run_test_failure(
-            SliceScalarExpression::new(
-                QueryLocation::new_fake(),
-                array_source.clone(),
-                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                ))),
-                Some(ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
-                ))),
-            ),
-            ExpressionError::ValidationFailure(
-                QueryLocation::new_fake(),
-                "Array slice index ends at '6' which is beyond the length of '5'".into(),
+                "Array slice index starts at '5' but target ends at index '4'".into(),
             ),
         );
     }
