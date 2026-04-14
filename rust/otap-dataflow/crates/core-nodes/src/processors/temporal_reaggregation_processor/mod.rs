@@ -208,9 +208,7 @@ pub struct TemporalReaggregationProcessor {
     /// The collection period for aggregating metrics before emitting a batch
     collection_period: Duration,
 
-    /// Current wakeup revision. `None` when no wakeup is pending (idle or
-    /// shutdown-latched).
-    /// TODO: Write a test for accept_pdata >= 3 case
+    /// Current wakeup revision.`None` when no wakeup is pending
     wakeup_revision: Option<WakeupRevision>,
 
     /// Maximum number of unique streams allowed in a single aggregating batch.
@@ -308,8 +306,7 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
     }
 
     fn accept_pdata(&self) -> bool {
-        // We may need up to one inbound slot and two outbound slots to process
-        // one pdata.
+        // We may need up to one inbound slot and two outbound slots.
         //
         // The inbound slot is used to track the inbound request context and is
         // needed if either there are ack/nack interests on the context OR if some of
@@ -324,7 +321,7 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         //
         // We reserve a third to prevent cases where a flush signal comes in and
         // we have no outbound slot available.
-        self.inbound_batches.has_capacity() && self.outbound_batches.remaining_capacity() >= 3
+        self.inbound_batches.has_capacity() && self.outbound_batches.remaining_capacity() >= 2
     }
 }
 
