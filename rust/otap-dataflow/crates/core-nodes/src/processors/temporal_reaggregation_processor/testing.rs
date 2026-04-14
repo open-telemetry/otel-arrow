@@ -77,6 +77,8 @@ pub(super) enum PdataAction {
     AssertEquivalent(OtapPayload),
     /// Assert whether this output has subscriber interest.
     AssertSubscribers(bool),
+    /// Run a custom assertion on the drained output.
+    AssertCustom(Box<dyn FnOnce(&OtapPdata)>),
     /// Nack this output with the given reason.
     Nack(&'static str),
     /// Ack this output.
@@ -156,6 +158,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                                     ctx.process(Message::ack_ctrl_msg(ack_msg))
                                         .await
                                         .expect("process ack");
+                                }
+                                PdataAction::AssertCustom(f) => {
+                                    f(&output);
                                 }
                                 PdataAction::AssertEquivalent(expected_payload) => {
                                     let actual = payload_to_otlp(output.payload_ref());

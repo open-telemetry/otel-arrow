@@ -3426,32 +3426,30 @@ mod tests {
     // ---- Wakeup-specific tests ----
 
     /// Deliver a wakeup with the wrong slot (not FLUSH_WAKEUP_SLOT). The
-    /// processor's `process()` match falls through to the `_ => Ok(())` arm,
-    /// so no flush occurs and buffered data remains intact.
+    /// processor only checks the wakeup revision, so we must also use a
+    /// revision that does not match the pending wakeup to verify the
+    /// foreign slot is truly a no-op.
     #[test]
     fn test_wakeup_wrong_slot_ignored() {
-        run_processor_test(json!({}), |mut ctx| async move {
-            let batch = make_otlp_pdata(make_n_gauge_metrics(1));
-            ctx.process(Message::PData(batch)).await.unwrap();
-
-            // Foreign slot — should be silently ignored.
-            ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                slot: WakeupSlot(99),
-                when: Instant::now(),
-                revision: 0,
-            }))
-            .await
-            .unwrap();
-            assert!(
-                ctx.drain_pdata().await.is_empty(),
-                "foreign wakeup slot should not trigger a flush"
-            );
-
-            // The real wakeup still flushes.
-            let _ = ctx.fire_wakeup().await.unwrap();
-            let output = ctx.drain_pdata().await;
-            assert_eq!(output.len(), 1);
-        });
+        run_test(
+            json!({}),
+            vec![
+                Action::SendPdata {
+                    interests: Interests::ACKS | Interests::NACKS,
+                    payload: make_otap_payload_from_metrics(make_n_gauge_metrics(1)),
+                },
+                // Foreign slot with non-matching revision — should be silently ignored.
+                Action::SendControl(NodeControlMsg::Wakeup {
+                    slot: WakeupSlot(99),
+                    when: Instant::now(),
+                    revision: 999,
+                }),
+                Action::AssertNoPdata,
+                // The real wakeup still flushes.
+                Action::FireWakeup,
+                Action::DrainPdata { actions: vec![] },
+            ],
+        );
     }
 
     /// Deliver a wakeup with the correct slot but a mismatched revision. The
@@ -3459,28 +3457,25 @@ mod tests {
     /// and ignores stale/unknown revisions.
     #[test]
     fn test_wakeup_mismatched_revision_ignored() {
-        run_processor_test(json!({}), |mut ctx| async move {
-            let batch = make_otlp_pdata(make_n_gauge_metrics(1));
-            ctx.process(Message::PData(batch)).await.unwrap();
-
-            // Wrong revision — should be silently ignored.
-            ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                slot: FLUSH_WAKEUP_SLOT,
-                when: Instant::now(),
-                revision: 999,
-            }))
-            .await
-            .unwrap();
-            assert!(
-                ctx.drain_pdata().await.is_empty(),
-                "mismatched revision should not trigger a flush"
-            );
-
-            // The real wakeup still flushes.
-            let _ = ctx.fire_wakeup().await.unwrap();
-            let output = ctx.drain_pdata().await;
-            assert_eq!(output.len(), 1);
-        });
+        run_test(
+            json!({}),
+            vec![
+                Action::SendPdata {
+                    interests: Interests::ACKS | Interests::NACKS,
+                    payload: make_otap_payload_from_metrics(make_n_gauge_metrics(1)),
+                },
+                // Wrong revision — should be silently ignored.
+                Action::SendControl(NodeControlMsg::Wakeup {
+                    slot: FLUSH_WAKEUP_SLOT,
+                    when: Instant::now(),
+                    revision: 999,
+                }),
+                Action::AssertNoPdata,
+                // The real wakeup still flushes.
+                Action::FireWakeup,
+                Action::DrainPdata { actions: vec![] },
+            ],
+        );
     }
 
     /// After a metric-id overflow triggers an early flush, the old wakeup
@@ -3490,43 +3485,44 @@ mod tests {
     #[test]
     fn test_stale_wakeup_after_overflow_ignored() {
         let max_metrics = (u16::MAX - 1) as usize;
-        run_processor_test(
+        run_test(
             json!({ "max_stream_cardinality": u16::MAX }),
-            move |mut ctx| async move {
-                let full_batch = make_otlp_bytes_pdata(make_n_gauge_metrics(max_metrics));
-                let overflow_batch =
-                    make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(2, max_metrics));
-
-                ctx.process(Message::PData(full_batch)).await.unwrap();
+            vec![
+                Action::SendPdata {
+                    interests: Interests::ACKS | Interests::NACKS,
+                    payload: make_otlp_payload_from_metrics(make_n_gauge_metrics(max_metrics)),
+                },
                 // This triggers an overflow flush internally.
-                ctx.process(Message::PData(overflow_batch)).await.unwrap();
-
+                Action::SendPdata {
+                    interests: Interests::ACKS | Interests::NACKS,
+                    payload: make_otlp_payload_from_metrics(make_n_gauge_metrics_with_offset(
+                        2,
+                        max_metrics,
+                    )),
+                },
                 // Drain the early-flush output.
-                let early_output = ctx.drain_pdata().await;
-                assert_eq!(early_output.len(), 1, "expected early overflow flush");
-                assert_output_metric_count(&early_output[0], max_metrics);
-
+                Action::DrainPdata {
+                    actions: vec![PdataAction::AssertCustom(Box::new(move |output| {
+                        assert_output_metric_count(output, max_metrics);
+                    }))],
+                },
                 // Deliver a stale wakeup with revision 0 — should be ignored
                 // because the overflow flush cancelled it.
-                ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                Action::SendControl(NodeControlMsg::Wakeup {
                     slot: FLUSH_WAKEUP_SLOT,
                     when: Instant::now(),
                     revision: 0,
-                }))
-                .await
-                .unwrap();
-                assert!(
-                    ctx.drain_pdata().await.is_empty(),
-                    "stale wakeup should not trigger a flush"
-                );
-
+                }),
+                Action::AssertNoPdata,
                 // The real wakeup (scheduled when the overflow data was retried)
                 // flushes the remaining data.
-                let _ = ctx.fire_wakeup().await.unwrap();
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 1);
-                assert_output_metric_count(&output[0], 2);
-            },
+                Action::FireWakeup,
+                Action::DrainPdata {
+                    actions: vec![PdataAction::AssertCustom(Box::new(|output| {
+                        assert_output_metric_count(output, 2);
+                    }))],
+                },
+            ],
         );
     }
 
