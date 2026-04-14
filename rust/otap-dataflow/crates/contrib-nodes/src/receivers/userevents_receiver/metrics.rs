@@ -38,4 +38,3 @@ pub(super) struct UsereventsReceiverMetrics {
     #[metric(unit = "{event}")]
     pub flushed_batches: Counter<u64>,
 }
-

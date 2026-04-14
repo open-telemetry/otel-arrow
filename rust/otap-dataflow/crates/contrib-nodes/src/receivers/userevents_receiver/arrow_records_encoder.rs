@@ -83,7 +83,9 @@ impl ArrowRecordsBuilder {
 
     fn append_attr(&mut self, key: &str, value: &str) {
         self.log_attrs.append_key(key);
-        self.log_attrs.any_values_builder.append_str(value.as_bytes());
+        self.log_attrs
+            .any_values_builder
+            .append_str(value.as_bytes());
         self.log_attrs.append_parent_id(&self.curr_log_id);
     }
 
@@ -92,7 +94,9 @@ impl ArrowRecordsBuilder {
         let log_record_count = self.curr_log_id.into();
 
         self.logs.resource.append_id_n(0, log_record_count);
-        self.logs.resource.append_schema_url_n(None, log_record_count);
+        self.logs
+            .resource
+            .append_schema_url_n(None, log_record_count);
         self.logs
             .resource
             .append_dropped_attributes_count_n(0, log_record_count);
@@ -130,7 +134,7 @@ impl ArrowRecordsBuilder {
 mod tests {
     use super::*;
     use crate::receivers::userevents_receiver::decoder::DecodedUsereventsRecord;
-    use arrow::array::{AsArray, DictionaryArray, StringArray, UInt16Array, UInt8Array};
+    use arrow::array::{AsArray, DictionaryArray, StringArray, UInt8Array, UInt16Array};
 
     #[test]
     fn build_creates_logs_and_attributes_batches() {

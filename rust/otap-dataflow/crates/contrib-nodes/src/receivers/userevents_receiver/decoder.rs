@@ -290,11 +290,10 @@ fn decode_eventheader_json(tracepoint: &str, payload: &[u8]) -> Option<Value> {
         )
         .ok()?;
     let mut json = String::from("{");
-    if !enumerator.write_json_item_and_move_next_sibling(
-        &mut json,
-        false,
-        PerfConvertOptions::Default,
-    ).ok()? {
+    if !enumerator
+        .write_json_item_and_move_next_sibling(&mut json, false, PerfConvertOptions::Default)
+        .ok()?
+    {
         return None;
     }
     json.push('}');
@@ -376,7 +375,9 @@ fn get_json_string(value: Option<&Value>) -> Option<String> {
 }
 
 fn get_json_i32(value: Option<&Value>) -> Option<i32> {
-    value?.as_i64().and_then(|number| i32::try_from(number).ok())
+    value?
+        .as_i64()
+        .and_then(|number| i32::try_from(number).ok())
 }
 
 fn leak_string(text: String) -> &'static str {
@@ -445,14 +446,18 @@ mod tests {
 
         assert_eq!(decoded.severity_number, Some(17));
         assert_eq!(decoded.severity_text, Some("ERROR"));
-        assert!(decoded
-            .attributes
-            .iter()
-            .any(|(key, value)| key == ATTR_PROVIDER && value == "myprovider"));
-        assert!(decoded
-            .attributes
-            .iter()
-            .any(|(key, value)| key == ATTR_EVENT_NAME && value == "Log"));
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(key, value)| key == ATTR_PROVIDER && value == "myprovider")
+        );
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(key, value)| key == ATTR_EVENT_NAME && value == "Log")
+        );
     }
 
     #[test]
@@ -492,11 +497,13 @@ mod tests {
             }),
             &mut out,
         );
-        assert!(out
-            .iter()
-            .any(|(key, value)| key == "cs.part_b.name" && value == "evt"));
-        assert!(out
-            .iter()
-            .any(|(key, value)| key == "cs.part_b.severity_number" && value == "17"));
+        assert!(
+            out.iter()
+                .any(|(key, value)| key == "cs.part_b.name" && value == "evt")
+        );
+        assert!(
+            out.iter()
+                .any(|(key, value)| key == "cs.part_b.severity_number" && value == "17")
+        );
     }
 }

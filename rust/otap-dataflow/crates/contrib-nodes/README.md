@@ -1,11 +1,13 @@
 # Contrib Nodes
 
-This crate contains optional (feature-gated) contrib processors and exporters.
+This crate contains contrib receivers, processors, and exporters.
 
 ## Folder Layout
 
 - `src/exporters/`
   - Contrib exporters
+- `src/receivers/`
+  - Contrib receivers
 - `src/processors/`
   - Contrib processors
 
@@ -13,6 +15,18 @@ This crate contains optional (feature-gated) contrib processors and exporters.
 
 Feature flags are grouped into aggregate categories and individual node flags.
 Aggregate flags enable all nodes in their category.
+
+### Receivers
+
+| Node | URN | Module |
+| ---- | --- | ------ |
+| userevents_receiver | `urn:otel:receiver:userevents` | `src/receivers/userevents_receiver/` |
+
+#### userevents_receiver
+
+- Reads Linux `user_events` tracepoints through per-CPU perf sessions
+- Supports single-tracepoint and multi-tracepoint configuration
+- Supports configurable decode modes including raw and Common Schema-oriented paths
 
 ### Exporters
 

@@ -6,5 +6,8 @@
 /// Exporter implementations for contrib nodes.
 pub mod exporters;
 
+/// Receiver implementations for contrib nodes.
+pub mod receivers;
+
 /// Processor implementations for contrib nodes.
 pub mod processors;

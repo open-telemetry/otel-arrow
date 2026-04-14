@@ -23,6 +23,7 @@ REMOTE_CONTRIB="${REMOTE_BASE}/opentelemetry-rust-contrib"
 REMOTE_CARGO_HOME="${REMOTE_CARGO_HOME:-/mnt/builddisk/cargo-home}"
 REMOTE_CARGO_TARGET_DIR="${REMOTE_CARGO_TARGET_DIR:-/mnt/builddisk/cargo-target}"
 REMOTE_TMPDIR="${REMOTE_TMPDIR:-/mnt/builddisk/tmp}"
+REMOTE_DEMO_CONFIG="${REMOTE_OTAP_DF}/configs/userevents-debug-demo.yaml"
 
 SSH_OPTS=(
   -o StrictHostKeyChecking=no
@@ -92,14 +93,62 @@ fi
 
 echo "Overlaying local demo files..."
 vm_scp \
-  "${OTAP_DF_ROOT}/configs/userevents-debug-demo.yaml" \
-  "${OTAP_DF_ROOT}/crates/core-nodes/src/receivers/userevents_receiver/mod.rs" \
-  "${OTAP_DF_ROOT}/crates/core-nodes/src/receivers/userevents_receiver/session.rs" \
-  "${VM_USER}@${VM_HOST}:${REMOTE_OTAP_DF}/crates/core-nodes/src/receivers/userevents_receiver/"
+  "${OTAP_DF_ROOT}/crates/contrib-nodes/src/receivers/userevents_receiver/mod.rs" \
+  "${OTAP_DF_ROOT}/crates/contrib-nodes/src/receivers/userevents_receiver/session.rs" \
+  "${VM_USER}@${VM_HOST}:${REMOTE_OTAP_DF}/crates/contrib-nodes/src/receivers/userevents_receiver/"
 
-vm_scp \
-  "${OTAP_DF_ROOT}/configs/userevents-debug-demo.yaml" \
-  "${VM_USER}@${VM_HOST}:${REMOTE_OTAP_DF}/configs/userevents-debug-demo.yaml"
+echo "Writing remote demo config..."
+vm_ssh "
+cat > '${REMOTE_DEMO_CONFIG}' <<'EOF'
+version: otel_dataflow/v1
+
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:userevents
+            config:
+              tracepoint: \"user_events:myprovider_L2K1\"
+              format:
+                type: common_schema_otel_logs
+              session:
+                wakeup_watermark: 1
+                late_registration:
+                  enabled: true
+                  poll_interval_ms: 100
+              batching:
+                max_size: 1
+                max_duration: 100ms
+
+          debug:
+            type: processor:debug
+            config:
+              verbosity: normal
+              mode: signal
+              output: userevents-debug-output.log
+              signals:
+                - logs
+
+          noop:
+            type: exporter:noop
+            config: {}
+
+        connections:
+          - from: receiver
+            to: debug
+          - from: debug
+            to: noop
+EOF
+"
 
 echo "Building df_engine and exporter example on the VM..."
 vm_ssh "
@@ -120,7 +169,7 @@ vm_sudo_bash "
 set -euo pipefail
 cd '${REMOTE_OTAP_DF}'
 rm -f userevents-debug-output.log /mnt/builddisk/userevents-exporter-demo.log /mnt/builddisk/df-engine-demo.log
-timeout 15s '${REMOTE_CARGO_TARGET_DIR}/debug/df_engine' --num-cores 1 --config configs/userevents-debug-demo.yaml >/mnt/builddisk/df-engine-demo.log 2>&1 &
+timeout 15s '${REMOTE_CARGO_TARGET_DIR}/debug/df_engine' --num-cores 1 --config '${REMOTE_DEMO_CONFIG}' >/mnt/builddisk/df-engine-demo.log 2>&1 &
 engine_pid=\$!
 sleep 3
 timeout 5s taskset -c 0 '${REMOTE_CARGO_TARGET_DIR}/debug/examples/basic-logs' >/mnt/builddisk/userevents-exporter-demo.log 2>&1 || test \$? -eq 124

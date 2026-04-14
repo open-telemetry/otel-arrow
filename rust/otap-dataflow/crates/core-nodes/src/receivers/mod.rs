@@ -19,6 +19,3 @@ pub mod otap_receiver;
 
 /// OTLP receiver.
 pub mod otlp_receiver;
-
-/// Linux userevents receiver.
-pub mod userevents_receiver;

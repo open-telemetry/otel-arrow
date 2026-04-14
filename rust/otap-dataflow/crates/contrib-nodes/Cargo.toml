@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 # Workspace crates (likely used by most/all features)
+otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-engine-macros = { workspace = true }
@@ -21,23 +22,26 @@ otap-df-otap = { workspace = true }
 otap-df-pdata = { workspace = true }
 otap-df-pdata-views = { workspace = true }
 otap-df-telemetry = { workspace = true }
-otap-df-channel = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 
 arrow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
 futures.workspace = true
-tokio.workspace = true
-tracing.workspace = true
 bytes.workspace = true
+humantime-serde.workspace = true
+memmap2.workspace = true
+nix.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 linkme.workspace = true
-chrono = { workspace = true, optional = true }
+tokio.workspace = true
+tracing.workspace = true
+tracepoint_decode = "0.5.0"
 geneva-uploader = { workspace = true, optional = true }
-humantime-serde = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
@@ -69,10 +73,8 @@ azure-monitor-exporter = [
     "dep:azure_core",
     "dep:ahash",
     "dep:sysinfo",
-    "dep:chrono",
     "dep:flate2",
     "dep:http",
-    "dep:humantime-serde",
     "dep:itoa",
     "dep:rand",
     "dep:ryu",
@@ -88,7 +90,6 @@ condense-attributes-processor = []
 recordset-kql-processor = [
     "dep:data_engine_recordset_otlp_bridge",
     "dep:data_engine_recordset",
-    "dep:chrono",
 ]
 resource-validator-processor = []
 
