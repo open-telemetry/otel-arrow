@@ -3,7 +3,7 @@
 # General dependencies
 requests==2.33.1
 pyyaml==6.0.3
-pydantic==2.12.5
+pydantic==2.13.0
 
 # Docker management
 docker==7.1.0
@@ -13,12 +13,12 @@ psutil==7.2.2
 kubernetes==35.0.0
 
 # Other dependencies
-duckdb==1.5.1
+duckdb==1.5.2
 jinja2==3.1.6
-opentelemetry-exporter-otlp==1.40.0
-opentelemetry-sdk==1.40.0
-opentelemetry-proto==1.40.0
-prometheus_client==0.24.1
+opentelemetry-exporter-otlp==1.41.0
+opentelemetry-sdk==1.41.0
+opentelemetry-proto==1.41.0
+prometheus_client==0.25.0
 pandas==2.3.3
 pyarrow==23.0.1
 tabulate==0.10.0
