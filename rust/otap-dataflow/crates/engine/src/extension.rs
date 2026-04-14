@@ -285,7 +285,9 @@ pub struct ExtensionWrapper {
 
 /// Builder for `ExtensionWrapper`.
 ///
-/// Call exactly one of `with_local()` or `with_shared()`, then `build()`.
+/// At least one variant (local or shared) must be added before calling `build()`.
+/// Both variants can be provided for dual-mode extensions — `build()` returns one
+/// `ExtensionWrapper` per variant.
 pub struct ExtensionWrapperBuilder {
     name: ExtensionName,
     user_config: Arc<ExtensionUserConfig>,
