@@ -1198,6 +1198,11 @@ fn validate_attribute_assign_cardinality(
             validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, left)?;
             validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, right)?;
         }
+        LogicalExprDataSource::MultiJoin(children) => {
+            for child in children {
+                validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, child)?;
+            }
+        }
     }
 
     Ok(())
