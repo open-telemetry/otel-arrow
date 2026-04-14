@@ -24,7 +24,6 @@ use crate::shared::extension as shared_ext;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use otap_df_channel::error::RecvError;
-use otap_df_config::ExtensionId;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_telemetry::otel_debug;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -33,6 +32,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::{Sleep, sleep_until};
+
+/// Name type for extensions — separate from node names.
+pub type ExtensionName = otap_df_config::ExtensionId;
 
 // ── ControlChannel ──────────────────────────────────────────────────────────
 
@@ -125,29 +127,29 @@ impl ControlChannel {
 
 /// The effect handler for extensions.
 ///
-/// Provides extensions with node identity and basic I/O. Extensions manage
-/// their own timers directly via `tokio::time` rather than through the engine's
+/// Provides extensions with identity and basic I/O. Extensions manage their
+/// own timers directly via `tokio::time` rather than through the engine's
 /// timer infrastructure, keeping the extension system fully PData-free.
 #[derive(Clone)]
 pub struct EffectHandler {
-    name: ExtensionId,
+    name: ExtensionName,
     #[allow(dead_code)]
     metrics_reporter: MetricsReporter,
 }
 
 impl EffectHandler {
-    /// Creates a new `EffectHandler` for the given extension node.
+    /// Creates a new `EffectHandler` for the given extension.
     #[must_use]
-    pub const fn new(name: ExtensionId, metrics_reporter: MetricsReporter) -> Self {
+    pub const fn new(name: ExtensionName, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
             name,
             metrics_reporter,
         }
     }
 
-    /// Returns the id of the extension associated with this handler.
+    /// Returns the name of the extension associated with this handler.
     #[must_use]
-    pub fn extension_id(&self) -> ExtensionId {
+    pub fn extension_id(&self) -> ExtensionName {
         self.name.clone()
     }
 
@@ -164,18 +166,13 @@ impl EffectHandler {
 // ── Active / Passive wrappers ────────────────────────────────────────────────
 
 /// Wraps an extension type to signal it has an active event loop.
-///
-/// The engine spawns a task and creates a control channel for active extensions.
-/// The inner type must implement the appropriate `Extension` trait.
 pub struct Active<E>(pub E);
 
 /// Wraps an extension type to signal it is passive (no lifecycle).
 ///
-/// No task is spawned, no control channel is created.
-///
-/// TODO: In this PR the wrapped value is consumed by `decompose()` and
-/// only its `TypeId` is retained for the same-type guard. The value itself
-/// will be stored in a later PR when the capability system is added.
+/// In this PR the wrapped value is consumed by `decompose()` and only its
+/// `TypeId` is retained. The value itself will be stored when the capability
+/// system is added.
 pub struct Passive<E>(pub E);
 
 /// Decomposed result of a shared extension provider.
@@ -192,13 +189,13 @@ pub struct LocalDecomposed {
     pub type_id: TypeId,
 }
 
-/// Sealed trait for shared extension providers (Active or Passive).
+/// Sealed trait for shared extension providers.
 pub trait SharedProvider: sealed_provider::SealedShared {
     /// Decompose into type-erased components.
     fn decompose(self) -> SharedDecomposed;
 }
 
-/// Sealed trait for local extension providers (Active or Passive).
+/// Sealed trait for local extension providers.
 pub trait LocalProvider: sealed_provider::SealedLocal {
     /// Decompose into type-erased components.
     fn decompose(self) -> LocalDecomposed;
@@ -209,28 +206,21 @@ mod sealed_provider {
     pub trait SealedLocal {}
 }
 
-// Active<E> shared: Clone is required by the capability system to produce a
-// `Box<dyn CloneAnySend>` for type-erased capability registration alongside
-// the lifecycle `Box<dyn Extension>`.
+// Clone is required by the capability system for `Box<dyn CloneAnySend>`.
 impl<E: shared_ext::Extension + Clone + Send + 'static> sealed_provider::SealedShared
     for Active<E>
 {
 }
-
 impl<E: shared_ext::Extension + Clone + Send + 'static> SharedProvider for Active<E> {
     fn decompose(self) -> SharedDecomposed {
-        let ext: Box<dyn shared_ext::Extension> = Box::new(self.0);
         SharedDecomposed {
-            extension: Some(ext),
+            extension: Some(Box::new(self.0)),
             type_id: TypeId::of::<E>(),
         }
     }
 }
 
-// Passive<E> shared: Clone + Send required for capability registration
-// (the value is stored as `Box<dyn CloneAnySend>` in the capability system).
 impl<E: Clone + Send + 'static> sealed_provider::SealedShared for Passive<E> {}
-
 impl<E: Clone + Send + 'static> SharedProvider for Passive<E> {
     fn decompose(self) -> SharedDecomposed {
         SharedDecomposed {
@@ -240,23 +230,17 @@ impl<E: Clone + Send + 'static> SharedProvider for Passive<E> {
     }
 }
 
-// Active<Rc<E>> local: requires local Extension
 impl<E: local_ext::Extension + 'static> sealed_provider::SealedLocal for Active<std::rc::Rc<E>> {}
-
 impl<E: local_ext::Extension + 'static> LocalProvider for Active<std::rc::Rc<E>> {
     fn decompose(self) -> LocalDecomposed {
-        let ext: std::rc::Rc<dyn local_ext::Extension> = self.0;
         LocalDecomposed {
-            extension: Some(ext),
+            extension: Some(self.0),
             type_id: TypeId::of::<E>(),
         }
     }
 }
 
-// Passive<Rc<E>> local: the value is stored as `Rc<dyn Any>` for local
-// capability registration in the capability system.
 impl<E: 'static> sealed_provider::SealedLocal for Passive<std::rc::Rc<E>> {}
-
 impl<E: 'static> LocalProvider for Passive<std::rc::Rc<E>> {
     fn decompose(self) -> LocalDecomposed {
         LocalDecomposed {
@@ -266,23 +250,43 @@ impl<E: 'static> LocalProvider for Passive<std::rc::Rc<E>> {
     }
 }
 
+// ── ExtensionLifecycle ──────────────────────────────────────────────────────
+
+/// The lifecycle variant of an extension.
+///
+/// Each active variant bundles the extension trait object with its control
+/// channel, making impossible states unrepresentable.
+pub(crate) enum ExtensionLifecycle {
+    /// No task spawned, no control channel. Capabilities only.
+    Passive,
+    /// A local (!Send) extension with an active event loop.
+    LocalActive {
+        extension: std::rc::Rc<dyn local_ext::Extension>,
+        control_sender: SharedSender<ExtensionControlMsg>,
+        control_receiver: SharedReceiver<ExtensionControlMsg>,
+    },
+    /// A shared (Send) extension with an active event loop.
+    SharedActive {
+        extension: Box<dyn shared_ext::Extension>,
+        control_sender: SharedSender<ExtensionControlMsg>,
+        control_receiver: SharedReceiver<ExtensionControlMsg>,
+    },
+}
+
 // ── ExtensionWrapper ────────────────────────────────────────────────────────
 
-/// Wrapper for extension instances in the pipeline engine.
+/// Wrapper for a single extension instance in the pipeline engine.
 ///
-/// Extensions are NOT generic over PData — they operate exclusively on
-/// [`ExtensionControlMsg`], keeping the extension system entirely decoupled
-/// from the data-plane type.
+/// Extensions are NOT generic over PData. The lifecycle enum determines
+/// whether a task is spawned and whether control channels exist.
+///
+/// For dual-type extensions (both local and shared), the factory should
+/// create two separate `ExtensionWrapper`s — one per variant.
 pub struct ExtensionWrapper {
-    name: ExtensionId,
+    name: ExtensionName,
     user_config: Arc<ExtensionUserConfig>,
     runtime_config: ExtensionConfig,
-    shared_extension: Option<Box<dyn shared_ext::Extension>>,
-    local_extension: Option<std::rc::Rc<dyn local_ext::Extension>>,
-    control_sender: Option<SharedSender<ExtensionControlMsg>>,
-    control_receiver: Option<SharedReceiver<ExtensionControlMsg>>,
-    shared_control_sender: Option<SharedSender<ExtensionControlMsg>>,
-    shared_control_receiver: Option<SharedReceiver<ExtensionControlMsg>>,
+    lifecycle: ExtensionLifecycle,
     telemetry: Option<NodeTelemetryGuard>,
 }
 
@@ -290,115 +294,100 @@ pub struct ExtensionWrapper {
 
 /// Builder for `ExtensionWrapper`.
 ///
-/// At least one variant (local or shared) must be added before calling `build()`.
+/// Call exactly one of `with_local()` or `with_shared()`, then `build()`.
 pub struct ExtensionWrapperBuilder {
-    name: ExtensionId,
+    name: ExtensionName,
     user_config: Arc<ExtensionUserConfig>,
     runtime_config: ExtensionConfig,
-    shared_extension: Option<Box<dyn shared_ext::Extension>>,
-    local_extension: Option<std::rc::Rc<dyn local_ext::Extension>>,
-    shared_type_id: Option<TypeId>,
-    local_type_id: Option<TypeId>,
+    shared: Option<SharedDecomposed>,
+    local: Option<LocalDecomposed>,
 }
 
 impl ExtensionWrapperBuilder {
     /// Add a **local** (!Send) extension variant.
-    ///
-    /// Use `Active(Rc::new(ext))` for extensions with an event loop,
-    /// or `Passive(Rc::new(ext))` for capability-only extensions.
     pub fn with_local(mut self, provider: impl LocalProvider) -> Self {
-        let decomposed = provider.decompose();
-        otel_debug!(
-            "extension.builder.with_local",
-            name = self.name.as_ref(),
-            active = decomposed.extension.is_some(),
-        );
-        self.local_extension = decomposed.extension;
-        self.local_type_id = Some(decomposed.type_id);
+        self.local = Some(provider.decompose());
         self
     }
 
     /// Add a **shared** (Send) extension variant.
-    ///
-    /// Use `Active(ext)` for extensions with an event loop,
-    /// or `Passive(ext)` for capability-only extensions.
     pub fn with_shared(mut self, provider: impl SharedProvider) -> Self {
-        let decomposed = provider.decompose();
-        otel_debug!(
-            "extension.builder.with_shared",
-            name = self.name.as_ref(),
-            active = decomposed.extension.is_some(),
-        );
-        self.shared_extension = decomposed.extension;
-        self.shared_type_id = Some(decomposed.type_id);
+        self.shared = Some(provider.decompose());
         self
     }
 
-    /// Build the `ExtensionWrapper`.
+    /// Build the `ExtensionWrapper`(s).
+    ///
+    /// Returns one wrapper for single-variant extensions, or two wrappers
+    /// for dual-type extensions (one local, one shared).
     ///
     /// # Panics
     ///
-    /// - Panics if neither `with_local` nor `with_shared` was called.
-    /// - Panics if both were called with the same concrete type.
-    pub fn build(self) -> ExtensionWrapper {
-        let has_local = self.local_extension.is_some() || self.local_type_id.is_some();
-        let has_shared = self.shared_extension.is_some() || self.shared_type_id.is_some();
+    /// Panics if neither `with_local` nor `with_shared` was called.
+    pub fn build(self) -> Vec<ExtensionWrapper> {
+        let cap = self.runtime_config.control_channel.capacity;
+        let mut wrappers = Vec::new();
+
+        if let Some(l) = self.local {
+            let lifecycle = match l.extension {
+                Some(ext) => {
+                    let (tx, rx) = tokio::sync::mpsc::channel(cap);
+                    ExtensionLifecycle::LocalActive {
+                        extension: ext,
+                        control_sender: SharedSender::mpsc(tx),
+                        control_receiver: SharedReceiver::mpsc(rx),
+                    }
+                }
+                None => ExtensionLifecycle::Passive,
+            };
+            wrappers.push(ExtensionWrapper {
+                name: self.name.clone(),
+                user_config: self.user_config.clone(),
+                runtime_config: self.runtime_config.clone(),
+                lifecycle,
+                telemetry: None,
+            });
+        }
+
+        if let Some(s) = self.shared {
+            let lifecycle = match s.extension {
+                Some(ext) => {
+                    let (tx, rx) = tokio::sync::mpsc::channel(cap);
+                    ExtensionLifecycle::SharedActive {
+                        extension: ext,
+                        control_sender: SharedSender::mpsc(tx),
+                        control_receiver: SharedReceiver::mpsc(rx),
+                    }
+                }
+                None => ExtensionLifecycle::Passive,
+            };
+            wrappers.push(ExtensionWrapper {
+                name: self.name.clone(),
+                user_config: self.user_config.clone(),
+                runtime_config: self.runtime_config.clone(),
+                lifecycle,
+                telemetry: None,
+            });
+        }
+
         assert!(
-            has_local || has_shared,
+            !wrappers.is_empty(),
             "ExtensionWrapper must have at least one variant (local or shared)"
         );
 
-        // TypeId guard: when both variants are provided, they must be different types.
-        if let (Some(local_tid), Some(shared_tid)) = (self.local_type_id, self.shared_type_id) {
-            assert!(
-                local_tid != shared_tid,
-                "with_local() and with_shared() called with the same concrete type — \
-                 use with_shared() alone when a single type should serve both \
-                 local and shared consumers"
+        for w in &wrappers {
+            otel_debug!(
+                "extension.builder.build",
+                name = w.name.as_ref(),
+                lifecycle = match &w.lifecycle {
+                    ExtensionLifecycle::Passive => "passive",
+                    ExtensionLifecycle::LocalActive { .. } => "local_active",
+                    ExtensionLifecycle::SharedActive { .. } => "shared_active",
+                },
             );
         }
 
-        let has_local_lifecycle = self.local_extension.is_some();
-        let has_shared_lifecycle = self.shared_extension.is_some();
-        let has_any_lifecycle = has_local_lifecycle || has_shared_lifecycle;
-        let has_both_lifecycles = has_local_lifecycle && has_shared_lifecycle;
-
-        let (control_sender, control_receiver) = if has_any_lifecycle {
-            let (tx, rx) = tokio::sync::mpsc::channel(self.runtime_config.control_channel.capacity);
-            (Some(SharedSender::mpsc(tx)), Some(SharedReceiver::mpsc(rx)))
-        } else {
-            (None, None)
-        };
-
-        // When both local and shared variants are active, each gets its own
-        // independent control channel so they can be started and shut down
-        // separately by the engine.
-        let (shared_control_sender, shared_control_receiver) = if has_both_lifecycles {
-            let (tx, rx) = tokio::sync::mpsc::channel(self.runtime_config.control_channel.capacity);
-            (Some(SharedSender::mpsc(tx)), Some(SharedReceiver::mpsc(rx)))
-        } else {
-            (None, None)
-        };
-
-        otel_debug!(
-            "extension.builder.build",
-            name = self.name.as_ref(),
-            has_local_lifecycle = has_local_lifecycle,
-            has_shared_lifecycle = has_shared_lifecycle,
-        );
-
-        ExtensionWrapper {
-            name: self.name,
-            user_config: self.user_config,
-            runtime_config: self.runtime_config,
-            shared_extension: self.shared_extension,
-            local_extension: self.local_extension,
-            control_sender,
-            control_receiver,
-            shared_control_sender,
-            shared_control_receiver,
-            telemetry: None,
-        }
+        wrappers
     }
 }
 
@@ -406,7 +395,7 @@ impl ExtensionWrapper {
     /// Start building an `ExtensionWrapper`.
     #[must_use]
     pub fn builder(
-        name: ExtensionId,
+        name: ExtensionName,
         user_config: Arc<ExtensionUserConfig>,
         config: &ExtensionConfig,
     ) -> ExtensionWrapperBuilder {
@@ -414,16 +403,14 @@ impl ExtensionWrapper {
             name,
             user_config,
             runtime_config: config.clone(),
-            shared_extension: None,
-            local_extension: None,
-            shared_type_id: None,
-            local_type_id: None,
+            shared: None,
+            local: None,
         }
     }
 
-    /// Returns the node ID of this extension.
+    /// Returns the name of this extension.
     #[must_use]
-    pub fn name(&self) -> ExtensionId {
+    pub fn name(&self) -> ExtensionName {
         self.name.clone()
     }
 
@@ -436,7 +423,7 @@ impl ExtensionWrapper {
     /// Returns `true` if this extension is passive (no active lifecycle).
     #[must_use]
     pub fn is_passive(&self) -> bool {
-        self.local_extension.is_none() && self.shared_extension.is_none()
+        matches!(self.lifecycle, ExtensionLifecycle::Passive)
     }
 
     pub(crate) fn with_node_telemetry_guard(mut self, guard: NodeTelemetryGuard) -> Self {
@@ -450,105 +437,102 @@ impl ExtensionWrapper {
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
     ) -> Self {
-        if self.control_sender.is_none() {
-            return self;
-        }
+        let capacity = self.runtime_config.control_channel.capacity as u64;
+        let name = self.name.as_ref();
 
-        let control_sender = self.control_sender.take().expect("checked above");
-        let control_receiver = self.control_receiver.take().expect("must exist");
-        let (wrapped_sender, wrapped_receiver) =
-            wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
-                self.name.as_ref(),
-                pipeline_ctx,
-                channel_metrics,
-                channel_metrics_enabled,
-                self.runtime_config.control_channel.capacity as u64,
+        self.lifecycle = match self.lifecycle {
+            ExtensionLifecycle::Passive => ExtensionLifecycle::Passive,
+            ExtensionLifecycle::LocalActive {
+                extension,
                 control_sender,
                 control_receiver,
-            );
-        self.control_sender = Some(wrapped_sender);
-        self.control_receiver = Some(wrapped_receiver);
-
-        if let (Some(shared_sender), Some(shared_receiver)) = (
-            self.shared_control_sender.take(),
-            self.shared_control_receiver.take(),
-        ) {
-            let (wrapped_sender, wrapped_receiver) =
-                wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
-                    self.name.as_ref(),
+            } => {
+                let (s, r) = wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
+                    name,
                     pipeline_ctx,
                     channel_metrics,
                     channel_metrics_enabled,
-                    self.runtime_config.control_channel.capacity as u64,
-                    shared_sender,
-                    shared_receiver,
+                    capacity,
+                    control_sender,
+                    control_receiver,
                 );
-            self.shared_control_sender = Some(wrapped_sender);
-            self.shared_control_receiver = Some(wrapped_receiver);
-        }
-
+                ExtensionLifecycle::LocalActive {
+                    extension,
+                    control_sender: s,
+                    control_receiver: r,
+                }
+            }
+            ExtensionLifecycle::SharedActive {
+                extension,
+                control_sender,
+                control_receiver,
+            } => {
+                let (s, r) = wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
+                    name,
+                    pipeline_ctx,
+                    channel_metrics,
+                    channel_metrics_enabled,
+                    capacity,
+                    control_sender,
+                    control_receiver,
+                );
+                ExtensionLifecycle::SharedActive {
+                    extension,
+                    control_sender: s,
+                    control_receiver: r,
+                }
+            }
+        };
         self
     }
 
     /// Returns `ExtensionControlSender`(s) for sending control messages.
-    #[allow(dead_code)] // Used by runtime pipeline in a follow-up PR.
+    #[allow(dead_code)]
     pub(crate) fn extension_control_senders(&self) -> Vec<crate::control::ExtensionControlSender> {
-        let mut senders = Vec::new();
-        if let Some(ref sender) = self.control_sender {
-            senders.push(crate::control::ExtensionControlSender {
-                name: self.name.clone(),
-                sender: crate::message::Sender::Shared(sender.clone()),
-            });
+        match &self.lifecycle {
+            ExtensionLifecycle::Passive => Vec::new(),
+            ExtensionLifecycle::LocalActive { control_sender, .. }
+            | ExtensionLifecycle::SharedActive { control_sender, .. } => {
+                vec![crate::control::ExtensionControlSender {
+                    name: self.name.clone(),
+                    sender: crate::message::Sender::Shared(control_sender.clone()),
+                }]
+            }
         }
-        if let Some(ref shared_sender) = self.shared_control_sender {
-            senders.push(crate::control::ExtensionControlSender {
-                name: self.name.clone(),
-                sender: crate::message::Sender::Shared(shared_sender.clone()),
-            });
-        }
-        senders
     }
 
-    /// Starts the extension lifecycle(s).
-    ///
-    /// For dual-lifecycle extensions, spawns the shared variant as a background
-    /// task and awaits the local variant on the current thread.
+    /// Starts the extension lifecycle.
     pub async fn start(self, metrics_reporter: MetricsReporter) -> Result<TerminalState, Error> {
         let ext_name = self.name.clone();
         let effect_handler = EffectHandler::new(self.name, metrics_reporter);
-        let control_receiver = self
-            .control_receiver
-            .expect("start() called on passive extension — this is a bug");
-        let ctrl_chan = ControlChannel::new(control_receiver);
 
-        match (self.local_extension, self.shared_extension) {
-            (Some(_), Some(_)) => {
-                // TODO(PR5): The engine will take each variant from the wrapper
-                // and start them as separate tasks. Until then, return an error.
-                Err(Error::InternalError {
-                    message: format!(
-                        "extension `{}`: dual-active start() not yet supported — \
-                         this support will be added in a follow-up PR.",
-                        ext_name,
-                    ),
-                })
+        match self.lifecycle {
+            ExtensionLifecycle::Passive => {
+                panic!("start() called on passive extension — this is a bug")
             }
-            (Some(local_ext), None) => {
-                otel_debug!("extension.start.local", node_id = ext_name.as_ref(),);
-                local_ext.start(ctrl_chan, effect_handler).await
+            ExtensionLifecycle::LocalActive {
+                extension,
+                control_receiver,
+                ..
+            } => {
+                otel_debug!("extension.start.local", name = ext_name.as_ref());
+                extension
+                    .start(ControlChannel::new(control_receiver), effect_handler)
+                    .await
             }
-            (None, Some(shared_ext)) => {
-                otel_debug!("extension.start.shared", node_id = ext_name.as_ref(),);
-                shared_ext.start(ctrl_chan, effect_handler).await
-            }
-            (None, None) => {
-                panic!("ExtensionWrapper has no extension instance — this is a bug")
+            ExtensionLifecycle::SharedActive {
+                extension,
+                control_receiver,
+                ..
+            } => {
+                otel_debug!("extension.start.shared", name = ext_name.as_ref());
+                extension
+                    .start(ControlChannel::new(control_receiver), effect_handler)
+                    .await
             }
         }
     }
 }
-
-// ── TelemetryWrapped impl ───────────────────────────────────────────────────
 
 impl crate::TelemetryWrapped for ExtensionWrapper {
     fn with_control_channel_metrics(
@@ -564,7 +548,6 @@ impl crate::TelemetryWrapped for ExtensionWrapper {
             channel_metrics_enabled,
         )
     }
-
     fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
         ExtensionWrapper::with_node_telemetry_guard(self, guard)
     }
@@ -577,8 +560,6 @@ mod tests {
     use crate::shared::extension::Extension as SharedExtension;
     use crate::testing::CtrlMsgCounters;
     use async_trait::async_trait;
-    use otap_df_config::extension::ExtensionUserConfig;
-    use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::Value;
 
     fn test_metrics_reporter() -> MetricsReporter {
@@ -586,29 +567,39 @@ mod tests {
         MetricsReporter::new(tx)
     }
 
-    #[derive(Clone)]
-    struct TestExtension {
-        counter: CtrlMsgCounters,
+    fn ext_config(
+        name: &'static str,
+    ) -> (ExtensionName, Arc<ExtensionUserConfig>, ExtensionConfig) {
+        (
+            name.into(),
+            Arc::new(ExtensionUserConfig::new(
+                "urn:otap:extension:test".into(),
+                Value::Null,
+            )),
+            ExtensionConfig::new(name),
+        )
     }
 
-    impl TestExtension {
-        fn new(counter: CtrlMsgCounters) -> Self {
-            TestExtension { counter }
+    #[derive(Clone)]
+    struct TestExt {
+        counter: CtrlMsgCounters,
+    }
+    impl TestExt {
+        fn new(c: CtrlMsgCounters) -> Self {
+            Self { counter: c }
         }
     }
 
     #[async_trait]
-    impl SharedExtension for TestExtension {
+    impl SharedExtension for TestExt {
         async fn start(
             self: Box<Self>,
-            mut ctrl_chan: ControlChannel,
-            _effect_handler: EffectHandler,
+            mut ctrl: ControlChannel,
+            _eh: EffectHandler,
         ) -> Result<TerminalState, Error> {
             loop {
-                match ctrl_chan.recv().await? {
-                    ExtensionControlMsg::Config { .. } => {
-                        self.counter.increment_config();
-                    }
+                match ctrl.recv().await? {
+                    ExtensionControlMsg::Config { .. } => self.counter.increment_config(),
                     ExtensionControlMsg::Shutdown { .. } => {
                         self.counter.increment_shutdown();
                         break;
@@ -621,14 +612,14 @@ mod tests {
     }
 
     #[async_trait(?Send)]
-    impl crate::local::extension::Extension for TestExtension {
+    impl crate::local::extension::Extension for TestExt {
         async fn start(
             self: std::rc::Rc<Self>,
-            mut ctrl_chan: ControlChannel,
-            _effect_handler: EffectHandler,
+            mut ctrl: ControlChannel,
+            _eh: EffectHandler,
         ) -> Result<TerminalState, Error> {
             loop {
-                if let ExtensionControlMsg::Shutdown { .. } = ctrl_chan.recv().await? {
+                if let ExtensionControlMsg::Shutdown { .. } = ctrl.recv().await? {
                     break;
                 }
             }
@@ -637,573 +628,314 @@ mod tests {
     }
 
     #[test]
-    fn test_shared_active_wrapper_creation() {
-        let counter = CtrlMsgCounters::new();
-        let extension = TestExtension::new(counter);
-        let node_id = "test_extension".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("test_extension");
-
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_shared(Active(extension))
-            .build();
-
-        assert!(!wrapper.is_passive());
+    fn test_shared_active() {
+        let (n, u, c) = ext_config("sa");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .with_shared(Active(TestExt::new(CtrlMsgCounters::new())))
+            .build()
+            .pop()
+            .unwrap();
+        assert!(!w.is_passive());
+        assert_eq!(w.extension_control_senders().len(), 1);
     }
 
     #[test]
-    fn test_shared_passive_wrapper_creation() {
-        let node_id = "test_passive".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("test_passive");
+    fn test_shared_passive() {
+        let (n, u, c) = ext_config("sp");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .with_shared(Passive("data".to_string()))
+            .build()
+            .pop()
+            .unwrap();
+        assert!(w.is_passive());
+        assert!(w.extension_control_senders().is_empty());
+    }
 
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_shared(Passive(String::from("passive_data")))
-            .build();
+    #[test]
+    fn test_local_active() {
+        let (n, u, c) = ext_config("la");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .with_local(Active(std::rc::Rc::new(TestExt::new(
+                CtrlMsgCounters::new(),
+            ))))
+            .build()
+            .pop()
+            .unwrap();
+        assert!(!w.is_passive());
+        assert_eq!(w.extension_control_senders().len(), 1);
+    }
 
-        assert!(wrapper.is_passive());
+    #[test]
+    fn test_local_passive() {
+        let (n, u, c) = ext_config("lp");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .with_local(Passive(std::rc::Rc::new(42u32)))
+            .build()
+            .pop()
+            .unwrap();
+        assert!(w.is_passive());
     }
 
     #[test]
     #[should_panic(expected = "at least one variant")]
-    fn test_empty_builder_panics() {
-        let node_id = "empty".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("empty");
-
-        let _ = ExtensionWrapper::builder(node_id, user_config, &config).build();
+    fn test_empty_panics() {
+        let (n, u, c) = ext_config("e");
+        let _ = ExtensionWrapper::builder(n, u, &c).build().pop().unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "same concrete type")]
-    fn test_same_type_dual_registration_panics() {
-        let counter = CtrlMsgCounters::new();
-        let ext = TestExtension::new(counter);
-        let node_id = "dual_same".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("dual_same");
-
-        let _ = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_local(Active(std::rc::Rc::new(ext.clone())))
-            .with_shared(Active(ext))
+    fn test_dual_creates_two_wrappers() {
+        let e = TestExt::new(CtrlMsgCounters::new());
+        let (n, u, c) = ext_config("d");
+        let wrappers = ExtensionWrapper::builder(n, u, &c)
+            .with_local(Active(std::rc::Rc::new(e.clone())))
+            .with_shared(Active(e))
             .build();
+        assert_eq!(wrappers.len(), 2);
+        // First is local, second is shared — both active
+        assert!(!wrappers[0].is_passive());
+        assert!(!wrappers[1].is_passive());
+        assert_eq!(wrappers[0].extension_control_senders().len(), 1);
+        assert_eq!(wrappers[1].extension_control_senders().len(), 1);
     }
 
     #[test]
-    fn test_local_active_wrapper_creation() {
-        let counter = CtrlMsgCounters::new();
-        let ext = TestExtension::new(counter);
-        let node_id = "local_active".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("local_active");
-
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_local(Active(std::rc::Rc::new(ext)))
-            .build();
-
-        assert!(!wrapper.is_passive());
+    fn test_name_and_config_accessors() {
+        let (n, u, c) = ext_config("acc");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .with_shared(Active(TestExt::new(CtrlMsgCounters::new())))
+            .build()
+            .pop()
+            .unwrap();
+        assert_eq!(w.name().as_ref(), "acc");
+        assert_eq!(w.user_config().r#type.as_ref(), "urn:otap:extension:test");
     }
 
     #[test]
-    fn test_local_passive_wrapper_creation() {
-        let node_id = "local_passive".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("local_passive");
-
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_local(Passive(std::rc::Rc::new(42u32)))
-            .build();
-
-        assert!(wrapper.is_passive());
-    }
-
-    #[test]
-    fn test_dual_type_different_types_succeeds() {
-        let counter = CtrlMsgCounters::new();
-        let ext = TestExtension::new(counter);
-        let node_id = "dual_diff".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("dual_diff");
-
-        // Local passive with a different type (u32), shared active with TestExtension.
-        // Different TypeIds should not panic.
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_local(Passive(std::rc::Rc::new(42u32)))
-            .with_shared(Active(ext))
-            .build();
-
-        // Shared is active, so not fully passive.
-        assert!(!wrapper.is_passive());
-    }
-
-    #[test]
-    fn test_node_id_and_user_config_accessors() {
-        let counter = CtrlMsgCounters::new();
-        let ext = TestExtension::new(counter);
-        let node_id = "accessors".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("accessors");
-
-        let wrapper = ExtensionWrapper::builder(node_id, user_config.clone(), &config)
-            .with_shared(Active(ext))
-            .build();
-
-        assert_eq!(wrapper.name().as_ref(), "accessors");
-        assert_eq!(
-            wrapper.user_config().r#type.as_ref(),
-            "urn:otap:extension:test"
+    fn test_control_msg_is_shutdown() {
+        assert!(
+            ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "t".into()
+            }
+            .is_shutdown()
+        );
+        assert!(
+            !ExtensionControlMsg::Config {
+                config: Value::Null
+            }
+            .is_shutdown()
         );
     }
 
     #[test]
-    fn test_extension_control_senders_active() {
-        let counter = CtrlMsgCounters::new();
-        let ext = TestExtension::new(counter);
-        let node_id = "ctrl_senders".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("ctrl_senders");
-
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_shared(Active(ext))
-            .build();
-
-        let senders = wrapper.extension_control_senders();
-        assert_eq!(senders.len(), 1);
-    }
-
-    #[test]
-    fn test_extension_control_senders_passive_empty() {
-        let node_id = "ctrl_passive".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("ctrl_passive");
-
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_shared(Passive(String::from("data")))
-            .build();
-
-        let senders = wrapper.extension_control_senders();
-        assert!(senders.is_empty());
-    }
-
-    #[test]
-    fn test_dual_active_different_types_builds_with_two_control_channels() {
-        // Use a genuinely different local type to satisfy the TypeId guard.
-        #[derive(Clone)]
-        struct LocalTestExtension;
-
-        #[async_trait(?Send)]
-        impl crate::local::extension::Extension for LocalTestExtension {
-            async fn start(
-                self: std::rc::Rc<Self>,
-                mut ctrl_chan: ControlChannel,
-                _effect_handler: EffectHandler,
-            ) -> Result<TerminalState, Error> {
-                loop {
-                    if let ExtensionControlMsg::Shutdown { .. } = ctrl_chan.recv().await? {
-                        break;
-                    }
-                }
-                Ok(TerminalState::default())
-            }
-        }
-
-        let counter = CtrlMsgCounters::new();
-        let ext = TestExtension::new(counter);
-        let node_id = "ctrl_dual".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("ctrl_dual");
-
-        // Both active with different types — valid, gets two control senders.
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_local(Active(std::rc::Rc::new(LocalTestExtension)))
-            .with_shared(Active(ext))
-            .build();
-
-        assert!(!wrapper.is_passive());
-        let senders = wrapper.extension_control_senders();
-        assert_eq!(senders.len(), 2);
-    }
-
-    #[test]
-    fn test_extension_control_msg_is_shutdown() {
-        let shutdown = ExtensionControlMsg::Shutdown {
-            deadline: Instant::now(),
-            reason: "test".into(),
-        };
-        assert!(shutdown.is_shutdown());
-
-        let config = ExtensionControlMsg::Config {
-            config: Value::Null,
-        };
-        assert!(!config.is_shutdown());
-    }
-
-    #[test]
-    fn test_shared_active_start_and_shutdown() {
-        let (rt, local_set) = crate::testing::setup_test_runtime();
-        rt.block_on(local_set.run_until(async {
-            let counter = CtrlMsgCounters::new();
-            let ext = TestExtension::new(counter.clone());
-            let node_id = "start_shared".into();
-            let user_config = Arc::new(ExtensionUserConfig::new(
-                "urn:otap:extension:test".into(),
-                Value::Null,
-            ));
-            let config = ExtensionConfig::new("start_shared");
-
-            let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-                .with_shared(Active(ext))
-                .build();
-
-            let senders = wrapper.extension_control_senders();
-            assert_eq!(senders.len(), 1);
-
-            let metrics_reporter = test_metrics_reporter();
-            let handle =
-                tokio::task::spawn_local(async move { wrapper.start(metrics_reporter).await });
-
-            // Send config then shutdown
-            senders[0]
-                .send(ExtensionControlMsg::Config {
-                    config: Value::Null,
-                })
-                .await
+    fn test_shared_start_shutdown() {
+        let (rt, ls) = crate::testing::setup_test_runtime();
+        rt.block_on(ls.run_until(async {
+            let ctr = CtrlMsgCounters::new();
+            let (n, u, c) = ext_config("ss");
+            let w = ExtensionWrapper::builder(n, u, &c)
+                .with_shared(Active(TestExt::new(ctr.clone())))
+                .build()
+                .pop()
                 .unwrap();
-            senders[0]
-                .send(ExtensionControlMsg::Shutdown {
-                    deadline: Instant::now(),
-                    reason: "done".into(),
-                })
-                .await
-                .unwrap();
-
-            let result = handle.await.unwrap();
-            assert!(result.is_ok());
-            counter.assert(0, 0, 1, 1);
-        }));
-    }
-
-    #[test]
-    fn test_local_active_start_and_shutdown() {
-        let (rt, local_set) = crate::testing::setup_test_runtime();
-        rt.block_on(local_set.run_until(async {
-            let counter = CtrlMsgCounters::new();
-            let ext = TestExtension::new(counter.clone());
-            let node_id = "start_local".into();
-            let user_config = Arc::new(ExtensionUserConfig::new(
-                "urn:otap:extension:test".into(),
-                Value::Null,
-            ));
-            let config = ExtensionConfig::new("start_local");
-
-            let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-                .with_local(Active(std::rc::Rc::new(ext)))
-                .build();
-
-            let senders = wrapper.extension_control_senders();
-            assert_eq!(senders.len(), 1);
-
-            let metrics_reporter = test_metrics_reporter();
-            let handle =
-                tokio::task::spawn_local(async move { wrapper.start(metrics_reporter).await });
-
-            senders[0]
-                .send(ExtensionControlMsg::Shutdown {
-                    deadline: Instant::now(),
-                    reason: "done".into(),
-                })
-                .await
-                .unwrap();
-
-            let result = handle.await.unwrap();
-            assert!(result.is_ok());
-            // Local impl breaks on shutdown without incrementing counters
-            counter.assert(0, 0, 0, 0);
-        }));
-    }
-
-    #[tokio::test]
-    async fn test_control_channel_immediate_shutdown() {
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let sender = SharedSender::mpsc(tx);
-        let receiver = SharedReceiver::mpsc(rx);
-        let mut chan = ControlChannel::new(receiver);
-
-        sender
-            .send(ExtensionControlMsg::Shutdown {
-                deadline: Instant::now(),
-                reason: "immediate".into(),
+            let s = w.extension_control_senders();
+            let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
+            s[0].send(ExtensionControlMsg::Config {
+                config: Value::Null,
             })
             .await
             .unwrap();
+            s[0].send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "d".into(),
+            })
+            .await
+            .unwrap();
+            assert!(h.await.unwrap().is_ok());
+            ctr.assert(0, 0, 1, 1);
+        }));
+    }
 
-        let msg = chan.recv().await.unwrap();
-        assert!(msg.is_shutdown());
-
-        // After shutdown, channel should be closed
-        let err = chan.recv().await;
-        assert!(err.is_err());
+    #[test]
+    fn test_local_start_shutdown() {
+        let (rt, ls) = crate::testing::setup_test_runtime();
+        rt.block_on(ls.run_until(async {
+            let ctr = CtrlMsgCounters::new();
+            let (n, u, c) = ext_config("ls");
+            let w = ExtensionWrapper::builder(n, u, &c)
+                .with_local(Active(std::rc::Rc::new(TestExt::new(ctr.clone()))))
+                .build()
+                .pop()
+                .unwrap();
+            let s = w.extension_control_senders();
+            let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
+            s[0].send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "d".into(),
+            })
+            .await
+            .unwrap();
+            assert!(h.await.unwrap().is_ok());
+            ctr.assert(0, 0, 0, 0);
+        }));
     }
 
     #[tokio::test]
-    async fn test_control_channel_config_before_shutdown() {
+    async fn test_ctrl_immediate_shutdown() {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let sender = SharedSender::mpsc(tx);
-        let receiver = SharedReceiver::mpsc(rx);
-        let mut chan = ControlChannel::new(receiver);
+        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        SharedSender::mpsc(tx)
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "i".into(),
+            })
+            .await
+            .unwrap();
+        assert!(ch.recv().await.unwrap().is_shutdown());
+        assert!(ch.recv().await.is_err());
+    }
 
+    #[tokio::test]
+    async fn test_ctrl_config_then_shutdown() {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let s = SharedSender::mpsc(tx);
+        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        s.send(ExtensionControlMsg::Config {
+            config: Value::String("h".into()),
+        })
+        .await
+        .unwrap();
+        s.send(ExtensionControlMsg::Shutdown {
+            deadline: Instant::now(),
+            reason: "d".into(),
+        })
+        .await
+        .unwrap();
+        assert!(!ch.recv().await.unwrap().is_shutdown());
+        assert!(ch.recv().await.unwrap().is_shutdown());
+        assert!(ch.recv().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_delayed_shutdown() {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        let dl = Instant::now() + std::time::Duration::from_millis(50);
+        SharedSender::mpsc(tx)
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: dl,
+                reason: "dl".into(),
+            })
+            .await
+            .unwrap();
+        assert!(ch.recv().await.unwrap().is_shutdown());
+        assert!(Instant::now() >= dl);
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_collect_telemetry() {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        SharedSender::mpsc(tx)
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: test_metrics_reporter(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            ch.recv().await.unwrap(),
+            ExtensionControlMsg::CollectTelemetry { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(8);
+        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        drop(tx);
+        assert!(ch.recv().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_sender_send() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sender = crate::control::ExtensionControlSender {
+            name: "st".into(),
+            sender: crate::message::Sender::Shared(SharedSender::mpsc(tx)),
+        };
         sender
             .send(ExtensionControlMsg::Config {
-                config: Value::String("hello".into()),
+                config: Value::Null,
             })
             .await
             .unwrap();
-        sender
-            .send(ExtensionControlMsg::Shutdown {
-                deadline: Instant::now(),
-                reason: "done".into(),
-            })
-            .await
-            .unwrap();
-
-        // Config arrives first
-        let msg1 = chan.recv().await.unwrap();
-        assert!(!msg1.is_shutdown());
-
-        // Then shutdown
-        let msg2 = chan.recv().await.unwrap();
-        assert!(msg2.is_shutdown());
-
-        // Then closed
-        assert!(chan.recv().await.is_err());
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            ExtensionControlMsg::Config { .. }
+        ));
     }
 
     #[test]
-    fn test_effect_handler_extension_id() {
-        let node_id = "eh_test".into();
-        let metrics_reporter = test_metrics_reporter();
-        let handler = EffectHandler::new(node_id, metrics_reporter);
-        assert_eq!(handler.extension_id().as_ref(), "eh_test");
+    fn test_effect_handler() {
+        let h = EffectHandler::new("eh".into(), test_metrics_reporter());
+        assert_eq!(h.extension_id().as_ref(), "eh");
+        let c = h.clone();
+        assert_eq!(c.extension_id().as_ref(), "eh");
     }
 
     #[tokio::test]
     async fn test_effect_handler_info() {
-        let node_id = "eh_info".into();
-        let metrics_reporter = test_metrics_reporter();
-        let handler = EffectHandler::new(node_id, metrics_reporter);
-        // Just verify it doesn't panic; output goes to stdout.
-        handler.info("test message").await;
-    }
-
-    #[tokio::test]
-    async fn test_control_channel_delayed_shutdown() {
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let sender = SharedSender::mpsc(tx);
-        let receiver = SharedReceiver::mpsc(rx);
-        let mut chan = ControlChannel::new(receiver);
-
-        // Send shutdown with a short future deadline
-        let deadline = Instant::now() + std::time::Duration::from_millis(50);
-        sender
-            .send(ExtensionControlMsg::Shutdown {
-                deadline,
-                reason: "delayed".into(),
-            })
-            .await
-            .unwrap();
-
-        // Should wait until the deadline, then return shutdown
-        let msg = chan.recv().await.unwrap();
-        assert!(msg.is_shutdown());
-        assert!(Instant::now() >= deadline);
-
-        // Channel should be closed after shutdown
-        assert!(chan.recv().await.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_control_channel_collect_telemetry() {
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let sender = SharedSender::mpsc(tx);
-        let receiver = SharedReceiver::mpsc(rx);
-        let mut chan = ControlChannel::new(receiver);
-
-        let reporter = test_metrics_reporter();
-        sender
-            .send(ExtensionControlMsg::CollectTelemetry {
-                metrics_reporter: reporter,
-            })
-            .await
-            .unwrap();
-
-        let msg = chan.recv().await.unwrap();
-        assert!(!msg.is_shutdown());
-        assert!(matches!(msg, ExtensionControlMsg::CollectTelemetry { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_control_channel_closed_immediately() {
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let receiver = SharedReceiver::mpsc(rx);
-        let mut chan = ControlChannel::new(receiver);
-
-        // Drop sender to close the channel
-        drop(tx);
-
-        let result = chan.recv().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_extension_control_sender_send() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        let sender = crate::control::ExtensionControlSender {
-            name: "sender_test".into(),
-            sender: crate::message::Sender::Shared(SharedSender::mpsc(tx)),
-        };
-
-        sender
-            .send(ExtensionControlMsg::Config {
-                config: Value::String("hello".into()),
-            })
-            .await
-            .unwrap();
-
-        let msg = rx.recv().await.unwrap();
-        assert!(matches!(msg, ExtensionControlMsg::Config { .. }));
+        EffectHandler::new("ehi".into(), test_metrics_reporter())
+            .info("msg")
+            .await;
     }
 
     #[test]
-    fn test_shared_active_start_and_shutdown_with_collect_telemetry() {
-        let (rt, local_set) = crate::testing::setup_test_runtime();
-        rt.block_on(local_set.run_until(async {
-            let counter = CtrlMsgCounters::new();
-            let ext = TestExtension::new(counter.clone());
-            let node_id = "start_telem".into();
-            let user_config = Arc::new(ExtensionUserConfig::new(
-                "urn:otap:extension:test".into(),
-                Value::Null,
-            ));
-            let config = ExtensionConfig::new("start_telem");
+    fn test_passive_ctrl_metrics_noop() {
+        let (n, u, c) = ext_config("pm");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .with_shared(Passive("d".to_string()))
+            .build()
+            .pop()
+            .unwrap();
+        let (ctx, _) = crate::testing::test_pipeline_ctx();
+        let mut cm = ChannelMetricsRegistry::default();
+        let w = w.with_control_channel_metrics(&ctx, &mut cm, true);
+        assert!(w.is_passive());
+    }
 
-            let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-                .with_shared(Active(ext))
-                .build();
-
-            let senders = wrapper.extension_control_senders();
-            let metrics_reporter = test_metrics_reporter();
-            let handle =
-                tokio::task::spawn_local(async move { wrapper.start(metrics_reporter).await });
-
-            // Send CollectTelemetry, Config, then Shutdown
-            senders[0]
-                .send(ExtensionControlMsg::CollectTelemetry {
-                    metrics_reporter: test_metrics_reporter(),
-                })
-                .await
+    #[test]
+    fn test_start_with_telemetry() {
+        let (rt, ls) = crate::testing::setup_test_runtime();
+        rt.block_on(ls.run_until(async {
+            let ctr = CtrlMsgCounters::new();
+            let (n, u, c) = ext_config("st");
+            let w = ExtensionWrapper::builder(n, u, &c)
+                .with_shared(Active(TestExt::new(ctr.clone())))
+                .build()
+                .pop()
                 .unwrap();
-            senders[0]
-                .send(ExtensionControlMsg::Config {
-                    config: Value::Null,
-                })
-                .await
-                .unwrap();
-            senders[0]
-                .send(ExtensionControlMsg::Shutdown {
-                    deadline: Instant::now(),
-                    reason: "done".into(),
-                })
-                .await
-                .unwrap();
-
-            let result = handle.await.unwrap();
-            assert!(result.is_ok());
-            counter.assert(0, 0, 1, 1);
+            let s = w.extension_control_senders();
+            let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
+            s[0].send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: test_metrics_reporter(),
+            })
+            .await
+            .unwrap();
+            s[0].send(ExtensionControlMsg::Config {
+                config: Value::Null,
+            })
+            .await
+            .unwrap();
+            s[0].send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "d".into(),
+            })
+            .await
+            .unwrap();
+            assert!(h.await.unwrap().is_ok());
+            ctr.assert(0, 0, 1, 1);
         }));
-    }
-
-    #[test]
-    fn test_passive_extension_with_control_channel_metrics_noop() {
-        let node_id = "passive_metrics".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("passive_metrics");
-
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_shared(Passive(String::from("data")))
-            .build();
-
-        // Passive has no control channels, so with_control_channel_metrics is a noop.
-        let (ctx, _registry) = crate::testing::test_pipeline_ctx();
-        let mut channel_metrics = ChannelMetricsRegistry::default();
-        let wrapper = wrapper.with_control_channel_metrics(&ctx, &mut channel_metrics, true);
-
-        assert!(wrapper.is_passive());
-    }
-
-    #[test]
-    fn test_effect_handler_clone() {
-        let node_id = "eh_clone".into();
-        let metrics_reporter = test_metrics_reporter();
-        let handler = EffectHandler::new(node_id, metrics_reporter);
-        let cloned = handler.clone();
-        assert_eq!(
-            handler.extension_id().as_ref(),
-            cloned.extension_id().as_ref()
-        );
-    }
-
-    #[test]
-    fn test_dual_passive_different_types() {
-        let node_id = "dual_passive".into();
-        let user_config = Arc::new(ExtensionUserConfig::new(
-            "urn:otap:extension:test".into(),
-            Value::Null,
-        ));
-        let config = ExtensionConfig::new("dual_passive");
-
-        // Both passive, different types
-        let wrapper = ExtensionWrapper::builder(node_id, user_config, &config)
-            .with_local(Passive(std::rc::Rc::new(42u32)))
-            .with_shared(Passive(String::from("data")))
-            .build();
-
-        assert!(wrapper.is_passive());
-        assert!(wrapper.extension_control_senders().is_empty());
     }
 }
