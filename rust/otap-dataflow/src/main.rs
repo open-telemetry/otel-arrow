@@ -19,11 +19,11 @@ use otap_df_controller::Controller;
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
+use cfg_if::cfg_if;
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 use sysinfo::System;
-use cfg_if::cfg_if;
 
 // -----------------------------------------------------------------------------
 // Feature guard: jemalloc + mimalloc + dhat-heap any two together should fail.
@@ -47,8 +47,8 @@ compile_error!(
 
 #[cfg(feature = "dhat-heap")]
 use {
-    std::sync::{LazyLock, Mutex},
     dhat::Profiler,
+    std::sync::{LazyLock, Mutex},
 };
 
 #[cfg(feature = "mimalloc")]
@@ -75,7 +75,7 @@ cfg_if! {
         fn dhat_finish() {
                 let mut profiler = DHAT_PROFILER.lock().unwrap();
                 let _ = profiler.take();
-	    }
+        }
 
     // Windows default: mimalloc
     } else if #[cfg(feature = "mimalloc")] {
@@ -124,7 +124,6 @@ compile_error!(
     "Features `crypto-aws-lc` and `crypto-openssl` are mutually exclusive. \
      Use --no-default-features to disable the default crypto provider, then enable exactly one."
 );
-
 
 #[derive(Parser, Debug)]
 #[command(
