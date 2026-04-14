@@ -532,14 +532,25 @@ impl TemporalReaggregationProcessor {
         let inbound_key = inbound_slot.insert(tracker);
         let inbound_calldata: CallData = inbound_key.into();
 
-        // If this is the first chunk of data in the current aggregating batch
-        // then we schedule a new wakeup
-        if self.pending_flush.is_empty() {
-            self.reset_wakeup(effect_handler)?;
-        }
+        self.ensure_flush_scheduled(effect_handler)?;
 
         self.pending_flush.push(inbound_calldata.clone());
         Ok(inbound_calldata)
+    }
+
+    /// Ensures a flush wakeup is scheduled if one isn't already pending.
+    ///
+    /// This is used when data is accumulated without subscriber tracking —
+    /// we still need a wakeup to flush the aggregated data even though
+    /// we're not tracking ack/nack for that input.
+    fn ensure_flush_scheduled(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if self.wakeup_revision.is_none() {
+            self.reset_wakeup(effect_handler)?;
+        }
+        Ok(())
     }
 
     /// Cancels the current wakeup, if any, and schedules a new one.
@@ -617,9 +628,11 @@ impl TemporalReaggregationProcessor {
                     Ok(effect_handler.send_message_with_source_node(pdata).await?)
                 }
                 AggregationResult::SomeAggregations(records) => {
-                    // Pass data through if there are no subscribers
+                    // Pass data through if there are no subscribers — but we
+                    // still need a wakeup to flush the aggregated portion.
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
+                        self.ensure_flush_scheduled(effect_handler)?;
                         let pt_pdata =
                             OtapPdata::new(inbound_ctx, OtapPayload::OtapArrowRecords(records));
 
@@ -639,7 +652,6 @@ impl TemporalReaggregationProcessor {
 
                     let inbound_calldata: CallData =
                         self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
-                    self.pending_flush.push(inbound_calldata.clone());
 
                     // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
                     // We always expect one inbound and two outbound slots available
@@ -665,9 +677,11 @@ impl TemporalReaggregationProcessor {
                 }
                 AggregationResult::AllAggregated => {
                     // Nothing to passthrough and no subscribers so we don't
-                    // care about ack/nack.
+                    // care about ack/nack — but we still need a wakeup to
+                    // flush the aggregated data.
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
+                        self.ensure_flush_scheduled(effect_handler)?;
                         return Ok(());
                     }
 
@@ -3435,7 +3449,7 @@ mod tests {
             json!({}),
             vec![
                 Action::SendPdata {
-                    interests: Interests::ACKS | Interests::NACKS,
+                    interests: Interests::empty(),
                     payload: make_otap_payload_from_metrics(make_n_gauge_metrics(1)),
                 },
                 // Foreign slot with non-matching revision — should be silently ignored.
@@ -3461,7 +3475,7 @@ mod tests {
             json!({}),
             vec![
                 Action::SendPdata {
-                    interests: Interests::ACKS | Interests::NACKS,
+                    interests: Interests::empty(),
                     payload: make_otap_payload_from_metrics(make_n_gauge_metrics(1)),
                 },
                 // Wrong revision — should be silently ignored.
@@ -3489,12 +3503,12 @@ mod tests {
             json!({ "max_stream_cardinality": u16::MAX }),
             vec![
                 Action::SendPdata {
-                    interests: Interests::ACKS | Interests::NACKS,
+                    interests: Interests::empty(),
                     payload: make_otlp_payload_from_metrics(make_n_gauge_metrics(max_metrics)),
                 },
                 // This triggers an overflow flush internally.
                 Action::SendPdata {
-                    interests: Interests::ACKS | Interests::NACKS,
+                    interests: Interests::empty(),
                     payload: make_otlp_payload_from_metrics(make_n_gauge_metrics_with_offset(
                         2,
                         max_metrics,
