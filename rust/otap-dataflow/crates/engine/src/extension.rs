@@ -152,15 +152,6 @@ impl EffectHandler {
     pub fn extension_id(&self) -> ExtensionName {
         self.name.clone()
     }
-
-    /// Print an info message to stdout.
-    pub async fn info(&self, message: &str) {
-        use tokio::io::{AsyncWriteExt, stdout};
-        let mut out = stdout();
-        let _ = out.write_all(message.as_bytes()).await;
-        let _ = out.write_all(b"\n").await;
-        let _ = out.flush().await;
-    }
 }
 
 // ── Active / Passive wrappers ────────────────────────────────────────────────
@@ -882,13 +873,6 @@ mod tests {
         assert_eq!(h.extension_id().as_ref(), "eh");
         let c = h.clone();
         assert_eq!(c.extension_id().as_ref(), "eh");
-    }
-
-    #[tokio::test]
-    async fn test_effect_handler_info() {
-        EffectHandler::new("ehi".into(), test_metrics_reporter())
-            .info("msg")
-            .await;
     }
 
     #[test]
