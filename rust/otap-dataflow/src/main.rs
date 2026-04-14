@@ -112,6 +112,17 @@ compile_error!(
      Use --no-default-features to disable the default crypto provider, then enable exactly one."
 );
 
+#[cfg(all(
+    feature = "crypto-symcrypt",
+    not(any(target_os = "linux", target_os = "windows")),
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Feature `crypto-symcrypt` is only supported on Linux and Windows targets. \
+     Use a different crypto provider on this platform (e.g., crypto-ring)."
+);
+
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 
