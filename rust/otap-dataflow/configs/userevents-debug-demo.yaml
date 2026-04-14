@@ -1,0 +1,47 @@
+version: otel_dataflow/v1
+
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:userevents
+            config:
+              tracepoint: "user_events:myprovider_L2K1"
+              format:
+                type: common_schema_otel_logs
+              session:
+                wakeup_watermark: 1
+                late_registration:
+                  enabled: true
+                  poll_interval_ms: 100
+              batching:
+                max_size: 1
+                max_duration: 100ms
+
+          debug:
+            type: processor:debug
+            config:
+              verbosity: normal
+              mode: signal
+              output: userevents-debug-output.log
+              signals:
+                - logs
+
+          noop:
+            type: exporter:noop
+            config: {}
+
+        connections:
+          - from: receiver
+            to: debug
+          - from: debug
+            to: noop

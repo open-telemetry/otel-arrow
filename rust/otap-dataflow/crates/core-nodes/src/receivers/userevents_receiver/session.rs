@@ -11,7 +11,7 @@ mod imp {
 
     use std::collections::HashMap;
     use std::fs::{self, File};
-    use std::io::{self, Read};
+    use std::io;
     use std::mem::size_of;
     use std::os::fd::{AsRawFd, FromRawFd, RawFd};
     use std::path::{Path, PathBuf};
@@ -36,7 +36,9 @@ mod imp {
     const PERF_SAMPLE_CPU: u64 = 1 << 7;
     const PERF_SAMPLE_RAW: u64 = 1 << 10;
     const PERF_ATTR_FLAG_WATERMARK: u64 = 1 << 14;
-    const PERF_ATTR_FLAG_USE_CLOCKID: u64 = 1 << 25;
+    const PERF_EVENT_IOC_ENABLE: libc::c_ulong = ioctl_request_none(b'$', 0);
+    const PERF_EVENT_IOC_SET_OUTPUT: libc::c_ulong = ioctl_request_none(b'$', 5);
+    const PERF_EVENT_IOC_ID: libc::c_ulong = ioctl_request_read(b'$', 7, size_of::<u64>());
     const MMAP_DATA_HEAD_OFFSET: usize = 1024;
     const MMAP_DATA_TAIL_OFFSET: usize = 1032;
     const MMAP_DATA_OFFSET_OFFSET: usize = 1040;
@@ -127,26 +129,39 @@ mod imp {
                 resolved.push(resolve_tracepoint(&tracefs_root, subscription)?);
             }
 
-            let leader_file = open_perf_fd(
-                resolved[0].id,
-                cpu_id,
-                config.wakeup_watermark,
-                PerfClock::Realtime,
-            )?;
+            let mut resolved = resolved.into_iter();
+            let leader_tracepoint = resolved.next().ok_or_else(|| {
+                SessionInitError::InvalidTracepoint(
+                    "at least one resolved tracepoint is required".to_owned(),
+                )
+            })?;
+
+            let leader_file = open_perf_fd(leader_tracepoint.id, cpu_id, config.wakeup_watermark)?;
             set_nonblocking(&leader_file)?;
+            let leader_sample_id = read_perf_id(&leader_file)?;
+            enable_event(leader_file.as_raw_fd())?;
 
             let mmap_len = page_size + buffer_size;
             let mmap = unsafe { MmapOptions::new().len(mmap_len).map_mut(&leader_file)? };
 
-            let mut member_files = Vec::with_capacity(resolved.len());
-            let mut tracepoints_by_sample_id = HashMap::with_capacity(resolved.len());
+            let mut member_files = Vec::with_capacity(subscriptions.len());
+            member_files.push(leader_file.try_clone()?);
+
+            let mut tracepoints_by_sample_id = HashMap::with_capacity(subscriptions.len());
+            let _ = tracepoints_by_sample_id.insert(
+                leader_sample_id,
+                TracepointMetadata {
+                    tracepoint: leader_tracepoint.tracepoint,
+                    payload_offset: leader_tracepoint.payload_offset,
+                },
+            );
+
             for tracepoint in resolved {
-                let file = open_perf_fd(tracepoint.id, cpu_id, 0, PerfClock::Realtime)?;
-                if file.as_raw_fd() != leader_file.as_raw_fd() {
-                    set_output(file.as_raw_fd(), leader_file.as_raw_fd())?;
-                }
+                let file = open_perf_fd(tracepoint.id, cpu_id, 0)?;
+                set_output(file.as_raw_fd(), leader_file.as_raw_fd())?;
                 let sample_id = read_perf_id(&file)?;
-                tracepoints_by_sample_id.insert(
+                enable_event(file.as_raw_fd())?;
+                let _ = tracepoints_by_sample_id.insert(
                     sample_id,
                     TracepointMetadata {
                         tracepoint: tracepoint.tracepoint,
@@ -170,8 +185,13 @@ mod imp {
             config: &DrainConfig,
         ) -> io::Result<SessionDrain> {
             loop {
-                let guard = self.leader.readable().await?;
-                let drain = self.drain_available(config)?;
+                let mut guard = self.leader.readable().await?;
+                let drain = Self::drain_available(
+                    &mut self.mmap,
+                    &self.tracepoints_by_sample_id,
+                    &mut self.scratch,
+                    config,
+                )?;
                 if drain.records.is_empty() && drain.lost_samples == 0 {
                     guard.clear_ready();
                     continue;
@@ -184,12 +204,17 @@ mod imp {
             self.member_files.len()
         }
 
-        fn drain_available(&mut self, config: &DrainConfig) -> io::Result<SessionDrain> {
+        fn drain_available(
+            mmap: &mut MmapMut,
+            tracepoints_by_sample_id: &HashMap<u64, TracepointMetadata>,
+            scratch: &mut Vec<u8>,
+            config: &DrainConfig,
+        ) -> io::Result<SessionDrain> {
             let page_size = page_size();
-            let header_page = &self.mmap[..page_size];
+            let header_page = &mmap[..page_size];
             let data_offset = read_u64(header_page, MMAP_DATA_OFFSET_OFFSET)? as usize;
             let data_size = read_u64(header_page, MMAP_DATA_SIZE_OFFSET)? as usize;
-            let ring = &self.mmap[data_offset..data_offset + data_size];
+            let ring = &mmap[data_offset..data_size + data_offset];
 
             let head = read_u64(header_page, MMAP_DATA_HEAD_OFFSET)?;
             fence(Ordering::Acquire);
@@ -221,11 +246,11 @@ mod imp {
                     break;
                 }
 
-                self.scratch.resize(record_size, 0);
+                scratch.resize(record_size, 0);
                 copy_from_ring(
                     ring,
                     (tail as usize) & (data_size - 1),
-                    self.scratch.as_mut_slice(),
+                    scratch.as_mut_slice(),
                 );
                 tail = tail.saturating_add(record_size as u64);
                 drained_bytes = drained_bytes.saturating_add(record_size);
@@ -233,20 +258,20 @@ mod imp {
                 match record_type {
                     PERF_RECORD_SAMPLE => {
                         if let Some(record) =
-                            parse_sample_record(&self.scratch, &self.tracepoints_by_sample_id)?
+                            parse_sample_record(scratch, tracepoints_by_sample_id)?
                         {
                             records.push(record);
                         }
                     }
                     PERF_RECORD_LOST => {
-                        lost_samples = lost_samples.saturating_add(parse_lost_record(&self.scratch));
+                        lost_samples = lost_samples.saturating_add(parse_lost_record(scratch));
                     }
                     _ => {}
                 }
             }
 
             fence(Ordering::Release);
-            write_u64(&mut self.mmap[..page_size], MMAP_DATA_TAIL_OFFSET, tail)?;
+            write_u64(&mut mmap[..page_size], MMAP_DATA_TAIL_OFFSET, tail)?;
 
             Ok(SessionDrain {
                 records,
@@ -266,11 +291,6 @@ mod imp {
     struct TracepointMetadata {
         tracepoint: String,
         payload_offset: usize,
-    }
-
-    #[derive(Clone, Copy)]
-    enum PerfClock {
-        Realtime,
     }
 
     #[repr(C)]
@@ -294,11 +314,21 @@ mod imp {
         sample_regs_intr: u64,
     }
 
+    const fn ioctl_request_none(ty: u8, nr: u8) -> libc::c_ulong {
+        ((ty as libc::c_ulong) << 8) | nr as libc::c_ulong
+    }
+
+    const fn ioctl_request_read(ty: u8, nr: u8, size: usize) -> libc::c_ulong {
+        (2u64 << 30)
+            | ((size as libc::c_ulong) << 16)
+            | ((ty as libc::c_ulong) << 8)
+            | nr as libc::c_ulong
+    }
+
     fn open_perf_fd(
         tracepoint_id: u64,
         cpu_id: usize,
         wakeup_watermark: usize,
-        clock: PerfClock,
     ) -> io::Result<File> {
         let attr = PerfEventAttr {
             attr_type: PERF_TYPE_TRACEPOINT,
@@ -311,11 +341,8 @@ mod imp {
                 | PERF_SAMPLE_CPU
                 | PERF_SAMPLE_RAW,
             read_format: PERF_FORMAT_ID,
-            flags: PERF_ATTR_FLAG_WATERMARK | PERF_ATTR_FLAG_USE_CLOCKID,
+            flags: PERF_ATTR_FLAG_WATERMARK,
             wakeup_events: wakeup_watermark as u32,
-            clockid: match clock {
-                PerfClock::Realtime => libc::CLOCK_REALTIME,
-            },
             ..PerfEventAttr::default()
         };
 
@@ -346,7 +373,17 @@ mod imp {
     }
 
     fn set_output(fd: RawFd, leader_fd: RawFd) -> io::Result<()> {
-        let rc = unsafe { libc::ioctl(fd, libc::PERF_EVENT_IOC_SET_OUTPUT as _, leader_fd) };
+        let request = PERF_EVENT_IOC_SET_OUTPUT;
+        let rc = unsafe { libc::ioctl(fd, request, leader_fd) };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn enable_event(fd: RawFd) -> io::Result<()> {
+        let request = PERF_EVENT_IOC_ENABLE;
+        let rc = unsafe { libc::ioctl(fd, request, 0) };
         if rc < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -354,10 +391,13 @@ mod imp {
     }
 
     fn read_perf_id(file: &File) -> io::Result<u64> {
-        let mut buf = [0u8; 16];
-        let mut file_ref = file;
-        file_ref.read_exact(&mut buf)?;
-        Ok(u64::from_ne_bytes(buf[8..16].try_into().unwrap_or([0; 8])))
+        let request = PERF_EVENT_IOC_ID;
+        let mut id = 0u64;
+        let rc = unsafe { libc::ioctl(file.as_raw_fd(), request, &mut id as *mut u64) };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(id)
     }
 
     fn tracefs_root() -> io::Result<PathBuf> {
@@ -387,12 +427,16 @@ mod imp {
             .ok_or_else(|| SessionInitError::InvalidTracepoint(subscription.tracepoint.clone()))?;
 
         if system != "user_events" {
-            return Err(SessionInitError::InvalidTracepoint(subscription.tracepoint.clone()));
+            return Err(SessionInitError::InvalidTracepoint(
+                subscription.tracepoint.clone(),
+            ));
         }
 
         let tracepoint_dir = tracefs_root.join("events").join(system).join(event);
         if !tracepoint_dir.exists() {
-            return Err(SessionInitError::MissingTracepoint(subscription.tracepoint.clone()));
+            return Err(SessionInitError::MissingTracepoint(
+                subscription.tracepoint.clone(),
+            ));
         }
 
         let id = fs::read_to_string(tracepoint_dir.join("id"))

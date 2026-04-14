@@ -36,12 +36,12 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;
-use self::metrics::UsereventsReceiverMetrics;
-use self::session::UsereventsSession;
 #[cfg(target_os = "linux")]
 use self::decoder::DecodedUsereventsRecord;
+use self::metrics::UsereventsReceiverMetrics;
 #[cfg(target_os = "linux")]
 use self::session::SessionInitError;
+use self::session::UsereventsSession;
 #[cfg(target_os = "linux")]
 use otap_df_engine::control::NodeControlMsg;
 #[cfg(target_os = "linux")]
@@ -236,9 +236,8 @@ impl UsereventsReceiver {
                 error: "configure either `tracepoint` or `subscriptions`, not both".to_owned(),
             }),
             (None, None) => Err(otap_df_config::error::Error::InvalidUserConfig {
-                error:
-                    "userevents receiver requires either `tracepoint` or `subscriptions`"
-                        .to_owned(),
+                error: "userevents receiver requires either `tracepoint` or `subscriptions`"
+                    .to_owned(),
             }),
             (Some(tracepoint), None) => Ok(vec![SubscriptionConfig {
                 tracepoint: tracepoint.clone(),
@@ -362,17 +361,18 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
             let mut flush_interval = time::interval(batch_cfg.max_duration);
             flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-            let retry_period = Duration::from_millis(session_cfg.late_registration.poll_interval_ms);
+            let retry_period =
+                Duration::from_millis(session_cfg.late_registration.poll_interval_ms);
             let mut retry_interval = time::interval(retry_period.max(Duration::from_millis(1)));
             retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-            let mut session = None;
+            let mut session: Option<UsereventsSession> = None;
             let mut builder = ArrowRecordsBuilder::new();
-            let cpu_id = effect_handler.receiver_id().name.as_ref();
+            let node_name = effect_handler.receiver_id().name.as_ref().to_owned();
             otel_info!(
                 "userevents_receiver.start",
-                node = effect_handler.receiver_id().name.as_ref(),
-                pipeline_core = cpu_id,
+                node = node_name.as_str(),
+                pipeline_core = node_name.as_str(),
                 message = "Linux userevents receiver started"
             );
 
@@ -425,7 +425,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                                 self.metrics.borrow_mut().sessions_started.inc();
                                 otel_info!(
                                     "userevents_receiver.session_opened",
-                                    node = effect_handler.receiver_id().name.as_ref(),
+                                    node = node_name.as_str(),
                                     subscriptions = opened.subscription_count(),
                                     message = "Opened Linux userevents perf session"
                                 );
@@ -434,28 +434,36 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                             Err(SessionInitError::MissingTracepoint(tracepoint)) => {
                                 otel_warn!(
                                     "userevents_receiver.tracepoint_pending",
-                                    node = effect_handler.receiver_id().name.as_ref(),
+                                    node = node_name.as_str(),
                                     tracepoint = tracepoint.as_str(),
                                     message = "Waiting for late tracepoint registration"
                                 );
                             }
                             Err(error) => {
+                                let source_detail = {
+                                    let nested = format_error_sources(&error);
+                                    if nested.is_empty() {
+                                        error.to_string()
+                                    } else {
+                                        format!("{}: {}", error, nested)
+                                    }
+                                };
                                 return Err(Error::ReceiverError {
                                     receiver: effect_handler.receiver_id(),
                                     kind: ReceiverErrorKind::Configuration,
                                     error: "failed to open Linux userevents perf session".to_owned(),
-                                    source_detail: format_error_sources(&error),
+                                    source_detail,
                                 });
                             }
                         }
                     }
 
                     drained = async {
-                        match session.as_mut() {
-                            Some(session) => session.drain_ready(&drain_cfg).await,
-                            None => std::future::pending().await,
-                        }
-                    } => {
+                        let session = session
+                            .as_mut()
+                            .expect("userevents session branch is gated by is_some()");
+                        session.drain_ready(&drain_cfg).await
+                    }, if session.is_some() => {
                         let drained = drained.map_err(|error| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
                             kind: ReceiverErrorKind::Transport,
@@ -493,11 +501,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                 }
 
                 if session.is_none() && !session_cfg.late_registration.enabled {
-                    match UsereventsSession::open(
-                        &self.subscriptions,
-                        &session_cfg,
-                        self.cpu_id,
-                    ) {
+                    match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                         Ok(opened) => {
                             self.metrics.borrow_mut().sessions_started.inc();
                             session = Some(opened);
@@ -564,8 +568,9 @@ mod linux_integration_tests {
     #[test]
     #[ignore = "requires a Linux runner with a pre-registered user_events tracepoint"]
     fn session_open_smoke_test_for_pre_registered_tracepoint() {
-        let tracepoint = std::env::var("OTAP_DF_USEREVENTS_TEST_TRACEPOINT")
-            .expect("set OTAP_DF_USEREVENTS_TEST_TRACEPOINT to a pre-registered user_events tracepoint");
+        let tracepoint = std::env::var("OTAP_DF_USEREVENTS_TEST_TRACEPOINT").expect(
+            "set OTAP_DF_USEREVENTS_TEST_TRACEPOINT to a pre-registered user_events tracepoint",
+        );
 
         let config = SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
@@ -654,6 +659,10 @@ mod config_tests {
 
         let error =
             UsereventsReceiver::normalize_subscriptions(&config).expect_err("config rejected");
-        assert!(error.to_string().contains("either `tracepoint` or `subscriptions`"));
+        assert!(
+            error
+                .to_string()
+                .contains("either `tracepoint` or `subscriptions`")
+        );
     }
 }
