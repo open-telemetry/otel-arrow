@@ -315,9 +315,10 @@ impl AdminBackend for HttpBackend {
 fn build_http_client(settings: &HttpAdminClientSettings) -> Result<reqwest::Client, Error> {
     validate_tls_settings(settings)?;
 
-    if settings.endpoint.scheme == AdminScheme::Https {
-        ensure_crypto_provider()?;
-    }
+    // reqwest with rustls-no-provider requires a process-wide provider even
+    // for plain HTTP clients because the TLS backend is selected at client
+    // construction time.
+    ensure_crypto_provider()?;
 
     let mut client_builder = ClientBuilder::new()
         .use_rustls_tls()
@@ -506,7 +507,7 @@ fn ensure_crypto_provider() -> Result<(), Error> {
         )))]
         {
             Err(
-                "HTTPS admin connections require one of the admin SDK crypto features: \
+                "Admin client construction requires one of the admin SDK crypto features: \
                  crypto-ring, crypto-aws-lc, or crypto-openssl"
                     .to_string(),
             )
