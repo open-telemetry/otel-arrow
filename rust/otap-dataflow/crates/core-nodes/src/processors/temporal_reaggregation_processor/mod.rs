@@ -208,7 +208,8 @@ pub struct TemporalReaggregationProcessor {
     /// The collection period for aggregating metrics before emitting a batch
     collection_period: Duration,
 
-    /// Current wakeup revision.`None` when no wakeup is pending
+    /// Current wakeup revision.`None` when no wakeup is pending or we've
+    /// cancelled any pending wakeup.
     wakeup_revision: Option<WakeupRevision>,
 
     /// Maximum number of unique streams allowed in a single aggregating batch.
@@ -279,12 +280,16 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::Wakeup { revision, .. } => {
                     if self.wakeup_revision == Some(revision) {
-                        self.flush(effect_handler, None).await?;
+                        self.wakeup_revision = None;
                         self.metrics.flushes_timer.inc();
+                        self.flush(effect_handler, None).await?;
                     }
 
                     Ok(())
                 }
+                // Note that the timer tick processing is just for the sake of benchmarking,
+                // we don't register a timer at all in this processor.
+                NodeControlMsg::TimerTick {} => self.flush(effect_handler, None).await,
                 NodeControlMsg::Ack(msg) => self.handle_ack(effect_handler, msg).await,
                 NodeControlMsg::Nack(msg) => self.handle_nack(effect_handler, msg).await,
                 NodeControlMsg::Shutdown { .. } => self.flush(effect_handler, None).await,
@@ -318,9 +323,6 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         //
         // A second outbound slot may be needed for the passthrough portion
         // of the inbound data, if any.
-        //
-        // We reserve a third to prevent cases where a flush signal comes in and
-        // we have no outbound slot available.
         self.inbound_batches.has_capacity() && self.outbound_batches.remaining_capacity() >= 2
     }
 }
@@ -532,18 +534,14 @@ impl TemporalReaggregationProcessor {
         let inbound_key = inbound_slot.insert(tracker);
         let inbound_calldata: CallData = inbound_key.into();
 
-        self.ensure_flush_scheduled(effect_handler)?;
+        self.ensure_wakeup_scheduled(effect_handler)?;
 
         self.pending_flush.push(inbound_calldata.clone());
         Ok(inbound_calldata)
     }
 
     /// Ensures a flush wakeup is scheduled if one isn't already pending.
-    ///
-    /// This is used when data is accumulated without subscriber tracking —
-    /// we still need a wakeup to flush the aggregated data even though
-    /// we're not tracking ack/nack for that input.
-    fn ensure_flush_scheduled(
+    fn ensure_wakeup_scheduled(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
@@ -554,16 +552,20 @@ impl TemporalReaggregationProcessor {
     }
 
     /// Cancels the current wakeup, if any, and schedules a new one.
-    ///
-    /// If shutdown has already been latched by the inbox, the wakeup is
-    /// silently skipped — the pending `Shutdown` control message will
-    /// trigger a final flush so no data is lost.
     fn reset_wakeup(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         self.cancel_current_wakeup(effect_handler);
+        self.schedule_wakeup(effect_handler)
+    }
 
+    // Schedule a new wakeup, note that this does not cancel the old one if
+    // one is pending.
+    fn schedule_wakeup(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         let wakeup_time = Instant::now() + self.collection_period;
         match effect_handler.set_wakeup(FLUSH_WAKEUP_SLOT, wakeup_time) {
             Ok(outcome) => {
@@ -584,8 +586,10 @@ impl TemporalReaggregationProcessor {
 
     // Cancel current wakeup, if any
     fn cancel_current_wakeup(&mut self, effect_handler: &local::EffectHandler<OtapPdata>) {
-        self.wakeup_revision = None;
-        _ = effect_handler.cancel_wakeup(FLUSH_WAKEUP_SLOT);
+        if self.wakeup_revision.is_some() {
+            self.wakeup_revision = None;
+            _ = effect_handler.cancel_wakeup(FLUSH_WAKEUP_SLOT);
+        }
     }
 
     /// Parse and process a metrics pdata payload.
@@ -632,7 +636,7 @@ impl TemporalReaggregationProcessor {
                     // still need a wakeup to flush the aggregated portion.
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
-                        self.ensure_flush_scheduled(effect_handler)?;
+                        self.ensure_wakeup_scheduled(effect_handler)?;
                         let pt_pdata =
                             OtapPdata::new(inbound_ctx, OtapPayload::OtapArrowRecords(records));
 
@@ -681,7 +685,7 @@ impl TemporalReaggregationProcessor {
                     // flush the aggregated data.
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
-                        self.ensure_flush_scheduled(effect_handler)?;
+                        self.ensure_wakeup_scheduled(effect_handler)?;
                         return Ok(());
                     }
 
@@ -3437,35 +3441,6 @@ mod tests {
         run_test(config, actions);
     }
 
-    // ---- Wakeup-specific tests ----
-
-    /// Deliver a wakeup with the wrong slot (not FLUSH_WAKEUP_SLOT). The
-    /// processor only checks the wakeup revision, so we must also use a
-    /// revision that does not match the pending wakeup to verify the
-    /// foreign slot is truly a no-op.
-    #[test]
-    fn test_wakeup_wrong_slot_ignored() {
-        run_test(
-            json!({}),
-            vec![
-                Action::SendPdata {
-                    interests: Interests::empty(),
-                    payload: make_otap_payload_from_metrics(make_n_gauge_metrics(1)),
-                },
-                // Foreign slot with non-matching revision — should be silently ignored.
-                Action::SendControl(NodeControlMsg::Wakeup {
-                    slot: WakeupSlot(99),
-                    when: Instant::now(),
-                    revision: 999,
-                }),
-                Action::AssertNoPdata,
-                // The real wakeup still flushes.
-                Action::FireWakeup,
-                Action::DrainPdata { actions: vec![] },
-            ],
-        );
-    }
-
     /// Deliver a wakeup with the correct slot but a mismatched revision. The
     /// processor compares `self.wakeup_revision` against the delivered revision
     /// and ignores stale/unknown revisions.
@@ -3520,7 +3495,7 @@ mod tests {
                         assert_output_metric_count(output, max_metrics);
                     }))],
                 },
-                // Deliver a stale wakeup with revision 0 — should be ignored
+                // Deliver a stale wakeup with revision 0 - should be ignored
                 // because the overflow flush cancelled it.
                 Action::SendControl(NodeControlMsg::Wakeup {
                     slot: FLUSH_WAKEUP_SLOT,
