@@ -26,7 +26,7 @@
 /// Returns `Ok(())` if installation succeeds or if no crypto feature is enabled.
 pub fn install_crypto_provider() -> Result<(), String> {
     // Priority order when multiple features are enabled (e.g. --all-features):
-    // ring > aws-lc-rs > symcrypt > openssl.
+    // ring > aws-lc-rs > openssl > symcrypt.
     #[cfg(feature = "crypto-ring")]
     {
         rustls::crypto::ring::default_provider()
@@ -42,26 +42,26 @@ pub fn install_crypto_provider() -> Result<(), String> {
     }
 
     #[cfg(all(
-        feature = "crypto-symcrypt",
-        not(feature = "crypto-ring"),
-        not(feature = "crypto-aws-lc")
-    ))]
-    {
-        rustls_symcrypt::default_symcrypt_provider()
-            .install_default()
-            .map_err(|_| "crypto provider already installed (symcrypt)".to_string())?;
-    }
-
-    #[cfg(all(
         feature = "crypto-openssl",
         not(feature = "crypto-ring"),
-        not(feature = "crypto-aws-lc"),
-        not(feature = "crypto-symcrypt")
+        not(feature = "crypto-aws-lc")
     ))]
     {
         rustls_openssl::default_provider()
             .install_default()
             .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
+    }
+
+    #[cfg(all(
+        feature = "crypto-symcrypt",
+        not(feature = "crypto-ring"),
+        not(feature = "crypto-aws-lc"),
+        not(feature = "crypto-openssl")
+    ))]
+    {
+        rustls_symcrypt::default_symcrypt_provider()
+            .install_default()
+            .map_err(|_| "crypto provider already installed (symcrypt)".to_string())?;
     }
 
     #[cfg(not(any(

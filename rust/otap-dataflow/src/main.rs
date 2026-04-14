@@ -50,7 +50,7 @@ compile_error!(
 // The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
 // pattern so that `cargo test --all-features` (used in CI) does not fail.
 // When all features are enabled (e.g. --all-features), crypto.rs uses a
-// priority order (ring > aws-lc > symcrypt > openssl) so the binary still works.
+// priority order (ring > aws-lc > openssl > symcrypt) so the binary still works.
 #[cfg(all(
     feature = "crypto-ring",
     feature = "crypto-aws-lc",
