@@ -177,7 +177,7 @@ impl ChannelMode for SharedMode {
 /// If the channel is already wrapped, it preserves the existing wrapper to avoid double
 /// instrumentation.
 pub(crate) fn wrap_control_channel_metrics<M, Msg>(
-    node_id: &crate::node::NodeId,
+    name: &str,
     pipeline_ctx: &PipelineContext,
     channel_metrics: &mut ChannelMetricsRegistry,
     channel_metrics_enabled: bool,
@@ -193,7 +193,7 @@ where
     match (control_sender, control_receiver) {
         (Ok(sender), Ok(receiver)) => {
             let channel_entity_key = pipeline_ctx.register_channel_entity(
-                control_channel_id(node_id),
+                control_channel_id(name),
                 "input".into(),
                 CHANNEL_KIND_CONTROL,
                 M::CHANNEL_MODE,

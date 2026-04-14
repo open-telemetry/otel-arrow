@@ -14,6 +14,9 @@ use otap_df_telemetry::event::ErrorSummary;
 use std::borrow::Cow;
 use std::fmt;
 
+/// Name type for extensions — separate from node names.
+pub type ExtensionName = otap_df_config::ExtensionId;
+
 /// High-level classification for exporter failures to aid troubleshooting.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ExporterErrorKind {
@@ -341,7 +344,7 @@ pub enum Error {
     #[error("The extension `{extension}` already exists")]
     ExtensionAlreadyExists {
         /// The name of the extension that already exists.
-        extension: NodeId,
+        extension: ExtensionName,
     },
 
     /// Unknown node.

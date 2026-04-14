@@ -229,8 +229,8 @@ pub struct ExtensionFactory {
     /// A function that creates a new extension instance.
     pub create: fn(
         pipeline: PipelineContext,
-        node: NodeId,
-        node_config: Arc<NodeUserConfig>,
+        name: otap_df_config::ExtensionId,
+        ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
         extension_config: &ExtensionConfig,
     ) -> Result<ExtensionWrapper, otap_df_config::error::Error>,
     /// Validates the node-specific config statically, without creating the component.
@@ -1764,7 +1764,6 @@ impl<PData> BuildState<PData> {
                 NodeType::Receiver => Error::ReceiverAlreadyExists { receiver: node_id },
                 NodeType::Processor => Error::ProcessorAlreadyExists { processor: node_id },
                 NodeType::Exporter => Error::ExporterAlreadyExists { exporter: node_id },
-                NodeType::Extension => Error::ExtensionAlreadyExists { extension: node_id },
             });
         }
 
@@ -1798,9 +1797,7 @@ impl<PData> BuildState<PData> {
         let registration = self.registration(name)?;
         match registration.node_type {
             NodeType::Processor | NodeType::Exporter => Ok(registration.node_id.clone()),
-            NodeType::Receiver | NodeType::Extension => {
-                Err(Error::UnknownNode { node: name.clone() })
-            }
+            NodeType::Receiver => Err(Error::UnknownNode { node: name.clone() }),
         }
     }
 }
@@ -2331,8 +2328,8 @@ mod test {
     fn test_extension_factory_named_factory() {
         fn dummy_create(
             _: PipelineContext,
-            _: NodeId,
-            _: Arc<NodeUserConfig>,
+            _: otap_df_config::ExtensionId,
+            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
         ) -> Result<ExtensionWrapper, otap_df_config::error::Error> {
             unimplemented!()
@@ -2361,7 +2358,7 @@ mod test {
     #[test]
     fn test_extension_already_exists_variant_name() {
         let err = Error::ExtensionAlreadyExists {
-            extension: testing::test_node("dup_ext"),
+            extension: "dup_ext".into(),
         };
         assert_eq!(err.variant_name(), "ExtensionAlreadyExists");
     }

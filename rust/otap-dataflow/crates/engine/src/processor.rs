@@ -311,7 +311,7 @@ impl<PData> ProcessorWrapper<PData> {
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
-                        &node_id,
+                        node_id.name.as_ref(),
                         pipeline_ctx,
                         channel_metrics,
                         channel_metrics_enabled,
@@ -347,7 +347,7 @@ impl<PData> ProcessorWrapper<PData> {
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
-                        &node_id,
+                        node_id.name.as_ref(),
                         pipeline_ctx,
                         channel_metrics,
                         channel_metrics_enabled,

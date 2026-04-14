@@ -20,12 +20,12 @@ use crate::control::ExtensionControlMsg;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::Error;
 use crate::local::extension as local_ext;
-use crate::node::NodeId;
 use crate::shared::extension as shared_ext;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use otap_df_channel::error::RecvError;
-use otap_df_config::node::NodeUserConfig;
+use otap_df_config::ExtensionId;
+use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_telemetry::otel_debug;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::any::TypeId;
@@ -130,7 +130,7 @@ impl ControlChannel {
 /// timer infrastructure, keeping the extension system fully PData-free.
 #[derive(Clone)]
 pub struct EffectHandler {
-    node_id: NodeId,
+    name: ExtensionId,
     #[allow(dead_code)]
     metrics_reporter: MetricsReporter,
 }
@@ -138,17 +138,17 @@ pub struct EffectHandler {
 impl EffectHandler {
     /// Creates a new `EffectHandler` for the given extension node.
     #[must_use]
-    pub const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub const fn new(name: ExtensionId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
-            node_id,
+            name,
             metrics_reporter,
         }
     }
 
     /// Returns the id of the extension associated with this handler.
     #[must_use]
-    pub fn extension_id(&self) -> NodeId {
-        self.node_id.clone()
+    pub fn extension_id(&self) -> ExtensionId {
+        self.name.clone()
     }
 
     /// Print an info message to stdout.
@@ -274,8 +274,8 @@ impl<E: 'static> LocalProvider for Passive<std::rc::Rc<E>> {
 /// [`ExtensionControlMsg`], keeping the extension system entirely decoupled
 /// from the data-plane type.
 pub struct ExtensionWrapper {
-    node_id: NodeId,
-    user_config: Arc<NodeUserConfig>,
+    name: ExtensionId,
+    user_config: Arc<ExtensionUserConfig>,
     runtime_config: ExtensionConfig,
     shared_extension: Option<Box<dyn shared_ext::Extension>>,
     local_extension: Option<std::rc::Rc<dyn local_ext::Extension>>,
@@ -292,8 +292,8 @@ pub struct ExtensionWrapper {
 ///
 /// At least one variant (local or shared) must be added before calling `build()`.
 pub struct ExtensionWrapperBuilder {
-    node_id: NodeId,
-    user_config: Arc<NodeUserConfig>,
+    name: ExtensionId,
+    user_config: Arc<ExtensionUserConfig>,
     runtime_config: ExtensionConfig,
     shared_extension: Option<Box<dyn shared_ext::Extension>>,
     local_extension: Option<std::rc::Rc<dyn local_ext::Extension>>,
@@ -310,7 +310,7 @@ impl ExtensionWrapperBuilder {
         let decomposed = provider.decompose();
         otel_debug!(
             "extension.builder.with_local",
-            node_id = self.node_id.name.as_ref(),
+            name = self.name.as_ref(),
             active = decomposed.extension.is_some(),
         );
         self.local_extension = decomposed.extension;
@@ -326,7 +326,7 @@ impl ExtensionWrapperBuilder {
         let decomposed = provider.decompose();
         otel_debug!(
             "extension.builder.with_shared",
-            node_id = self.node_id.name.as_ref(),
+            name = self.name.as_ref(),
             active = decomposed.extension.is_some(),
         );
         self.shared_extension = decomposed.extension;
@@ -382,13 +382,13 @@ impl ExtensionWrapperBuilder {
 
         otel_debug!(
             "extension.builder.build",
-            node_id = self.node_id.name.as_ref(),
+            name = self.name.as_ref(),
             has_local_lifecycle = has_local_lifecycle,
             has_shared_lifecycle = has_shared_lifecycle,
         );
 
         ExtensionWrapper {
-            node_id: self.node_id,
+            name: self.name,
             user_config: self.user_config,
             runtime_config: self.runtime_config,
             shared_extension: self.shared_extension,
@@ -406,12 +406,12 @@ impl ExtensionWrapper {
     /// Start building an `ExtensionWrapper`.
     #[must_use]
     pub fn builder(
-        node_id: NodeId,
-        user_config: Arc<NodeUserConfig>,
+        name: ExtensionId,
+        user_config: Arc<ExtensionUserConfig>,
         config: &ExtensionConfig,
     ) -> ExtensionWrapperBuilder {
         ExtensionWrapperBuilder {
-            node_id,
+            name,
             user_config,
             runtime_config: config.clone(),
             shared_extension: None,
@@ -423,13 +423,13 @@ impl ExtensionWrapper {
 
     /// Returns the node ID of this extension.
     #[must_use]
-    pub fn node_id(&self) -> NodeId {
-        self.node_id.clone()
+    pub fn name(&self) -> ExtensionId {
+        self.name.clone()
     }
 
     /// Returns the user configuration for this extension.
     #[must_use]
-    pub fn user_config(&self) -> Arc<NodeUserConfig> {
+    pub fn user_config(&self) -> Arc<ExtensionUserConfig> {
         self.user_config.clone()
     }
 
@@ -458,7 +458,7 @@ impl ExtensionWrapper {
         let control_receiver = self.control_receiver.take().expect("must exist");
         let (wrapped_sender, wrapped_receiver) =
             wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
-                &self.node_id,
+                self.name.as_ref(),
                 pipeline_ctx,
                 channel_metrics,
                 channel_metrics_enabled,
@@ -475,7 +475,7 @@ impl ExtensionWrapper {
         ) {
             let (wrapped_sender, wrapped_receiver) =
                 wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
-                    &self.node_id,
+                    self.name.as_ref(),
                     pipeline_ctx,
                     channel_metrics,
                     channel_metrics_enabled,
@@ -496,13 +496,13 @@ impl ExtensionWrapper {
         let mut senders = Vec::new();
         if let Some(ref sender) = self.control_sender {
             senders.push(crate::control::ExtensionControlSender {
-                node_id: self.node_id.clone(),
+                name: self.name.clone(),
                 sender: crate::message::Sender::Shared(sender.clone()),
             });
         }
         if let Some(ref shared_sender) = self.shared_control_sender {
             senders.push(crate::control::ExtensionControlSender {
-                node_id: self.node_id.clone(),
+                name: self.name.clone(),
                 sender: crate::message::Sender::Shared(shared_sender.clone()),
             });
         }
@@ -514,8 +514,8 @@ impl ExtensionWrapper {
     /// For dual-lifecycle extensions, spawns the shared variant as a background
     /// task and awaits the local variant on the current thread.
     pub async fn start(self, metrics_reporter: MetricsReporter) -> Result<TerminalState, Error> {
-        let node_name = self.node_id.name.clone();
-        let effect_handler = EffectHandler::new(self.node_id, metrics_reporter);
+        let ext_name = self.name.clone();
+        let effect_handler = EffectHandler::new(self.name, metrics_reporter);
         let control_receiver = self
             .control_receiver
             .expect("start() called on passive extension — this is a bug");
@@ -529,16 +529,16 @@ impl ExtensionWrapper {
                     message: format!(
                         "extension `{}`: dual-active start() not yet supported — \
                          this support will be added in a follow-up PR.",
-                        node_name,
+                        ext_name,
                     ),
                 })
             }
             (Some(local_ext), None) => {
-                otel_debug!("extension.start.local", node_id = node_name.as_ref(),);
+                otel_debug!("extension.start.local", node_id = ext_name.as_ref(),);
                 local_ext.start(ctrl_chan, effect_handler).await
             }
             (None, Some(shared_ext)) => {
-                otel_debug!("extension.start.shared", node_id = node_name.as_ref(),);
+                otel_debug!("extension.start.shared", node_id = ext_name.as_ref(),);
                 shared_ext.start(ctrl_chan, effect_handler).await
             }
             (None, None) => {
@@ -575,9 +575,9 @@ mod tests {
     use super::*;
     use crate::control::ExtensionControlMsg;
     use crate::shared::extension::Extension as SharedExtension;
-    use crate::testing::{CtrlMsgCounters, test_node};
+    use crate::testing::CtrlMsgCounters;
     use async_trait::async_trait;
-    use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::extension::ExtensionUserConfig;
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::Value;
 
@@ -640,8 +640,8 @@ mod tests {
     fn test_shared_active_wrapper_creation() {
         let counter = CtrlMsgCounters::new();
         let extension = TestExtension::new(counter);
-        let node_id = test_node("test_extension");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "test_extension".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -656,8 +656,8 @@ mod tests {
 
     #[test]
     fn test_shared_passive_wrapper_creation() {
-        let node_id = test_node("test_passive");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "test_passive".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -673,8 +673,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "at least one variant")]
     fn test_empty_builder_panics() {
-        let node_id = test_node("empty");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "empty".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -688,8 +688,8 @@ mod tests {
     fn test_same_type_dual_registration_panics() {
         let counter = CtrlMsgCounters::new();
         let ext = TestExtension::new(counter);
-        let node_id = test_node("dual_same");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "dual_same".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -705,8 +705,8 @@ mod tests {
     fn test_local_active_wrapper_creation() {
         let counter = CtrlMsgCounters::new();
         let ext = TestExtension::new(counter);
-        let node_id = test_node("local_active");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "local_active".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -721,8 +721,8 @@ mod tests {
 
     #[test]
     fn test_local_passive_wrapper_creation() {
-        let node_id = test_node("local_passive");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "local_passive".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -739,8 +739,8 @@ mod tests {
     fn test_dual_type_different_types_succeeds() {
         let counter = CtrlMsgCounters::new();
         let ext = TestExtension::new(counter);
-        let node_id = test_node("dual_diff");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "dual_diff".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -761,8 +761,8 @@ mod tests {
     fn test_node_id_and_user_config_accessors() {
         let counter = CtrlMsgCounters::new();
         let ext = TestExtension::new(counter);
-        let node_id = test_node("accessors");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "accessors".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -772,7 +772,7 @@ mod tests {
             .with_shared(Active(ext))
             .build();
 
-        assert_eq!(wrapper.node_id().name.as_ref(), "accessors");
+        assert_eq!(wrapper.name().as_ref(), "accessors");
         assert_eq!(
             wrapper.user_config().r#type.as_ref(),
             "urn:otap:extension:test"
@@ -783,8 +783,8 @@ mod tests {
     fn test_extension_control_senders_active() {
         let counter = CtrlMsgCounters::new();
         let ext = TestExtension::new(counter);
-        let node_id = test_node("ctrl_senders");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "ctrl_senders".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -800,8 +800,8 @@ mod tests {
 
     #[test]
     fn test_extension_control_senders_passive_empty() {
-        let node_id = test_node("ctrl_passive");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "ctrl_passive".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -839,8 +839,8 @@ mod tests {
 
         let counter = CtrlMsgCounters::new();
         let ext = TestExtension::new(counter);
-        let node_id = test_node("ctrl_dual");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "ctrl_dual".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -877,8 +877,8 @@ mod tests {
         rt.block_on(local_set.run_until(async {
             let counter = CtrlMsgCounters::new();
             let ext = TestExtension::new(counter.clone());
-            let node_id = test_node("start_shared");
-            let user_config = Arc::new(NodeUserConfig::with_user_config(
+            let node_id = "start_shared".into();
+            let user_config = Arc::new(ExtensionUserConfig::new(
                 "urn:otap:extension:test".into(),
                 Value::Null,
             ));
@@ -922,8 +922,8 @@ mod tests {
         rt.block_on(local_set.run_until(async {
             let counter = CtrlMsgCounters::new();
             let ext = TestExtension::new(counter.clone());
-            let node_id = test_node("start_local");
-            let user_config = Arc::new(NodeUserConfig::with_user_config(
+            let node_id = "start_local".into();
+            let user_config = Arc::new(ExtensionUserConfig::new(
                 "urn:otap:extension:test".into(),
                 Value::Null,
             ));
@@ -1013,15 +1013,15 @@ mod tests {
 
     #[test]
     fn test_effect_handler_extension_id() {
-        let node_id = test_node("eh_test");
+        let node_id = "eh_test".into();
         let metrics_reporter = test_metrics_reporter();
         let handler = EffectHandler::new(node_id, metrics_reporter);
-        assert_eq!(handler.extension_id().name.as_ref(), "eh_test");
+        assert_eq!(handler.extension_id().as_ref(), "eh_test");
     }
 
     #[tokio::test]
     async fn test_effect_handler_info() {
-        let node_id = test_node("eh_info");
+        let node_id = "eh_info".into();
         let metrics_reporter = test_metrics_reporter();
         let handler = EffectHandler::new(node_id, metrics_reporter);
         // Just verify it doesn't panic; output goes to stdout.
@@ -1091,7 +1091,7 @@ mod tests {
     async fn test_extension_control_sender_send() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let sender = crate::control::ExtensionControlSender {
-            node_id: test_node("sender_test"),
+            name: "sender_test".into(),
             sender: crate::message::Sender::Shared(SharedSender::mpsc(tx)),
         };
 
@@ -1112,8 +1112,8 @@ mod tests {
         rt.block_on(local_set.run_until(async {
             let counter = CtrlMsgCounters::new();
             let ext = TestExtension::new(counter.clone());
-            let node_id = test_node("start_telem");
-            let user_config = Arc::new(NodeUserConfig::with_user_config(
+            let node_id = "start_telem".into();
+            let user_config = Arc::new(ExtensionUserConfig::new(
                 "urn:otap:extension:test".into(),
                 Value::Null,
             ));
@@ -1157,8 +1157,8 @@ mod tests {
 
     #[test]
     fn test_passive_extension_with_control_channel_metrics_noop() {
-        let node_id = test_node("passive_metrics");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "passive_metrics".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));
@@ -1178,20 +1178,20 @@ mod tests {
 
     #[test]
     fn test_effect_handler_clone() {
-        let node_id = test_node("eh_clone");
+        let node_id = "eh_clone".into();
         let metrics_reporter = test_metrics_reporter();
         let handler = EffectHandler::new(node_id, metrics_reporter);
         let cloned = handler.clone();
         assert_eq!(
-            handler.extension_id().name.as_ref(),
-            cloned.extension_id().name.as_ref()
+            handler.extension_id().as_ref(),
+            cloned.extension_id().as_ref()
         );
     }
 
     #[test]
     fn test_dual_passive_different_types() {
-        let node_id = test_node("dual_passive");
-        let user_config = Arc::new(NodeUserConfig::with_user_config(
+        let node_id = "dual_passive".into();
+        let user_config = Arc::new(ExtensionUserConfig::new(
             "urn:otap:extension:test".into(),
             Value::Null,
         ));

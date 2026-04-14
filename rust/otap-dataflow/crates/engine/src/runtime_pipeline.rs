@@ -498,7 +498,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .exporters
                 .get(ndef.inner.index)
                 .map(|e| e as &dyn Node<PData>),
-            NodeType::Extension => None,
         }
     }
 
@@ -520,7 +519,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .get_mut(ndef.inner.index)
                 .map(|p| p as &mut dyn NodeWithPDataSender<PData>),
             NodeType::Exporter => None,
-            NodeType::Extension => None,
         }
     }
 
@@ -542,7 +540,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .exporters
                 .get_mut(ndef.inner.index)
                 .map(|e| e as &mut dyn NodeWithPDataReceiver<PData>),
-            NodeType::Extension => None,
         }
     }
 
@@ -574,14 +571,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                         .expect("precomputed")
                         .send_control_msg(ctrl_msg)
                         .await
-                }
-                NodeType::Extension => {
-                    return Err(TypedError::Error(Error::InternalError {
-                        message: format!(
-                            "cannot send NodeControlMsg to extension node `{}`",
-                            node_id.name,
-                        ),
-                    }));
                 }
             }
             .map_err(|e| TypedError::NodeControlMsgSendError {

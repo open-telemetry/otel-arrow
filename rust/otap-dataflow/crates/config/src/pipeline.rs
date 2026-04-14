@@ -5,9 +5,10 @@
 pub mod telemetry;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
+use crate::extension::ExtensionUserConfig;
 use crate::node::{NodeKind, NodeUserConfig};
 use crate::policy::Policies;
-use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
+use crate::{Description, ExtensionId, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,8 +55,8 @@ pub struct PipelineConfig {
     /// expose functionality (e.g., authentication, service discovery) to other
     /// components. Unlike nodes, extensions do NOT participate in data-path
     /// connections.
-    #[serde(default, skip_serializing_if = "PipelineNodes::is_empty")]
-    extensions: PipelineNodes,
+    #[serde(default, skip_serializing_if = "PipelineExtensions::is_empty")]
+    extensions: PipelineExtensions,
 
     /// Explicit graph connections between nodes.
     ///
@@ -437,6 +438,100 @@ impl IntoIterator for PipelineNodes {
     }
 }
 
+/// A collection of pipeline extensions, keyed by extension ID.
+///
+/// Mirrors [`PipelineNodes`] but uses [`ExtensionUserConfig`] instead of
+/// [`NodeUserConfig`], reflecting that extensions have a simpler configuration
+/// model (no output ports, wiring, or header policies).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+#[serde(transparent)]
+pub struct PipelineExtensions(HashMap<ExtensionId, Arc<ExtensionUserConfig>>);
+
+impl PipelineExtensions {
+    /// Returns true if the extensions collection is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the number of extensions.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns a reference to the extension with the given ID, if it exists.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&Arc<ExtensionUserConfig>> {
+        self.0.get(id)
+    }
+
+    /// Returns true if an extension with the given ID exists.
+    #[must_use]
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.0.contains_key(id)
+    }
+
+    /// Inserts an extension into the collection.
+    pub fn insert(&mut self, id: ExtensionId, config: ExtensionUserConfig) {
+        _ = self.0.insert(id, Arc::new(config));
+    }
+
+    /// Returns an iterator visiting all extensions.
+    pub fn iter(&self) -> impl Iterator<Item = (&ExtensionId, &Arc<ExtensionUserConfig>)> {
+        self.0.iter()
+    }
+
+    /// Returns an iterator over extension IDs.
+    pub fn keys(&self) -> impl Iterator<Item = &ExtensionId> {
+        self.0.keys()
+    }
+
+    /// Canonicalize extension type URNs.
+    fn canonicalize_plugin_urns(
+        &mut self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Result<(), Error> {
+        for (ext_id, ext) in self.0.iter_mut() {
+            let mut updated = (**ext).clone();
+            let normalized = crate::node_urn::canonicalize_plugin_urn(updated.r#type.as_ref())
+                .map_err(|e| {
+                    if let Error::InvalidUserConfig { error } = e {
+                        Error::InvalidNodeType {
+                            context: Box::new(Context::new(
+                                pipeline_group_id.clone(),
+                                pipeline_id.clone(),
+                            )),
+                            node_id: ext_id.clone(),
+                            details: error,
+                        }
+                    } else {
+                        e
+                    }
+                })?;
+            updated.r#type = normalized;
+            *ext = Arc::new(updated);
+        }
+        Ok(())
+    }
+}
+
+impl IntoIterator for PipelineExtensions {
+    type Item = (ExtensionId, Arc<ExtensionUserConfig>);
+    type IntoIter = std::collections::hash_map::IntoIter<ExtensionId, Arc<ExtensionUserConfig>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl FromIterator<(ExtensionId, Arc<ExtensionUserConfig>)> for PipelineExtensions {
+    fn from_iter<T: IntoIterator<Item = (ExtensionId, Arc<ExtensionUserConfig>)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
 impl FromIterator<(NodeId, Arc<NodeUserConfig>)> for PipelineNodes {
     fn from_iter<T: IntoIterator<Item = (NodeId, Arc<NodeUserConfig>)>>(iter: T) -> Self {
         Self(iter.into_iter().collect())
@@ -494,7 +589,7 @@ impl PipelineConfig {
 
     /// Returns a reference to the pipeline extensions.
     #[must_use]
-    pub const fn extensions(&self) -> &PipelineNodes {
+    pub const fn extensions(&self) -> &PipelineExtensions {
         &self.extensions
     }
 
@@ -504,7 +599,9 @@ impl PipelineConfig {
     }
 
     /// Returns an iterator visiting all extension nodes in the pipeline.
-    pub fn extension_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
+    pub fn extension_iter(
+        &self,
+    ) -> impl Iterator<Item = (&ExtensionId, &Arc<ExtensionUserConfig>)> {
         self.extensions.iter()
     }
 
@@ -525,7 +622,9 @@ impl PipelineConfig {
     }
 
     /// Creates a consuming iterator over the extensions in the pipeline.
-    pub fn extension_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
+    pub fn extension_into_iter(
+        self,
+    ) -> impl Iterator<Item = (ExtensionId, Arc<ExtensionUserConfig>)> {
         self.extensions.into_iter()
     }
 
@@ -620,7 +719,7 @@ impl PipelineConfig {
             r#type: PipelineType::Otap,
             policies,
             nodes,
-            extensions: PipelineNodes::default(),
+            extensions: PipelineExtensions::default(),
             connections,
         }
     }
@@ -692,20 +791,6 @@ impl PipelineConfig {
                         ),
                     });
                 }
-            }
-        }
-
-        // Check that extensions don't have capability bindings
-        for (ext_id, ext_config) in self.extensions.iter() {
-            if !ext_config.capabilities.is_empty() {
-                errors.push(Error::InvalidUserConfig {
-                    error: format!(
-                        "Extension '{}' has a `capabilities` section, but extensions \
-                         provide capabilities - they don't consume them. \
-                         Move capability bindings to the nodes that need them.",
-                        ext_id.as_ref(),
-                    ),
-                });
             }
         }
 
@@ -972,7 +1057,7 @@ fn prune_connection(
 pub struct PipelineConfigBuilder {
     description: Option<Description>,
     nodes: HashMap<NodeId, NodeUserConfig>,
-    extensions: HashMap<NodeId, NodeUserConfig>,
+    extensions: HashMap<ExtensionId, ExtensionUserConfig>,
     duplicate_nodes: Vec<NodeId>,
     pending_connections: Vec<PendingConnection>,
 }
@@ -1066,7 +1151,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add an extension (configured as a sibling to nodes, not as a node).
-    pub fn add_extension<S: Into<NodeId>, U: Into<NodeUrn>>(
+    pub fn add_extension<S: Into<ExtensionId>, U: Into<NodeUrn>>(
         mut self,
         id: S,
         node_type: U,
@@ -1079,16 +1164,10 @@ impl PipelineConfigBuilder {
         } else {
             _ = self.extensions.insert(
                 id.clone(),
-                NodeUserConfig {
+                ExtensionUserConfig {
                     r#type: node_type,
                     description: None,
-                    entity: None,
-                    outputs: Vec::new(),
-                    default_output: None,
                     config: config.unwrap_or(Value::Null),
-                    header_capture: None,
-                    header_propagation: None,
-                    capabilities: HashMap::new(),
                 },
             );
         }
@@ -2940,6 +3019,9 @@ connections:
 
     #[test]
     fn test_capabilities_on_extension_rejected() {
+        // ExtensionUserConfig uses #[serde(deny_unknown_fields)], so
+        // `capabilities` on an extension is caught at deserialization time
+        // (extensions don't consume capabilities — they provide them).
         let yaml = r#"
 nodes:
   receiver:
@@ -2958,18 +3040,16 @@ connections:
     to: exporter
 "#;
         let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
-        match result {
-            Err(Error::InvalidConfiguration { errors }) => {
-                assert!(
-                    errors.iter().any(|e| matches!(
-                        e,
-                        Error::InvalidUserConfig { error } if error.contains("provide capabilities")
-                    )),
-                    "expected error about extensions providing capabilities, got: {errors:?}"
-                );
-            }
-            other => panic!("expected InvalidConfiguration, got {other:?}"),
-        }
+        assert!(
+            result.is_err(),
+            "extensions with `capabilities` should be rejected"
+        );
+        let err = result.unwrap_err();
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("capabilities"),
+            "error should mention `capabilities`, got: {err_str}"
+        );
     }
 
     #[test]
