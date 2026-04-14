@@ -20,6 +20,7 @@ use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
+use otap_df_engine::inline_processor::{InlineOutput, InlineProcessor};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
@@ -72,6 +73,10 @@ pub static FILTER_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata>
                  proc_cfg: &ProcessorConfig| {
             create_filter_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        create_inline: Some(|pipeline_ctx, _node, node_config, _proc_cfg| {
+            let proc = FilterProcessor::from_config(pipeline_ctx, &node_config.config)?;
+            Ok(Box::new(proc) as Box<dyn InlineProcessor<OtapPdata>>)
+        }),
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
@@ -108,10 +113,6 @@ impl FilterProcessor {
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for FilterProcessor {
-    fn is_chainable(&self) -> bool {
-        true
-    }
-
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -201,6 +202,79 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 Ok(())
             }
         }
+    }
+}
+
+impl InlineProcessor<OtapPdata> for FilterProcessor {
+    fn process_inline(&mut self, pdata: OtapPdata) -> Result<InlineOutput<OtapPdata>, Error> {
+        let signal = pdata.signal_type();
+        let (context, payload) = pdata.into_parts();
+
+        let mut arrow_records: OtapArrowRecords = payload.try_into()?;
+        arrow_records.decode_transport_optimized_ids()?;
+
+        let (filtered_arrow_records, signals_consumed, signals_filtered) = match signal {
+            SignalType::Metrics => (arrow_records, 0, 0),
+            SignalType::Logs => self
+                .config
+                .log_filters()
+                .filter(arrow_records)
+                .map_err(|e| {
+                    let source_detail = format_error_sources(&e);
+                    Error::ProcessorError {
+                        processor: NodeId {
+                            index: 0,
+                            name: FILTER_PROCESSOR_URN.into(),
+                        },
+                        kind: ProcessorErrorKind::Other,
+                        error: format!("Filter error: {e}"),
+                        source_detail,
+                    }
+                })?,
+            SignalType::Traces => {
+                self.config
+                    .trace_filters()
+                    .filter(arrow_records)
+                    .map_err(|e| {
+                        let source_detail = format_error_sources(&e);
+                        Error::ProcessorError {
+                            processor: NodeId {
+                                index: 0,
+                                name: FILTER_PROCESSOR_URN.into(),
+                            },
+                            kind: ProcessorErrorKind::Other,
+                            error: format!("Filter error: {e}"),
+                            source_detail,
+                        }
+                    })?
+            }
+        };
+
+        match signal {
+            SignalType::Metrics => {}
+            SignalType::Logs => {
+                self.metrics.log_signals_consumed.add(signals_consumed);
+                self.metrics.log_signals_filtered.add(signals_filtered);
+            }
+            SignalType::Traces => {
+                self.metrics.span_signals_consumed.add(signals_consumed);
+                self.metrics.span_signals_filtered.add(signals_filtered);
+            }
+        }
+
+        Ok(InlineOutput::Forward(OtapPdata::new(
+            context,
+            filtered_arrow_records.into(),
+        )))
+    }
+
+    fn compute_duration(&self) -> Option<&ComputeDuration> {
+        Some(&self.compute_duration)
+    }
+
+    fn collect_telemetry(&mut self, reporter: &mut otap_df_telemetry::reporter::MetricsReporter) {
+        let _ = reporter.report(&mut self.metrics);
+        self.compute_duration.report(reporter);
     }
 }
 

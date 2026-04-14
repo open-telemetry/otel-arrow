@@ -42,6 +42,7 @@ use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::inline_processor::{InlineOutput, InlineProcessor};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
@@ -330,10 +331,6 @@ impl AttributesProcessor {
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for AttributesProcessor {
-    fn is_chainable(&self) -> bool {
-        true
-    }
-
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -409,6 +406,66 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
     }
 }
 
+impl InlineProcessor<OtapPdata> for AttributesProcessor {
+    fn process_inline(&mut self, pdata: OtapPdata) -> Result<InlineOutput<OtapPdata>, EngineError> {
+        // Fast path: no actions to apply
+        if self.is_noop() {
+            return Ok(InlineOutput::Forward(pdata));
+        }
+
+        let signal = pdata.signal_type();
+        let (context, payload) = pdata.into_parts();
+
+        let mut records: OtapArrowRecords = payload.try_into()?;
+
+        // Update domain counters (count once per message when domains are enabled)
+        if self.has_resource_domain {
+            self.metrics.domains_resource.inc();
+        }
+        if self.has_scope_domain {
+            self.metrics.domains_scope.inc();
+        }
+        if self.has_signal_domain {
+            self.metrics.domains_signal.inc();
+        }
+
+        match self.apply_transform_with_stats(&mut records, signal) {
+            Ok((deleted_total, renamed_total, inserted_total, upserted_total)) => {
+                if deleted_total > 0 {
+                    self.metrics.deleted_entries.add(deleted_total);
+                }
+                if renamed_total > 0 {
+                    self.metrics.renamed_entries.add(renamed_total);
+                }
+                if inserted_total > 0 {
+                    self.metrics.inserted_entries.add(inserted_total);
+                }
+                if upserted_total > 0 {
+                    self.metrics.upserted_entries.add(upserted_total);
+                }
+            }
+            Err(e) => {
+                self.metrics.transform_failed.inc();
+                return Err(e);
+            }
+        }
+
+        Ok(InlineOutput::Forward(OtapPdata::new(
+            context,
+            records.into(),
+        )))
+    }
+
+    fn compute_duration(&self) -> Option<&ComputeDuration> {
+        Some(&self.compute_duration)
+    }
+
+    fn collect_telemetry(&mut self, reporter: &mut otap_df_telemetry::reporter::MetricsReporter) {
+        let _ = reporter.report(&mut self.metrics);
+        self.compute_duration.report(reporter);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ApplyDomain {
     Signal,
@@ -466,6 +523,17 @@ pub fn create_attributes_processor(
     ))
 }
 
+/// Factory function to create an inline AttributesProcessor for chain use.
+fn create_inline_attributes_processor(
+    pipeline_ctx: PipelineContext,
+    _node: NodeId,
+    node_config: Arc<NodeUserConfig>,
+    _processor_config: &ProcessorConfig,
+) -> Result<Box<dyn InlineProcessor<OtapPdata>>, ConfigError> {
+    let proc = AttributesProcessor::from_config(pipeline_ctx, &node_config.config)?;
+    Ok(Box::new(proc))
+}
+
 /// Register AttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
@@ -478,6 +546,9 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
                  proc_cfg: &ProcessorConfig| {
             create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        create_inline: Some(|pipeline_ctx, node, node_config, proc_cfg| {
+            create_inline_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
+        }),
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };

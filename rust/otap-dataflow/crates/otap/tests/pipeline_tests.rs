@@ -307,12 +307,12 @@ fn build_processor_chain_pipeline_config(
     let chain_config = json!({
         "processors": {
             "step_1": {
-                "type": "processor:debug",
-                "config": { "verbosity": "basic" }
+                "type": "processor:attribute",
+                "config": { "actions": [] }
             },
             "step_2": {
-                "type": "processor:debug",
-                "config": { "verbosity": "basic" }
+                "type": "processor:attribute",
+                "config": { "actions": [] }
             }
         }
     });
@@ -387,8 +387,8 @@ fn test_pipeline_with_non_chainable_processor_in_chain_rejected() {
 
     let msg = err.to_string();
     assert!(
-        msg.contains("is not chainable"),
-        "error should mention chainability: {msg}"
+        msg.contains("does not support inline execution"),
+        "error should mention inline support: {msg}"
     );
 }
 
@@ -397,12 +397,12 @@ fn test_pipeline_with_chainable_and_non_chainable_rejects_non_chainable() {
     let pipeline_group_id: PipelineGroupId = "test-group".into();
     let pipeline_id: PipelineId = "chain-mixed".into();
 
-    // Mix of chainable (debug) and non-chainable (batch) — should be rejected
+    // Mix of chainable (attribute) and non-chainable (batch) — should be rejected
     let chain_config = json!({
         "processors": {
             "ok": {
-                "type": "processor:debug",
-                "config": { "verbosity": "basic" }
+                "type": "processor:attribute",
+                "config": { "actions": [] }
             },
             "bad": {
                 "type": "processor:batch",
@@ -452,8 +452,8 @@ fn test_pipeline_with_chainable_and_non_chainable_rejects_non_chainable() {
 
     let msg = err.to_string();
     assert!(
-        msg.contains("is not chainable"),
-        "error should mention chainability: {msg}"
+        msg.contains("does not support inline execution"),
+        "error should mention inline support: {msg}"
     );
     assert!(
         msg.contains("batch"),

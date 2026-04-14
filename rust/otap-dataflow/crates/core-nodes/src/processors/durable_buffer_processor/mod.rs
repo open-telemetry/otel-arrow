@@ -1944,6 +1944,7 @@ pub fn create_durable_buffer(
 pub static DURABLE_BUFFER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: DURABLE_BUFFER_URN,
     create: create_durable_buffer,
+    create_inline: None,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<DurableBufferConfig>,
 };

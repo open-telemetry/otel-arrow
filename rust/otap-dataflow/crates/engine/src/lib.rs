@@ -73,6 +73,7 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub mod inline_processor;
 pub mod local;
 pub mod memory_limiter;
 pub mod node;
@@ -87,6 +88,7 @@ pub mod terminal_state;
 pub mod testing;
 pub mod topic;
 pub mod wiring_contract;
+pub use inline_processor::{InlineOutput, InlineProcessor};
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
 
@@ -149,6 +151,20 @@ pub struct ProcessorFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
+    /// Optional factory for creating an [`InlineProcessor`] instance.
+    ///
+    /// When `Some`, this processor can be used inside a `processor_chain:inlined`.
+    /// The chain calls this factory directly instead of going through `create`
+    /// and extracting the inner processor. When `None`, the processor cannot be
+    /// used inside a chain.
+    pub create_inline: Option<
+        fn(
+            pipeline: PipelineContext,
+            node: NodeId,
+            node_config: Arc<NodeUserConfig>,
+            processor_config: &ProcessorConfig,
+        ) -> Result<Box<dyn InlineProcessor<PData>>, otap_df_config::error::Error>,
+    >,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -165,6 +181,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
         ProcessorFactory {
             name: self.name,
             create: self.create,
+            create_inline: self.create_inline,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -1552,33 +1569,20 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Composite compute duration registered under the chain's entity.
         let composite_duration = ComputeDuration::new(pipeline_ctx);
 
-        // Create each sub-processor using its factory.
-        let mut sub_processors = Vec::with_capacity(chain_config.processors.len());
+        // Create each sub-processor using its inline factory.
+        let mut sub_processors: Vec<Box<dyn InlineProcessor<PData>>> =
+            Vec::with_capacity(chain_config.processors.len());
         for (sub_name_key, sub_cfg) in &chain_config.processors {
             let sub_name: Cow<'static, str> =
                 format!("{}/{}", chain_name.as_ref(), sub_name_key).into();
 
             let sub_urn = sub_cfg.r#type.clone();
 
-            let sub_ctx = pipeline_ctx.with_node_context(
-                sub_name.clone(),
-                sub_urn.clone(),
-                otap_df_config::node::NodeKind::Processor,
-                sub_cfg.identity_attributes(),
-            );
-
-            // Register a distinct entity for this sub-processor so its metrics
-            // (e.g. ComputeDuration) are attributed with the sub-processor's
-            // own node.id ("chain/0") and node.urn rather than the chain's.
-            let sub_entity_key = sub_ctx.register_node_entity();
-            let sub_telemetry_handle =
-                NodeTelemetryHandle::new(sub_ctx.metrics_registry(), sub_entity_key);
-
             let sub_node_config = Arc::new(sub_cfg.clone());
 
             let sub_node_id = NodeId {
                 index: node_id.index,
-                name: sub_name,
+                name: sub_name.clone(),
             };
 
             let sub_processor_config = ProcessorConfig::with_channel_capacities(
@@ -1594,45 +1598,60 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     plugin_urn: sub_urn.clone(),
                 })?;
 
-            // Run the factory within the sub-processor's telemetry scope so
-            // that register_metrics() inside the factory picks up the correct
-            // entity key (sub-processor, not chain).
-            let wrapper = with_node_telemetry_handle(sub_telemetry_handle, || {
-                (factory.create)(
-                    sub_ctx,
-                    sub_node_id.clone(),
+            let create_inline = factory.create_inline.ok_or_else(|| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "processor `{}` (urn: {}) does not support inline execution \
+                             and cannot be used inside a processor_chain. Only processors \
+                             that provide a `create_inline` factory are supported.",
+                        sub_name_key,
+                        sub_urn.as_str(),
+                    ),
+                }))
+            })?;
+
+            // Only register a distinct telemetry entity for each sub-processor
+            // when enable_sub_processor_telemetry is enabled. Otherwise the sub-processor's
+            // internal metrics (e.g. ComputeDuration) would be registered but
+            // never reported, producing phantom entities with zero values.
+            let inline_processor = if chain_config.enable_sub_processor_telemetry {
+                let sub_ctx = pipeline_ctx.with_node_context(
+                    sub_name,
+                    sub_urn,
+                    otap_df_config::node::NodeKind::Processor,
+                    sub_cfg.identity_attributes(),
+                );
+                let sub_entity_key = sub_ctx.register_node_entity();
+                let sub_telemetry_handle =
+                    NodeTelemetryHandle::new(sub_ctx.metrics_registry(), sub_entity_key);
+
+                with_node_telemetry_handle(sub_telemetry_handle, || {
+                    create_inline(sub_ctx, sub_node_id, sub_node_config, &sub_processor_config)
+                })
+                .map_err(|e| Error::ConfigError(Box::new(e)))?
+            } else {
+                // No entity registration — run the factory with the chain's
+                // pipeline context so register_metrics calls are attributed
+                // to the chain node. Internal metrics will not be reported
+                // (collect_telemetry is not called when enable_sub_processor_telemetry
+                // is false), but this avoids orphaned entities.
+                create_inline(
+                    pipeline_ctx.clone(),
+                    sub_node_id,
                     sub_node_config,
                     &sub_processor_config,
                 )
-            })
-            .map_err(|e| Error::ConfigError(Box::new(e)))?;
+                .map_err(|e| Error::ConfigError(Box::new(e)))?
+            };
 
-            // Extract just the processor implementation; the chain manages its
-            // own channels and control flow.
-            let processor = wrapper.into_local_processor();
-
-            if !processor.is_chainable() {
-                return Err(Error::ConfigError(Box::new(
-                    otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "processor `{}` (urn: {}) is not chainable and cannot be used \
-                             inside a processor_chain. Only processors that implement \
-                             `is_chainable() -> true` are supported.",
-                            sub_name_key,
-                            sub_urn.as_str(),
-                        ),
-                    },
-                )));
-            }
-
-            let (_metrics_rx, metrics_reporter) =
-                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);
-
-            sub_processors.push((processor, sub_node_id, metrics_reporter));
+            sub_processors.push(inline_processor);
         }
 
-        let chain_node =
-            ProcessorChainNode::new(sub_processors, composite_duration, pdata_channel_capacity);
+        let chain_node = ProcessorChainNode::new(
+            sub_processors,
+            composite_duration,
+            chain_config.enable_sub_processor_telemetry,
+        );
 
         let processor_config = ProcessorConfig::with_channel_capacities(
             chain_name.clone(),

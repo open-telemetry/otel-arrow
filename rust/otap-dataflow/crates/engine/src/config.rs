@@ -234,6 +234,14 @@ pub struct ProcessorChainConfig {
     /// (e.g. `chain/insert_B`). Insertion order is preserved by
     /// [`IndexMap`] and determines execution order.
     pub processors: IndexMap<String, NodeUserConfig>,
+    /// When `true`, the chain calls `collect_telemetry` on each
+    /// sub-processor during `CollectTelemetry` control messages,
+    /// exposing per-stage internal metrics.
+    ///
+    /// Defaults to `false` — only the chain's composite
+    /// `ComputeDuration` is reported.
+    #[serde(default)]
+    pub enable_sub_processor_telemetry: bool,
 }
 
 #[cfg(test)]

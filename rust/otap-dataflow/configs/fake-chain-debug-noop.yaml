@@ -32,6 +32,7 @@ groups:
           chain:
             type: processor_chain:inlined
             config:
+              enable_sub_processor_telemetry: true
               processors:
                 insert_B:
                   type: processor:attribute

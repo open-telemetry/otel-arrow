@@ -668,6 +668,7 @@ pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactor
 
         Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
     },
+    create_inline: None,
 };
 
 #[cfg(test)]

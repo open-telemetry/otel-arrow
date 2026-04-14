@@ -228,12 +228,9 @@ fn validate_processor_chain_components<PData: 'static + Clone + Debug>(
     for (i, (sub_name, sub_cfg)) in chain_config.processors.iter().enumerate() {
         let sub_urn = sub_cfg.r#type.as_str();
 
-        let validate_fn = factory
-            .get_processor_factory_map()
-            .get(sub_urn)
-            .map(|f| f.validate_config);
+        let proc_factory = factory.get_processor_factory_map().get(sub_urn);
 
-        match validate_fn {
+        match proc_factory {
             None => {
                 return Err(std::io::Error::other(format!(
                     "Unknown processor component `{}` in processor_chain node={} sub_name={sub_name} index={i} pipeline_group={} pipeline={}",
@@ -244,8 +241,20 @@ fn validate_processor_chain_components<PData: 'static + Clone + Debug>(
                 ))
                 .into());
             }
-            Some(validate_fn) => {
-                validate_fn(&sub_cfg.config).map_err(|e| {
+            Some(f) => {
+                if f.create_inline.is_none() {
+                    return Err(std::io::Error::other(format!(
+                        "processor `{sub_name}` (urn: {sub_urn}) does not support inline execution \
+                         and cannot be used inside a processor_chain in node={} pipeline_group={} pipeline={}. \
+                         Only processors that provide a `create_inline` factory are supported.",
+                        node_id.as_ref(),
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                    ))
+                    .into());
+                }
+
+                (f.validate_config)(&sub_cfg.config).map_err(|e| {
                     std::io::Error::other(format!(
                         "Invalid config for sub-processor `{}` in processor_chain node={} sub_name={sub_name} index={i} pipeline_group={} pipeline={}: {e}",
                         sub_urn,

@@ -285,21 +285,6 @@ impl<PData> ProcessorWrapper<PData> {
 
     /// Extracts the inner local processor implementation, consuming this wrapper.
     ///
-    /// Used by [`ProcessorChainNode`](crate::local::processor_chain::ProcessorChainNode)
-    /// to inline sub-processors within a chain.
-    ///
-    /// # Panics
-    ///
-    /// Panics if this is a `Shared` variant — chain sub-processors must be local.
-    pub(crate) fn into_local_processor(self) -> Box<dyn local::Processor<PData>> {
-        match self {
-            ProcessorWrapper::Local { processor, .. } => processor,
-            ProcessorWrapper::Shared { .. } => {
-                panic!("processor chain sub-processors must be Local (!Send)")
-            }
-        }
-    }
-
     pub(crate) fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         match self {
             ProcessorWrapper::Local { processor, .. } => processor.runtime_requirements(),

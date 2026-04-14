@@ -24,6 +24,7 @@ use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NackMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::inline_processor::{InlineOutput, InlineProcessor};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
@@ -205,6 +206,10 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
                  proc_cfg: &ProcessorConfig| {
             create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        create_inline: Some(|pipeline_ctx, _node, node_config, _proc_cfg| {
+            let proc = CondenseAttributesProcessor::from_config(pipeline_ctx, &node_config.config)?;
+            Ok(Box::new(proc) as Box<dyn InlineProcessor<OtapPdata>>)
+        }),
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: |config| Config::from_config(config).map(|_| ()),
     };
@@ -581,10 +586,6 @@ impl CondenseAttributesProcessor {
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
-    fn is_chainable(&self) -> bool {
-        true
-    }
-
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -675,6 +676,75 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                 }
             }
         }
+    }
+}
+
+impl InlineProcessor<OtapPdata> for CondenseAttributesProcessor {
+    fn process_inline(&mut self, pdata: OtapPdata) -> Result<InlineOutput<OtapPdata>, Error> {
+        let signal = pdata.signal_type();
+        let (context, payload) = pdata.into_parts();
+
+        let mut records: OtapArrowRecords = payload.try_into()?;
+        let input_items = records.num_items() as u64;
+
+        otel_debug!("condense_attributes_processor.processing", input_items);
+
+        let result = match signal {
+            SignalType::Logs => self.condense(&mut records),
+            _ => Err(Error::InternalError {
+                message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
+                    .to_string(),
+            }),
+        };
+
+        match result {
+            Ok(condensed) => {
+                let output_items = records.num_items() as u64;
+                otel_debug!(
+                    "condense_attributes_processor.success",
+                    input_items,
+                    output_items,
+                    condensed_items = condensed
+                );
+                Ok(InlineOutput::Forward(OtapPdata::new(
+                    context,
+                    records.into(),
+                )))
+            }
+            Err(e) => {
+                let message = e.to_string();
+                otel_error!(
+                    "condense_attributes_processor.failure",
+                    input_items,
+                    signal = ?signal,
+                    message,
+                );
+                Err(e)
+            }
+        }
+    }
+
+    fn compute_duration(&self) -> Option<&ComputeDuration> {
+        Some(&self.compute_duration)
+    }
+
+    fn on_config(&mut self, config: Value) {
+        match Config::from_config(&config) {
+            Ok(new_config) => {
+                otel_info!("condense_attributes_processor.reconfigured");
+                self.config = new_config;
+            }
+            Err(e) => {
+                otel_warn!(
+                    "condense_attributes_processor.reconfigure_error",
+                    message = %e
+                );
+            }
+        }
+    }
+
+    fn collect_telemetry(&mut self, reporter: &mut otap_df_telemetry::reporter::MetricsReporter) {
+        self.compute_duration.report(reporter);
     }
 }
 

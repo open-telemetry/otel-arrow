@@ -38,6 +38,7 @@ use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::error::Error;
+use otap_df_engine::inline_processor::{InlineOutput, InlineProcessor};
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::local::processor_chain::ProcessorChainNode;
 use otap_df_engine::message::{Message, Sender};
@@ -96,23 +97,15 @@ fn make_effect_handler() -> (EffectHandler<String>, mpsc::Receiver<String>) {
     (eh, receiver)
 }
 
-fn make_sub(suffix: &str) -> (Box<dyn Processor<String>>, NodeId, MetricsReporter) {
+fn make_sub(suffix: &str) -> Box<dyn InlineProcessor<String>> {
     make_sub_with_work(suffix, SIMULATED_WORK_NS)
 }
 
-fn make_sub_with_work(
-    suffix: &str,
-    work_ns: u64,
-) -> (Box<dyn Processor<String>>, NodeId, MetricsReporter) {
-    let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
-    (
-        Box::new(SuffixProcessor {
-            suffix: suffix.to_string(),
-            work_ns,
-        }),
-        node_id("sub"),
-        reporter,
-    )
+fn make_sub_with_work(suffix: &str, work_ns: u64) -> Box<dyn InlineProcessor<String>> {
+    Box::new(SuffixProcessor {
+        suffix: suffix.to_string(),
+        work_ns,
+    })
 }
 
 // ── Mock processor ───────────────────────────────────────────────────
@@ -131,6 +124,13 @@ fn simulate_work(ns: u64) {
     let target = std::time::Duration::from_nanos(ns);
     while start.elapsed() < target {
         std::hint::spin_loop();
+    }
+}
+
+impl InlineProcessor<String> for SuffixProcessor {
+    fn process_inline(&mut self, data: String) -> Result<InlineOutput<String>, Error> {
+        simulate_work(self.work_ns);
+        Ok(InlineOutput::Forward(format!("{}{}", data, self.suffix)))
     }
 }
 
@@ -181,7 +181,7 @@ fn bench_processor_chain_high_work(c: &mut Criterion) {
                         let subs: Vec<_> =
                             (0..chain_len).map(|i| make_sub(&format!("_{i}"))).collect();
 
-                        let mut chain = ProcessorChainNode::new(subs, cd, BATCH_COUNT + 128);
+                        let mut chain = ProcessorChainNode::new(subs, cd, false);
                         let (mut eh, _rx) = make_effect_handler();
 
                         for _ in 0..BATCH_COUNT {
@@ -218,7 +218,7 @@ fn bench_processor_chain_high_work(c: &mut Criterion) {
                             drop(tokio::task::spawn_local(async move {
                                 let mut proc = SuffixProcessor { suffix, work_ns };
                                 while let Ok(data) = inbox.recv().await {
-                                    proc.process(Message::PData(data), &mut eh)
+                                    Processor::process(&mut proc, Message::PData(data), &mut eh)
                                         .await
                                         .expect("process failed");
                                 }
@@ -290,7 +290,7 @@ fn bench_processor_chain_low_work(c: &mut Criterion) {
                             .map(|i| make_sub_with_work(&format!("_{i}"), LOW_WORK_NS))
                             .collect();
 
-                        let mut chain = ProcessorChainNode::new(subs, cd, BATCH_COUNT + 128);
+                        let mut chain = ProcessorChainNode::new(subs, cd, false);
                         let (mut eh, _rx) = make_effect_handler();
 
                         for _ in 0..BATCH_COUNT {
@@ -325,7 +325,7 @@ fn bench_processor_chain_low_work(c: &mut Criterion) {
                             drop(tokio::task::spawn_local(async move {
                                 let mut proc = SuffixProcessor { suffix, work_ns };
                                 while let Ok(data) = inbox.recv().await {
-                                    proc.process(Message::PData(data), &mut eh)
+                                    Processor::process(&mut proc, Message::PData(data), &mut eh)
                                         .await
                                         .expect("process failed");
                                 }
