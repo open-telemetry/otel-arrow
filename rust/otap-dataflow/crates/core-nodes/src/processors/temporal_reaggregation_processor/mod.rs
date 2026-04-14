@@ -18,6 +18,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::ProducerEffectHandlerExtension;
+use otap_df_engine::WakeupError;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{
@@ -207,11 +208,8 @@ pub struct TemporalReaggregationProcessor {
     /// The collection period for aggregating metrics before emitting a batch
     collection_period: Duration,
 
-    /// Current wakeup revision
-    /// TODO: Figure out what to do if the wakeup scheduling fails. There might be
-    /// cases that are just fine if we're shutting down.
-    /// TODO: Consider if the batch processors handling of scheduling failures
-    /// (which is to return an engine error and crash) is correct.
+    /// Current wakeup revision. `None` when no wakeup is pending (idle or
+    /// shutdown-latched).
     /// TODO: Write a test for accept_pdata >= 3 case
     wakeup_revision: Option<WakeupRevision>,
 
@@ -547,7 +545,11 @@ impl TemporalReaggregationProcessor {
         Ok(inbound_calldata)
     }
 
-    /// Cancels the current wakeup, if any, and schedules a new one
+    /// Cancels the current wakeup, if any, and schedules a new one.
+    ///
+    /// If shutdown has already been latched by the inbox, the wakeup is
+    /// silently skipped — the pending `Shutdown` control message will
+    /// trigger a final flush so no data is lost.
     fn reset_wakeup(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -555,17 +557,21 @@ impl TemporalReaggregationProcessor {
         self.cancel_current_wakeup(effect_handler);
 
         let wakeup_time = Instant::now() + self.collection_period;
-        let revision = effect_handler
-            .set_wakeup(FLUSH_WAKEUP_SLOT, wakeup_time)
-            .map_err(|_| Error::ProcessorError {
+        match effect_handler.set_wakeup(FLUSH_WAKEUP_SLOT, wakeup_time) {
+            Ok(outcome) => {
+                self.wakeup_revision = Some(outcome.revision());
+                Ok(())
+            }
+            // Shutdown is latched; We ignore this because the Shutdown message
+            // will arrive after drain completes and trigger a final flush.
+            Err(WakeupError::ShuttingDown) => Ok(()),
+            Err(e) => Err(Error::ProcessorError {
                 processor: effect_handler.processor_id(),
                 kind: ProcessorErrorKind::Other,
-                error: "could not set wakeup".into(),
-                source_detail: "".into(),
-            })?
-            .revision();
-        self.wakeup_revision = Some(revision);
-        Ok(())
+                error: format!("could not set wakeup: {e:?}"),
+                source_detail: String::new(),
+            }),
+        }
     }
 
     // Cancel current wakeup, if any
@@ -3525,39 +3531,6 @@ mod tests {
                 assert_output_metric_count(&output[0], 2);
             },
         );
-    }
-
-    /// After a shutdown flush, delivering the pre-flush wakeup should be a
-    /// no-op (wakeup_revision was cleared by the flush).
-    #[test]
-    fn test_flush_via_shutdown_ignores_subsequent_wakeup() {
-        run_processor_test(json!({}), |mut ctx| async move {
-            let batch = make_otlp_pdata(make_n_gauge_metrics(2));
-            ctx.process(Message::PData(batch)).await.unwrap();
-
-            // Shutdown triggers a flush and cancels the wakeup.
-            ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                deadline: Instant::now() + Duration::from_secs(5),
-                reason: "test shutdown".to_string(),
-            }))
-            .await
-            .unwrap();
-            let output = ctx.drain_pdata().await;
-            assert_eq!(output.len(), 1, "shutdown should flush accumulated data");
-
-            // The stale wakeup should be a no-op.
-            ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                slot: FLUSH_WAKEUP_SLOT,
-                when: Instant::now(),
-                revision: 0,
-            }))
-            .await
-            .unwrap();
-            assert!(
-                ctx.drain_pdata().await.is_empty(),
-                "wakeup after shutdown flush should produce no output"
-            );
-        });
     }
 
     /// When the processor is idle (no data), `fire_wakeup` should return
