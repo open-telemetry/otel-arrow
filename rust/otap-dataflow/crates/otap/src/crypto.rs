@@ -11,8 +11,8 @@
 //! |------------------|------------------|------------------------------------|
 //! | `crypto-ring`    | `ring`           | Default, backward-compatible       |
 //! | `crypto-aws-lc`  | `aws-lc-rs`      | AWS environments, broader algos    |
-//! | `crypto-symcrypt`| `rustls-symcrypt`| Windows/SymCrypt-aligned backend   |
 //! | `crypto-openssl` | `rustls-openssl` | Regulated / FIPS environments      |
+//! | `crypto-symcrypt`| `rustls-symcrypt`| Microsoft/SymCrypt-aligned backend |
 
 /// Installs the selected rustls `CryptoProvider` as the process-wide default.
 ///
