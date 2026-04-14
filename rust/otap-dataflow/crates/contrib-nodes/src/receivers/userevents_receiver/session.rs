@@ -105,6 +105,7 @@ mod imp {
         member_files: Vec<File>,
         mmap: MmapMut,
         tracepoints_by_sample_id: HashMap<u64, TracepointMetadata>,
+        monotonic_to_realtime_offset_ns: i128,
         scratch: Vec<u8>,
     }
 
@@ -123,6 +124,7 @@ mod imp {
             let tracefs_root = tracefs_root()?;
             let page_size = page_size();
             let buffer_size = round_up_buffer_size(page_size, config.per_cpu_buffer_size);
+            let monotonic_to_realtime_offset_ns = monotonic_to_realtime_offset_ns()?;
 
             let mut resolved = Vec::with_capacity(subscriptions.len());
             for subscription in subscriptions {
@@ -176,6 +178,7 @@ mod imp {
                 member_files,
                 mmap,
                 tracepoints_by_sample_id,
+                monotonic_to_realtime_offset_ns,
                 scratch: Vec::new(),
             })
         }
@@ -189,6 +192,7 @@ mod imp {
                 let drain = Self::drain_available(
                     &mut self.mmap,
                     &self.tracepoints_by_sample_id,
+                    self.monotonic_to_realtime_offset_ns,
                     &mut self.scratch,
                     config,
                 )?;
@@ -207,6 +211,7 @@ mod imp {
         fn drain_available(
             mmap: &mut MmapMut,
             tracepoints_by_sample_id: &HashMap<u64, TracepointMetadata>,
+            monotonic_to_realtime_offset_ns: i128,
             scratch: &mut Vec<u8>,
             config: &DrainConfig,
         ) -> io::Result<SessionDrain> {
@@ -257,9 +262,11 @@ mod imp {
 
                 match record_type {
                     PERF_RECORD_SAMPLE => {
-                        if let Some(record) =
-                            parse_sample_record(scratch, tracepoints_by_sample_id)?
-                        {
+                        if let Some(record) = parse_sample_record(
+                            scratch,
+                            tracepoints_by_sample_id,
+                            monotonic_to_realtime_offset_ns,
+                        )? {
                             records.push(record);
                         }
                     }
@@ -439,14 +446,12 @@ mod imp {
             ));
         }
 
-        let id = fs::read_to_string(tracepoint_dir.join("id"))
-            .map_err(|_| SessionInitError::MissingTracepoint(subscription.tracepoint.clone()))?
+        let id = read_tracepoint_metadata(&tracepoint_dir, "id", &subscription.tracepoint)?
             .trim()
             .parse::<u64>()
             .map_err(|_| SessionInitError::InvalidTracepoint(subscription.tracepoint.clone()))?;
 
-        let format = fs::read_to_string(tracepoint_dir.join("format"))
-            .map_err(|_| SessionInitError::MissingTracepoint(subscription.tracepoint.clone()))?;
+        let format = read_tracepoint_metadata(&tracepoint_dir, "format", &subscription.tracepoint)?;
         let parsed_format = parse_tracepoint_format(&format)
             .ok_or_else(|| SessionInitError::InvalidTracepoint(subscription.tracepoint.clone()))?;
 
@@ -454,6 +459,25 @@ mod imp {
             tracepoint: subscription.tracepoint.clone(),
             id,
             payload_offset: parsed_format.payload_offset,
+        })
+    }
+
+    fn read_tracepoint_metadata(
+        tracepoint_dir: &Path,
+        file_name: &str,
+        tracepoint: &str,
+    ) -> Result<String, SessionInitError> {
+        let path = tracepoint_dir.join(file_name);
+        fs::read_to_string(&path).map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => SessionInitError::MissingTracepoint(tracepoint.to_owned()),
+            io::ErrorKind::PermissionDenied => SessionInitError::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "tracepoint `{tracepoint}` is registered but `{}` is not readable; run df_engine with elevated privileges or relax tracefs read permissions",
+                    path.display()
+                ),
+            )),
+            _ => SessionInitError::Io(error),
         })
     }
 
@@ -506,6 +530,7 @@ mod imp {
     fn parse_sample_record(
         record: &[u8],
         tracepoints_by_sample_id: &HashMap<u64, TracepointMetadata>,
+        monotonic_to_realtime_offset_ns: i128,
     ) -> io::Result<Option<RawUsereventsRecord>> {
         if record.len() < 8 + 8 + 8 + 8 + 8 + 4 {
             return Ok(None);
@@ -515,7 +540,10 @@ mod imp {
         let sample_id = read_u64_from(record, &mut cursor)?;
         let pid = read_u32_from(record, &mut cursor)? as i32;
         let tid = read_u32_from(record, &mut cursor)? as i32;
-        let timestamp_unix_nano = read_u64_from(record, &mut cursor)?;
+        let timestamp_unix_nano = perf_timestamp_to_unix_nano(
+            read_u64_from(record, &mut cursor)?,
+            monotonic_to_realtime_offset_ns,
+        );
         let cpu = read_u32_from(record, &mut cursor)?;
         _ = read_u32_from(record, &mut cursor)?;
         let raw_size = read_u32_from(record, &mut cursor)? as usize;
@@ -552,6 +580,47 @@ mod imp {
             return 1;
         }
         u64::from_ne_bytes(record[16..24].try_into().unwrap_or([0; 8]))
+    }
+
+    fn monotonic_to_realtime_offset_ns() -> io::Result<i128> {
+        // Perf tracepoint sample timestamps on this path are monotonic-domain.
+        // Convert them to wall clock once per session using a paired snapshot.
+        let monotonic_before = clock_gettime_ns(libc::CLOCK_MONOTONIC)?;
+        let realtime = clock_gettime_ns(libc::CLOCK_REALTIME)?;
+        let monotonic_after = clock_gettime_ns(libc::CLOCK_MONOTONIC)?;
+        let monotonic_midpoint = monotonic_before + (monotonic_after - monotonic_before) / 2;
+        Ok(realtime as i128 - monotonic_midpoint as i128)
+    }
+
+    fn clock_gettime_ns(clock_id: libc::clockid_t) -> io::Result<u64> {
+        let mut timespec = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let status = unsafe { libc::clock_gettime(clock_id, &mut timespec) };
+        if status != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if timespec.tv_sec < 0 || timespec.tv_nsec < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "clock_gettime returned a negative timestamp",
+            ));
+        }
+        Ok((timespec.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(timespec.tv_nsec as u64))
+    }
+
+    fn perf_timestamp_to_unix_nano(timestamp: u64, monotonic_to_realtime_offset_ns: i128) -> u64 {
+        let unix_timestamp = (timestamp as i128).saturating_add(monotonic_to_realtime_offset_ns);
+        if unix_timestamp <= 0 {
+            0
+        } else if unix_timestamp >= u64::MAX as i128 {
+            u64::MAX
+        } else {
+            unix_timestamp as u64
+        }
     }
 
     fn read_u64(buf: &[u8], offset: usize) -> io::Result<u64> {
@@ -656,13 +725,19 @@ format:
                 },
             );
 
-            let parsed = parse_sample_record(&record, &tracepoints)
+            let parsed = parse_sample_record(&record, &tracepoints, 1000)
                 .expect("sample parsed")
                 .expect("sample resolved");
             assert_eq!(parsed.payload, vec![3, 4, 5]);
             assert_eq!(parsed.cpu, 44);
             assert_eq!(parsed.pid, 11);
             assert_eq!(parsed.tid, 22);
+            assert_eq!(parsed.timestamp_unix_nano, 1033);
+        }
+
+        #[test]
+        fn perf_timestamp_to_unix_nano_saturates_at_zero() {
+            assert_eq!(perf_timestamp_to_unix_nano(33, -100), 0);
         }
     }
 }
