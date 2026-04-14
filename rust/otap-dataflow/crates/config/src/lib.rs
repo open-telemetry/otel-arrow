@@ -24,6 +24,8 @@ pub mod engine;
 pub mod env_substitution;
 pub mod error;
 pub mod extension;
+/// Extension URN type.
+pub mod extension_urn;
 pub mod health;
 pub mod node;
 /// Node type URN value object.

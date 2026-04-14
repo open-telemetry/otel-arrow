@@ -2339,17 +2339,17 @@ mod test {
         }
 
         let factory = ExtensionFactory {
-            name: "urn:test:extension:example",
+            name: "urn:test:example",
             description: "test extension",
             documentation_url: "",
             create: dummy_create,
             validate_config: dummy_validate,
         };
 
-        assert_eq!(factory.name(), "urn:test:extension:example");
+        assert_eq!(factory.name(), "urn:test:example");
 
         let cloned = factory.clone();
-        assert_eq!(cloned.name(), "urn:test:extension:example");
+        assert_eq!(cloned.name(), "urn:test:example");
         assert_eq!(cloned.description, "test extension");
     }
 
@@ -2361,5 +2361,37 @@ mod test {
             extension: "dup_ext".into(),
         };
         assert_eq!(err.variant_name(), "ExtensionAlreadyExists");
+    }
+
+    #[test]
+    fn test_extension_factory_validate_config() {
+        fn dummy_create(
+            _: PipelineContext,
+            _: otap_df_config::ExtensionId,
+            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionWrapper, otap_df_config::error::Error> {
+            unimplemented!()
+        }
+        fn dummy_validate(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            if config.is_null() {
+                Ok(())
+            } else {
+                Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: "expected null".into(),
+                })
+            }
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:test:example",
+            description: "test",
+            documentation_url: "",
+            create: dummy_create,
+            validate_config: dummy_validate,
+        };
+
+        assert!((factory.validate_config)(&serde_json::Value::Null).is_ok());
+        assert!((factory.validate_config)(&serde_json::json!({"key": "val"})).is_err());
     }
 }

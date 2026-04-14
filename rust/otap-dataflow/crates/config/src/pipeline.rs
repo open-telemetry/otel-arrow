@@ -493,23 +493,23 @@ impl PipelineExtensions {
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
+        use crate::extension::ExtensionUrn;
         for (ext_id, ext) in self.0.iter_mut() {
             let mut updated = (**ext).clone();
-            let normalized = crate::node_urn::canonicalize_plugin_urn(updated.r#type.as_ref())
-                .map_err(|e| {
-                    if let Error::InvalidUserConfig { error } = e {
-                        Error::InvalidNodeType {
-                            context: Box::new(Context::new(
-                                pipeline_group_id.clone(),
-                                pipeline_id.clone(),
-                            )),
-                            node_id: ext_id.clone(),
-                            details: error,
-                        }
-                    } else {
-                        e
+            let normalized = ExtensionUrn::parse(updated.r#type.as_ref()).map_err(|e| {
+                if let Error::InvalidUserConfig { error } = e {
+                    Error::InvalidNodeType {
+                        context: Box::new(Context::new(
+                            pipeline_group_id.clone(),
+                            pipeline_id.clone(),
+                        )),
+                        node_id: ext_id.clone(),
+                        details: error,
                     }
-                })?;
+                } else {
+                    e
+                }
+            })?;
             updated.r#type = normalized;
             *ext = Arc::new(updated);
         }
@@ -793,22 +793,8 @@ impl PipelineConfig {
                 }
             }
         }
-
-        // Check that all entries in the extensions section have extension-kind URNs
-        for (ext_id, ext_config) in self.extensions.iter() {
-            if ext_config.kind() != NodeKind::Extension {
-                errors.push(Error::InvalidUserConfig {
-                    error: format!(
-                        "Extension '{}' has URN '{}' with kind '{}', but only \
-                         extension-kind URNs (e.g. `urn:<ns>:extension:<id>`) are \
-                         allowed in the `extensions` section.",
-                        ext_id.as_ref(),
-                        ext_config.r#type.as_str(),
-                        std::borrow::Cow::<str>::from(ext_config.kind()),
-                    ),
-                });
-            }
-        }
+        // Extension URN format validation happens at parse time via ExtensionUrn::parse(),
+        // so no runtime kind check is needed here.
     }
 
     fn validate_connections(
@@ -1151,21 +1137,21 @@ impl PipelineConfigBuilder {
     }
 
     /// Add an extension (configured as a sibling to nodes, not as a node).
-    pub fn add_extension<S: Into<ExtensionId>, U: Into<NodeUrn>>(
+    pub fn add_extension<S: Into<ExtensionId>, U: Into<crate::extension::ExtensionUrn>>(
         mut self,
         id: S,
-        node_type: U,
+        ext_type: U,
         config: Option<Value>,
     ) -> Self {
         let id = id.into();
-        let node_type = node_type.into();
+        let ext_type = ext_type.into();
         if self.extensions.contains_key(&id) {
             self.duplicate_nodes.push(id.clone());
         } else {
             _ = self.extensions.insert(
                 id.clone(),
                 ExtensionUserConfig {
-                    r#type: node_type,
+                    r#type: ext_type,
                     description: None,
                     config: config.unwrap_or(Value::Null),
                 },
@@ -2719,7 +2705,7 @@ sink:
         let config = PipelineConfigBuilder::new()
             .add_receiver("recv", "urn:test:receiver:example", None)
             .add_exporter("exp", "urn:test:exporter:example", None)
-            .add_extension("auth", "urn:test:extension:auth", None)
+            .add_extension("auth", "urn:test:auth", None)
             .connect("recv", "", ["exp"], DispatchPolicy::Broadcast)
             .build(PipelineType::Otap, "g", "p")
             .unwrap();
@@ -2748,7 +2734,7 @@ nodes:
 
 extensions:
   auth:
-    type: "urn:test:extension:auth"
+    type: "urn:test:auth"
     config:
       method: "managed_identity"
       scope: "https://example.com/.default"
@@ -2761,7 +2747,7 @@ connections:
 
         // Extension parsed with config
         let (_, ext_cfg) = config.extension_iter().next().unwrap();
-        assert_eq!(ext_cfg.r#type.as_ref(), "urn:test:extension:auth");
+        assert_eq!(ext_cfg.r#type.as_ref(), "urn:test:auth");
         assert_eq!(ext_cfg.config["method"], "managed_identity");
 
         // Exporter has capabilities binding
@@ -2776,13 +2762,12 @@ connections:
     }
 
     #[test]
-    fn test_extension_kind_from_urn() {
-        use crate::node::NodeKind;
-        use crate::node_urn;
+    fn test_extension_urn_parsing() {
+        use crate::extension::ExtensionUrn;
 
-        let urn =
-            node_urn::validate_plugin_urn("urn:test:extension:auth", NodeKind::Extension).unwrap();
-        assert_eq!(urn.kind(), NodeKind::Extension);
+        let urn = ExtensionUrn::parse("urn:test:auth").unwrap();
+        assert_eq!(urn.namespace(), "test");
+        assert_eq!(urn.id(), "auth");
     }
 
     #[test]
@@ -2791,7 +2776,7 @@ connections:
         let config = PipelineConfigBuilder::new()
             .add_receiver("myname", "urn:test:receiver:example", None)
             .add_exporter("exp", "urn:test:exporter:example", None)
-            .add_extension("myname", "urn:test:extension:auth", None)
+            .add_extension("myname", "urn:test:auth", None)
             .connect("myname", "", ["exp"], DispatchPolicy::Broadcast)
             .build(PipelineType::Otap, "g", "p")
             .unwrap();
@@ -2801,13 +2786,14 @@ connections:
     }
 
     #[test]
-    fn test_extension_urn_in_nodes_section_parsed_with_extension_kind() {
-        // Parsing does not enforce section/kind alignment.
-        // An extension URN under `nodes:` is accepted and keeps Extension kind.
+    fn test_extension_urn_format_rejected_in_nodes_section() {
+        // Extension URNs use a 3-segment format (`urn:<ns>:<id>`) which is
+        // incompatible with the 4-segment node URN format (`urn:<ns>:<kind>:<id>`).
+        // Placing an extension-style URN under `nodes:` is a parse error.
         let yaml = r#"
 nodes:
   auth:
-    type: "urn:test:extension:auth"
+    type: "urn:test:auth"
   receiver:
     type: "urn:test:receiver:example"
   exporter:
@@ -2817,22 +2803,17 @@ connections:
   - from: receiver
     to: exporter
 "#;
-        let config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
-
-        // The URN kind is preserved as Extension.
-        let (_, auth_cfg) = config
-            .node_iter()
-            .find(|(id, _)| id.as_ref() == "auth")
-            .unwrap();
-        assert_eq!(auth_cfg.kind(), NodeKind::Extension);
-        // Any stricter enforcement belongs to downstream engine/runtime validation.
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        assert!(
+            result.is_err(),
+            "3-segment extension URN should be rejected in nodes section"
+        );
     }
 
     #[test]
     fn test_receiver_urn_in_extensions_section_rejected() {
-        // A receiver URN placed in the `extensions:` section is rejected
-        // during validation because only extension-kind URNs are allowed
-        // in the extensions section.
+        // A 4-segment node URN placed in the `extensions:` section is rejected
+        // at parse time because ExtensionUrn only accepts 3-segment format.
         let yaml = r#"
 nodes:
   receiver:
@@ -2849,11 +2830,11 @@ connections:
     to: exporter
 "#;
         let err = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml)
-            .expect_err("should reject non-extension URN in extensions section");
-        let msg = err.to_string();
+            .expect_err("should reject node URN in extensions section");
+        let msg = format!("{err:?}");
         assert!(
-            msg.contains("misplaced") && msg.contains("extension"),
-            "expected rejection of non-extension URN in extensions section, got: {msg}"
+            msg.contains("misplaced") || msg.contains("Invalid extension URN"),
+            "expected rejection of node URN in extensions section, got: {msg}"
         );
     }
 
@@ -2929,11 +2910,11 @@ nodes:
 
 extensions:
   auth:
-    type: "urn:test:extension:auth"
+    type: "urn:test:auth"
     config:
       method: dev
   kv:
-    type: "urn:test:extension:kv_store"
+    type: "urn:test:kv_store"
 
 connections:
   - from: receiver
@@ -3002,7 +2983,7 @@ nodes:
 
 extensions:
   auth:
-    type: "urn:test:extension:auth"
+    type: "urn:test:auth"
 
 connections:
   - from: receiver
@@ -3031,7 +3012,7 @@ nodes:
 
 extensions:
   auth:
-    type: "urn:test:extension:auth"
+    type: "urn:test:auth"
     capabilities:
       some_capability: "other_ext"
 
@@ -3069,7 +3050,7 @@ pipelines:
         to: exp
 extensions:
   auth:
-    type: "urn:test:extension:auth"
+    type: "urn:test:auth"
 "#;
         let result: Result<crate::pipeline_group::PipelineGroupConfig, _> =
             serde_yaml::from_str(yaml);

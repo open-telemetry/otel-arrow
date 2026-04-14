@@ -564,7 +564,7 @@ mod tests {
         (
             name.into(),
             Arc::new(ExtensionUserConfig::new(
-                "urn:otap:extension:test".into(),
+                "urn:otap:test".into(),
                 Value::Null,
             )),
             ExtensionConfig::new(name),
@@ -699,7 +699,7 @@ mod tests {
             .pop()
             .unwrap();
         assert_eq!(w.name().as_ref(), "acc");
-        assert_eq!(w.user_config().r#type.as_ref(), "urn:otap:extension:test");
+        assert_eq!(w.user_config().r#type.as_ref(), "urn:otap:test");
     }
 
     #[test]
@@ -921,5 +921,47 @@ mod tests {
             assert!(h.await.unwrap().is_ok());
             ctr.assert(0, 0, 1, 1);
         }));
+    }
+
+    #[test]
+    fn test_active_with_control_channel_metrics() {
+        let (n, u, c) = ext_config("acm");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .with_shared(Active(TestExt::new(CtrlMsgCounters::new())))
+            .build()
+            .pop()
+            .unwrap();
+
+        // Active extension should have control channels that get wrapped.
+        let (ctx, _) = crate::testing::test_pipeline_ctx();
+        let mut cm = ChannelMetricsRegistry::default();
+        let w = w.with_control_channel_metrics(&ctx, &mut cm, true);
+        assert!(!w.is_passive());
+        assert_eq!(w.extension_control_senders().len(), 1);
+    }
+
+    #[test]
+    fn test_dual_passive_creates_two_passive_wrappers() {
+        let (n, u, c) = ext_config("dp");
+        let wrappers = ExtensionWrapper::builder(n, u, &c)
+            .with_local(Passive(std::rc::Rc::new(42u32)))
+            .with_shared(Passive("data".to_string()))
+            .build();
+        assert_eq!(wrappers.len(), 2);
+        assert!(wrappers[0].is_passive());
+        assert!(wrappers[1].is_passive());
+    }
+
+    #[test]
+    fn test_dual_mixed_active_passive() {
+        let (n, u, c) = ext_config("dmap");
+        let wrappers = ExtensionWrapper::builder(n, u, &c)
+            .with_local(Passive(std::rc::Rc::new(42u32)))
+            .with_shared(Active(TestExt::new(CtrlMsgCounters::new())))
+            .build();
+        assert_eq!(wrappers.len(), 2);
+        // First is local passive, second is shared active
+        assert!(wrappers[0].is_passive());
+        assert!(!wrappers[1].is_passive());
     }
 }
