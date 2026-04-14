@@ -78,7 +78,7 @@ fn parse_date_time(
             .ok_or_else(|| {
                 ParserError::SyntaxError(
                     query_location.clone(),
-                    format!("Invalid date {parsed_date:?}"),
+                    format!("Invalid date {parsed_date}"),
                 )
             })?,
         other => {
@@ -105,7 +105,7 @@ fn parse_date_time(
     .ok_or_else(|| {
         ParserError::SyntaxError(
             query_location.clone(),
-            format!("Invalid time {parsed_date:?}"),
+            format!("Invalid time {parsed_time}"),
         )
     })?;
 
@@ -246,6 +246,27 @@ mod test {
     fn test_parse_from_invalid_datetime_literal() {
         let err = run_test_failure("date_time\"halloween\""); // not a valid datetime format
         assert_eq!("Invalid datetime literal \"halloween\"", err.to_string())
+    }
+
+    #[test]
+    fn test_parse_from_invalid_date_literal() {
+        // Feb 30th an invalid day
+        let err = run_test_failure("date_time\"2026-02-30T05:30:00\"");
+        assert_eq!("Invalid date 2026-02-30", err.to_string())
+    }
+
+    #[test]
+    fn test_parse_from_invalid_time_literal() {
+        // 24:00 o'clock, an invalid time
+        let err = run_test_failure("date_time\"2026-02-04T24:00:00\"");
+        assert_eq!("Invalid time 24:00:00.0+00:00", err.to_string())
+    }
+
+    #[test]
+    fn test_invalid_timezone() {
+        // timezone 24 hours and 1 minute behind UTC = invalid
+        let err = run_test_failure("date_time\"2026-02-04T05:30:00-24:01\"");
+        assert_eq!("Invalid offset -86460", err.to_string())
     }
 
     /// Test some "valid" iso 8601 date formats that we don't support yet
