@@ -283,7 +283,6 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
             Message::Control(ctrl) => match ctrl {
                 NodeControlMsg::Wakeup { revision, .. } => {
                     if self.wakeup_revision == Some(revision) {
-                        self.wakeup_revision = None;
                         self.flush(effect_handler, None).await?;
                         self.metrics.flushes_timer.inc();
                     }
@@ -714,8 +713,8 @@ impl TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
         self.clear_state();
-        // Whenever we flush we cancel the current wakeup. Wakeups are scheduled
-        // whenever we start aggregating a new batch
+        // Whenever we flush we cancel the current wakeup if any. Wakeups are
+        // scheduled whenever we start aggregating a new batch
         self.cancel_current_wakeup(effect_handler);
 
         if records.is_empty() {
@@ -733,8 +732,7 @@ impl TemporalReaggregationProcessor {
         }
 
         // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
-        // We always expect one inbound and two outbound slots available
-        // before accepting pdata.
+        // We always expect to have enough available slots before accepting pdata
         let outbound_slot = self.outbound_batches.reserve().expect("available");
         for inbound_calldata in pending_flush_calldata.iter().cloned() {
             // safety: We created all of this calldata
