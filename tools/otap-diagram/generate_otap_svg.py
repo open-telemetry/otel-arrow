@@ -14,7 +14,7 @@ failed / refused) producing 3 timeseries.
 Usage:
     python3 tools/otap-diagram/generate_otap_svg.py
 
-Output goes to tools/otap-diagram/output/*.svg
+Output goes to rust/otap-dataflow/docs/images/*.svg
 """
 
 import os
@@ -805,11 +805,12 @@ def make_encoding3():
 
 
 def main():
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(os.path.dirname(script_dir))
+    out_dir = os.path.join(repo_root, "rust", "otap-dataflow", "docs", "images")
     os.makedirs(out_dir, exist_ok=True)
 
     diagrams = [
-        ("otap-metrics-otlp-protobuf.svg", make_otlp_tree),
         ("otap-metrics-encoding1-flat.svg", make_encoding1),
         ("otap-metrics-encoding2-scope-dims.svg", make_encoding2),
         ("otap-metrics-encoding3-dp-attrs.svg", make_encoding3),

@@ -357,6 +357,8 @@ attributes for a metric source) and there are M metrics in the
 Note that for 1 dimension there are 3 timeseries defined and for 2
 dimensions there are 9 timeseries defined.
 
+![Encoding 1: Scope attributes, flat metrics](images/otap-metrics-encoding1-flat.svg)
+
 #### Scope attributes as dimensional metrics
 
 In this representation, we duplicate each scope and add the intended
@@ -370,6 +372,8 @@ metric attributes.
 | UnivariateMetrics | 3M          | 9M           |
 | NumberDataPoint   | 3M          | 9M           |
 | Total rows        | 3K+6M+3     | 9K+18M+18    |
+
+![Encoding 2: Scope attributes as dimensional metrics](images/otap-metrics-encoding2-scope-dims.svg)
 
 #### Data point attributes
 
@@ -387,6 +391,8 @@ when the number of metrics per set is small.
 | NumberDataPoint   | 3M                         | 9M                          |
 | NumberDPAttrs     | 3M                         | 18M                         |
 | Total rows        | K+7M                       | K+28M                       |
+
+![Encoding 3: Data point attributes](images/otap-metrics-encoding3-dp-attrs.svg)
 
 Note, as well, that these figures will be extended with more
 possibilities when we introduce OpenTelemetry entities defined at the
