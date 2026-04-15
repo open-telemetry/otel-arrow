@@ -1032,21 +1032,14 @@ mod test {
                 StaticScalarExpression::Null(NullScalarExpression::new(QueryLocation::new_fake())),
             ),
             (
-                "datetime(2026-02-04)",
+                "date_time\"2026-02-04T00:00:00Z\"",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
                 )),
             ),
             (
-                "datetime(\"2026-02-04\")",
-                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    create_utc(2026, 2, 4, 0, 0, 0, 0),
-                )),
-            ),
-            (
-                "datetime('2026-02-04')",
+                "date_time'2026-02-04T00:00:00Z'",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
