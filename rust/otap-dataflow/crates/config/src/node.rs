@@ -544,7 +544,7 @@ header_capture:
     - match_names: ["x-request-id"]
       store_as: request_id
 config:
-  listening_addr: "0.0.0.0:50051"
+  listening_addr: "127.0.0.1:50051"
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(cfg.kind(), NodeKind::Receiver));
