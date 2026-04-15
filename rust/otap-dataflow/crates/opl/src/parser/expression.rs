@@ -702,8 +702,11 @@ pub(crate) fn parse_tagged_literal(
             })?;
             StaticScalarExpression::Regex(RegexScalarExpression::new(query_location, regex))
         }
-        _unknown_tag => {
-            todo!()
+        unknown_tag => {
+            return Err(ParserError::SyntaxError(
+                query_location.clone(),
+                format!("Unknown tag '{unknown_tag}' in tagged literal"),
+            ));
         }
     };
 
@@ -2262,6 +2265,18 @@ mod test {
             err.to_string(),
             "Function 'concat_ws' expects at least 1 argument, got 0".to_string(),
         );
+    }
+
+    #[test]
+    fn parse_catches_invalid_tag() {
+        let input = "test\"hello\"";
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let err =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
+
+        assert_eq!(err.to_string(), "Unknown tag 'test' in tagged literal");
     }
 
     #[test]
