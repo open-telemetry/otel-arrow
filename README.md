@@ -140,7 +140,8 @@ cargo build --bin df_engine --no-default-features
 A [directory of example configurations][EXAMPLE-CONFIGS] provides a
 number of examples (e.g.,
 [syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to receive
-syslog messages on port 5140 and print them to the console:
+syslog messages with our [Syslog/CEF receiver][SYSLOG-CEF] on port
+5140 and print them to the console:
 
 ```bash
 ./target/debug/df_engine -c ./configs/syslog-console.yaml
