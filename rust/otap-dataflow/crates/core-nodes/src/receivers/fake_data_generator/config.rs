@@ -172,6 +172,18 @@ pub struct TrafficConfig {
     /// matching real log-to-trace correlation and adding per-record entropy.
     #[serde(default)]
     use_trace_context: bool,
+
+    /// Number of attributes to attach to each metric data point (Static data source only).
+    /// When set, generates this many key-value attributes per data point.
+    /// When unset, uses the default 3 attributes (http.method, http.route, http.status_code).
+    #[serde(default)]
+    num_metric_attributes: Option<usize>,
+
+    /// Number of data points per metric (Static data source only).
+    /// When set, generates this many data points per metric.
+    /// When unset, uses the default of 1 data point per metric.
+    #[serde(default)]
+    num_data_points_per_metric: Option<usize>,
 }
 
 impl Config {
@@ -290,6 +302,8 @@ impl TrafficConfig {
             log_body_size_bytes: None,
             num_log_attributes: None,
             use_trace_context: false,
+            num_metric_attributes: None,
+            num_data_points_per_metric: None,
         }
     }
 
@@ -372,6 +386,18 @@ impl TrafficConfig {
     #[must_use]
     pub const fn use_trace_context(&self) -> bool {
         self.use_trace_context
+    }
+
+    /// Returns the configured number of metric attributes, if set.
+    #[must_use]
+    pub const fn num_metric_attributes(&self) -> Option<usize> {
+        self.num_metric_attributes
+    }
+
+    /// Returns the configured number of data points per metric, if set.
+    #[must_use]
+    pub const fn num_data_points_per_metric(&self) -> Option<usize> {
+        self.num_data_points_per_metric
     }
 }
 

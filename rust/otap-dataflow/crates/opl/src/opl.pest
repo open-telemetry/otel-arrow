@@ -20,8 +20,7 @@ string_literal = {
   | ("'" ~ single_quote_string_char* ~ "'")
 }
 
-datetime_literal    = { (ASCII_ALPHANUMERIC | "-" | "+" | ":" | "/" | "." | ",")+ }
-datetime_expression = { "datetime(" ~ (string_literal | datetime_literal) ~ ")" }
+datetime_expression = { "date_time" ~ string_literal }
 
 identifier_expression = {
     ident
