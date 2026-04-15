@@ -2263,4 +2263,22 @@ mod test {
             "Function 'concat_ws' expects at least 1 argument, got 0".to_string(),
         );
     }
+
+    #[test]
+    fn parse_catches_invalid_regex() {
+        let input = "r\".*[\""; // unclosed bracket is invalid
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let err =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Invalid regex literal '.*[': regex parse error:\n    \
+            .*[\n      \
+            ^\n\
+            error: unclosed character class"
+        );
+    }
 }
