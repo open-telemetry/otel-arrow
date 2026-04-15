@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776126951767,
+  "lastUpdate": 1776213335100,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3350,6 +3350,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 105.43,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "albertlockett",
+            "username": "albertlockett",
+            "email": "a.lockett@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "706037b6dd9d5707299b6f84ca31c1e6942a2069",
+          "message": "Support function calls where args have differing row orders (#2635)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nAdds capability to the columnar query engine to invoke functions where\nthe columns passed as arguments have a different \"row order\"..\n\nConsider calling a function in OPL or KQL like `my_func(severity_text,\nattributes[\"x\"])`. In these cases, the `severity_text` would have the\n\"row order\" of the root record batch, where `attributes[\"x\"]` would have\nthe \"row order\" of however the `parent_id`s were sorted in the Log Attrs\nbatch rows where `key == \"x\"`.\n\n(We can think of \"row order\" here as order we'd encounter a row\nbelonging to some signal (e.g. log, span, etc.) represented as we scan\nthe column).\n\nCurrently the columnar query engine doesn't handle the case where\nfunction args have different \"row order\" and will just return an error.\nThis PR resolves the issue.\n\nIt does this by determining if the arguments to some function have\ndifferent \"row order\" (in the parlance of the engine's expressions\nplanning, we say they have incompatible `DataScope`s), and if the scopes\nare incompatible we must align the rows in each column by performing one\nor more joins before calling the function.\n\nNoe: the engine's planned expressions are a tree of \"scoped exprs\" where\neach node in the tree represents a datafusion expression operating on a\nsingle data scope. While evaluating the tree at each node, we take data\nfrom the source and possibly perform \"joins\" on the input (depending on\nthe data source for this node), to create an input record batch for the\ndatafusion expression. A 2-way join was already implemented for binary\nexpressions (using in arithmetic, for example).\n\nThis PR adds a new kind of data source called `MultiJoin` representing\nan arbitrary number of input expressions that must be joined, and having\nthe convention that the resulting record batch columns will be named\nlike \"arg0\", \"arg1\", ... \"argn\". The planner is changed to create this\nkind of join for as the data source to a scoped expr node that evaluates\na function if any of the args have incompatible `DataScope`s. The scoped\nexpr node now has logic to perform this `MultiJoin` when it encounters\ndata source of this type. The mutli join logic is implemented in the\n`pipeline::expr::join` module, using the same join utilities we use for\nbinary expressions.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes #2634\n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\nYes, users of transform processor can now pass to functions columns as\narguments that in OTAP would have different row orders.\n\n <!-- If yes, provide further info below -->",
+          "timestamp": "2026-04-14T22:10:46Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/706037b6dd9d5707299b6f84ca31c1e6942a2069"
+        },
+        "date": 1776213327278,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 105.47,
             "unit": "MB"
           }
         ]
