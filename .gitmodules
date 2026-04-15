@@ -1,3 +1,6 @@
 [submodule "proto/opentelemetry-proto"]
 	path = proto/opentelemetry-proto
 	url = https://github.com/open-telemetry/opentelemetry-proto.git
+[submodule "rust/one-collect"]
+	path = rust/one-collect
+	url = https://github.com/microsoft/one-collect.git

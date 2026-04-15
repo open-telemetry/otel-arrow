@@ -57,6 +57,9 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"]
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+one_collect = { path = "../../../one-collect/one_collect", features = ["scripting"] }
+
 [features]
 contrib-exporters = [
     "geneva-exporter",
