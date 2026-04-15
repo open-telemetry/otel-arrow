@@ -633,10 +633,10 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
             ring: Arc::clone(&self.broadcast_ring),
             cursor: Arc::new(Mutex::new(BroadcastCursor {
                 read_seq: start_seq,
-                leased_seq: None,
+                permitted_seq: None,
                 disconnected_on_lag: false,
                 spun: false,
-                lease_waiters: WakerSet::new(),
+                permit_waiters: WakerSet::new(),
             })),
             on_lag: self.broadcast_on_lag,
             ack_state: AckState {
@@ -934,10 +934,10 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             ring: Arc::clone(&self.broadcast_ring),
             cursor: Arc::new(Mutex::new(BroadcastCursor {
                 read_seq: start_seq,
-                leased_seq: None,
+                permitted_seq: None,
                 disconnected_on_lag: false,
                 spun: false,
-                lease_waiters: WakerSet::new(),
+                permit_waiters: WakerSet::new(),
             })),
             on_lag: self.broadcast_on_lag,
             ack_state: AckState {
@@ -1001,8 +1001,8 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
             if cursor.disconnected_on_lag {
                 return Poll::Ready(Err(SubscriptionClosed));
             }
-            if cursor.leased_seq.is_some() {
-                cursor.lease_waiters.register(cx.waker());
+            if cursor.permitted_seq.is_some() {
+                cursor.permit_waiters.register(cx.waker());
                 return Poll::Pending;
             }
         }
@@ -1033,8 +1033,8 @@ impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
         self.ring.register_waker(cx.waker());
         {
             let cursor = self.cursor.lock();
-            if cursor.leased_seq.is_some() {
-                cursor.lease_waiters.register(cx.waker());
+            if cursor.permitted_seq.is_some() {
+                cursor.permit_waiters.register(cx.waker());
                 return Poll::Pending;
             }
         }
@@ -1059,7 +1059,7 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
     fn try_read_delivery(&self) -> Option<Result<RecvDelivery<T>, Error>> {
         let read_seq = {
             let cursor = self.cursor.lock();
-            if cursor.disconnected_on_lag || cursor.leased_seq.is_some() {
+            if cursor.disconnected_on_lag || cursor.permitted_seq.is_some() {
                 return None;
             }
             cursor.read_seq
@@ -1068,10 +1068,10 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
         match self.ring.try_read(read_seq) {
             BroadcastReadResult::Ready(envelope) => {
                 let mut cursor = self.cursor.lock();
-                if cursor.disconnected_on_lag || cursor.leased_seq.is_some() {
+                if cursor.disconnected_on_lag || cursor.permitted_seq.is_some() {
                     return None;
                 }
-                cursor.leased_seq = Some(read_seq);
+                cursor.permitted_seq = Some(read_seq);
                 cursor.spun = false;
                 Some(Ok(RecvDelivery::Message(Delivery::new_in_memory(
                     envelope,
@@ -1101,19 +1101,19 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
 
 pub(crate) struct BroadcastCursor {
     read_seq: u64,
-    leased_seq: Option<u64>,
+    permitted_seq: Option<u64>,
     disconnected_on_lag: bool,
     spun: bool,
-    lease_waiters: WakerSet,
+    permit_waiters: WakerSet,
 }
 
 fn finish_broadcast_delivery(cursor: &Arc<Mutex<BroadcastCursor>>, seq: u64) {
     let mut cursor = cursor.lock();
-    if cursor.leased_seq == Some(seq) {
+    if cursor.permitted_seq == Some(seq) {
         cursor.read_seq = seq + 1;
-        cursor.leased_seq = None;
+        cursor.permitted_seq = None;
         cursor.spun = false;
-        cursor.lease_waiters.wake_all();
+        cursor.permit_waiters.wake_all();
     }
 }
 
