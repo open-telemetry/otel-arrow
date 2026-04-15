@@ -691,6 +691,9 @@ impl PipelinePlanner {
                     let right = source_references_col_or_key(right.as_ref(), referenced);
                     left | right
                 }
+                LogicalExprDataSource::MultiJoin(children) => children
+                    .iter()
+                    .any(|child| source_references_col_or_key(child, referenced)),
             }
         }
 
