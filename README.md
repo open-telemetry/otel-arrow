@@ -142,10 +142,6 @@ number of examples (e.g.,
 [syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to receive
 syslog messages on port 5140 and print them to the console:
 
-> [!NOTE]
-> This is insecure! See the [Syslog/CEF Receiver
-> documentation][SYSLOG-CEF] for secure configuration examples.
-
 ```bash
 ./target/debug/df_engine -c ./configs/syslog-console.yaml
 ```
