@@ -122,5 +122,3 @@ otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-state = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
-core_affinity.workspace = true
-eventheader_dynamic = "0.5.0"
