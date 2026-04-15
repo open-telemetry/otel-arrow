@@ -23,7 +23,7 @@ tokio = { workspace = true }
 portpicker = { workspace = true }
 humantime-serde = { workspace = true }
 
-testcontainers = { workspace = true }
+testcontainers = { workspace = true, features = ["http_wait_plain"] }
 minijinja = { workspace = true }
 
 otap-df-admin-api = { workspace = true }
