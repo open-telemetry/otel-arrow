@@ -6,14 +6,15 @@ use std::sync::LazyLock;
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
     CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
-    ContainsLogicalExpression, DoubleScalarExpression, DoubleValue, EqualToLogicalExpression,
-    Expression, GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-    IntegerScalarExpression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
-    JoinTextScalarExpression, ListScalarExpression, LogicalExpression, MatchesLogicalExpression,
-    MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
-    QueryLocation, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
-    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, TextScalarExpression,
-    ValueAccessor,
+    ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression, DoubleValue,
+    EqualToLogicalExpression, Expression, GreaterThanLogicalExpression,
+    GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+    NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
+    RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
+    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, StringValue,
+    TextScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -23,9 +24,10 @@ use pest::{
     iterators::{Pair, Pairs},
     pratt_parser::PrattParser,
 };
+use regex::Regex;
 
 use crate::parser::{
-    Rule, invalid_child_rule_error, pipeline::PipelineBuilder, temporal::parse_datetime_expression,
+    Rule, invalid_child_rule_error, pipeline::PipelineBuilder, temporal::parse_date_time,
 };
 
 fn parse_next_child_rule<F, E>(
@@ -668,14 +670,37 @@ pub(crate) fn parse_tagged_literal(
     let tag_ident_rule = inner_rules
         .next()
         .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
-    let tagged_string_literal = inner_rules
+    let tagged_string_literal_rule = inner_rules
         .next()
         .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
 
+    let tagged_str = match parse_standard_string_literal(tagged_string_literal_rule) {
+        StaticScalarExpression::String(str) => str,
+        invalid_expr => {
+            return Err(ParserError::SyntaxError(
+                query_location.clone(),
+                format!("Expected static string literal, found {:?}", invalid_expr),
+            ));
+        }
+    };
+
     let static_scalar_expr = match tag_ident_rule.as_str() {
-        "date_time" => parse_datetime_expression(tagged_string_literal, query_location)?,
+        "date_time" => {
+            let date_time = parse_date_time(tagged_str.get_value(), &query_location)?;
+            StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                query_location,
+                date_time,
+            ))
+        }
         "r" => {
-            todo!()
+            let pattern = tagged_str.get_value();
+            let regex = Regex::new(pattern).map_err(|e| {
+                ParserError::SyntaxError(
+                    query_location.clone(),
+                    format!("Invalid regex literal '{pattern}': {e}"),
+                )
+            })?;
+            StaticScalarExpression::Regex(RegexScalarExpression::new(query_location, regex))
         }
         _unknown_tag => {
             todo!()
@@ -942,12 +967,14 @@ mod test {
         ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
         NotLogicalExpression, NullScalarExpression, OrLogicalExpression, PipelineFunction,
         PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation,
-        ReplaceTextScalarExpression, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, TextScalarExpression, ValueAccessor,
+        RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TextScalarExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::{ParserError, ParserFunction, ParserState};
     use pest::Parser;
     use pretty_assertions::assert_eq;
+    use regex::Regex;
 
     use crate::parser::{
         Rule,
@@ -1065,6 +1092,13 @@ mod test {
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
+                )),
+            ),
+            (
+                "r\".*hello.*\"",
+                StaticScalarExpression::Regex(RegexScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    Regex::new(".*hello.*").unwrap(),
                 )),
             ),
         ];

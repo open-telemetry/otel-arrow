@@ -2,43 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
-use data_engine_expressions::{
-    DateTimeScalarExpression, QueryLocation, StaticScalarExpression, StringValue,
-};
-use data_engine_parser_abstractions::{ParserError, parse_standard_string_literal};
-use pest::iterators::Pair;
-
-use crate::parser::Rule;
+use data_engine_expressions::QueryLocation;
+use data_engine_parser_abstractions::ParserError;
 
 /// Number of milliseconds in a nanosecond
 const MINUTES_PER_SECOND: i32 = 60;
 const SECONDS_PER_HOUR: i32 = 3600;
 const MILLIS_PER_NANO_SECOND: u32 = 1_000_000;
 
-pub(crate) fn parse_datetime_expression(
-    rule: Pair<'_, Rule>,
-    rule_query_location: QueryLocation,
-) -> Result<StaticScalarExpression, ParserError> {
-    let static_str_scalar_expr = parse_standard_string_literal(rule);
-    let datetime_value = match static_str_scalar_expr {
-        StaticScalarExpression::String(str) => {
-            let str_value = str.get_value();
-            parse_date_time(str_value, &rule_query_location)?
-        }
-        invalid_expr => {
-            return Err(ParserError::SyntaxError(
-                rule_query_location,
-                format!("Expected static string literal, found {:?}", invalid_expr),
-            ));
-        }
-    };
-
-    Ok(StaticScalarExpression::DateTime(
-        DateTimeScalarExpression::new(rule_query_location, datetime_value),
-    ))
-}
-
-fn parse_date_time(
+pub(crate) fn parse_date_time(
     str_value: &str,
     query_location: &QueryLocation,
 ) -> Result<DateTime<FixedOffset>, ParserError> {
@@ -146,10 +118,10 @@ mod test {
 
     use chrono::TimeZone;
     use chrono_tz::{Canada, Tz};
-    use data_engine_expressions::{DateTimeValue, ScalarExpression};
+    use data_engine_expressions::{DateTimeValue, ScalarExpression, StaticScalarExpression};
     use pest::Parser;
 
-    use crate::parser::{expression::parse_tagged_literal, pest::OplPestParser};
+    use crate::parser::{Rule, expression::parse_tagged_literal, pest::OplPestParser};
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_with_tz(
