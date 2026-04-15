@@ -226,4 +226,4 @@ Recommended test layers:
   `opentelemetry-user-events-logs` into this receiver
 
 An ignored Linux-only end-to-end smoke test exists under
-`crates/otap/tests/userevents_exporter_receiver_e2e.rs`.
+`crates/contrib-nodes/tests/userevents_exporter_receiver_e2e.rs`.
