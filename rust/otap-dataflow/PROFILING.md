@@ -2,7 +2,7 @@
 
 This section covers CPU and memory profiling for `df_engine`.
 
-### CPU profiling (samply)
+## CPU profiling (samply)
 
 **Requirements**:
 
@@ -30,7 +30,7 @@ samply record ./target/profiling/df_engine --config ./configs/otap-noop.yaml
 
 CPU profiling output will be automatically rendered on browser.
 
-### Memory profiling (dhat)
+## Memory profiling (dhat)
 
 **Build**:
 
