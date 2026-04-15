@@ -40,6 +40,10 @@ CPU profiling output will be automatically rendered on browser.
 cargo build --profile profiling --no-default-features --features dhat-heap --workspace
 ```
 
+> [!NOTE]
+> In this command, all default features are disabled.
+> Use specific flags to enable individual features.
+
 **Run**:
 
 ```pwsh/bash
@@ -52,8 +56,5 @@ On graceful shutdown of `df_engine`, it will generate `dhat-heap.json` file
 for memory profiling that needs to be rendered by uploading it to:
 <https://nnethercote.github.io/dh_view/>.
 
-> [!NOTE]
-> In this command, all default features are disabled.
-> Use specific flags to enable individual features.
 > [!NOTE]
 > `dhat` needs a clean shutdown to generate `dhat-heap.json` file.
