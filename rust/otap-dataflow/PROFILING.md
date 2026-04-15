@@ -14,8 +14,6 @@ This section covers CPU and memory profiling for `df_engine`.
 cargo install --locked samply
 ```
 
-### CPU profiling (samply)
-
 **Build**:
 
 ```cmd/pwsh/bash
