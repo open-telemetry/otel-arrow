@@ -5,13 +5,13 @@
 //!
 //! Compares the throughput of N processors wired as:
 //! 1. A single `ProcessorChainNode` (all processors in one task, no inter-channels)
-//! 2. Separate processors, each running in its own `spawn_local` task and
-//!    connected by mpsc channels — matching how the real engine wires
-//!    individual processors via `ProcessorWrapper::start()`.
+//! 2. Separate processors in the same task, connected by mpsc channels —
+//!    isolating per-message channel send/recv overhead without pipelining.
 //!
-//! This isolates the overhead of the chain's Vec-backed staging approach
-//! vs. the baseline of individual processor tasks with inter-task channel
-//! coordination (async send/recv, task wake-ups, executor scheduling).
+//! Both variants process messages sequentially: one message completes all
+//! N stages before the next starts.  This ensures the comparison measures
+//! the chain's elimination of inter-processor channels rather than
+//! concurrent-vs-sequential scheduling differences.
 //!
 //! The chain's value is the ability to produce a correct composite duration
 //! metric (min/max/sum/count) across all sub-processors, which is impossible
@@ -19,17 +19,16 @@
 //!
 //! ## Expected results
 //!
-//! **`processor_chain_high_work` group** (300µs simulated work per processor):
-//! Both approaches show identical throughput — the chain's overhead is
+//! **`processor_chain_high_work` group** (~100µs simulated work per processor):
+//! Both approaches show near-identical throughput — the chain's overhead is
 //! negligible relative to real processor work.
 //!
 //! **`processor_chain_low_work` group** (100ns simulated work per processor):
-//! The chain matches separate tasks for `len=1` (single-processor fast
-//! path delegates directly with zero staging overhead). For `len>=2`,
-//! the chain is ~5-8% slower due to the per-stage `Vec`/`RefCell`
-//! bookkeeping that is significant only at trivially low work levels.
-//!
-//! At production workloads the overhead is negligible.
+//! The chain is slower for `len>=2` because it inserts `yield_now().await`
+//! between stages for scheduling fairness.  Each yield is a ~1µs context
+//! switch, which dominates when per-stage work is only 100ns.  The separate
+//! variant has channel send/recv overhead (~200ns/stage) but no yield.
+//! At production work levels (~100µs+) the yield cost is negligible.
 
 #![allow(missing_docs)]
 
@@ -60,10 +59,9 @@ static GLOBAL: Jemalloc = Jemalloc;
 const BATCH_COUNT: usize = 1_000;
 
 /// Simulated compute work per processor in nanoseconds.
-/// Set to ~300µs to approximate a real attribute transform on an Arrow
-/// record batch. This ensures the benchmark reflects production-like
-/// overhead ratios rather than being dominated by chain bookkeeping.
-const SIMULATED_WORK_NS: u64 = 300_000;
+/// Set to ~100µs to approximate a real attribute transform on an Arrow
+/// record batch while keeping benchmark runtime reasonable.
+const SIMULATED_WORK_NS: u64 = 100_000;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -195,62 +193,41 @@ fn bench_processor_chain_high_work(c: &mut Criterion) {
             });
         });
 
-        // ── Separate: N processors each in its own spawned task ──
+        // ── Separate: N processors in same task, channels between each ──
+        // Each message passes through all N processors sequentially,
+        // with channel send/recv between each stage. This isolates the
+        // per-message channel overhead without pipelining effects.
         let _ = group.bench_function(BenchmarkId::new("separate", chain_len), |b| {
             b.to_async(&rt).iter(|| async {
                 let local = LocalSet::new();
                 local
                     .run_until(async {
-                        // Build a pipeline of N tasks connected by channels:
-                        //   producer_tx -> [proc_0] -> [proc_1] -> ... -> [proc_N-1] -> final_rx
-                        let (producer_tx, first_rx) =
-                            mpsc::Channel::<String>::new(BATCH_COUNT + 128);
+                        // Build N (processor, effect_handler, receiver) tuples.
+                        let mut stages: Vec<(
+                            SuffixProcessor,
+                            EffectHandler<String>,
+                            mpsc::Receiver<String>,
+                        )> = (0..chain_len)
+                            .map(|i| {
+                                let proc = SuffixProcessor {
+                                    suffix: format!("_{i}"),
+                                    work_ns: SIMULATED_WORK_NS,
+                                };
+                                let (eh, rx) = make_effect_handler();
+                                (proc, eh, rx)
+                            })
+                            .collect();
 
-                        let mut prev_rx = Some(first_rx);
-                        let mut final_rx: Option<mpsc::Receiver<String>> = None;
-
-                        for i in 0..chain_len {
-                            let inbox = prev_rx.take().expect("prev_rx must be set");
-                            let (mut eh, out_rx) = make_effect_handler();
-
-                            let suffix = format!("_{i}");
-                            let work_ns = SIMULATED_WORK_NS;
-                            drop(tokio::task::spawn_local(async move {
-                                let mut proc = SuffixProcessor { suffix, work_ns };
-                                while let Ok(data) = inbox.recv().await {
-                                    Processor::process(&mut proc, Message::PData(data), &mut eh)
-                                        .await
-                                        .expect("process failed");
-                                }
-                            }));
-
-                            if i < chain_len - 1 {
-                                // Intermediate: next processor reads from this one's output
-                                prev_rx = Some(out_rx);
-                            } else {
-                                // Last: benchmark drains the final output
-                                final_rx = Some(out_rx);
-                            }
-                        }
-
-                        let final_rx = final_rx.expect("chain_len must be >= 1");
-
-                        // Feed all messages into the pipeline.
                         for _ in 0..BATCH_COUNT {
-                            producer_tx
-                                .send(black_box("hello".to_string()))
-                                .expect("send failed");
+                            let mut current = black_box("hello".to_string());
+                            for (proc, eh, rx) in stages.iter_mut() {
+                                Processor::process(proc, Message::PData(current), eh)
+                                    .await
+                                    .expect("process failed");
+                                current = rx.try_recv().expect("missing output");
+                            }
+                            let _ = black_box(current);
                         }
-                        // Drop the producer so the first task eventually sees channel close.
-                        drop(producer_tx);
-
-                        // Drain all outputs from the last processor.
-                        let mut received = 0;
-                        while let Ok(data) = final_rx.recv().await {
-                            let _ = black_box(data);
-                            received += 1;
-                        }
-                        assert_eq!(received, BATCH_COUNT, "lost messages in separate pipeline");
                     })
                     .await;
             });
@@ -310,49 +287,31 @@ fn bench_processor_chain_low_work(c: &mut Criterion) {
                 let local = LocalSet::new();
                 local
                     .run_until(async {
-                        let (producer_tx, first_rx) =
-                            mpsc::Channel::<String>::new(BATCH_COUNT + 128);
-
-                        let mut prev_rx = Some(first_rx);
-                        let mut final_rx: Option<mpsc::Receiver<String>> = None;
-
-                        for i in 0..chain_len {
-                            let inbox = prev_rx.take().expect("prev_rx must be set");
-                            let (mut eh, out_rx) = make_effect_handler();
-
-                            let suffix = format!("_{i}");
-                            let work_ns = LOW_WORK_NS;
-                            drop(tokio::task::spawn_local(async move {
-                                let mut proc = SuffixProcessor { suffix, work_ns };
-                                while let Ok(data) = inbox.recv().await {
-                                    Processor::process(&mut proc, Message::PData(data), &mut eh)
-                                        .await
-                                        .expect("process failed");
-                                }
-                            }));
-
-                            if i < chain_len - 1 {
-                                prev_rx = Some(out_rx);
-                            } else {
-                                final_rx = Some(out_rx);
-                            }
-                        }
-
-                        let final_rx = final_rx.expect("chain_len must be >= 1");
+                        let mut stages: Vec<(
+                            SuffixProcessor,
+                            EffectHandler<String>,
+                            mpsc::Receiver<String>,
+                        )> = (0..chain_len)
+                            .map(|i| {
+                                let proc = SuffixProcessor {
+                                    suffix: format!("_{i}"),
+                                    work_ns: LOW_WORK_NS,
+                                };
+                                let (eh, rx) = make_effect_handler();
+                                (proc, eh, rx)
+                            })
+                            .collect();
 
                         for _ in 0..BATCH_COUNT {
-                            producer_tx
-                                .send(black_box("hello".to_string()))
-                                .expect("send failed");
+                            let mut current = black_box("hello".to_string());
+                            for (proc, eh, rx) in stages.iter_mut() {
+                                Processor::process(proc, Message::PData(current), eh)
+                                    .await
+                                    .expect("process failed");
+                                current = rx.try_recv().expect("missing output");
+                            }
+                            let _ = black_box(current);
                         }
-                        drop(producer_tx);
-
-                        let mut received = 0;
-                        while let Ok(data) = final_rx.recv().await {
-                            let _ = black_box(data);
-                            received += 1;
-                        }
-                        assert_eq!(received, BATCH_COUNT, "lost messages in separate pipeline");
                     })
                     .await;
             });

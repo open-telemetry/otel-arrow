@@ -283,8 +283,6 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
-    /// Extracts the inner local processor implementation, consuming this wrapper.
-    ///
     pub(crate) fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         match self {
             ProcessorWrapper::Local { processor, .. } => processor.runtime_requirements(),

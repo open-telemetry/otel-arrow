@@ -1,0 +1,115 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      # Classic pipeline: each processor is a separate node with channels between them.
+      classic:
+        policies:
+          telemetry:
+            runtime_metrics: normal
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 100
+                signals_per_second: 1000
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          insert_A:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: step_1
+                  value: A
+          insert_B:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: step_2
+                  value: B
+          insert_C:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: step_3
+                  value: C
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: insert_A
+          - from: insert_A
+            to: insert_B
+          - from: insert_B
+            to: insert_C
+          - from: insert_C
+            to: noop
+
+      # Chained pipeline: same processors run inside a single chain node.
+      chained:
+        policies:
+          telemetry:
+            runtime_metrics: normal
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 100
+                signals_per_second: 1000
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          chain:
+            type: processor_chain:inlined
+            config:
+              enable_sub_processor_telemetry: true
+              processors:
+                insert_A:
+                  type: processor:attribute
+                  config:
+                    actions:
+                      - action: insert
+                        key: step_1
+                        value: A
+                insert_B:
+                  type: processor:attribute
+                  config:
+                    actions:
+                      - action: insert
+                        key: step_2
+                        value: B
+                insert_C:
+                  type: processor:attribute
+                  config:
+                    actions:
+                      - action: insert
+                        key: step_3
+                        value: C
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: chain
+          - from: chain
+            to: noop

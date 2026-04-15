@@ -15,6 +15,7 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::Interests;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
@@ -213,27 +214,13 @@ impl InlineProcessor<OtapPdata> for FilterProcessor {
         let mut arrow_records: OtapArrowRecords = payload.try_into()?;
         arrow_records.decode_transport_optimized_ids()?;
 
-        let (filtered_arrow_records, signals_consumed, signals_filtered) = match signal {
-            SignalType::Metrics => (arrow_records, 0, 0),
-            SignalType::Logs => self
-                .config
-                .log_filters()
-                .filter(arrow_records)
-                .map_err(|e| {
-                    let source_detail = format_error_sources(&e);
-                    Error::ProcessorError {
-                        processor: NodeId {
-                            index: 0,
-                            name: FILTER_PROCESSOR_URN.into(),
-                        },
-                        kind: ProcessorErrorKind::Other,
-                        error: format!("Filter error: {e}"),
-                        source_detail,
-                    }
-                })?,
-            SignalType::Traces => {
-                self.config
-                    .trace_filters()
+        let (filtered_arrow_records, signals_consumed, signals_filtered) = self
+            .compute_duration
+            .timed(Interests::PROCESS_DURATION, || match signal {
+                SignalType::Metrics => Ok((arrow_records, 0, 0)),
+                SignalType::Logs => self
+                    .config
+                    .log_filters()
                     .filter(arrow_records)
                     .map_err(|e| {
                         let source_detail = format_error_sources(&e);
@@ -246,9 +233,25 @@ impl InlineProcessor<OtapPdata> for FilterProcessor {
                             error: format!("Filter error: {e}"),
                             source_detail,
                         }
-                    })?
-            }
-        };
+                    }),
+                SignalType::Traces => {
+                    self.config
+                        .trace_filters()
+                        .filter(arrow_records)
+                        .map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: NodeId {
+                                    index: 0,
+                                    name: FILTER_PROCESSOR_URN.into(),
+                                },
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })
+                }
+            })?;
 
         match signal {
             SignalType::Metrics => {}

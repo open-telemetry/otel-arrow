@@ -20,6 +20,7 @@ use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
+use otap_df_engine::Interests;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NackMsg;
@@ -689,13 +690,15 @@ impl InlineProcessor<OtapPdata> for CondenseAttributesProcessor {
 
         otel_debug!("condense_attributes_processor.processing", input_items);
 
-        let result = match signal {
-            SignalType::Logs => self.condense(&mut records),
-            _ => Err(Error::InternalError {
-                message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
-                    .to_string(),
-            }),
-        };
+        let result = self
+            .compute_duration
+            .timed(Interests::PROCESS_DURATION, || match signal {
+                SignalType::Logs => self.condense(&mut records),
+                _ => Err(Error::InternalError {
+                    message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
+                        .to_string(),
+                }),
+            });
 
         match result {
             Ok(condensed) => {

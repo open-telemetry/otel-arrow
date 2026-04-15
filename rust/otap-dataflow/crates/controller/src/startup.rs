@@ -92,7 +92,7 @@ pub fn apply_cli_overrides(
 /// **Scope:** This is *static* validation only -- it checks that config values
 /// can be deserialized into the expected types.  It does **not** detect runtime
 /// issues such as port conflicts, unreachable endpoints, or missing files.
-pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
+pub fn validate_pipeline_components<PData: 'static + Clone + Debug + otap_df_engine::Unwindable>(
     pipeline_group_id: &PipelineGroupId,
     pipeline_id: &PipelineId,
     pipeline_cfg: &PipelineConfig,
@@ -178,7 +178,7 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
 /// This is the top-level validation entry point that iterates over all
 /// pipeline groups, all pipelines within each group, and the optional
 /// observability pipeline.
-pub fn validate_engine_components<PData: 'static + Clone + Debug>(
+pub fn validate_engine_components<PData: 'static + Clone + Debug + otap_df_engine::Unwindable>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -208,7 +208,9 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
 ///
 /// Parses the chain config, then validates that every sub-processor's URN
 /// is a registered processor component and that its config is valid.
-fn validate_processor_chain_components<PData: 'static + Clone + Debug>(
+fn validate_processor_chain_components<
+    PData: 'static + Clone + Debug + otap_df_engine::Unwindable,
+>(
     pipeline_group_id: &PipelineGroupId,
     pipeline_id: &PipelineId,
     node_id: &NodeId,
@@ -280,7 +282,7 @@ fn validate_processor_chain_components<PData: 'static + Clone + Debug>(
 /// Useful for diagnostics, `--help` output, or startup banners in any
 /// distribution.
 #[must_use]
-pub fn system_info<PData: 'static + Clone + Debug>(
+pub fn system_info<PData: 'static + Clone + Debug + otap_df_engine::Unwindable>(
     factory: &PipelineFactory<PData>,
     memory_allocator: &str,
 ) -> String {

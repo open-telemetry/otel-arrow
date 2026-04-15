@@ -501,7 +501,7 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
+impl<PData: 'static + Clone + Debug + Unwindable> PipelineFactory<PData> {
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(
@@ -2096,7 +2096,7 @@ impl ResolvedHyperEdgeRuntime {
         core_id: usize,
     ) -> Result<HyperEdgeWiring<PData>, Error>
     where
-        PData: 'static + Clone + Debug,
+        PData: 'static + Clone + Debug + Unwindable,
     {
         let channel_id = self.channel_id();
         let ResolvedHyperEdgeRuntime {

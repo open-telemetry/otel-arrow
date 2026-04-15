@@ -38,6 +38,7 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::Interests;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
@@ -429,7 +430,11 @@ impl InlineProcessor<OtapPdata> for AttributesProcessor {
             self.metrics.domains_signal.inc();
         }
 
-        match self.apply_transform_with_stats(&mut records, signal) {
+        match self
+            .compute_duration
+            .timed(Interests::PROCESS_DURATION, || {
+                self.apply_transform_with_stats(&mut records, signal)
+            }) {
             Ok((deleted_total, renamed_total, inserted_total, upserted_total)) => {
                 if deleted_total > 0 {
                     self.metrics.deleted_entries.add(deleted_total);

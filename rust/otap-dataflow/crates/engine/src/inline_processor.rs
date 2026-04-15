@@ -52,10 +52,11 @@ pub trait InlineProcessor<PData> {
 
     /// Returns the processor's compute-duration instrument, if any.
     ///
-    /// When this returns `Some`, the chain automatically times each
-    /// [`process_inline`](Self::process_inline) call and records the elapsed duration
-    /// into the returned [`ComputeDuration`]. Processors do not need to
-    /// time themselves.
+    /// Processors that track their own compute duration should use
+    /// [`ComputeDuration::timed`] internally within `process_inline` to
+    /// wrap only their core transform work, excluding deserialization.
+    /// This method exposes the instrument for reporting via
+    /// [`collect_telemetry`](Self::collect_telemetry).
     fn compute_duration(&self) -> Option<&ComputeDuration> {
         None
     }

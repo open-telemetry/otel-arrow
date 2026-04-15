@@ -10,7 +10,11 @@
 //!
 //! The chain times the entire sequence with a composite [`ComputeDuration`]
 //! so that callers can observe the total compute cost of a record batch
-//! passing through all sub-processors.
+//! passing through all sub-processors.  Individual sub-processor timing
+//! is handled internally by each sub-processor via
+//! [`ComputeDuration::timed`], matching how standalone processors use
+//! `effect_handler.timed()` to exclude deserialization from their
+//! duration metrics.
 //!
 //! # Scheduling fairness
 //!
@@ -28,8 +32,10 @@
 //! in memory while later stages catch up.  Restricting to non-expanding stages
 //! avoids that entirely.
 
+use crate::_private::AckNackRouting;
 use crate::Interests;
-use crate::control::NodeControlMsg;
+use crate::Unwindable;
+use crate::control::{NackMsg, NodeControlMsg};
 use crate::error::Error;
 use crate::inline_processor::{InlineOutput, InlineProcessor};
 use crate::local::processor::{EffectHandler, Processor};
@@ -79,7 +85,7 @@ impl<PData> ProcessorChainNode<PData> {
 }
 
 #[async_trait(?Send)]
-impl<PData: 'static> Processor<PData> for ProcessorChainNode<PData> {
+impl<PData: 'static + Clone + Unwindable> Processor<PData> for ProcessorChainNode<PData> {
     async fn process(
         &mut self,
         msg: Message<PData>,
@@ -118,6 +124,15 @@ impl<PData: 'static> Processor<PData> for ProcessorChainNode<PData> {
                     return Ok(());
                 }
 
+                // Clone the original data for NACK if any upstream
+                // subscriber is listening. Guarded by has_frames()
+                // so the clone is skipped when nobody cares.
+                let saved_for_nack = if pdata.has_frames() {
+                    Some(pdata.clone())
+                } else {
+                    None
+                };
+
                 let interests = effect_handler.node_interests();
 
                 let timer = if interests.contains(Interests::PROCESS_DURATION) {
@@ -137,14 +152,7 @@ impl<PData: 'static> Processor<PData> for ProcessorChainNode<PData> {
                             tokio::task::yield_now().await;
                         }
 
-                        // Time the sub-processor if it exposes a ComputeDuration.
-                        let sub_timer = sub
-                            .compute_duration()
-                            .map(|_| otap_df_telemetry::instrument::Timer::start());
                         let output = sub.process_inline(current);
-                        if let (Some(sub_timer), Some(cd)) = (sub_timer, sub.compute_duration()) {
-                            cd.record(sub_timer.elapsed_nanos(), output.is_ok());
-                        }
 
                         match output? {
                             InlineOutput::Forward(data) => current = data,
@@ -164,6 +172,13 @@ impl<PData: 'static> Processor<PData> for ProcessorChainNode<PData> {
                 if let Some(timer) = timer {
                     self.composite_duration
                         .record(timer.elapsed_nanos(), result.is_ok());
+                }
+
+                if let Err(ref e) = result {
+                    if let Some(saved) = saved_for_nack {
+                        let nack = NackMsg::new(e.to_string(), saved);
+                        effect_handler.route_nack(nack).await?;
+                    }
                 }
 
                 result
@@ -571,5 +586,170 @@ mod tests {
 
         assert_eq!(count1.load(Ordering::Relaxed), 1);
         assert_eq!(count2.load(Ordering::Relaxed), 1);
+    }
+
+    /// Error in the first sub-processor prevents later sub-processors from running.
+    #[tokio::test]
+    async fn error_in_first_processor_skips_remaining() {
+        let tail = SuffixProcessor::new("_tail");
+        let tail_count = tail.call_count.clone();
+        let mut chain = make_chain(vec![Box::new(ErrorProcessor), Box::new(tail)]);
+        let (mut eh, rx) = test_effect_handler();
+
+        let result = chain.process(Message::PData("hello".into()), &mut eh).await;
+        assert!(result.is_err());
+        assert_eq!(tail_count.load(Ordering::Relaxed), 0, "tail never called");
+        assert!(rx.try_recv().is_err(), "nothing sent downstream");
+    }
+
+    /// Drop records composite duration as success (drop is intentional, not a failure).
+    #[tokio::test]
+    async fn drop_records_success_duration() {
+        let (ctx, _) = test_pipeline_ctx();
+        let cd = ComputeDuration::new(&ctx);
+        let mut chain = ProcessorChainNode::new(
+            vec![
+                Box::new(SuffixProcessor::new("_head")),
+                Box::new(DropAllProcessor),
+                Box::new(SuffixProcessor::new("_tail")),
+            ],
+            cd,
+            false,
+        );
+
+        let (sender, _rx) = mpsc::Channel::new(100);
+        let port: PortName = "default".into();
+        let mut senders: HashMap<PortName, Sender<String>> = HashMap::new();
+        let _ = senders.insert(port.clone(), Sender::new_local_mpsc_sender(sender));
+        let (_metrics_rx, reporter) = test_reporter();
+        let mut eh = EffectHandler::new(test_node_id("chain"), senders, Some(port), reporter);
+        eh.core.set_node_interests(Interests::PROCESS_DURATION);
+
+        chain
+            .process(Message::PData("hello".into()), &mut eh)
+            .await
+            .unwrap();
+
+        let success_snap = chain.composite_duration.snapshot_success().get();
+        assert_eq!(success_snap.count, 1, "drop counts as success");
+
+        let failed_snap = chain.composite_duration.snapshot_failed().get();
+        assert_eq!(failed_snap.count, 0, "drop is not a failure");
+    }
+
+    /// With String PData (has_frames = false), error does not attempt NACK.
+    /// This verifies the guard works — no pipeline completion sender is wired,
+    /// so an unguarded route_nack call would panic/error.
+    #[tokio::test]
+    async fn error_without_frames_does_not_nack() {
+        let mut chain = make_chain(vec![Box::new(ErrorProcessor)]);
+        let (mut eh, _rx) = test_effect_handler();
+        // No pipeline completion sender — route_nack would fail if called.
+
+        let result = chain.process(Message::PData("hello".into()), &mut eh).await;
+        assert!(result.is_err(), "error propagates");
+        // Test passes because saved_for_nack was None (String has no frames),
+        // so route_nack was never called.
+    }
+
+    /// Chain is reusable across multiple batches — no one-shot state.
+    #[tokio::test]
+    async fn chain_processes_multiple_batches() {
+        let mut chain = make_chain(vec![
+            Box::new(SuffixProcessor::new("_A")),
+            Box::new(SuffixProcessor::new("_B")),
+        ]);
+        let (mut eh, rx) = test_effect_handler();
+
+        for i in 0..3 {
+            chain
+                .process(Message::PData(format!("batch_{i}")), &mut eh)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(rx.try_recv().unwrap(), "batch_0_A_B");
+        assert_eq!(rx.try_recv().unwrap(), "batch_1_A_B");
+        assert_eq!(rx.try_recv().unwrap(), "batch_2_A_B");
+    }
+
+    /// Drop at the very first sub-processor — nothing downstream, returns Ok.
+    #[tokio::test]
+    async fn drop_at_first_processor() {
+        let tail = SuffixProcessor::new("_tail");
+        let count = tail.call_count.clone();
+        let mut chain = make_chain(vec![Box::new(DropAllProcessor), Box::new(tail)]);
+        let (mut eh, rx) = test_effect_handler();
+
+        chain
+            .process(Message::PData("hello".into()), &mut eh)
+            .await
+            .unwrap();
+
+        assert!(rx.try_recv().is_err(), "nothing sent downstream");
+        assert_eq!(count.load(Ordering::Relaxed), 0, "tail never called");
+    }
+
+    /// Chain does NOT externally time sub-processors. Each sub-processor
+    /// is responsible for calling ComputeDuration::timed() internally on
+    /// its core work, matching standalone processors that use
+    /// effect_handler.timed(). This avoids inflating timing with
+    /// deserialization costs.
+    #[tokio::test]
+    async fn chain_does_not_externally_time_sub_processors() {
+        let (ctx, _) = test_pipeline_ctx();
+        let sub_cd = ComputeDuration::new(&ctx);
+
+        struct TimedProcessor {
+            cd: ComputeDuration,
+        }
+        impl InlineProcessor<String> for TimedProcessor {
+            fn process_inline(&mut self, data: String) -> Result<InlineOutput<String>, Error> {
+                // Does NOT call self.cd.timed() — simulates a processor
+                // that hasn't added internal timing yet.
+                Ok(InlineOutput::Forward(data))
+            }
+            fn compute_duration(&self) -> Option<&ComputeDuration> {
+                Some(&self.cd)
+            }
+        }
+
+        let chain_cd = ComputeDuration::new(&ctx);
+        let mut chain = ProcessorChainNode::new(
+            vec![Box::new(TimedProcessor { cd: sub_cd })],
+            chain_cd,
+            false,
+        );
+
+        let (sender, _rx) = mpsc::Channel::new(100);
+        let port: PortName = "default".into();
+        let mut senders: HashMap<PortName, Sender<String>> = HashMap::new();
+        let _ = senders.insert(port.clone(), Sender::new_local_mpsc_sender(sender));
+        let (_metrics_rx, reporter) = test_reporter();
+        let mut eh = EffectHandler::new(test_node_id("chain"), senders, Some(port), reporter);
+        eh.core.set_node_interests(Interests::PROCESS_DURATION);
+
+        chain
+            .process(Message::PData("hello".into()), &mut eh)
+            .await
+            .unwrap();
+
+        // Chain should NOT have recorded into the sub-processor's ComputeDuration
+        // (that's the sub-processor's own responsibility via timed()).
+        let sub_cd = chain.sub_processors[0]
+            .compute_duration()
+            .expect("sub-processor exposes compute_duration");
+        let snap = sub_cd.snapshot_success().get();
+        assert_eq!(
+            snap.count, 0,
+            "chain should not externally time sub-processors"
+        );
+
+        // Composite duration should still be recorded.
+        let composite_snap = chain.composite_duration.snapshot_success().get();
+        assert_eq!(
+            composite_snap.count, 1,
+            "composite duration should be recorded"
+        );
     }
 }
