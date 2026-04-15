@@ -156,6 +156,7 @@ prost-types = "0.14"
 quote = "1.0"
 rand = "0.10.0"
 rcgen = "0.14"
+regex = "1.12"
 roaring = "0.11.2"
 ryu = "1"
 rustls = { version = "0.23.22", default-features = false, features = ["std", "tls12"] }
