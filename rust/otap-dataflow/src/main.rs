@@ -72,7 +72,7 @@ use tikv_jemallocator::Jemalloc;
 // -----------------------------------------------------------------------------
 cfg_if! {
     // dhat (profiling) — wins everywhere when enabled
-    if #[cfg(feature = "dhat-heap")] {
+    if #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))] {
         #[global_allocator]
         static GLOBAL: dhat::Alloc = dhat::Alloc;
         static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
@@ -222,7 +222,7 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(feature = "dhat-heap")]
+    #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
     {
         dhat_start();
     }
@@ -268,7 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
-    #[cfg(feature = "dhat-heap")]
+    #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
     {
         dhat_finish();
     }
