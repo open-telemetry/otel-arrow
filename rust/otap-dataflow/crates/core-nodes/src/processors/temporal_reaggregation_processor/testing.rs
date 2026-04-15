@@ -67,6 +67,9 @@ pub(super) enum Action {
     /// Assert on upstream ack/nack messages received via the pipeline
     /// completion channel.
     AssertUpstream(UpstreamExpectation),
+
+    /// Assert the value of the processor's `accept_pdata` gate.
+    AssertAcceptPdata(bool),
 }
 
 /// An action to perform on a single drained output.
@@ -213,6 +216,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                     Action::AssertNoPdata => {
                         assert!(output_buffer.is_empty());
                         assert!(ctx.drain_pdata().await.is_empty());
+                    }
+                    Action::AssertAcceptPdata(expected) => {
+                        assert_eq!(ctx.accept_pdata(), expected, "accept_pdata mismatch");
                     }
                 }
             }
