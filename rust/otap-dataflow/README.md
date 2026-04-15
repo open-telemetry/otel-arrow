@@ -445,6 +445,10 @@ cargo run --example <example_name>
 docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 ```
 
+## Profiling
+
+[Refer profiling Page](./PROFILING.md)
+
 ## Contributing
 
 - [Contribution Guidelines](CONTRIBUTING.md)

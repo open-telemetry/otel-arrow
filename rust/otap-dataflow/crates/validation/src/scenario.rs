@@ -485,13 +485,13 @@ nodes:
     config:
       protocols:
         grpc:
-          listening_addr: "0.0.0.0:4317"
+          listening_addr: "127.0.0.1:4317"
   exporter:
     config:
       grpc_endpoint: "http://default-export"
   otap_recv:
     config:
-      listening_addr: "0.0.0.0:4420"
+      listening_addr: "127.0.0.1:4420"
   otap_exp:
     config:
       grpc_endpoint: "http://default-otap-export"
@@ -622,7 +622,7 @@ nodes:
     config:
       protocols:
         grpc:
-          listening_addr: "0.0.0.0:4317"
+          listening_addr: "127.0.0.1:4317"
   kafka_sink:
     config:
       broker: "placeholder:9092"
@@ -724,7 +724,7 @@ nodes:
     config:
       protocols:
         grpc:
-          listening_addr: "0.0.0.0:4317"
+          listening_addr: "127.0.0.1:4317"
   kafka_sink:
     config:
       broker: "placeholder:9092"
