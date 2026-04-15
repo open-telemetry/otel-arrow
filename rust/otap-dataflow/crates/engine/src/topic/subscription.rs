@@ -12,7 +12,7 @@
 //! # Receive
 //!
 //! `recv()` delegates to `poll_fn(|cx| self.inner.poll_recv_delivery(cx))`.
-//! The future itself is stack-allocated. In-memory delivery leases also avoid
+//! The future itself is stack-allocated. In-memory delivery permits also avoid
 //! per-message heap allocation on the common path.
 //!
 //! # Ack/Nack
@@ -78,7 +78,7 @@ pub struct Delivery<T: Send + Sync + 'static> {
 enum DeliveryFinalizer<T: Send + Sync + 'static> {
     InMemory(InMemoryDeliveryFinalizer),
     // Keep the opaque finalizer path available so a future backend can attach
-    // its own delivery lease implementation without changing the public
+    // its own delivery permit implementation without changing the public
     // subscription API. The in-memory backend no longer uses this variant.
     #[allow(dead_code)]
     Opaque(Box<dyn DeliveryBackend<T>>),

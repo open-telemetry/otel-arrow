@@ -744,14 +744,14 @@ async fn blocked_tracked_publish_drop_releases_in_flight_capacity() {
     );
 }
 
-// Broadcast delivery leases keep ownership of one message until the caller
-// commits it, preventing the subscription from advancing past the leased item.
+// Broadcast delivery permits keep ownership of one message until the caller
+// commits it, preventing the subscription from advancing past the permitted item.
 #[tokio::test]
 async fn broadcast_delivery_commit_advances_to_next_message() {
     let broker = TopicBroker::<u64>::new();
     let topic = broker
         .create_topic(
-            "broadcast-delivery-lease",
+            "broadcast-delivery-permit",
             TopicOptions::BroadcastOnly {
                 capacity: 16,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
@@ -778,7 +778,7 @@ async fn broadcast_delivery_commit_advances_to_next_message() {
         tokio::time::timeout(Duration::from_millis(200), sub.recv_delivery())
             .await
             .is_err(),
-        "second delivery should stay blocked while the first delivery lease is held"
+        "second delivery should stay blocked while the first delivery permit is held"
     );
 
     first.commit();
