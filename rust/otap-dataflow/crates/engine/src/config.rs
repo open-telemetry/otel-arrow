@@ -216,7 +216,7 @@ impl ExtensionConfig {
 ///
 /// ```yaml
 /// my_chain:
-///   type: processor_chain:composite
+///   type: processor_chain:inlined
 ///   config:
 ///     processors:
 ///       insert_B:

@@ -93,7 +93,7 @@ nodes:
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   chain:
-    type: processor_chain:composite
+    type: processor_chain:inlined
     config:
 {chain_config_yaml}
   exporter:
@@ -115,10 +115,13 @@ connections:
 fn validate_processor_chain_accepted() {
     let cfg = chain_pipeline(
         r#"      processors:
-        dbg:
-          type: processor:debug
+        attr:
+          type: processor:attribute
           config:
-            verbosity: basic"#,
+            actions:
+              - action: insert
+                key: test_key
+                value: test_value"#,
     );
     let gid: PipelineGroupId = "test_group".into();
     let pid: PipelineId = "test_pipeline".into();

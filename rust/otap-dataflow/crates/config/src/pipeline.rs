@@ -2117,7 +2117,7 @@ sink:
                 type: "receiver:otlp"
                 config: {}
               chain:
-                type: "processor_chain:composite"
+                type: "processor_chain:inlined"
                 config:
                   processors:
                     dbg:

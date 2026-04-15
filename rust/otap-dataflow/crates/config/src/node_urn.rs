@@ -342,16 +342,13 @@ mod tests {
 
         // Processor chain — full and shortcut forms
         assert!(
-            validate_plugin_urn(
-                "urn:otel:processor_chain:composite",
-                NodeKind::ProcessorChain
-            )
-            .is_ok()
+            validate_plugin_urn("urn:otel:processor_chain:inlined", NodeKind::ProcessorChain)
+                .is_ok()
         );
-        assert!(validate_plugin_urn("processor_chain:composite", NodeKind::ProcessorChain).is_ok());
+        assert!(validate_plugin_urn("processor_chain:inlined", NodeKind::ProcessorChain).is_ok());
         let chain_urn =
-            validate_plugin_urn("processor_chain:composite", NodeKind::ProcessorChain).unwrap();
-        assert_eq!(chain_urn.as_str(), "urn:otel:processor_chain:composite");
+            validate_plugin_urn("processor_chain:inlined", NodeKind::ProcessorChain).unwrap();
+        assert_eq!(chain_urn.as_str(), "urn:otel:processor_chain:inlined");
         assert!(matches!(chain_urn.kind(), NodeKind::ProcessorChain));
 
         // Hyphen and dot allowed in NSS segments
@@ -380,7 +377,7 @@ mod tests {
             NodeKind::Processor
         ));
         assert!(matches!(
-            infer_node_kind("processor_chain:composite").unwrap(),
+            infer_node_kind("processor_chain:inlined").unwrap(),
             NodeKind::ProcessorChain
         ));
     }

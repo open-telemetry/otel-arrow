@@ -112,6 +112,17 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug + otap_df_eng
                 .get(urn_str)
                 .map(|f| f.validate_config),
             NodeKind::ProcessorChain => {
+                // Only the :inlined variant is currently supported.
+                if !urn_str.ends_with(":inlined") {
+                    return Err(std::io::Error::other(format!(
+                        "Unsupported processor_chain variant `{urn_str}` for node={} in \
+                         pipeline_group={} pipeline={}. Only `processor_chain:inlined` is supported.",
+                        node_id.as_ref(),
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                    ))
+                    .into());
+                }
                 validate_processor_chain_components(
                     pipeline_group_id,
                     pipeline_id,

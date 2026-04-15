@@ -1551,6 +1551,19 @@ impl<PData: 'static + Clone + Debug + Unwindable> PipelineFactory<PData> {
             node_id = chain_name.as_ref(),
         );
 
+        // Only the :inlined variant is currently supported.
+        let node_urn = node_config.r#type.as_str();
+        if !node_urn.ends_with(":inlined") {
+            return Err(Error::ConfigError(Box::new(
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "Unsupported processor_chain variant `{node_urn}`. \
+                         Only `processor_chain:inlined` is supported."
+                    ),
+                },
+            )));
+        }
+
         // Parse the chain config from the node's config blob.
         let chain_config: ProcessorChainConfig = serde_json::from_value(node_config.config.clone())
             .map_err(|e| {
