@@ -3,7 +3,6 @@
 
 //! Integration tests validating exporter-side proxy + TLS behavior for the OTLP exporter.
 
-#![cfg(feature = "experimental-tls")]
 #![allow(missing_docs)]
 
 use bytes::Bytes;

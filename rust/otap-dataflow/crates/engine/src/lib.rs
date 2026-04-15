@@ -69,6 +69,7 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub(crate) mod indexed_min_heap;
 pub mod local;
 pub mod memory_limiter;
 pub mod node;
@@ -2102,7 +2103,7 @@ mod test {
     use super::*;
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
-        PropagationAction, PropagationDefault, PropagationSelector,
+        PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
 
     #[test]
@@ -2194,7 +2195,10 @@ mod test {
     fn make_propagation_policy(action: PropagationAction) -> HeaderPropagationPolicy {
         HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 action,
                 ..Default::default()
             },

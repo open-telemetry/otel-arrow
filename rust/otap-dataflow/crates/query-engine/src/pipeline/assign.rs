@@ -1198,6 +1198,11 @@ fn validate_attribute_assign_cardinality(
             validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, left)?;
             validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, right)?;
         }
+        LogicalExprDataSource::MultiJoin(children) => {
+            for child in children {
+                validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, child)?;
+            }
+        }
     }
 
     Ok(())
@@ -4351,5 +4356,237 @@ mod test {
     #[tokio::test]
     async fn test_update_attr_to_replace_with_non_scalar_args_kql_parser() {
         test_update_attr_to_replace_with_non_scalar_args::<KqlParser>("replace_string").await
+    }
+
+    async fn test_update_attr_to_regexp_capture_with_scalars<P: Parser>(
+        fn_name: &str,
+        args: &[&str],
+    ) {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend attributes["s1"] = {fn_name}({})"#,
+            args.join(", ")
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello world")),
+                KeyValue::new("s1", AnyValue::new_string("world")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_scalars_opl_parser() {
+        test_update_attr_to_regexp_capture_with_scalars::<OplParser>(
+            "regexp_capture",
+            &["attributes[\"attr\"]", "\".*hello (.*)$\"", "1"],
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_scalars_kql_parser() {
+        test_update_attr_to_regexp_capture_with_scalars::<KqlParser>(
+            "extract",
+            &["\".*hello (.*)$\"", "1", "attributes[\"attr\"]"],
+        )
+        .await
+    }
+
+    async fn test_update_attr_to_regexp_capture_with_named_group<P: Parser>(
+        fn_name: &str,
+        args: &[&str],
+    ) {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend attributes["s1"] = {fn_name}({})"#,
+            args.join(", ")
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello world")),
+                KeyValue::new("s1", AnyValue::new_string("hello")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_named_group_parser() {
+        test_update_attr_to_regexp_capture_with_named_group::<OplParser>(
+            "regexp_capture",
+            &[
+                "attributes[\"attr\"]",
+                "\".*(?P<greeting>.....+) \"",
+                "\"greeting\"",
+            ],
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_named_group_kql_parser() {
+        test_update_attr_to_regexp_capture_with_named_group::<KqlParser>(
+            "extract",
+            &[
+                "\".*(?P<greeting>.....+) \"",
+                "\"greeting\"",
+                "attributes[\"attr\"]",
+            ],
+        )
+        .await
+    }
+
+    async fn test_update_attr_to_regexp_capture_with_non_scalar_args<P: Parser>(
+        fn_name: &str,
+        args: &[&str],
+    ) {
+        // clearly this isn't a well formed batch of logs, but the test here is just to ensure
+        // that some non-scalar args can be passed into the function call
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .event_name("hello world")
+                .severity_text("(.).*")
+                .severity_number(1)
+                .finish(),
+            LogRecord::build()
+                .event_name("hello world")
+                .severity_text(".(.)(..).*")
+                .severity_number(2)
+                .finish(),
+        ]);
+
+        let query = format!(
+            r#"logs | extend event_name = {fn_name}({})"#,
+            args.join(", ")
+        );
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &[
+                LogRecord::build()
+                    .event_name("h")
+                    .severity_text("(.).*")
+                    .severity_number(1)
+                    .finish(),
+                LogRecord::build()
+                    .event_name("ll")
+                    .severity_text(".(.)(..).*")
+                    .severity_number(2)
+                    .finish(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_non_scalar_args_opl_parser() {
+        test_update_attr_to_regexp_capture_with_non_scalar_args::<OplParser>(
+            "regexp_capture",
+            &["event_name", "severity_text", "severity_number"],
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_capture_with_non_scalar_args_kql_parser() {
+        test_update_attr_to_regexp_capture_with_non_scalar_args::<KqlParser>(
+            "extract",
+            &["severity_text", "severity_number", "event_name"],
+        )
+        .await
+    }
+
+    async fn test_update_attr_to_regexp_substring_func_call_with_scalars<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query =
+            r#"logs | extend attributes["s1"] = regexp_substr(attributes["attr"], "hell.")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello world")),
+                KeyValue::new("s1", AnyValue::new_string("hello")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_substring_func_call_with_scalars_opl_parser() {
+        test_update_attr_to_regexp_substring_func_call_with_scalars::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_regexp_substring_func_call_with_scalars_kq_parser() {
+        test_update_attr_to_regexp_substring_func_call_with_scalars::<KqlParser>().await
     }
 }

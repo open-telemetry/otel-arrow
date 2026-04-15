@@ -16,6 +16,7 @@ use otap_df_controller::startup;
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
+use cfg_if::cfg_if;
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 /// Project license text (Apache-2.0), embedded at compile time.
@@ -34,17 +35,69 @@ fn memory_allocator_name() -> &'static str {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Feature guard: jemalloc + mimalloc + dhat-heap any two together should fail.
+// -----------------------------------------------------------------------------
 #[cfg(all(
-    not(windows),
-    feature = "jemalloc",
-    feature = "mimalloc",
     not(any(test, doc)),
-    not(clippy)
+    not(clippy),
+    any(
+        all(feature = "dhat-heap", feature = "mimalloc"),
+        all(feature = "dhat-heap", feature = "jemalloc"),
+        all(feature = "jemalloc", feature = "mimalloc"),
+    )
 ))]
 compile_error!(
-    "Features `jemalloc` and `mimalloc` are mutually exclusive. \
-     To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
+    "Allocator features are mutually exclusive. Enable only one allocator: `dhat-heap`, `mimalloc`, `jemalloc`. \
+    Example: \
+        (mimalloc): cargo build --release --no-default-features --features mimalloc. \
+        (jemalloc): cargo build --release --no-default-features --features jemalloc. \
+        (dhat): cargo build --profile profiling --no-default-features --features dhat-heap."
 );
+
+#[cfg(feature = "dhat-heap")]
+use {
+    dhat::Profiler,
+    std::sync::{LazyLock, Mutex},
+};
+
+#[cfg(all(not(clippy), feature = "mimalloc"))]
+use mimalloc::MiMalloc;
+
+#[cfg(all(not(clippy), not(windows), feature = "jemalloc"))]
+use tikv_jemallocator::Jemalloc;
+
+// -----------------------------------------------------------------------------
+// Global allocator selection.
+// -----------------------------------------------------------------------------
+cfg_if! {
+    // dhat (profiling) — wins everywhere when enabled
+    if #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))] {
+        #[global_allocator]
+        static GLOBAL: dhat::Alloc = dhat::Alloc;
+        static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
+
+        fn dhat_start() {
+                let mut profiler = DHAT_PROFILER.lock().unwrap();
+                *profiler = Some(dhat::Profiler::new_heap());
+        }
+
+        fn dhat_finish() {
+                let mut profiler = DHAT_PROFILER.lock().unwrap();
+                let _ = profiler.take();
+        }
+
+    // Windows default: mimalloc
+    } else if #[cfg(feature = "mimalloc")] {
+        #[global_allocator]
+        static GLOBAL: MiMalloc = MiMalloc;
+
+    // Linux default: jemalloc
+    } else if #[cfg(all(not(windows), feature = "jemalloc"))] {
+        #[global_allocator]
+        static GLOBAL: Jemalloc = Jemalloc;
+    }
+}
 
 // Crypto provider features are mutually exclusive.
 // The `not(any(test, doc))` and `not(clippy)` guards mirror the jemalloc/mimalloc
@@ -81,20 +134,6 @@ compile_error!(
     "Features `crypto-aws-lc` and `crypto-openssl` are mutually exclusive. \
      Use --no-default-features to disable the default crypto provider, then enable exactly one."
 );
-
-#[cfg(feature = "mimalloc")]
-use mimalloc::MiMalloc;
-
-#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
-use tikv_jemallocator::Jemalloc;
-
-#[cfg(feature = "mimalloc")]
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
-
-#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -147,9 +186,8 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
     //  S -> digit | CoreRange | S,",",S
     //  CoreRange -> digit,"..",digit | digit,"..=",digit | digit,"-",digit
     //  digit -> [0-9]+
-    Ok(CoreAllocation::CoreSet {
-        set: s
-            .split(',')
+    Ok(CoreAllocation::core_set(
+        s.split(',')
             .map(|part| {
                 part.trim()
                     .parse::<usize>()
@@ -158,7 +196,7 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
                     .or_else(|_| parse_core_id_range(part))
             })
             .collect::<Result<Vec<CoreRange>, String>>()?,
-    })
+    ))
 }
 
 fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
@@ -184,6 +222,10 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
+    {
+        dhat_start();
+    }
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
     otap_df_otap::crypto::install_crypto_provider()
@@ -226,6 +268,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
+    #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
+    {
+        dhat_finish();
+    }
+
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
@@ -262,19 +309,18 @@ mod tests {
     fn parse_core_allocation_ok() {
         assert_eq!(
             parse_core_id_allocation("0..=4,5,6-7"),
-            Ok(CoreAllocation::CoreSet {
-                set: vec![
-                    CoreRange { start: 0, end: 4 },
-                    CoreRange { start: 5, end: 5 },
-                    CoreRange { start: 6, end: 7 }
-                ]
-            })
+            Ok(CoreAllocation::core_set(vec![
+                CoreRange { start: 0, end: 4 },
+                CoreRange { start: 5, end: 5 },
+                CoreRange { start: 6, end: 7 },
+            ]))
         );
         assert_eq!(
             parse_core_id_allocation("0..4"),
-            Ok(CoreAllocation::CoreSet {
-                set: vec![CoreRange { start: 0, end: 4 }]
-            })
+            Ok(CoreAllocation::core_set(vec![CoreRange {
+                start: 0,
+                end: 4,
+            }]))
         );
     }
 
@@ -439,12 +485,10 @@ connections:
         .expect("args should parse");
         assert_eq!(
             args.core_id_range,
-            Some(CoreAllocation::CoreSet {
-                set: vec![
-                    CoreRange { start: 1, end: 3 },
-                    CoreRange { start: 7, end: 7 }
-                ]
-            })
+            Some(CoreAllocation::core_set(vec![
+                CoreRange { start: 1, end: 3 },
+                CoreRange { start: 7, end: 7 },
+            ]))
         );
         assert_eq!(args.num_cores, None);
     }

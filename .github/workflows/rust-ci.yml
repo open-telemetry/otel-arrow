@@ -20,12 +20,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test_and_coverage:
+  # Non-required test matrix.
+  # - experimental folders run unpartitioned on all OSes (they are small).
+  # - otap-dataflow runs on ARM and macOS, split into 3 partitions.
+  experimental_tests:
     strategy:
       fail-fast: false
       matrix:
         folder:
-          - otap-dataflow
           - experimental/query_abstraction
           - experimental/query_engine
         os:
@@ -33,11 +35,6 @@ jobs:
           - ubuntu-24.04-arm
           - windows-latest
           - macos-latest
-        exclude:
-          - folder: otap-dataflow
-            os: ubuntu-latest
-          - folder: otap-dataflow
-            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -49,63 +46,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-
-        # running llvm codecov and building the collector etc. tend to create a lot of artifacts
-        # that will cause the job to run out of disk space. Here we delete some pre-installed
-        # packages from the runner that are not needed to free up space
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
-          echo "disk usage before"
-          df -h
-
-          # Remove Java (JDKs)
-          sudo rm -rf /usr/lib/jvm
-          # Remove .NET SDKs
-          sudo rm -rf /usr/share/dotnet
-          # Remove Swift toolchain
-          sudo rm -rf /usr/share/swift
-          # Remove Haskell (GHC)
-          sudo rm -rf /usr/local/.ghcup
-          # Remove Julia
-          sudo rm -rf /usr/local/julia*
-          # Remove Android SDKs
-          sudo rm -rf /usr/local/lib/android
-          # Remove Chromium (optional if not using for browser tests)
-          sudo rm -rf /usr/local/share/chromium
-          # Remove Microsoft/Edge and Google Chrome builds
-          sudo rm -rf /opt/microsoft /opt/google
-          # Remove Azure CLI
-          sudo rm -rf /opt/az
-          # Remove PowerShell
-          sudo rm -rf /usr/local/share/powershell
-
-          echo "disk usage after"
-          df -h
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: Free disk space (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Write-Host "disk usage before"
-          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
-
-          # Remove unnecessary tools to free up space
           if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
           if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
           if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
-
-          Write-Host "disk usage after"
-          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
-
-      # macOS runners have sufficient disk space (~40GB available) for running tests without
-      # building the collector or running code coverage, so no cleanup is needed.
-
       - name: install cargo-llvm-cov and nextest
         uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
         with:
           tool: cargo-llvm-cov,cargo-nextest
-      # The collector is only built on Linux. Integration tests that require
-      # the collector are skipped on Windows via #[cfg(not(target_os = "windows"))].
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         if: runner.os == 'Linux'
         with:
@@ -129,8 +86,6 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
-      # Only upload coverage from Linux x86_64 since it runs the complete test suite
-      # (including integration tests that are skipped on Windows).
       - name: Upload to codecov.io
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
@@ -138,6 +93,83 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
           fail_ci_if_error: true
+
+  # otap-dataflow on ARM and macOS (non-required): build once per OS, fan out tests.
+  # Uses default features only -- full feature coverage is handled by the required x86/Windows jobs.
+  build_nonrequired:
+    strategy:
+      fail-fast: false
+      matrix:
+        folder: [otap-dataflow]
+        os: [ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ./rust/${{ matrix.folder }}
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+      - name: install nextest
+        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        with:
+          tool: cargo-nextest
+      - name: Build and archive tests (default features)
+        run: cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Upload nextest archive
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: nextest-archive-${{ matrix.os }}
+          path: ./rust/${{ matrix.folder }}/nextest-archive.tar.zst
+          retention-days: 1
+
+  test_nonrequired:
+    needs: build_nonrequired
+    strategy:
+      fail-fast: false
+      matrix:
+        folder: [otap-dataflow]
+        os: [ubuntu-24.04-arm, macos-latest]
+        partition: [1, 2, 3]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: install nextest
+        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        with:
+          tool: cargo-nextest
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nextest-archive-${{ matrix.os }}
+          path: ./rust/${{ matrix.folder }}
+      - name: Run tests (partition ${{ matrix.partition }}/3)
+        run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
+        working-directory: ./rust/${{ matrix.folder }}
 
   fmt:
     strategy:
@@ -253,6 +285,9 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ./rust/${{ matrix.folder }}
       - name: cargo clippy ${{ matrix.folder }}
         run: |
           cargo clippy --all-targets --all-features --workspace -- -D warnings
@@ -376,9 +411,13 @@ jobs:
       - name: cargo check benchmarks --no-default-features
         run: cargo check -p benchmarks --benches --no-default-features
         working-directory: ./rust/${{ matrix.folder }}
+      - name: cargo test otap integration targets --no-run
+        run: cargo test -p otap-df-otap --tests --no-run
+        working-directory: ./rust/${{ matrix.folder }}
 
-  # Required matrix combinations for test_and_coverage: otap-dataflow on ubuntu and windows
-  test_and_coverage_required:
+  # Required builds for otap-dataflow: compile once per OS, create nextest archive.
+  # Test binaries are uploaded as artifacts so test partitions don't re-compile.
+  build_required:
     strategy:
       fail-fast: false
       matrix:
@@ -402,38 +441,63 @@ jobs:
           vcpkg install openssl:x64-windows-static-md
           echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
         shell: pwsh
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ./rust/${{ matrix.folder }}
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
-          echo "disk usage before"
-          df -h
-          sudo rm -rf /usr/lib/jvm
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/share/swift
-          sudo rm -rf /usr/local/.ghcup
-          sudo rm -rf /usr/local/julia*
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/local/share/chromium
-          sudo rm -rf /opt/microsoft /opt/google
-          sudo rm -rf /opt/az
-          sudo rm -rf /usr/local/share/powershell
-          echo "disk usage after"
-          df -h
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: Free disk space (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Write-Host "disk usage before"
-          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
           if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
           if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
           if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
-          Write-Host "disk usage after"
-          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
-      - name: install cargo-llvm-cov and nextest
+      - name: install nextest
         uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
         with:
-          tool: cargo-llvm-cov,cargo-nextest
+          tool: cargo-nextest
+      - name: Build and archive tests
+        run: cargo nextest archive --all-features --workspace --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Upload nextest archive
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: nextest-archive-${{ matrix.os }}
+          path: ./rust/${{ matrix.folder }}/nextest-archive.tar.zst
+          retention-days: 1
+
+  # Required test partitions: download pre-built archive and run 1/3 of tests each.
+  test_required:
+    needs: build_required
+    strategy:
+      fail-fast: false
+      matrix:
+        folder: [otap-dataflow]
+        os: [ubuntu-latest, windows-latest]
+        partition: [1, 2, 3]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: install nextest
+        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        with:
+          tool: cargo-nextest
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         if: runner.os == 'Linux'
         with:
@@ -441,16 +505,50 @@ jobs:
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
-      - name: Run tests with coverage (Linux x86_64)
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nextest-archive-${{ matrix.os }}
+          path: ./rust/${{ matrix.folder }}
+      - name: Run tests (partition ${{ matrix.partition }}/3)
+        run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
-        run: cargo nextest run --all-features --workspace
-        working-directory: ./rust/${{ matrix.folder }}
+
+  # Coverage runs unpartitioned on Linux x86_64 (does not block merge).
+  # This compiles from scratch with coverage instrumentation and runs all tests.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ./rust/otap-dataflow
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+      - name: install cargo-llvm-cov and nextest
+        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.1"
+      - name: Build the test collector
+        run: make otelarrowcol
+      - name: Run tests with coverage
+        run: cargo llvm-cov nextest --profile ci --all-features --workspace --lcov --output-path lcov.info
+        working-directory: ./rust/otap-dataflow
       - name: Upload to codecov.io
-        if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -499,6 +597,9 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ./rust/${{ matrix.folder }}
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
         # Required for the crypto-openssl feature (rustls-openssl -> openssl-sys).
@@ -600,7 +701,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
-      - test_and_coverage_required
+      - test_required
       - fmt_required
       - clippy_required
       - deny_required
@@ -611,8 +712,8 @@ jobs:
     steps:
       - name: Check if all required jobs succeeded
         run: |
-          if [[ "${{ needs.test_and_coverage_required.result }}" != "success" ]]; then
-            echo "test_and_coverage_required failed or was cancelled"
+          if [[ "${{ needs.test_required.result }}" != "success" ]]; then
+            echo "test_required failed or was cancelled"
             exit 1
           fi
           if [[ "${{ needs.fmt_required.result }}" != "success" ]]; then

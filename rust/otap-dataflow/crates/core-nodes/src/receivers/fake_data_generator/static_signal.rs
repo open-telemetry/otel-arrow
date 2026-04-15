@@ -14,8 +14,10 @@ use otap_df_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
     metrics::v1::{
-        AggregationTemporality, Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
-        ScopeMetrics, Sum,
+        AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
+        Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+        ScopeMetrics, Sum, Summary, SummaryDataPoint, exponential_histogram_data_point::Buckets,
+        summary_data_point::ValueAtQuantile,
     },
     resource::v1::Resource,
     trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData, span::SpanKind},
@@ -47,13 +49,275 @@ fn static_span_attributes() -> Vec<KeyValue> {
     ]
 }
 
-/// Static metric attributes
-fn static_metric_attributes() -> Vec<KeyValue> {
-    vec![
-        KeyValue::new("http.method", AnyValue::new_string("GET")),
-        KeyValue::new("http.route", AnyValue::new_string("/api")),
-        KeyValue::new("http.status_code", AnyValue::new_int(200)),
-    ]
+/// Default number of metric attributes when `num_metric_attributes` is not configured.
+const DEFAULT_METRIC_ATTRIBUTE_COUNT: usize = 3;
+
+/// Default number of data points per metric when `num_data_points` is not configured.
+const DEFAULT_DATA_POINTS_PER_METRIC: usize = 1;
+
+/// Metric attribute names drawn from common OTel semantic conventions for metrics.
+const METRIC_ATTR_NAMES: &[&str] = &[
+    "http.method",
+    "http.route",
+    "http.status_code",
+    "server.address",
+    "server.port",
+    "network.protocol.name",
+    "network.protocol.version",
+    "rpc.system",
+    "rpc.service",
+    "rpc.method",
+    "db.system",
+    "db.namespace",
+    "db.operation.name",
+    "messaging.system",
+    "messaging.operation.type",
+    "messaging.destination.name",
+    "cloud.region",
+    "cloud.availability_zone",
+    "k8s.namespace.name",
+    "k8s.deployment.name",
+    "container.name",
+    "process.runtime.name",
+    "deployment.environment",
+    "service.namespace",
+    "host.name",
+    "host.arch",
+    "os.type",
+    "net.peer.name",
+];
+
+/// Metric attribute value pools per attribute type for realistic cardinality.
+const METRIC_ATTR_ROUTES: &[&str] = &[
+    "/api/v1/users",
+    "/api/v2/orders",
+    "/api/v1/products",
+    "/api/v2/payments",
+    "/api/v1/auth",
+    "/api/v3/search",
+    "/api/v1/notifications",
+    "/internal/health",
+];
+
+const METRIC_ATTR_METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"];
+
+const METRIC_ATTR_HOSTS: &[&str] = &[
+    "prod-us-east-1a.internal",
+    "prod-us-west-2b.internal",
+    "staging-eu-west-1.internal",
+    "worker-pool-7f3a.compute",
+    "api-gateway-01.internal",
+    "cache-redis-03.internal",
+    "db-primary-01.internal",
+    "queue-broker-12.internal",
+];
+
+/// Realistic metric definitions covering all five OTLP metric types.
+/// Each entry: (name, description, unit, MetricKind)
+#[derive(Clone, Copy)]
+enum MetricKind {
+    /// Monotonic cumulative sum (counter)
+    Counter,
+    /// Non-monotonic delta sum (up-down counter)
+    UpDownCounter,
+    /// Gauge
+    Gauge,
+    /// Explicit-bucket histogram
+    Histogram,
+    /// Base-2 exponential histogram
+    ExponentialHistogram,
+    /// Summary (quantile sketch)
+    Summary,
+}
+
+struct MetricDef {
+    name: &'static str,
+    description: &'static str,
+    unit: &'static str,
+    kind: MetricKind,
+}
+
+const METRIC_DEFS: &[MetricDef] = &[
+    // Counters
+    MetricDef {
+        name: "http.server.request.count",
+        description: "Total number of HTTP server requests",
+        unit: "{request}",
+        kind: MetricKind::Counter,
+    },
+    MetricDef {
+        name: "http.client.request.count",
+        description: "Total number of HTTP client requests",
+        unit: "{request}",
+        kind: MetricKind::Counter,
+    },
+    MetricDef {
+        name: "rpc.server.request.count",
+        description: "Total number of RPC server requests",
+        unit: "{request}",
+        kind: MetricKind::Counter,
+    },
+    MetricDef {
+        name: "db.client.operation.count",
+        description: "Total number of database operations",
+        unit: "{operation}",
+        kind: MetricKind::Counter,
+    },
+    MetricDef {
+        name: "messaging.publish.count",
+        description: "Total messages published",
+        unit: "{message}",
+        kind: MetricKind::Counter,
+    },
+    MetricDef {
+        name: "http.server.request.body.size",
+        description: "Total bytes received in HTTP request bodies",
+        unit: "By",
+        kind: MetricKind::Counter,
+    },
+    // Up-down counters
+    MetricDef {
+        name: "http.server.active_requests",
+        description: "Number of active HTTP server requests",
+        unit: "{request}",
+        kind: MetricKind::UpDownCounter,
+    },
+    MetricDef {
+        name: "db.client.connection.count",
+        description: "Number of active database connections",
+        unit: "{connection}",
+        kind: MetricKind::UpDownCounter,
+    },
+    // Gauges
+    MetricDef {
+        name: "process.cpu.utilization",
+        description: "CPU utilization ratio",
+        unit: "1",
+        kind: MetricKind::Gauge,
+    },
+    MetricDef {
+        name: "process.memory.usage",
+        description: "Current memory usage",
+        unit: "By",
+        kind: MetricKind::Gauge,
+    },
+    MetricDef {
+        name: "system.cpu.load_average.1m",
+        description: "1-minute load average",
+        unit: "1",
+        kind: MetricKind::Gauge,
+    },
+    MetricDef {
+        name: "runtime.gc.heap_size",
+        description: "Current heap size",
+        unit: "By",
+        kind: MetricKind::Gauge,
+    },
+    // Histograms
+    MetricDef {
+        name: "http.server.request.duration",
+        description: "Duration of HTTP server requests",
+        unit: "ms",
+        kind: MetricKind::Histogram,
+    },
+    MetricDef {
+        name: "http.client.request.duration",
+        description: "Duration of HTTP client requests",
+        unit: "ms",
+        kind: MetricKind::Histogram,
+    },
+    MetricDef {
+        name: "rpc.server.duration",
+        description: "Duration of RPC server calls",
+        unit: "ms",
+        kind: MetricKind::Histogram,
+    },
+    MetricDef {
+        name: "db.client.operation.duration",
+        description: "Duration of database operations",
+        unit: "ms",
+        kind: MetricKind::Histogram,
+    },
+    MetricDef {
+        name: "http.server.response.body.size",
+        description: "Size of HTTP response bodies",
+        unit: "By",
+        kind: MetricKind::Histogram,
+    },
+    // Exponential histograms
+    MetricDef {
+        name: "messaging.process.duration",
+        description: "Duration of message processing",
+        unit: "ms",
+        kind: MetricKind::ExponentialHistogram,
+    },
+    MetricDef {
+        name: "rpc.client.duration",
+        description: "Duration of RPC client calls",
+        unit: "ms",
+        kind: MetricKind::ExponentialHistogram,
+    },
+    // Summaries
+    MetricDef {
+        name: "runtime.gc.pause_duration",
+        description: "GC pause duration quantiles",
+        unit: "ms",
+        kind: MetricKind::Summary,
+    },
+    MetricDef {
+        name: "http.server.request.duration.summary",
+        description: "HTTP request duration quantiles",
+        unit: "ms",
+        kind: MetricKind::Summary,
+    },
+];
+
+/// OTel SDK default explicit bucket histogram boundaries.
+/// See <https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation>
+const HISTOGRAM_BOUNDS: &[f64] = &[
+    0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0,
+    10000.0,
+];
+
+/// Standard quantiles for summary metrics.
+const SUMMARY_QUANTILES: &[f64] = &[0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0];
+
+/// Generate `count` metric attributes with realistic names and per-data-point
+/// value variance.
+fn build_metric_attributes(count: usize, point_index: usize) -> Vec<KeyValue> {
+    (0..count)
+        .map(|i| {
+            let name = if i < METRIC_ATTR_NAMES.len() {
+                METRIC_ATTR_NAMES[i].to_string()
+            } else {
+                format!("metric_attr_{i}")
+            };
+            let value = match METRIC_ATTR_NAMES.get(i) {
+                Some(&"http.method") => AnyValue::new_string(
+                    METRIC_ATTR_METHODS[point_index % METRIC_ATTR_METHODS.len()],
+                ),
+                Some(&"http.route") => {
+                    AnyValue::new_string(METRIC_ATTR_ROUTES[point_index % METRIC_ATTR_ROUTES.len()])
+                }
+                Some(&"http.status_code") | Some(&"http.response.status_code") => {
+                    AnyValue::new_int(
+                        [200, 200, 200, 201, 204, 301, 400, 403, 404, 500][point_index % 10],
+                    )
+                }
+                Some(&"server.port") | Some(&"client.port") | Some(&"net.peer.port") => {
+                    AnyValue::new_int([8080, 8443, 3000, 4317, 9090, 5432][point_index % 6])
+                }
+                Some(&"server.address") | Some(&"host.name") | Some(&"net.peer.name") => {
+                    AnyValue::new_string(METRIC_ATTR_HOSTS[point_index % METRIC_ATTR_HOSTS.len()])
+                }
+                _ => {
+                    let pool_idx = (i.wrapping_mul(7) + point_index) % ATTR_VALUE_POOL.len();
+                    AnyValue::new_string(ATTR_VALUE_POOL[pool_idx])
+                }
+            };
+            KeyValue::new(name, value)
+        })
+        .collect()
 }
 
 /// Pool of realistic log attribute names drawn from common OTel semantic conventions.
@@ -368,7 +632,25 @@ pub fn static_otlp_metrics(
     signal_count: usize,
     extra_attrs: Option<&HashMap<String, String>>,
 ) -> MetricsData {
-    let metrics = static_metrics(signal_count);
+    static_otlp_metrics_with_config(signal_count, None, None, extra_attrs)
+}
+
+/// Generates MetricsData with configurable attribute count, data point count,
+/// and optional extra resource attributes.
+///
+/// - `num_metric_attributes`: When `Some(n)`, generates `n` key-value attributes per data point.
+///   When `None`, uses the default 3 attributes (http.method, http.route, http.status_code).
+/// - `num_data_points`: When `Some(n)`, generates `n` data points per metric.
+///   When `None`, uses the default of 1 data point per metric.
+/// - `extra_attrs`: Optional extra key-value pairs merged into the resource attributes.
+#[must_use]
+pub fn static_otlp_metrics_with_config(
+    signal_count: usize,
+    num_metric_attributes: Option<usize>,
+    num_data_points: Option<usize>,
+    extra_attrs: Option<&HashMap<String, String>>,
+) -> MetricsData {
+    let metrics = static_metrics_elaborate(signal_count, num_metric_attributes, num_data_points);
 
     let scopes = vec![ScopeMetrics::new(
         InstrumentationScope::build()
@@ -410,42 +692,271 @@ fn static_spans(signal_count: usize) -> Vec<Span> {
         .collect()
 }
 
-/// Generate static metrics (alternating between counter and gauge)
-fn static_metrics(signal_count: usize) -> Vec<Metric> {
-    let attributes = static_metric_attributes();
+/// Generate static metrics covering all five OTLP metric types with realistic
+/// names, attributes, and per-data-point variance.
+///
+/// Metrics cycle through [`METRIC_DEFS`] which includes Counters, UpDownCounters,
+/// Gauges, Histograms, ExponentialHistograms, and Summaries.
+fn static_metrics_elaborate(
+    signal_count: usize,
+    num_metric_attributes: Option<usize>,
+    num_data_points: Option<usize>,
+) -> Vec<Metric> {
+    let attr_count = num_metric_attributes.unwrap_or(DEFAULT_METRIC_ATTRIBUTE_COUNT);
+    let dp_count = num_data_points.unwrap_or(DEFAULT_DATA_POINTS_PER_METRIC);
+    let defs_len = METRIC_DEFS.len();
 
     (0..signal_count)
         .map(|i| {
-            let timestamp = current_time();
-            let datapoints = vec![
-                NumberDataPoint::build()
-                    .time_unix_nano(timestamp)
-                    .value_double(1.0)
-                    .attributes(attributes.clone())
-                    .finish(),
-            ];
-
-            if i % 2 == 0 {
-                // Counter (monotonic sum)
-                Metric::build()
-                    .name("http.server.request.duration")
-                    .description("Duration of HTTP server requests")
-                    .unit("ms")
-                    .data_sum(Sum::new(
-                        AggregationTemporality::Cumulative,
-                        true,
-                        datapoints,
-                    ))
-                    .finish()
-            } else {
-                // Gauge
-                Metric::build()
-                    .name("http.server.active_requests")
-                    .description("Number of active HTTP requests")
-                    .unit("{request}")
-                    .data_gauge(Gauge::new(datapoints))
-                    .finish()
+            let def = &METRIC_DEFS[i % defs_len];
+            match def.kind {
+                MetricKind::Counter => {
+                    let datapoints = build_number_data_points(dp_count, i, attr_count, true);
+                    Metric::build()
+                        .name(def.name)
+                        .description(def.description)
+                        .unit(def.unit)
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Cumulative,
+                            true,
+                            datapoints,
+                        ))
+                        .finish()
+                }
+                MetricKind::UpDownCounter => {
+                    let datapoints = build_number_data_points(dp_count, i, attr_count, false);
+                    Metric::build()
+                        .name(def.name)
+                        .description(def.description)
+                        .unit(def.unit)
+                        .data_sum(Sum::new(AggregationTemporality::Delta, false, datapoints))
+                        .finish()
+                }
+                MetricKind::Gauge => {
+                    let datapoints = build_number_data_points(dp_count, i, attr_count, false);
+                    Metric::build()
+                        .name(def.name)
+                        .description(def.description)
+                        .unit(def.unit)
+                        .data_gauge(Gauge::new(datapoints))
+                        .finish()
+                }
+                MetricKind::Histogram => {
+                    let datapoints = build_histogram_data_points(dp_count, i, attr_count);
+                    Metric::build()
+                        .name(def.name)
+                        .description(def.description)
+                        .unit(def.unit)
+                        .data_histogram(Histogram::new(AggregationTemporality::Delta, datapoints))
+                        .finish()
+                }
+                MetricKind::ExponentialHistogram => {
+                    let datapoints = build_exp_histogram_data_points(dp_count, i, attr_count);
+                    Metric::build()
+                        .name(def.name)
+                        .description(def.description)
+                        .unit(def.unit)
+                        .data_exponential_histogram(ExponentialHistogram::new(
+                            AggregationTemporality::Delta,
+                            datapoints,
+                        ))
+                        .finish()
+                }
+                MetricKind::Summary => {
+                    let datapoints = build_summary_data_points(dp_count, i, attr_count);
+                    Metric::build()
+                        .name(def.name)
+                        .description(def.description)
+                        .unit(def.unit)
+                        .data_summary(Summary::new(datapoints))
+                        .finish()
+                }
             }
+        })
+        .collect()
+}
+
+/// Build NumberDataPoints with varying values and attributes.
+fn build_number_data_points(
+    count: usize,
+    metric_index: usize,
+    attr_count: usize,
+    monotonic: bool,
+) -> Vec<NumberDataPoint> {
+    (0..count)
+        .map(|j| {
+            let point_idx = metric_index.wrapping_mul(31) + j;
+            let timestamp = current_time();
+            let start_time = timestamp - delay();
+            let attributes = build_metric_attributes(attr_count, point_idx);
+            let value = if monotonic {
+                // Monotonic counter: increasing values
+                ((point_idx + 1) * 42) as f64 + (j as f64 * 1.5)
+            } else {
+                // Gauge/up-down: varied values centered around typical ranges
+                let base_values = [0.73, 1.2, 45.8, 128.0, 0.95, 2048.0, 0.12, 89.5];
+                base_values[point_idx % base_values.len()]
+            };
+            NumberDataPoint::build()
+                .time_unix_nano(timestamp)
+                .start_time_unix_nano(start_time)
+                .value_double(value)
+                .attributes(attributes)
+                .finish()
+        })
+        .collect()
+}
+
+/// Build HistogramDataPoints with realistic bucket distributions.
+fn build_histogram_data_points(
+    count: usize,
+    metric_index: usize,
+    attr_count: usize,
+) -> Vec<HistogramDataPoint> {
+    // Pre-computed bucket count distributions (16 buckets = 15 bounds + 1 overflow)
+    // representing different latency profiles.
+    // Bounds: [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000, +inf]
+    const DISTRIBUTIONS: &[&[u64]] = &[
+        // Mostly fast requests with tail latency
+        &[10, 45, 120, 200, 180, 90, 40, 15, 8, 4, 2, 1, 0, 0, 0, 0],
+        // Bimodal: fast + slow
+        &[5, 20, 80, 150, 60, 20, 10, 5, 30, 80, 40, 10, 3, 1, 0, 0],
+        // Uniform-ish spread
+        &[8, 12, 18, 25, 30, 35, 32, 28, 22, 15, 10, 6, 3, 1, 1, 0],
+        // Very fast (cache hits)
+        &[200, 150, 50, 10, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        // Slow service
+        &[0, 1, 3, 5, 10, 20, 45, 80, 120, 90, 50, 25, 12, 5, 2, 0],
+    ];
+
+    (0..count)
+        .map(|j| {
+            let point_idx = metric_index.wrapping_mul(31) + j;
+            let timestamp = current_time();
+            let start_time = timestamp - delay();
+            let attributes = build_metric_attributes(attr_count, point_idx);
+            let dist = DISTRIBUTIONS[point_idx % DISTRIBUTIONS.len()];
+            let total_count: u64 = dist.iter().sum();
+            // Midpoints of each bucket: [(-inf,0], (0,5], (5,10], ... (10000,+inf)]
+            let midpoints = [
+                0.0, 2.5, 7.5, 17.5, 37.5, 62.5, 87.5, 175.0, 375.0, 625.0, 875.0, 1750.0, 3750.0,
+                6250.0, 8750.0, 15000.0,
+            ];
+            let sum: f64 = dist
+                .iter()
+                .zip(midpoints.iter())
+                .map(|(&c, &m)| c as f64 * m)
+                .sum();
+            // Derive min/max from the first and last non-zero bucket midpoints
+            let min_val = dist
+                .iter()
+                .zip(midpoints.iter())
+                .find(|(c, _)| **c > 0)
+                .map_or(0.0, |(_, &m)| m);
+            let max_val = dist
+                .iter()
+                .zip(midpoints.iter())
+                .rev()
+                .find(|(c, _)| **c > 0)
+                .map_or(0.0, |(_, &m)| m);
+
+            HistogramDataPoint::build()
+                .time_unix_nano(timestamp)
+                .start_time_unix_nano(start_time)
+                .count(total_count)
+                .sum(sum)
+                .bucket_counts(dist.to_vec())
+                .explicit_bounds(HISTOGRAM_BOUNDS.to_vec())
+                .min(min_val)
+                .max(max_val)
+                .attributes(attributes)
+                .finish()
+        })
+        .collect()
+}
+
+/// Build ExponentialHistogramDataPoints with realistic exponential bucket distributions.
+fn build_exp_histogram_data_points(
+    count: usize,
+    metric_index: usize,
+    attr_count: usize,
+) -> Vec<ExponentialHistogramDataPoint> {
+    (0..count)
+        .map(|j| {
+            let point_idx = metric_index.wrapping_mul(31) + j;
+            let timestamp = current_time();
+            let start_time = timestamp - delay();
+            let attributes = build_metric_attributes(attr_count, point_idx);
+
+            // Vary the bucket distribution per point
+            let positive_buckets = match point_idx % 4 {
+                0 => Buckets::new(0, vec![100, 80, 40, 15, 5, 2, 1]),
+                1 => Buckets::new(1, vec![20, 50, 120, 80, 30, 10]),
+                2 => Buckets::new(-1, vec![5, 15, 40, 90, 60, 25, 8, 3]),
+                _ => Buckets::new(0, vec![30, 45, 60, 45, 30, 15, 5]),
+            };
+            let total_count: u64 = positive_buckets.bucket_counts.iter().sum();
+            let sum = total_count as f64 * 12.5;
+            let zeros = 2u64;
+
+            ExponentialHistogramDataPoint::build()
+                .time_unix_nano(timestamp)
+                .start_time_unix_nano(start_time)
+                .count(total_count + zeros)
+                .sum(sum)
+                .scale(4)
+                .zero_count(zeros)
+                .positive(positive_buckets)
+                .min(0.1)
+                .max(sum / total_count as f64 * 3.0)
+                .attributes(attributes)
+                .finish()
+        })
+        .collect()
+}
+
+/// Build SummaryDataPoints with realistic quantile values.
+fn build_summary_data_points(
+    count: usize,
+    metric_index: usize,
+    attr_count: usize,
+) -> Vec<SummaryDataPoint> {
+    // Different latency profiles for quantile values
+    const QUANTILE_PROFILES: &[&[f64]] = &[
+        // Fast service: p50=2ms, p99=50ms
+        &[0.1, 0.8, 2.0, 5.0, 12.0, 25.0, 50.0, 120.0],
+        // Medium service: p50=15ms, p99=500ms
+        &[1.0, 5.0, 15.0, 40.0, 100.0, 200.0, 500.0, 1200.0],
+        // Slow service: p50=100ms, p99=5000ms
+        &[5.0, 30.0, 100.0, 300.0, 800.0, 1500.0, 5000.0, 12000.0],
+        // Very fast (cache): p50=0.3ms, p99=5ms
+        &[0.01, 0.1, 0.3, 0.8, 2.0, 3.5, 5.0, 15.0],
+    ];
+
+    (0..count)
+        .map(|j| {
+            let point_idx = metric_index.wrapping_mul(31) + j;
+            let timestamp = current_time();
+            let start_time = timestamp - delay();
+            let attributes = build_metric_attributes(attr_count, point_idx);
+            let profile = QUANTILE_PROFILES[point_idx % QUANTILE_PROFILES.len()];
+            let total_count = ((point_idx + 1) * 1000) as u64;
+            let sum = profile[3] * total_count as f64 * 0.8;
+
+            let quantile_values: Vec<ValueAtQuantile> = SUMMARY_QUANTILES
+                .iter()
+                .zip(profile.iter())
+                .map(|(&q, &v)| ValueAtQuantile::new(q, v))
+                .collect();
+
+            SummaryDataPoint::build()
+                .time_unix_nano(timestamp)
+                .start_time_unix_nano(start_time)
+                .count(total_count)
+                .sum(sum)
+                .quantile_values(quantile_values)
+                .attributes(attributes)
+                .finish()
         })
         .collect()
 }
@@ -606,6 +1117,109 @@ mod tests {
         assert_eq!(
             metrics.resource_metrics[0].scope_metrics[0].metrics.len(),
             10
+        );
+    }
+
+    #[test]
+    fn test_static_metrics_all_types() {
+        // Generate enough metrics to cycle through all METRIC_DEFS (22 entries)
+        let metrics = static_otlp_metrics(22, None);
+        let metric_list = &metrics.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metric_list.len(), 22);
+
+        // Verify we have all metric types
+        use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+        let mut has_sum = false;
+        let mut has_gauge = false;
+        let mut has_histogram = false;
+        let mut has_exp_histogram = false;
+        let mut has_summary = false;
+        for m in metric_list {
+            match &m.data {
+                Some(Data::Sum(_)) => has_sum = true,
+                Some(Data::Gauge(_)) => has_gauge = true,
+                Some(Data::Histogram(_)) => has_histogram = true,
+                Some(Data::ExponentialHistogram(_)) => has_exp_histogram = true,
+                Some(Data::Summary(_)) => has_summary = true,
+                None => panic!("Metric should have data"),
+            }
+        }
+        assert!(has_sum, "should generate Sum metrics");
+        assert!(has_gauge, "should generate Gauge metrics");
+        assert!(has_histogram, "should generate Histogram metrics");
+        assert!(
+            has_exp_histogram,
+            "should generate ExponentialHistogram metrics"
+        );
+        assert!(has_summary, "should generate Summary metrics");
+    }
+
+    #[test]
+    fn test_static_metrics_with_custom_attributes() {
+        let metrics = static_otlp_metrics_with_config(5, Some(6), None, None);
+        let metric_list = &metrics.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metric_list.len(), 5);
+    }
+
+    #[test]
+    fn test_static_metrics_with_custom_data_points() {
+        let metrics = static_otlp_metrics_with_config(3, None, Some(4), None);
+        let metric_list = &metrics.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metric_list.len(), 3);
+        // First metric is a counter (Sum), check it has 4 data points
+        use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+        if let Some(Data::Sum(sum)) = &metric_list[0].data {
+            assert_eq!(sum.data_points.len(), 4);
+        } else {
+            panic!("First metric should be a Sum");
+        }
+    }
+
+    #[test]
+    fn test_static_metrics_with_extra_resource_attrs() {
+        let mut extra = HashMap::new();
+        _ = extra.insert("tenant.id".to_string(), "prod".to_string());
+        let metrics = static_otlp_metrics(5, Some(&extra));
+        let attrs = &metrics.resource_metrics[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes;
+        assert!(attrs.iter().any(|kv| kv.key == "tenant.id"));
+    }
+
+    /// Verify that generated metric batches achieve a realistic compression ratio.
+    ///
+    /// Generates 500 metrics covering all five OTLP metric types with 6
+    /// attributes and 3 data points per metric, then checks the zstd
+    /// compression ratio stays within a realistic range.
+    ///
+    /// Run with:
+    /// ```sh
+    /// cargo test -p otap-df-core-nodes --features dev-tools -- test_metrics_compression_ratio --nocapture
+    /// ```
+    #[test]
+    fn test_metrics_compression_ratio_is_realistic() {
+        use prost::Message;
+
+        let metrics = static_otlp_metrics_with_config(500, Some(6), Some(3), None);
+        let raw = metrics.encode_to_vec();
+        let raw_size = raw.len();
+
+        let compressed = zstd::bulk::compress(&raw, 3).expect("zstd compression failed");
+        let compressed_size = compressed.len();
+
+        let ratio = raw_size as f64 / compressed_size as f64;
+
+        println!(
+            "Metrics compression: raw={raw_size} bytes, compressed={compressed_size} bytes, \
+             ratio={ratio:.1}:1"
+        );
+
+        assert!(
+            (3.0..=45.0).contains(&ratio),
+            "compression ratio {ratio:.1}:1 is outside acceptable range (3:1 - 45:1); \
+             raw={raw_size} bytes, compressed={compressed_size} bytes"
         );
     }
 

@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Internal logs configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct LogsConfig {
     /// The log level for internal engine logs.
     ///
@@ -36,7 +36,7 @@ pub struct LogsConfig {
 }
 
 /// Configuration for the internal log tap used by admin/MCP-style consumers.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct InternalLogTapConfig {
     /// Enable the internal in-memory log tap.
     #[serde(default)]
@@ -81,7 +81,7 @@ impl LogLevel {
 }
 
 /// Logging providers for different execution contexts.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct LoggingProviders {
     /// Provider mode for non-engine threads. This defines the global Tokio
     /// `tracing` subscriber. Default is ConsoleAsync.
