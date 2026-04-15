@@ -5,16 +5,24 @@ engine:
       readers:
         - pull:
             exporter:
-              prometheus:
+              type: prometheus
+              config:
                 host: "0.0.0.0"
                 port: 9090
                 path: "/metrics"
-    views:
-      - selector:
-          instrument_name: "logs.produced"
-        stream:
-          name: "otlp.logs.produced.count"
-          description: "Count of logs produced"
+      views:
+        - selector:
+            scope_name: "fake_data_generator.receiver.metrics"
+            instrument_name: "logs.produced"
+          stream:
+            name: "otlp.logs.produced.count"
+            description: "Count of logs produced"
+        - selector:
+            scope_name: "debug.processor.pdata.metrics"
+            instrument_name: "logs.consumed"
+          stream:
+            name: "debug.logs.consumed.count"
+            description: "Count of log messages consumed by debug processor"
     resource:
       service.name: "fake-debug-noop-service"
 groups:
@@ -23,10 +31,10 @@ groups:
       main:
         policies:
           channel_capacity:
-              control:
-                node: 100
-                pipeline: 100
-              pdata: 128
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
         nodes:
           receiver:

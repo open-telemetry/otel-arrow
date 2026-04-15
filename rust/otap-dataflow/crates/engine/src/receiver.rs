@@ -29,6 +29,7 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,6 +63,8 @@ pub enum ReceiverWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
+        /// Pre-resolved capture policy for transport header extraction.
+        capture_policy: Option<HeaderCapturePolicy>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -86,6 +89,8 @@ pub enum ReceiverWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
+        /// Pre-resolved capture policy for transport header extraction.
+        capture_policy: Option<HeaderCapturePolicy>,
     },
 }
 
@@ -127,6 +132,7 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_receiver: None,
             telemetry: None,
             source_tag: SourceTagging::Disabled,
+            capture_policy: None,
         }
     }
 
@@ -154,6 +160,7 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_receiver: None,
             telemetry: None,
             source_tag: SourceTagging::Disabled,
+            capture_policy: None,
         }
     }
 
@@ -169,6 +176,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 source_tag,
+                capture_policy,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -181,6 +189,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 source_tag,
+                capture_policy,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -192,6 +201,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 source_tag,
+                capture_policy,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -204,6 +214,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 source_tag,
+                capture_policy,
             },
         }
     }
@@ -233,6 +244,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
+                capture_policy,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -257,6 +269,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     source_tag,
+                    capture_policy,
                 }
             }
             ReceiverWrapper::Shared {
@@ -270,6 +283,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
+                capture_policy,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -294,6 +308,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     source_tag,
+                    capture_policy,
                 }
             }
         }
@@ -317,6 +332,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     user_config,
                     source_tag,
+                    capture_policy,
                     ..
                 },
                 metrics_reporter,
@@ -341,6 +357,7 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.set_capture_policy(capture_policy);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -355,6 +372,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     user_config,
                     source_tag,
+                    capture_policy,
                     ..
                 },
                 metrics_reporter,
@@ -379,6 +397,7 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
+                effect_handler.set_capture_policy(capture_policy);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -471,6 +490,65 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
         match self {
             ReceiverWrapper::Local { source_tag, .. } => *source_tag = value,
             ReceiverWrapper::Shared { source_tag, .. } => *source_tag = value,
+        }
+    }
+}
+
+impl<PData> ReceiverWrapper<PData> {
+    /// Returns the wrapper with the given pre-resolved capture engine for
+    /// transport header extraction.
+    pub(crate) fn with_capture_policy(self, policy: Option<HeaderCapturePolicy>) -> Self {
+        match self {
+            ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                ..
+            } => ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy: policy,
+            },
+            ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                ..
+            } => ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy: policy,
+            },
         }
     }
 }
@@ -784,5 +862,70 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario(port_rx))
             .run_validation(validation_procedure());
+    }
+
+    // -- with_capture_policy tests --------------------------------------------
+
+    use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
+
+    #[test]
+    fn test_with_capture_policy_none_by_default() {
+        let (port_tx, _port_rx) = oneshot::channel();
+        let test_runtime = TestRuntime::<TestMsg>::new();
+        let wrapper = ReceiverWrapper::local(
+            TestReceiver::new(test_runtime.counters(), port_tx),
+            test_node("recv"),
+            Arc::new(NodeUserConfig::new_receiver_config("test")),
+            test_runtime.config(),
+        );
+
+        match wrapper {
+            ReceiverWrapper::Local { capture_policy, .. } => {
+                assert!(capture_policy.is_none(), "should be None by default")
+            }
+            _ => panic!("expected Local variant"),
+        }
+    }
+
+    #[test]
+    fn test_with_capture_policy_local() {
+        let (port_tx, _port_rx) = oneshot::channel();
+        let test_runtime = TestRuntime::<TestMsg>::new();
+        let wrapper = ReceiverWrapper::local(
+            TestReceiver::new(test_runtime.counters(), port_tx),
+            test_node("recv"),
+            Arc::new(NodeUserConfig::new_receiver_config("test")),
+            test_runtime.config(),
+        )
+        .with_capture_policy(Some(HeaderCapturePolicy::default()));
+
+        match wrapper {
+            ReceiverWrapper::Local { capture_policy, .. } => assert!(
+                capture_policy.is_some(),
+                "should be set after with_capture_policy"
+            ),
+            _ => panic!("expected Local variant"),
+        }
+    }
+
+    #[test]
+    fn test_with_capture_policy_shared() {
+        let (port_tx, _port_rx) = oneshot::channel();
+        let test_runtime = TestRuntime::<TestMsg>::new();
+        let wrapper = ReceiverWrapper::shared(
+            TestReceiver::new(test_runtime.counters(), port_tx),
+            test_node("recv"),
+            Arc::new(NodeUserConfig::new_receiver_config("test")),
+            test_runtime.config(),
+        )
+        .with_capture_policy(Some(HeaderCapturePolicy::default()));
+
+        match wrapper {
+            ReceiverWrapper::Shared { capture_policy, .. } => assert!(
+                capture_policy.is_some(),
+                "should be set after with_capture_policy"
+            ),
+            _ => panic!("expected Shared variant"),
+        }
     }
 }

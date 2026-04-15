@@ -11,13 +11,18 @@ rust-version.workspace = true
 [dependencies]
 arrow = { workspace = true, features = ["prettyprint"] }
 async-trait = { workspace = true }
-datafusion = { workspace = true }
+datafusion = { workspace = true, features = [
+    "crypto_expressions",
+    "unicode_expressions",
+] }
 futures-core = { workspace = true }
+memchr = { workspace = true }
+paste = { workspace = true }
 parking_lot = { workspace = true }
-roaring = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
+data_engine_parser_abstractions = { workspace = true }
 
 otap-df-pdata = { workspace = true, features = ["testing"] }
 

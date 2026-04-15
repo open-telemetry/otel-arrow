@@ -11,10 +11,12 @@ use pest::iterators::Pair;
 use crate::parser::expression::{
     parse_attribute_selection_expression, parse_expression, parse_index_expression,
 };
+use crate::parser::pipeline::PipelineBuilder;
 use crate::parser::{Rule, invalid_child_rule_error};
 
 pub(crate) fn parse_assignment_expression(
     rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
 ) -> Result<(SourceScalarExpression, ScalarExpression), ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
@@ -40,7 +42,7 @@ pub(crate) fn parse_assignment_expression(
                 )),
             )]),
         ),
-        Rule::index_expression => match parse_index_expression(left)?.into() {
+        Rule::index_expression => match parse_index_expression(left, pipeline_builder)?.into() {
             ScalarExpression::Source(source_expr) => source_expr,
             other => {
                 return Err(ParserError::SyntaxError(
@@ -53,7 +55,7 @@ pub(crate) fn parse_assignment_expression(
             }
         },
         Rule::attribute_selection_expression => {
-            match parse_attribute_selection_expression(left)?.into() {
+            match parse_attribute_selection_expression(left, pipeline_builder)?.into() {
                 ScalarExpression::Source(source_expr) => source_expr,
                 other => {
                     return Err(ParserError::SyntaxError(
@@ -77,7 +79,7 @@ pub(crate) fn parse_assignment_expression(
 
     let right_query_location = to_query_location(&right);
     let source = match right.as_rule() {
-        Rule::expression => parse_expression(right)?.into(),
+        Rule::expression => parse_expression(right, pipeline_builder)?.into(),
         invalid_rule => {
             return Err(invalid_child_rule_error(
                 right_query_location,
@@ -96,10 +98,11 @@ mod test {
         IntegerScalarExpression, QueryLocation, ScalarExpression, StaticScalarExpression,
         StringScalarExpression,
     };
+    use data_engine_parser_abstractions::ParserState;
     use pest::Parser;
 
     use super::*;
-    use crate::parser::pest::OplPestParser;
+    use crate::parser::{pest::OplPestParser, pipeline::RootPipelineBuilder};
 
     #[test]
     fn test_simple_assignment() {
@@ -107,7 +110,9 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let (destination, source) = parse_assignment_expression(rule).unwrap();
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
+        let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -132,7 +137,9 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let (destination, source) = parse_assignment_expression(rule).unwrap();
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
+        let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -159,7 +166,9 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let (destination, source) = parse_assignment_expression(rule).unwrap();
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
+        let (destination, source) = parse_assignment_expression(rule, &pipeline_builder).unwrap();
 
         let expected_destination = SourceScalarExpression::new(
             QueryLocation::new_fake(),

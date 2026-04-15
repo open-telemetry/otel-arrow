@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// OpenTelemetry Metrics View configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ViewConfig {
     /// Selector to match instruments for this view transformation.
     pub selector: MetricSelector,
@@ -17,15 +17,17 @@ pub struct ViewConfig {
 }
 
 /// OpenTelemetry Metric Selector configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct MetricSelector {
     /// The name of the instrument to match.
     pub instrument_name: Option<String>,
-    // TODO: Add more selector fields.
+    /// The instrumentation scope (meter) name to match.
+    /// When set, the view only applies to instruments created under this scope.
+    pub scope_name: Option<String>,
 }
 
 /// OpenTelemetry Metric Stream configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct MetricStream {
     /// The new name of the instrument matching the selector.
     pub name: Option<String>,
@@ -51,6 +53,7 @@ mod tests {
             config.selector.instrument_name.as_deref(),
             Some("requests.total")
         );
+        assert_eq!(config.selector.scope_name.as_deref(), None);
         assert_eq!(config.stream.name.as_deref(), Some("http.requests.total"));
         assert_eq!(
             config.stream.description.as_deref(),
@@ -83,7 +86,33 @@ mod tests {
             "#;
         let config: ViewConfig = serde_yaml::from_str(yaml_str).unwrap();
         assert_eq!(config.selector.instrument_name.as_deref(), None);
+        assert_eq!(config.selector.scope_name.as_deref(), None);
         assert_eq!(config.stream.name.as_deref(), None);
         assert_eq!(config.stream.description.as_deref(), None);
+    }
+
+    #[test]
+    fn test_view_config_with_scope_name() {
+        let yaml_str = r#"
+            selector:
+              instrument_name: "successful_rows"
+              scope_name: "azure_monitor_exporter.metrics"
+            stream:
+              name: "exporter_sent_log_records"
+              description: "Number of log records successfully sent by the exporter."
+            "#;
+        let config: ViewConfig = serde_yaml::from_str(yaml_str).unwrap();
+        assert_eq!(
+            config.selector.instrument_name.as_deref(),
+            Some("successful_rows")
+        );
+        assert_eq!(
+            config.selector.scope_name.as_deref(),
+            Some("azure_monitor_exporter.metrics")
+        );
+        assert_eq!(
+            config.stream.name.as_deref(),
+            Some("exporter_sent_log_records")
+        );
     }
 }
