@@ -7,10 +7,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
-use nix::libc;
+use one_collect::helpers::exporting::ExportMachine;
 #[cfg(target_os = "linux")]
 use one_collect::perf_event::{PerfSession, RingBufBuilder, RingBufSessionBuilder};
 #[cfg(target_os = "linux")]
@@ -113,8 +113,6 @@ impl OneCollectUserEventsSession {
 
         let pending = Rc::new(RefCell::new(VecDeque::new()));
         let lost_samples = Rc::new(Cell::new(0u64));
-        let monotonic_raw_to_realtime_offset_ns = monotonic_raw_to_realtime_offset_ns()?;
-
         let ancillary = session.ancillary_data();
         let time_field = session.time_data_ref();
         let pid_field = session.pid_field_ref();
@@ -158,8 +156,8 @@ impl OneCollectUserEventsSession {
                 let full_data = data.full_data();
                 let timestamp = event_time_field
                     .try_get_u64(full_data)
-                    .map(|value| perf_timestamp_to_unix_nano(value, monotonic_raw_to_realtime_offset_ns))
-                    .unwrap_or_default();
+                    .map(sample_qpc_to_unix_nano)
+                    .unwrap_or_else(current_time_unix_nano);
                 let pid = event_pid_field.try_get_u32(full_data).map(|value| value as i32);
                 let tid = event_tid_field.try_get_u32(full_data).map(|value| value as i32);
                 let mut cpu = None;
@@ -265,44 +263,21 @@ fn page_count(per_cpu_buffer_size: usize) -> usize {
 }
 
 #[cfg(target_os = "linux")]
-fn monotonic_raw_to_realtime_offset_ns() -> Result<i128, CollectInitError> {
-    let before = clock_gettime_ns(libc::CLOCK_MONOTONIC_RAW)?;
-    let realtime = clock_gettime_ns(libc::CLOCK_REALTIME)?;
-    let after = clock_gettime_ns(libc::CLOCK_MONOTONIC_RAW)?;
-    let midpoint = before + (after - before) / 2;
-    Ok(realtime as i128 - midpoint as i128)
+fn current_time_unix_nano() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_default()
 }
 
 #[cfg(target_os = "linux")]
-fn clock_gettime_ns(clock_id: libc::clockid_t) -> Result<u64, CollectInitError> {
-    let mut timespec = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    let status = unsafe { libc::clock_gettime(clock_id, &mut timespec) };
-    if status != 0 {
-        return Err(CollectInitError::Io(io::Error::last_os_error()));
-    }
-    if timespec.tv_sec < 0 || timespec.tv_nsec < 0 {
-        return Err(CollectInitError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "clock_gettime returned a negative timestamp",
-        )));
-    }
-    Ok((timespec.tv_sec as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(timespec.tv_nsec as u64))
-}
-
-#[cfg(target_os = "linux")]
-fn perf_timestamp_to_unix_nano(timestamp: u64, monotonic_raw_to_realtime_offset_ns: i128) -> u64 {
-    let unix_timestamp = (timestamp as i128).saturating_add(monotonic_raw_to_realtime_offset_ns);
-    if unix_timestamp <= 0 {
-        0
-    } else if unix_timestamp >= u64::MAX as i128 {
-        u64::MAX
+fn sample_qpc_to_unix_nano(sample_qpc: u64) -> u64 {
+    let now_unix = current_time_unix_nano();
+    let now_qpc = ExportMachine::qpc_time();
+    if sample_qpc <= now_qpc {
+        now_unix.saturating_sub(now_qpc - sample_qpc)
     } else {
-        unix_timestamp as u64
+        now_unix.saturating_add(sample_qpc - now_qpc)
     }
 }
 
