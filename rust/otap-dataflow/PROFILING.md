@@ -2,6 +2,8 @@
 
 This section covers CPU and memory profiling for `df_engine`.
 
+### CPU profiling (samply)
+
 **Requirements**:
 
 - [samply](https://github.com/mstange/samply)
@@ -11,8 +13,6 @@ This section covers CPU and memory profiling for `df_engine`.
 ```cmd/pwsh/bash
 cargo install --locked samply
 ```
-
-### CPU profiling (samply)
 
 **Build**:
 
