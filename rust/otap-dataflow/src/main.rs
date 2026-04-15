@@ -51,10 +51,10 @@ use {
     std::sync::{LazyLock, Mutex},
 };
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(not(clippy), feature = "mimalloc"))]
 use mimalloc::MiMalloc;
 
-#[cfg(all(not(windows), feature = "jemalloc"))]
+#[cfg(all(not(clippy), not(windows), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
 
 // -----------------------------------------------------------------------------
