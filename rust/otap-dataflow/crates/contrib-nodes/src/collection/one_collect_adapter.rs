@@ -120,16 +120,17 @@ impl OneCollectUserEventsSession {
         let tracefs = TraceFS::open().map_err(CollectInitError::Io)?;
 
         for subscription in subscriptions {
-            let (_, event_name) = subscription
-                .tracepoint
-                .split_once(':')
-                .ok_or_else(|| CollectInitError::InvalidTracepoint(subscription.tracepoint.clone()))?;
+            let (_, event_name) = subscription.tracepoint.split_once(':').ok_or_else(|| {
+                CollectInitError::InvalidTracepoint(subscription.tracepoint.clone())
+            })?;
 
             let mut event = match tracefs.find_event("user_events", event_name) {
                 Ok(event) => event,
                 Err(error) => match error.kind() {
                     io::ErrorKind::NotFound => {
-                        return Err(CollectInitError::MissingTracepoint(subscription.tracepoint.clone()))
+                        return Err(CollectInitError::MissingTracepoint(
+                            subscription.tracepoint.clone(),
+                        ));
                     }
                     io::ErrorKind::PermissionDenied => {
                         return Err(CollectInitError::Io(io::Error::new(
@@ -138,7 +139,7 @@ impl OneCollectUserEventsSession {
                                 "tracepoint `{}` is registered but tracefs metadata is not readable; run df_engine with elevated privileges or relax tracefs read permissions",
                                 subscription.tracepoint
                             ),
-                        )))
+                        )));
                     }
                     _ => return Err(CollectInitError::Io(error)),
                 },
@@ -158,8 +159,12 @@ impl OneCollectUserEventsSession {
                     .try_get_u64(full_data)
                     .map(sample_qpc_to_unix_nano)
                     .unwrap_or_else(current_time_unix_nano);
-                let pid = event_pid_field.try_get_u32(full_data).map(|value| value as i32);
-                let tid = event_tid_field.try_get_u32(full_data).map(|value| value as i32);
+                let pid = event_pid_field
+                    .try_get_u32(full_data)
+                    .map(|value| value as i32);
+                let tid = event_tid_field
+                    .try_get_u32(full_data)
+                    .map(|value| value as i32);
                 let mut cpu = None;
                 event_ancillary.read(|values| {
                     cpu = Some(values.cpu());

@@ -61,9 +61,10 @@ const DEFAULT_LATE_REGISTRATION_POLL: Duration = Duration::from_secs(1);
 /// URN for the Linux userevents receiver.
 pub const USEREVENTS_RECEIVER_URN: &str = "urn:otel:receiver:userevents";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FormatConfig {
+    #[default]
     Raw,
     CommonSchemaOtelLogs,
     EventheaderFlat {
@@ -78,12 +79,6 @@ enum FormatConfig {
         #[serde(default)]
         attributes_from: Vec<String>,
     },
-}
-
-impl Default for FormatConfig {
-    fn default() -> Self {
-        Self::Raw
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

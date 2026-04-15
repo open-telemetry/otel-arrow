@@ -134,7 +134,8 @@ impl ArrowRecordsBuilder {
 mod tests {
     use super::*;
     use crate::receivers::userevents_receiver::decoder::DecodedUsereventsRecord;
-    use arrow::array::{AsArray, DictionaryArray, StringArray, UInt8Array, UInt16Array};
+    use arrow::array::{AsArray, DictionaryArray, Int32Array, StringArray, StructArray};
+    use arrow::datatypes::{TimestampNanosecondType, UInt8Type, UInt16Type};
 
     #[test]
     fn build_creates_logs_and_attributes_batches() {
@@ -171,14 +172,20 @@ mod tests {
         let time_col = logs_rb
             .column_by_name("time_unix_nano")
             .expect("time column");
-        let time_values = time_col.as_primitive::<arrow::datatypes::Int64Type>();
+        let time_values = time_col.as_primitive::<TimestampNanosecondType>();
         assert_eq!(time_values.value(0), 1234);
 
         let body_col = logs_rb.column_by_name("body").expect("body column");
-        let body_dict = body_col
+        let body_struct = body_col
             .as_any()
-            .downcast_ref::<DictionaryArray<UInt8Array>>()
-            .expect("body dictionary");
+            .downcast_ref::<StructArray>()
+            .expect("body struct");
+        let body_dict = body_struct
+            .column_by_name("str")
+            .expect("body string field")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .expect("body string dictionary");
         let body_values = body_dict
             .values()
             .as_any()
@@ -191,12 +198,12 @@ mod tests {
             .column_by_name("severity_number")
             .expect("severity number column")
             .as_any()
-            .downcast_ref::<DictionaryArray<UInt8Array>>()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
             .expect("severity dictionary");
         let severity_values = severity_col
             .values()
             .as_any()
-            .downcast_ref::<UInt16Array>()
+            .downcast_ref::<Int32Array>()
             .expect("severity values");
         let severity_idx = severity_col.keys().value(0) as usize;
         assert_eq!(severity_values.value(severity_idx), 17);
@@ -204,7 +211,7 @@ mod tests {
         let parent_col = attrs_rb
             .column_by_name("parent_id")
             .expect("parent id column")
-            .as_primitive::<arrow::datatypes::UInt16Type>();
+            .as_primitive::<UInt16Type>();
         for row in 0..attrs_rb.num_rows() {
             assert_eq!(parent_col.value(row), 0);
         }

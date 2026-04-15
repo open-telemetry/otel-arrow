@@ -85,17 +85,18 @@ mod imp {
                 cpu_ids: vec![cpu_id],
             };
 
-            let inner = OneCollectUserEventsSession::open(&subscriptions, &config).map_err(
-                |error| match error {
-                    CollectInitError::MissingTracepoint(tracepoint) => {
-                        SessionInitError::MissingTracepoint(tracepoint)
+            let inner =
+                OneCollectUserEventsSession::open(&subscriptions, &config).map_err(|error| {
+                    match error {
+                        CollectInitError::MissingTracepoint(tracepoint) => {
+                            SessionInitError::MissingTracepoint(tracepoint)
+                        }
+                        CollectInitError::InvalidTracepoint(tracepoint) => {
+                            SessionInitError::InvalidTracepoint(tracepoint)
+                        }
+                        CollectInitError::Io(error) => SessionInitError::Io(error),
                     }
-                    CollectInitError::InvalidTracepoint(tracepoint) => {
-                        SessionInitError::InvalidTracepoint(tracepoint)
-                    }
-                    CollectInitError::Io(error) => SessionInitError::Io(error),
-                },
-            )?;
+                })?;
 
             Ok(Self { inner })
         }

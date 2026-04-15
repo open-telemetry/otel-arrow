@@ -101,11 +101,16 @@ axum.workspace = true
 clap.workspace = true
 criterion = { workspace = true, features = ["html_reports"] }
 humantime.workspace = true
+core_affinity.workspace = true
+eventheader_dynamic = "0.5.0"
+otap-df-channel = { workspace = true }
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["test-utils"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 
 [[bench]]
