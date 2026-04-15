@@ -19,7 +19,7 @@ engine:
                 port: 9090
                 path: "/metrics"
     logs:
-      level: "debug"
+      level: "info"
       providers:
         global: its
         engine: its
