@@ -55,6 +55,7 @@ pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:receiver:traffic_genera
 pub struct FakeGeneratorReceiver {
     /// Configuration for the fake data generator
     config: Config,
+
     /// Metrics for the fake data generator
     metrics: MetricSet<FakeSignalReceiverMetrics>,
 }
@@ -103,6 +104,40 @@ impl FakeGeneratorReceiver {
                 }
             })?,
         ))
+    }
+
+    fn create_signal_generator(&self, id: NodeId) -> Result<SignalGenerator, Error> {
+        let traffic_config = self.config.get_traffic_config();
+        let signal_generator = match self.config.data_source() {
+            DataSource::SemanticConventions => {
+                let registry = self
+                    .config
+                    .get_registry()
+                    .map_err(|err| Error::ReceiverError {
+                        receiver: id,
+                        kind: ReceiverErrorKind::Configuration,
+                        error: err,
+                        source_detail: String::new(),
+                    })?
+                    .expect("SemanticConventions data source should return Some registry");
+                SignalGenerator::SemanticConventions(registry)
+            }
+            DataSource::Static => {
+                let entries = self.config.resource_attributes().to_vec();
+                let rotation = build_rotation_table(&entries);
+                SignalGenerator::Static {
+                    entries,
+                    rotation,
+                    log_body_size_bytes: traffic_config.log_body_size_bytes(),
+                    num_log_attributes: traffic_config.num_log_attributes(),
+                    use_trace_context: traffic_config.use_trace_context(),
+                    num_metric_attributes: traffic_config.num_metric_attributes(),
+                    num_data_points_per_metric: traffic_config.num_data_points_per_metric(),
+                }
+            }
+        };
+
+        Ok(signal_generator)
     }
 }
 
@@ -319,41 +354,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        //start event loop
         let traffic_config = self.config.get_traffic_config();
-        let data_source = self.config.data_source().clone();
         let generation_strategy = self.config.generation_strategy().clone();
 
         // Create the appropriate signal generator based on data source
-        let signal_generator = match data_source {
-            DataSource::SemanticConventions => {
-                let registry = self
-                    .config
-                    .get_registry()
-                    .map_err(|err| Error::ReceiverError {
-                        receiver: effect_handler.receiver_id(),
-                        kind: ReceiverErrorKind::Configuration,
-                        error: err,
-                        source_detail: String::new(),
-                    })?
-                    .expect("SemanticConventions data source should return Some registry");
-                SignalGenerator::SemanticConventions(registry)
-            }
-            DataSource::Static => {
-                let entries = self.config.resource_attributes().to_vec();
-                let rotation = build_rotation_table(&entries);
-                SignalGenerator::Static {
-                    entries,
-                    rotation,
-                    log_body_size_bytes: traffic_config.log_body_size_bytes(),
-                    num_log_attributes: traffic_config.num_log_attributes(),
-                    use_trace_context: traffic_config.use_trace_context(),
-                    num_metric_attributes: traffic_config.num_metric_attributes(),
-                    num_data_points_per_metric: traffic_config.num_data_points_per_metric(),
-                }
-            }
-        };
-
+        let signal_generator = self.create_signal_generator(effect_handler.receiver_id())?;
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
         let max_signal_count = traffic_config.get_max_signal_count();
         let signals_per_second = traffic_config.get_signal_rate();
@@ -419,13 +424,15 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         loop {
             let wait_till = Instant::now() + one_second_duration;
             tokio::select! {
-                biased; //prioritize ctrl_msg over all other blocks
-                // Process internal event
+                biased;
+
+                // prioritize ctrl_msg over all other blocks
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     if let Some(terminal) = handle_control_msg(ctrl_msg, &effect_handler, &mut self.metrics).await? {
                         return Ok(terminal);
                     }
                 }
+
                 // generate and send signal based on provided configuration
                 signal_status = send_signals(
                     effect_handler.clone(),
