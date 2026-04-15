@@ -1,9 +1,9 @@
-# Contributing to the OpenTelemetry Protocol with Apache Arrow project
+# Contributing to OTel-Arrow
 
 ## Introduction
 
 Welcome to the OpenTelemetry Protocol with Apache Arrow project! :tada:
-This repository defines and supports Golang libraries for producing and
+This repository defines and supports Golang and Rust libraries for producing and
 consuming telemetry data streams using the OpenTelemetry Protocol with Apache
 Arrow.
 
@@ -11,23 +11,12 @@ We value all contributions, whether big or small, and encourage you to join us
 in improving this project. If you have questions, don't hesitate to reach out to
 the OpenTelemetry community - we're here to help!
 
-Looking for a place to start? See the repository's
-[Contribute page](https://github.com/open-telemetry/otel-arrow/contribute).
-
 ## Pre-requisites
 
 To work with this repository, you'll need:
 
-- **Go (Golang):** v1.18 or higher. [Installation
-  Guide](https://golang.org/doc/install)
-- **Rust:** v1.87.0 or higher. [Installation Guide](https://www.rust-lang.org/tools/install)
-- **Protocol Buffer Compiler (protoc):** Required for regenerating gRPC
-  services. [Installation Guide](https://grpc.io/docs/protoc-installation/)
-- **protoc-gen-go:** Install using:
-
-  ```shell
-  go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
-  ```
+- **Golang:** One of the latest two Go releases. [Installation Guide](https://golang.org/doc/install)
+- **Rust:** We build using the stable channel. [Installation Guide](https://www.rust-lang.org/tools/install)
 
 ## Local Run/Build
 
@@ -232,6 +221,41 @@ to upgrade this repository is:
    the new collector release).
 3. Regenerate `otelarrowcol` via `make genotelarrowcol`
 4. Run `go work sync` to update the other modules with fresh dependencies.
+
+## Project Team
+
+### Maintainers
+
+- [Albert Lockett](https://github.com/albertlockett), F5
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+
+For more information about the maintainer role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
+
+### Approvers
+
+- [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Jake Dern](https://github.com/JakeDern), F5
+- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
+- [Lei Huang](https://github.com/v0y4g3r), Greptime
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
+
+For more information about the approver role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
+
+### Emeritus Approvers
+
+- [Alex Boten](https://github.com/codeboten)
+- [Moh Osman](https://github.com/moh-osman3)
+
+### Triagers
+
+- [Tom Tan](https://github.com/ThomsonTan), Microsoft
+
+For more information about the triager role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
 
 [RELEASING.md]: ./RELEASING.md
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
