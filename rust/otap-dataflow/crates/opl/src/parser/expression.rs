@@ -509,10 +509,6 @@ pub fn parse_member_expression(
         Rule::attribute_selection_expression => {
             parse_attribute_selection_expression(rule, pipeline_builder)
         }
-        Rule::datetime_expression => {
-            let date_time_expr = parse_datetime_expression(rule)?;
-            Ok(ScalarExpression::Static(date_time_expr).into())
-        }
         Rule::function_call => parse_function_call(rule, pipeline_builder),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
@@ -642,6 +638,7 @@ fn parse_primitive_expression(
         Rule::string_literal => {
             Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
         }
+        Rule::tagged_literal => Ok(parse_tagged_literal(rule, query_location)?.into()),
         Rule::bool_true_token => Ok(ScalarExpression::Static(StaticScalarExpression::Boolean(
             BooleanScalarExpression::new(query_location, true),
         ))
@@ -661,6 +658,31 @@ fn parse_primitive_expression(
             invalid_rule,
         )),
     }
+}
+
+pub(crate) fn parse_tagged_literal(
+    rule: Pair<'_, Rule>,
+    query_location: QueryLocation,
+) -> Result<ScalarExpression, ParserError> {
+    let mut inner_rules = rule.into_inner();
+    let tag_ident_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+    let tagged_string_literal = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+
+    let static_scalar_expr = match tag_ident_rule.as_str() {
+        "date_time" => parse_datetime_expression(tagged_string_literal, query_location)?,
+        "r" => {
+            todo!()
+        }
+        _unknown_tag => {
+            todo!()
+        }
+    };
+
+    Ok(ScalarExpression::Static(static_scalar_expr))
 }
 
 /// Parses invocation of function

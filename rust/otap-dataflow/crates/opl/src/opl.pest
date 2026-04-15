@@ -20,7 +20,7 @@ string_literal = {
   | ("'" ~ single_quote_string_char* ~ "'")
 }
 
-datetime_expression = { "date_time" ~ string_literal }
+tagged_literal = { ident ~ string_literal }
 
 identifier_expression = {
     ident
@@ -32,6 +32,7 @@ null_token       = @{ "null" }
 
 primitive_expression = {
     string_literal
+  | tagged_literal
   | bool_true_token
   | bool_false_token
   | null_token
@@ -61,7 +62,6 @@ function_call = { identifier_expression ~ "(" ~ argument_list ~ ")" }
 member_expression = {
     index_expression
   | attribute_selection_expression
-  | datetime_expression
   | function_call
   | primitive_expression
 }
