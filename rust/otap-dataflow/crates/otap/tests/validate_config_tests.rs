@@ -173,3 +173,103 @@ fn validate_processor_chain_invalid_config_rejected() {
         "error should mention invalid config: {err}"
     );
 }
+
+#[test]
+fn validate_processor_chain_non_inline_processor_rejected() {
+    let cfg = chain_pipeline(
+        r#"      processors:
+        dbg:
+          type: processor:debug
+          config:
+            verbosity: basic"#,
+    );
+    let gid: PipelineGroupId = "test_group".into();
+    let pid: PipelineId = "test_pipeline".into();
+    let err = otap_df_controller::startup::validate_pipeline_components(
+        &gid,
+        &pid,
+        &cfg,
+        &OTAP_PIPELINE_FACTORY,
+    )
+    .expect_err("non-inline processor should fail validation");
+    assert!(
+        err.to_string()
+            .contains("does not support inline execution"),
+        "error should mention inline support: {err}"
+    );
+}
+
+#[test]
+fn validate_processor_chain_unsupported_variant_rejected() {
+    // Use a non-inlined chain variant
+    let yaml = r#"
+nodes:
+  receiver:
+    type: receiver:traffic_generator
+    config:
+      traffic_config:
+        max_batch_size: 1
+        signals_per_second: 1
+        log_weight: 100
+      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+  chain:
+    type: processor_chain:channeled
+    config:
+      processors:
+        attr:
+          type: processor:attribute
+          config:
+            actions:
+              - action: insert
+                key: k
+                value: v
+  exporter:
+    type: exporter:noop
+    config:
+connections:
+  - from: receiver
+    to: chain
+  - from: chain
+    to: exporter
+"#;
+    let gid: PipelineGroupId = "test_group".into();
+    let pid: PipelineId = "test_pipeline".into();
+    let cfg = PipelineConfig::from_yaml(gid.clone(), pid.clone(), yaml)
+        .expect("pipeline YAML should parse");
+    let err = otap_df_controller::startup::validate_pipeline_components(
+        &gid,
+        &pid,
+        &cfg,
+        &OTAP_PIPELINE_FACTORY,
+    )
+    .expect_err("unsupported chain variant should fail validation");
+    assert!(
+        err.to_string()
+            .contains("Only `processor_chain:inlined` is supported"),
+        "error should mention inlined: {err}"
+    );
+}
+
+#[test]
+fn validate_processor_chain_invalid_sub_processor_config_rejected() {
+    let cfg = chain_pipeline(
+        r#"      processors:
+        filt:
+          type: processor:filter
+          config: "not_an_object"
+"#,
+    );
+    let gid: PipelineGroupId = "test_group".into();
+    let pid: PipelineId = "test_pipeline".into();
+    let err = otap_df_controller::startup::validate_pipeline_components(
+        &gid,
+        &pid,
+        &cfg,
+        &OTAP_PIPELINE_FACTORY,
+    )
+    .expect_err("invalid sub-processor config should fail validation");
+    assert!(
+        err.to_string().contains("Invalid config for sub-processor"),
+        "error should mention invalid sub-processor config: {err}"
+    );
+}

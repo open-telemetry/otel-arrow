@@ -1436,6 +1436,26 @@ mod condense_tests {
             })
             .validate(|_| async move {});
     }
+
+    #[test]
+    fn test_process_inline_forward() {
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";"
+        });
+        let mut processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+
+        let input =
+            build_log_with_attrs(vec![KeyValue::new("attr1", AnyValue::new_string("value1"))]);
+        let mut bytes = BytesMut::new();
+        input.encode(&mut bytes).expect("encode");
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Forward(_))));
+    }
 }
 
 #[cfg(test)]

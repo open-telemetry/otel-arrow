@@ -1217,4 +1217,23 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn test_process_inline_forward() {
+        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
+        let config: RecordsetKqlProcessorConfig =
+            serde_json::from_value(serde_json::json!({ "query": "source" })).unwrap();
+        let mut processor =
+            RecordsetKqlProcessor::with_pipeline_ctx(pipeline_ctx, config).expect("valid config");
+
+        let input =
+            build_log_with_attrs(vec![KeyValue::new("key1", AnyValue::new_string("value1"))]);
+        let mut bytes = BytesMut::new();
+        input.encode(&mut bytes).expect("encode");
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Forward(_))));
+    }
 }

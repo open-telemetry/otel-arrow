@@ -288,6 +288,7 @@ mod tests {
     };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::inline_processor::{InlineOutput, InlineProcessor};
     use otap_df_engine::message::Message;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
@@ -301,6 +302,7 @@ mod tests {
         traces::{TraceFilter, TraceMatchProperties},
     };
     use otap_df_pdata::proto::opentelemetry::{
+        collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
@@ -312,6 +314,7 @@ mod tests {
     };
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
+    use serde_json;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -1750,5 +1753,27 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario_traces(expected_data))
             .validate(validation_procedure());
+    }
+
+    #[test]
+    fn test_process_inline_forward() {
+        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
+        let cfg = serde_json::json!({});
+        let mut processor = FilterProcessor::from_config(pipeline_ctx, &cfg).expect("valid config");
+
+        let input = ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build().severity_text("INFO").finish()],
+            )],
+        )]);
+        let mut bytes = bytes::BytesMut::new();
+        input.encode(&mut bytes).expect("encode");
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Forward(_))));
     }
 }

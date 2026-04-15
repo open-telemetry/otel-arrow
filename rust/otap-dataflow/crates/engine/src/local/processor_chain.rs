@@ -42,6 +42,8 @@ use crate::local::processor::{EffectHandler, Processor};
 use crate::message::Message;
 use crate::process_duration::ComputeDuration;
 use async_trait::async_trait;
+use otap_df_telemetry::instrument::Timer;
+use tokio::task::yield_now;
 
 /// A processor that chains multiple inline sub-processors sequentially.
 ///
@@ -136,7 +138,7 @@ impl<PData: 'static + Clone + Unwindable> Processor<PData> for ProcessorChainNod
                 let interests = effect_handler.node_interests();
 
                 let timer = if interests.contains(Interests::PROCESS_DURATION) {
-                    Some(otap_df_telemetry::instrument::Timer::start())
+                    Some(Timer::start())
                 } else {
                     None
                 };
@@ -149,7 +151,7 @@ impl<PData: 'static + Clone + Unwindable> Processor<PData> for ProcessorChainNod
                         // other tasks.  This bounds uninterrupted CPU time
                         // to a single sub-processor's work.
                         if i > 0 {
-                            tokio::task::yield_now().await;
+                            yield_now().await;
                         }
 
                         let output = sub.process_inline(current);

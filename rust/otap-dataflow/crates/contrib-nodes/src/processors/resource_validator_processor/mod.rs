@@ -618,6 +618,9 @@ impl InlineProcessor<OtapPdata> for ResourceValidatorProcessor {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use otap_df_engine::inline_processor::InlineOutput;
+    use otap_df_otap::pdata::OtapPdata;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -1223,5 +1226,81 @@ mod tests {
             result,
             Err((ValidationFailure::NotInAllowedList, _))
         ));
+    }
+
+    #[test]
+    fn test_process_inline_forward_on_valid_resource() {
+        let allowed: HashSet<String> = ["/subscriptions/xxx".to_string()].into_iter().collect();
+        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
+        let mut processor = ResourceValidatorProcessor::new(
+            "cloud.resource_id".to_string(),
+            allowed,
+            true,
+            pipeline_ctx,
+        );
+
+        let request = ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource {
+                attributes: vec![KeyValue::new(
+                    "cloud.resource_id",
+                    AnyValue::new_string("/subscriptions/xxx"),
+                )],
+                ..Default::default()
+            },
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(1u64)
+                        .severity_number(SeverityNumber::Info)
+                        .finish(),
+                ],
+            )],
+        )]);
+        let mut buf = Vec::new();
+        request.encode(&mut buf).unwrap();
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(buf)).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Forward(_))));
+    }
+
+    #[test]
+    fn test_process_inline_drop_on_invalid_resource() {
+        let allowed: HashSet<String> = ["/subscriptions/xxx".to_string()].into_iter().collect();
+        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
+        let mut processor = ResourceValidatorProcessor::new(
+            "cloud.resource_id".to_string(),
+            allowed,
+            true,
+            pipeline_ctx,
+        );
+
+        let request = ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource {
+                attributes: vec![KeyValue::new(
+                    "cloud.resource_id",
+                    AnyValue::new_string("/subscriptions/WRONG"),
+                )],
+                ..Default::default()
+            },
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(1u64)
+                        .severity_number(SeverityNumber::Info)
+                        .finish(),
+                ],
+            )],
+        )]);
+        let mut buf = Vec::new();
+        request.encode(&mut buf).unwrap();
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(buf)).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Drop)));
     }
 }

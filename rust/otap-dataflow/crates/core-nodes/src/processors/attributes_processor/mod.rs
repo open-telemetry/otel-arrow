@@ -2194,6 +2194,25 @@ mod tests {
             })
             .validate(|_| async move {});
     }
+
+    #[test]
+    fn test_process_inline_forward() {
+        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
+        let cfg = json!({
+            "actions": [{"action": "insert", "key": "inline_key", "value": "inline_val"}]
+        });
+        let mut processor =
+            AttributesProcessor::from_config(pipeline_ctx, &cfg).expect("valid config");
+
+        let input = build_logs_with_attrs(vec![], vec![], vec![]);
+        let mut bytes = BytesMut::new();
+        input.encode(&mut bytes).expect("encode");
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Forward(_))));
+    }
 }
 
 #[cfg(test)]
