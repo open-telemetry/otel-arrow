@@ -538,6 +538,100 @@
     <span class="font-semibold">Error:</span>
     <span id="error-text" class="ml-1"></span>
   </div>
+
+  <!-- Live log stream panel -->
+  <section id="logs-section" class="card rounded-2xl p-4 shadow-lg">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <h2 class="text-lg font-semibold tracking-tight">Internal Logs</h2>
+      <div class="flex flex-wrap items-center gap-2 text-xs">
+        <label id="logs-panel-toggle-wrap" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-300 cursor-pointer">
+          <input
+            id="logs-panel-toggle"
+            type="checkbox"
+            class="sr-only"
+            aria-label="Show internal logs panel"
+            aria-controls="logs-panel-body"
+            aria-expanded="false"
+          />
+          <span>Show panel</span>
+          <span id="logs-panel-toggle-track" class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <div id="logs-panel-body" class="hidden" aria-hidden="true">
+      <div class="mt-3 flex flex-wrap items-center gap-2 text-xs">
+        <!-- Connect / disconnect -->
+        <button id="logs-connect-btn"
+          class="rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-200 hover:border-sky-400 hover:text-sky-200">
+          Connect
+        </button>
+        <!-- Pause / resume -->
+        <button id="logs-pause-btn" disabled
+          class="rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-200 hover:border-sky-400 hover:text-sky-200 disabled:opacity-40 disabled:cursor-not-allowed">
+          Pause
+        </button>
+        <!-- Backfill (resync after drop) -->
+        <button id="logs-backfill-btn" disabled
+          class="rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-200 hover:border-sky-400 hover:text-sky-200 disabled:opacity-40 disabled:cursor-not-allowed">
+          Resync
+        </button>
+        <!-- Clear visible buffer -->
+        <button id="logs-clear-btn"
+          class="rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-200 hover:border-sky-400 hover:text-sky-200">
+          Clear
+        </button>
+        <!-- Minimum level filter -->
+        <label for="logs-level-select" class="sr-only">Minimum log level</label>
+        <select id="logs-level-select"
+          class="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-1 text-slate-200 focus:border-sky-400 focus:outline-none">
+          <option value="ALL">All levels</option>
+          <option value="TRACE">TRACE+</option>
+          <option value="DEBUG">DEBUG+</option>
+          <option value="INFO" selected>INFO+</option>
+          <option value="WARN">WARN+</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+        <!-- Text filter (label is visually hidden but announced by screen readers) -->
+        <label for="logs-filter-input" class="sr-only">Filter logs</label>
+        <input id="logs-filter-input" type="search" placeholder="Filter logs…"
+          class="w-40 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-200 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none" />
+      </div>
+      <!-- Status line — role=status + aria-live so screen readers announce changes -->
+      <div class="mt-2 text-xs text-slate-400">
+        <span id="logs-status" role="status" aria-live="polite">Disconnected</span>
+      </div>
+
+      <!-- Drop / lag warning banner — role=alert for immediate screen-reader announcement -->
+      <div id="logs-drop-banner" role="alert"
+        class="hidden mt-2 rounded border border-yellow-600/60 bg-yellow-900/30 px-3 py-1 text-xs text-yellow-300">
+      </div>
+
+      <!-- Log table -->
+      <div class="logs-viewport mt-3 overflow-auto rounded border border-slate-700/60" style="max-height:28rem">
+        <table class="logs-table w-full text-xs" aria-label="Internal log entries">
+          <thead>
+            <tr class="text-left text-slate-400 border-b border-slate-700">
+              <th class="log-th log-ts">Time</th>
+              <th class="log-th log-level-cell">Level</th>
+              <th class="log-th log-target">Target</th>
+              <th class="log-th log-rendered">Message</th>
+            </tr>
+          </thead>
+          <tbody id="logs-tbody">
+            <tr>
+              <td colspan="4" class="px-3 py-4 text-center text-slate-500">
+                Press <strong>Connect</strong> to start streaming logs.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   </div>
 </div>
 
