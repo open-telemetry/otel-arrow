@@ -278,6 +278,9 @@ condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-proc
 recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
 resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+
 [workspace.lints.rust]
 # General compatibility lints
 rust_2018_idioms = { level = "warn", priority = -1 }
