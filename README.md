@@ -58,9 +58,8 @@ Our Golang Collector components [`otelarrowreceiver`][RECEIVER] and
 OpenTelemetry Collector-Contrib distribution since [the July 2024
 release of v0.104.0][ARROW-RELEASED].
 
-Our project has many contributors and over 1500 pull requests merged.
-**[Join us in `#otel-arrow` on the CNCF
-Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
+Our project is growing, new contributors are welcome.  **[Join us in
+`#otel-arrow` on the CNCF Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
 
 ## What is Apache Arrow?
 
