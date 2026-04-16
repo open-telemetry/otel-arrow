@@ -4,8 +4,8 @@ from_template:
   variables:
     num_cores: 16
     engine_core_range: "0-15"
-    loadgen_cores: 48
-    loadgen_core_range: "16-63"
+    loadgen_cores: 32
+    loadgen_core_range: "16-47"
     backend_cores: 16
-    backend_core_range: "64-79"
+    backend_core_range: "48-63"
     max_batch_size: 512
