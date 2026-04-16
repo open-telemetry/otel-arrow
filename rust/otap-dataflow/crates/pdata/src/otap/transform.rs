@@ -2906,7 +2906,7 @@ pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Resu
             .convert_columns(&sort_arrays)
             .expect("error converting columns for sorting");
         let mut sort: Vec<_> = rows.iter().enumerate().collect();
-        sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+        sort.sort_unstable_by_key(|(_, a)| *a);
 
         let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
         Ok(indices)

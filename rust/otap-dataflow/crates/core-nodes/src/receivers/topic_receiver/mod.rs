@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_channel::error::SendError;
 use otap_df_config::TopicName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -20,7 +21,9 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::topic::{RecvItem, SubscriberOptions, Subscription, SubscriptionMode};
+use otap_df_engine::topic::{
+    Delivery, RecvDelivery, SubscriberOptions, Subscription, SubscriptionMode,
+};
 use otap_df_engine::{
     Interests, MessageSourceLocalEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
@@ -33,6 +36,9 @@ use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::smallvec;
+use std::collections::HashSet;
+use std::future::{self, Future};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -128,6 +134,15 @@ pub struct TopicReceiver {
     ack_propagation_mode: TopicAckPropagationMode,
     broadcast_on_lag: Option<TopicBroadcastOnLagPolicy>,
     metrics: MetricSet<TopicReceiverMetrics>,
+}
+
+/// Message received from the topic runtime but not yet admitted to the
+/// downstream pipeline.
+struct PendingForward {
+    delivery: Delivery<OtapPdata>,
+    tracked_message_id: Option<u64>,
+    send_started_at: Instant,
+    future: Pin<Box<dyn Future<Output = Result<(), otap_df_engine::error::TypedError<OtapPdata>>>>>,
 }
 
 /// Declares the topic receiver as a local receiver factory.
@@ -233,14 +248,276 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
             ack_propagation = format!("{ack_propagation_mode:?}"),
             message = "Topic receiver started"
         );
-        let telemetry_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
+        let mut telemetry_cancel_handle = Some(
+            effect_handler
+                .start_periodic_telemetry(Duration::from_secs(1))
+                .await?,
+        );
+        let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
-        let mut drained_notified = false;
+        let mut pending_tracked_message_ids = HashSet::new();
+        let mut pending_forward: Option<PendingForward> = None;
 
-        let run_result: Result<(), Error> = async {
+        let run_result: Result<TerminalState, Error> = async {
             loop {
+                if let Some(deadline) = draining_deadline {
+                    if let Some(pending) = pending_forward.take() {
+                        if let Some(reason) = draining_reason.as_deref() {
+                            if let Some(message_id) = pending.tracked_message_id {
+                                match subscription.nack(message_id, reason) {
+                                    Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                    Err(Error::MessageNotTracked) => {
+                                        metrics.bridge_invalid_or_untracked_id.add(1);
+                                    }
+                                    Err(e) => {
+                                        metrics.bridge_runtime_failures.add(1);
+                                        otel_warn!(
+                                            "topic_receiver.drain_ingress_pending_forward_nack_failed",
+                                            node = receiver_id.name.as_ref(),
+                                            topic = config.topic.as_ref(),
+                                            error = e.to_string(),
+                                            message = "Failed to nack an unsent tracked topic message while aborting ingress drain"
+                                        );
+                                    }
+                                }
+                            }
+                            otel_warn!(
+                                "topic_receiver.drain_ingress_drop_pending_forward",
+                                node = receiver_id.name.as_ref(),
+                                topic = config.topic.as_ref(),
+                                tracked = pending.tracked_message_id.is_some(),
+                                blocked_ms = pending.send_started_at.elapsed().as_millis() as u64,
+                                message = "Topic receiver dropped an unsent topic message while entering ingress drain"
+                            );
+                        }
+                    }
+
+                    if pending_tracked_message_ids.is_empty() {
+                        if let Some(handle) = telemetry_cancel_handle.take() {
+                            _ = handle.cancel().await;
+                        }
+                        effect_handler.notify_receiver_drained().await?;
+                        return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                    }
+
+                    if Instant::now() >= deadline {
+                        if let Some(reason) = draining_reason.as_deref() {
+                            otel_warn!(
+                                "topic_receiver.drain_ingress.timeout",
+                                node = receiver_id.name.as_ref(),
+                                topic = config.topic.as_ref(),
+                                pending_tracked = pending_tracked_message_ids.len() as u64,
+                                message = "Topic receiver reached the ingress drain deadline with tracked topic outcomes still pending"
+                            );
+                            for message_id in pending_tracked_message_ids.drain() {
+                                match subscription.nack(message_id, reason) {
+                                    Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                    Err(Error::MessageNotTracked) => {
+                                        metrics.bridge_invalid_or_untracked_id.add(1);
+                                    }
+                                    Err(e) => {
+                                        metrics.bridge_runtime_failures.add(1);
+                                        otel_warn!(
+                                            "topic_receiver.drain_ingress_force_nack_failed",
+                                            node = receiver_id.name.as_ref(),
+                                            topic = config.topic.as_ref(),
+                                            error = e.to_string(),
+                                            message = "Failed to resolve a tracked topic message while forcing topic receiver drain"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(handle) = telemetry_cancel_handle.take() {
+                            _ = handle.cancel().await;
+                        }
+                        effect_handler.notify_receiver_drained().await?;
+                        return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                    }
+                }
+
+                if let Some(pending) = pending_forward.as_mut() {
+                    let current_draining_deadline = draining_deadline;
+                    let mut drain_sleep = std::pin::pin!(async move {
+                        if let Some(deadline) = current_draining_deadline {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))
+                                .await;
+                        } else {
+                            future::pending::<()>().await;
+                        }
+                    });
+
+                    tokio::select! {
+                        biased;
+
+                        ctrl = ctrl_msg_recv.recv() => {
+                            match ctrl {
+                                Ok(NodeControlMsg::CollectTelemetry {
+                                    mut metrics_reporter,
+                                }) => {
+                                    _ = metrics_reporter.report(&mut metrics);
+                                }
+                                Ok(NodeControlMsg::Ack(ack)) => {
+                                    if ack_propagation_mode != TopicAckPropagationMode::Auto {
+                                        metrics
+                                            .bridge_controls_ignored_propagation_disabled
+                                            .add(1);
+                                    } else if let Some(message_id) =
+                                        Self::decode_topic_message_id(&ack.unwind.route.calldata)
+                                    {
+                                        let _ = pending_tracked_message_ids.remove(&message_id);
+                                        match subscription.ack(message_id) {
+                                            Ok(()) => metrics.bridged_downstream_acks.add(1),
+                                            Err(Error::MessageNotTracked) => {
+                                                metrics.bridge_invalid_or_untracked_id.add(1);
+                                                otel_warn!(
+                                                    "topic_receiver.bridge_ack_untracked_or_invalid_id",
+                                                    node = receiver_id.name.as_ref(),
+                                                    topic = config.topic.as_ref(),
+                                                    message_id = message_id,
+                                                    message = "Failed to ack topic message because the downstream control referenced an untracked or invalid message id"
+                                                );
+                                            }
+                                            Err(e) => {
+                                                metrics.bridge_runtime_failures.add(1);
+                                                otel_warn!(
+                                                    "topic_receiver.bridge_ack_failed",
+                                                    node = receiver_id.name.as_ref(),
+                                                    topic = config.topic.as_ref(),
+                                                    error = e.to_string(),
+                                                    message = "Failed to ack topic message from downstream ack control"
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        metrics.bridge_missing_calldata.add(1);
+                                        otel_warn!(
+                                            "topic_receiver.bridge_ack_missing_calldata",
+                                            node = receiver_id.name.as_ref(),
+                                            topic = config.topic.as_ref(),
+                                            message = "Downstream ack missing topic message id calldata"
+                                        );
+                                    }
+                                }
+                                Ok(NodeControlMsg::DrainIngress { deadline, reason }) => {
+                                    if draining_deadline.is_none() {
+                                        // Receiver-first shutdown stops polling the topic
+                                        // subscription immediately. If Ack/Nack propagation is
+                                        // enabled, keep the receiver alive only long enough to bridge
+                                        // terminal outcomes for tracked messages that were already
+                                        // forwarded downstream.
+                                        draining_deadline = Some(deadline);
+                                        draining_reason = Some(reason);
+                                    }
+                                }
+                                Ok(NodeControlMsg::Nack(nack)) => {
+                                    if ack_propagation_mode != TopicAckPropagationMode::Auto {
+                                        metrics
+                                            .bridge_controls_ignored_propagation_disabled
+                                            .add(1);
+                                    } else if let Some(message_id) =
+                                        Self::decode_topic_message_id(&nack.unwind.route.calldata)
+                                    {
+                                        let _ = pending_tracked_message_ids.remove(&message_id);
+                                        match subscription.nack(message_id, nack.reason.as_str()) {
+                                            Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                            Err(Error::MessageNotTracked) => {
+                                                metrics.bridge_invalid_or_untracked_id.add(1);
+                                                otel_warn!(
+                                                    "topic_receiver.bridge_nack_untracked_or_invalid_id",
+                                                    node = receiver_id.name.as_ref(),
+                                                    topic = config.topic.as_ref(),
+                                                    message_id = message_id,
+                                                    message = "Failed to nack topic message because the downstream control referenced an untracked or invalid message id"
+                                                );
+                                            }
+                                            Err(e) => {
+                                                metrics.bridge_runtime_failures.add(1);
+                                                otel_warn!(
+                                                    "topic_receiver.bridge_nack_failed",
+                                                    node = receiver_id.name.as_ref(),
+                                                    topic = config.topic.as_ref(),
+                                                    error = e.to_string(),
+                                                    message = "Failed to nack topic message from downstream nack control"
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        metrics.bridge_missing_calldata.add(1);
+                                        otel_warn!(
+                                            "topic_receiver.bridge_nack_missing_calldata",
+                                            node = receiver_id.name.as_ref(),
+                                            topic = config.topic.as_ref(),
+                                            message = "Downstream nack missing topic message id calldata"
+                                        );
+                                    }
+                                }
+                                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                                    if let Some(handle) = telemetry_cancel_handle.take() {
+                                        _ = handle.cancel().await;
+                                    }
+                                    return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                                }
+                                Ok(_) => {}
+                                Err(e) => return Err(Error::ChannelRecvError(e)),
+                            }
+                        }
+
+                        result = pending.future.as_mut() => {
+                            let pending = pending_forward
+                                .take()
+                                .expect("pending forward should still exist");
+                            match result {
+                                Ok(()) => {
+                                    pending.delivery.commit();
+                                    if let Some(message_id) = pending.tracked_message_id {
+                                        _ = pending_tracked_message_ids.insert(message_id);
+                                    }
+                                    metrics.forwarded_messages.add(1);
+                                    let blocked_for = pending.send_started_at.elapsed();
+                                    if blocked_for.as_millis() >= 500 {
+                                        metrics.downstream_backpressure_events.add(1);
+                                        metrics
+                                            .downstream_blocked_ms
+                                            .add(blocked_for.as_millis() as u64);
+                                        otel_warn!(
+                                            "topic_receiver.downstream_backpressure",
+                                            node = receiver_id.name.as_ref(),
+                                            topic = config.topic.as_ref(),
+                                            blocked_ms = blocked_for.as_millis() as u64,
+                                            message = "Topic receiver blocked while forwarding to downstream pipeline channel"
+                                        );
+                                    }
+                                    tokio::task::consume_budget().await;
+                                }
+                                Err(e) => {
+                                    metrics.forward_failures.add(1);
+                                    otel_warn!(
+                                        "topic_receiver.forward_failed",
+                                        node = receiver_id.name.as_ref(),
+                                        topic = config.topic.as_ref(),
+                                        error = e.to_string(),
+                                        message = "Topic receiver failed forwarding to downstream channel"
+                                    );
+                                    return Err(Error::from(e));
+                                }
+                            }
+                        }
+
+                        _ = &mut drain_sleep => {}
+                    }
+                    continue;
+                }
+
+                let current_draining_deadline = draining_deadline;
+                let mut drain_sleep = std::pin::pin!(async move {
+                    if let Some(deadline) = current_draining_deadline {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                    } else {
+                        future::pending::<()>().await;
+                    }
+                });
+
                 tokio::select! {
                     biased;
 
@@ -259,6 +536,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 } else if let Some(message_id) =
                                     Self::decode_topic_message_id(&ack.unwind.route.calldata)
                                 {
+                                    let _ = pending_tracked_message_ids.remove(&message_id);
                                     match subscription.ack(message_id) {
                                         Ok(()) => metrics.bridged_downstream_acks.add(1),
                                         Err(Error::MessageNotTracked) => {
@@ -292,16 +570,15 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     );
                                 }
                             }
-                            Ok(NodeControlMsg::DrainIngress { reason, .. }) => {
-                                if !drained_notified {
-                                    // TopicReceiver does not hold a separate wait_for_result
-                                    // backlog like OTLP/OTAP receivers. Once ingress is marked as
-                                    // draining, the runtime can consider the receiver drained
-                                    // immediately; later topic deliveries are rejected/nacked
-                                    // below instead of being admitted into the pipeline.
+                            Ok(NodeControlMsg::DrainIngress { deadline, reason }) => {
+                                if draining_deadline.is_none() {
+                                    // Receiver-first shutdown stops polling the topic
+                                    // subscription immediately. If Ack/Nack propagation is
+                                    // enabled, keep the receiver alive only long enough to bridge
+                                    // terminal outcomes for tracked messages that were already
+                                    // forwarded downstream.
+                                    draining_deadline = Some(deadline);
                                     draining_reason = Some(reason);
-                                    effect_handler.notify_receiver_drained().await?;
-                                    drained_notified = true;
                                 }
                             }
                             Ok(NodeControlMsg::Nack(nack)) => {
@@ -312,6 +589,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 } else if let Some(message_id) =
                                     Self::decode_topic_message_id(&nack.unwind.route.calldata)
                                 {
+                                    let _ = pending_tracked_message_ids.remove(&message_id);
                                     match subscription.nack(message_id, nack.reason.as_str()) {
                                         Ok(()) => metrics.bridged_downstream_nacks.add(1),
                                         Err(Error::MessageNotTracked) => {
@@ -345,51 +623,33 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     );
                                 }
                             }
-                            Ok(NodeControlMsg::Shutdown { .. }) => break,
+                            Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                                if let Some(handle) = telemetry_cancel_handle.take() {
+                                    _ = handle.cancel().await;
+                                }
+                                return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                            }
                             Ok(_) => {}
                             Err(e) => return Err(Error::ChannelRecvError(e)),
                         }
                     }
 
-                    recv = subscription.recv() => {
+                    recv = subscription.recv_delivery(), if draining_deadline.is_none() => {
                         match recv {
-                            Ok(RecvItem::Message(env)) => {
-                                if let Some(reason) = draining_reason.as_deref() {
-                                    // DrainIngress was already acknowledged to the runtime, so any
-                                    // message delivered after that point must be bounced at the
-                                    // topic boundary rather than forwarded into the pipeline.
-                                    if ack_propagation_mode == TopicAckPropagationMode::Auto
-                                        && env.tracked
-                                    {
-                                        match subscription.nack(env.id, reason) {
-                                            Ok(()) => metrics.bridged_downstream_nacks.add(1),
-                                            Err(Error::MessageNotTracked) => {
-                                                metrics.bridge_invalid_or_untracked_id.add(1);
-                                            }
-                                            Err(e) => {
-                                                metrics.bridge_runtime_failures.add(1);
-                                                otel_warn!(
-                                                    "topic_receiver.drain_ingress_reject_failed",
-                                                    node = receiver_id.name.as_ref(),
-                                                    topic = config.topic.as_ref(),
-                                                    error = e.to_string(),
-                                                    message = "Failed to reject topic message while receiver was draining ingress"
-                                                );
-                                            }
-                                        }
-                                    }
-                                    tokio::task::consume_budget().await;
-                                    continue;
-                                }
-
+                            Ok(RecvDelivery::Message(delivery)) => {
                                 // Topic hop is a transport boundary: reset in-process
                                 // Ack/Nack routing context before forwarding.
                                 // Use source-tag-aware send so fan-in wiring can attribute source node.
-                                let mut pdata = env.payload.clone_without_context();
+                                let mut pdata = delivery.envelope().payload.clone_without_context();
+                                let tracked_message_id =
+                                    (ack_propagation_mode == TopicAckPropagationMode::Auto
+                                        && delivery.tracked())
+                                        .then_some(delivery.message_id());
                                 if ack_propagation_mode == TopicAckPropagationMode::Auto
-                                    && env.tracked
+                                    && delivery.tracked()
                                 {
-                                    let topic_message_calldata = smallvec![Context8u8::from(env.id)];
+                                    let topic_message_calldata =
+                                        smallvec![Context8u8::from(delivery.message_id())];
                                     effect_handler.subscribe_to(
                                         Interests::ACKS | Interests::NACKS,
                                         topic_message_calldata,
@@ -397,35 +657,42 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     );
                                 }
                                 let send_started_at = Instant::now();
-                                if let Err(e) = effect_handler.send_message_with_source_node(pdata).await {
-                                    metrics.forward_failures.add(1);
-                                    otel_warn!(
-                                        "topic_receiver.forward_failed",
-                                        node = receiver_id.name.as_ref(),
-                                        topic = config.topic.as_ref(),
-                                        error = e.to_string(),
-                                        message = "Topic receiver failed forwarding to downstream channel"
-                                    );
-                                    return Err(Error::from(e));
+                                match effect_handler.try_send_message_with_source_node(pdata) {
+                                    Ok(()) => {
+                                        delivery.commit();
+                                        if let Some(message_id) = tracked_message_id {
+                                            _ = pending_tracked_message_ids.insert(message_id);
+                                        }
+                                        metrics.forwarded_messages.add(1);
+                                        tokio::task::consume_budget().await;
+                                    }
+                                    Err(otap_df_engine::error::TypedError::ChannelSendError(
+                                        SendError::Full(pdata),
+                                    )) => {
+                                        let effect_handler = effect_handler.clone();
+                                        pending_forward = Some(PendingForward {
+                                            delivery,
+                                            tracked_message_id,
+                                            send_started_at,
+                                            future: Box::pin(async move {
+                                                effect_handler.send_message_with_source_node(pdata).await
+                                            }),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        metrics.forward_failures.add(1);
+                                        otel_warn!(
+                                            "topic_receiver.forward_failed",
+                                            node = receiver_id.name.as_ref(),
+                                            topic = config.topic.as_ref(),
+                                            error = e.to_string(),
+                                            message = "Topic receiver failed forwarding to downstream channel"
+                                        );
+                                        return Err(Error::from(e));
+                                    }
                                 }
-                                metrics.forwarded_messages.add(1);
-                                let blocked_for = send_started_at.elapsed();
-                                if blocked_for.as_millis() >= 500 {
-                                    metrics.downstream_backpressure_events.add(1);
-                                    metrics
-                                        .downstream_blocked_ms
-                                        .add(blocked_for.as_millis() as u64);
-                                    otel_warn!(
-                                        "topic_receiver.downstream_backpressure",
-                                        node = receiver_id.name.as_ref(),
-                                        topic = config.topic.as_ref(),
-                                        blocked_ms = blocked_for.as_millis() as u64,
-                                        message = "Topic receiver blocked while forwarding to downstream pipeline channel"
-                                    );
-                                }
-                                tokio::task::consume_budget().await;
                             }
-                            Ok(RecvItem::Lagged { missed }) => {
+                            Ok(RecvDelivery::Lagged { missed }) => {
                                 metrics.lagged_notifications.add(1);
                                 metrics.lagged_messages.add(missed);
                                 if broadcast_on_lag == Some(TopicBroadcastOnLagPolicy::Disconnect) {
@@ -450,15 +717,18 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             Err(e) => return Err(e),
                         }
                     }
+
+                    _ = &mut drain_sleep => {}
                 }
             }
-            Ok(())
+            Ok(TerminalState::default())
         }
         .await;
 
-        _ = telemetry_cancel_handle.cancel().await;
-        run_result?;
-        Ok(TerminalState::default())
+        if let Some(handle) = telemetry_cancel_handle.take() {
+            _ = handle.cancel().await;
+        }
+        run_result
     }
 }
 
@@ -727,6 +997,321 @@ mod tests {
                 receiver_result.is_ok(),
                 "receiver should stop cleanly after lag disconnect"
             );
+        }));
+    }
+
+    /// Scenario: receiver-first shutdown drains a topic receiver whose default
+    /// Ack/Nack propagation is disabled.
+    /// Guarantees: `DrainIngress` stops subscription polling and the receiver
+    /// exits promptly without waiting for downstream terminal outcomes.
+    #[test]
+    fn drain_ingress_exits_promptly_when_ack_propagation_is_disabled() {
+        let (rt, local_tasks) = setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async move {
+            let broker = TopicBroker::<OtapPdata>::new();
+            let topic_name =
+                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let handle = broker
+                .create_in_memory_topic(
+                    topic_name.clone(),
+                    TopicOptions::Mixed {
+                        balanced_capacity: 16,
+                        broadcast_capacity: 16,
+                        on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                    },
+                )
+                .expect("topic should be created");
+
+            let receiver_set = TopicSet::new("receiver-set");
+            _ = receiver_set.insert(
+                topic_name.clone(),
+                PipelineTopicBinding::from(handle.clone()),
+            );
+
+            let mut receiver_ctx = create_test_pipeline_context();
+            receiver_ctx.set_topic_set(receiver_set);
+
+            let receiver_node = test_node("topic_receiver");
+            let mut receiver_user_cfg = NodeUserConfig::new_receiver_config(TOPIC_RECEIVER_URN);
+            receiver_user_cfg.config = json!({
+                "topic": "ingress",
+                "subscription": {
+                    "mode": "balanced",
+                    "group": "sut-workers"
+                }
+            });
+
+            let mut receiver = (TOPIC_RECEIVER.create)(
+                receiver_ctx,
+                receiver_node.clone(),
+                Arc::new(receiver_user_cfg),
+                &ReceiverConfig::new("topic_receiver"),
+            )
+            .expect("topic receiver should be created");
+
+            let (receiver_output_tx, _receiver_output_rx) = create_not_send_channel::<OtapPdata>(8);
+            receiver
+                .set_pdata_sender(
+                    receiver_node.clone(),
+                    "".into(),
+                    PDataSender::Local(LocalSender::mpsc(receiver_output_tx)),
+                )
+                .expect("receiver output channel should be wired");
+
+            let receiver_ctrl = receiver.control_sender();
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_completion_tx, _pipeline_completion_rx) =
+                pipeline_completion_msg_channel::<OtapPdata>(32);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+            let receiver_task = tokio::task::spawn_local(async move {
+                receiver
+                    .start(
+                        runtime_ctrl_tx,
+                        pipeline_completion_tx,
+                        metrics_reporter,
+                        otap_df_engine::Interests::empty(),
+                    )
+                    .await
+            });
+
+            receiver_ctrl
+                .send(NodeControlMsg::DrainIngress {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test drain".to_owned(),
+                })
+                .await
+                .expect("receiver drain should be sent");
+
+            let terminal_state = tokio::time::timeout(Duration::from_secs(2), receiver_task)
+                .await
+                .expect("receiver should exit promptly after drain ingress")
+                .expect("receiver task should join")
+                .expect("receiver should stop cleanly");
+            assert!(
+                terminal_state.deadline() > Instant::now(),
+                "receiver should return the drain deadline terminal state"
+            );
+        }));
+    }
+
+    /// Scenario: receiver-first shutdown hits a topic receiver after it has
+    /// already forwarded a tracked message with Ack/Nack propagation enabled.
+    /// Guarantees: the receiver stops polling new topic deliveries, stays alive
+    /// until the downstream terminal outcome is bridged, then exits promptly.
+    #[test]
+    fn drain_ingress_waits_for_forwarded_tracked_message_then_exits() {
+        let (rt, local_tasks) = setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async move {
+            let broker = TopicBroker::<OtapPdata>::new();
+            let topic_name =
+                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let base_handle = broker
+                .create_in_memory_topic(
+                    topic_name.clone(),
+                    TopicOptions::Mixed {
+                        balanced_capacity: 16,
+                        broadcast_capacity: 16,
+                        on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                    },
+                )
+                .expect("topic should be created");
+            let receiver_handle = PipelineTopicBinding::from(base_handle.clone())
+                .with_default_ack_propagation_mode(TopicAckPropagationMode::Auto);
+
+            let receiver_set = TopicSet::new("receiver-set");
+            _ = receiver_set.insert(topic_name.clone(), receiver_handle);
+
+            let mut receiver_ctx = create_test_pipeline_context();
+            receiver_ctx.set_topic_set(receiver_set);
+
+            let receiver_node = test_node("topic_receiver");
+            let mut receiver_user_cfg = NodeUserConfig::new_receiver_config(TOPIC_RECEIVER_URN);
+            receiver_user_cfg.config = json!({
+                "topic": "ingress",
+                "subscription": {
+                    "mode": "balanced",
+                    "group": "sut-workers"
+                }
+            });
+
+            let mut receiver = (TOPIC_RECEIVER.create)(
+                receiver_ctx,
+                receiver_node.clone(),
+                Arc::new(receiver_user_cfg),
+                &ReceiverConfig::new("topic_receiver"),
+            )
+            .expect("topic receiver should be created");
+
+            let (receiver_output_tx, receiver_output_rx) = create_not_send_channel::<OtapPdata>(8);
+            receiver
+                .set_pdata_sender(
+                    receiver_node.clone(),
+                    "".into(),
+                    PDataSender::Local(LocalSender::mpsc(receiver_output_tx)),
+                )
+                .expect("receiver output channel should be wired");
+
+            let receiver_ctrl = receiver.control_sender();
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_completion_tx, _pipeline_completion_rx) =
+                pipeline_completion_msg_channel::<OtapPdata>(32);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+            let receiver_task = tokio::task::spawn_local(async move {
+                receiver
+                    .start(
+                        runtime_ctrl_tx,
+                        pipeline_completion_tx,
+                        metrics_reporter,
+                        otap_df_engine::Interests::empty(),
+                    )
+                    .await
+            });
+
+            let publisher = base_handle.tracked_publisher();
+            let receipt = publisher
+                .publish(Arc::new(create_test_pdata()))
+                .await
+                .expect("publish should succeed");
+
+            let forwarded = tokio::time::timeout(Duration::from_secs(2), receiver_output_rx.recv())
+                .await
+                .expect("timed out waiting for receiver output")
+                .expect("receiver output channel should stay open");
+
+            receiver_ctrl
+                .send(NodeControlMsg::DrainIngress {
+                    deadline: Instant::now() + Duration::from_secs(2),
+                    reason: "test drain".to_owned(),
+                })
+                .await
+                .expect("receiver drain should be sent");
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(
+                !receiver_task.is_finished(),
+                "receiver should wait for the already-forwarded tracked message outcome"
+            );
+
+            let (_node_id, ack_for_receiver) = next_ack(AckMsg::new(forwarded))
+                .expect("receiver should attach ack calldata for topic bridge");
+            receiver_ctrl
+                .send(NodeControlMsg::Ack(ack_for_receiver))
+                .await
+                .expect("failed to send ack control to topic receiver");
+
+            let outcome = tokio::time::timeout(Duration::from_secs(2), receipt.wait_for_outcome())
+                .await
+                .expect("timed out waiting for tracked topic outcome");
+            assert_eq!(outcome, TrackedPublishOutcome::Ack);
+
+            let receiver_result = tokio::time::timeout(Duration::from_secs(2), receiver_task)
+                .await
+                .expect("receiver should exit once the tracked outcome is bridged")
+                .expect("receiver task should join");
+            assert!(receiver_result.is_ok(), "receiver should stop cleanly");
+        }));
+    }
+
+    /// Scenario: receiver-first shutdown reaches a topic receiver while it is
+    /// blocked trying to forward into a full downstream channel.
+    /// Guarantees: `DrainIngress` keeps control responsiveness, aborts the
+    /// unsent topic message, and exits promptly instead of deadlocking on the
+    /// blocked send.
+    #[test]
+    fn drain_ingress_interrupts_blocked_forward_when_ack_propagation_is_disabled() {
+        let (rt, local_tasks) = setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async move {
+            let broker = TopicBroker::<OtapPdata>::new();
+            let topic_name =
+                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let handle = broker
+                .create_in_memory_topic(
+                    topic_name.clone(),
+                    TopicOptions::Mixed {
+                        balanced_capacity: 16,
+                        broadcast_capacity: 16,
+                        on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                    },
+                )
+                .expect("topic should be created");
+
+            let receiver_set = TopicSet::new("receiver-set");
+            _ = receiver_set.insert(
+                topic_name.clone(),
+                PipelineTopicBinding::from(handle.clone()),
+            );
+
+            let mut receiver_ctx = create_test_pipeline_context();
+            receiver_ctx.set_topic_set(receiver_set);
+
+            let receiver_node = test_node("topic_receiver");
+            let mut receiver_user_cfg = NodeUserConfig::new_receiver_config(TOPIC_RECEIVER_URN);
+            receiver_user_cfg.config = json!({
+                "topic": "ingress",
+                "subscription": {
+                    "mode": "balanced",
+                    "group": "sut-workers"
+                }
+            });
+
+            let mut receiver = (TOPIC_RECEIVER.create)(
+                receiver_ctx,
+                receiver_node.clone(),
+                Arc::new(receiver_user_cfg),
+                &ReceiverConfig::new("topic_receiver"),
+            )
+            .expect("topic receiver should be created");
+
+            let (receiver_output_tx, _receiver_output_rx) = create_not_send_channel::<OtapPdata>(1);
+            receiver
+                .set_pdata_sender(
+                    receiver_node.clone(),
+                    "".into(),
+                    PDataSender::Local(LocalSender::mpsc(receiver_output_tx)),
+                )
+                .expect("receiver output channel should be wired");
+
+            let receiver_ctrl = receiver.control_sender();
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
+            let (pipeline_completion_tx, _pipeline_completion_rx) =
+                pipeline_completion_msg_channel::<OtapPdata>(32);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+            let receiver_task = tokio::task::spawn_local(async move {
+                receiver
+                    .start(
+                        runtime_ctrl_tx,
+                        pipeline_completion_tx,
+                        metrics_reporter,
+                        otap_df_engine::Interests::empty(),
+                    )
+                    .await
+            });
+
+            handle
+                .publish(Arc::new(create_test_pdata()))
+                .await
+                .expect("first publish should succeed");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            handle
+                .publish(Arc::new(create_test_pdata()))
+                .await
+                .expect("second publish should succeed");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            receiver_ctrl
+                .send(NodeControlMsg::DrainIngress {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test drain".to_owned(),
+                })
+                .await
+                .expect("receiver drain should be sent");
+
+            let receiver_result = tokio::time::timeout(Duration::from_secs(2), receiver_task)
+                .await
+                .expect("receiver should exit promptly after interrupting a blocked forward")
+                .expect("receiver task should join");
+            assert!(receiver_result.is_ok(), "receiver should stop cleanly");
         }));
     }
 }

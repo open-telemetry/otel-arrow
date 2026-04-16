@@ -2007,7 +2007,7 @@ where
         // sent each message.
         let multi_source = self.sources.len() > 1;
 
-        for (source, sender) in self.sources.into_iter().zip(self.senders.into_iter()) {
+        for (source, sender) in self.sources.into_iter().zip(self.senders) {
             let src_node = pipeline
                 .get_mut_node_with_pdata_sender(source.node_id.index)
                 .ok_or_else(|| Error::UnknownNode {

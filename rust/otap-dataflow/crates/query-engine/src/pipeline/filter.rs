@@ -2307,6 +2307,15 @@ mod test {
         .await;
     }
 
+    #[tokio::test]
+    async fn test_filter_matches_regex_opl_regex_literal() {
+        test_filter_matches_regex::<OplParser>(
+            r#"logs | where matches(event_name, r"^err.*")"#,
+            r#"logs | where matches(attributes["username"], r"^t.*")"#,
+        )
+        .await;
+    }
+
     async fn test_filter_text_matches_regex_struct_cols<P: Parser>(q1: &str) {
         let input = LogsData {
             resource_logs: vec![

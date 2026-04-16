@@ -2,63 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
-use data_engine_expressions::{
-    DateTimeScalarExpression, QueryLocation, StaticScalarExpression, StringValue,
-};
-use data_engine_parser_abstractions::{
-    ParserError, parse_standard_string_literal, to_query_location,
-};
-use pest::iterators::Pair;
-
-use crate::parser::invalid_child_rule_error;
-use crate::parser::{Rule, expression::no_inner_rule_error};
+use data_engine_expressions::QueryLocation;
+use data_engine_parser_abstractions::ParserError;
 
 /// Number of milliseconds in a nanosecond
 const MINUTES_PER_SECOND: i32 = 60;
 const SECONDS_PER_HOUR: i32 = 3600;
 const MILLIS_PER_NANO_SECOND: u32 = 1_000_000;
 
-pub(crate) fn parse_datetime_expression(
-    datetime_expression_rule: Pair<'_, Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
-    let query_location = to_query_location(&datetime_expression_rule);
-    let mut inner_rules = datetime_expression_rule.into_inner();
-    let rule = inner_rules
-        .next()
-        .ok_or_else(|| no_inner_rule_error(query_location))?;
-    let rule_query_location = to_query_location(&rule);
-
-    let datetime_value = match rule.as_rule() {
-        Rule::string_literal => {
-            let static_str_scalar_expr = parse_standard_string_literal(rule);
-            match static_str_scalar_expr {
-                StaticScalarExpression::String(str) => {
-                    let str_value = str.get_value();
-                    parse_date_time(str_value, &rule_query_location)?
-                }
-                invalid_expr => {
-                    return Err(ParserError::SyntaxError(
-                        rule_query_location,
-                        format!("Expected static string literal, found {:?}", invalid_expr),
-                    ));
-                }
-            }
-        }
-        other_rule => {
-            return Err(invalid_child_rule_error(
-                rule_query_location.clone(),
-                Rule::datetime_expression,
-                other_rule,
-            ));
-        }
-    };
-
-    Ok(StaticScalarExpression::DateTime(
-        DateTimeScalarExpression::new(rule_query_location, datetime_value),
-    ))
-}
-
-fn parse_date_time(
+pub(crate) fn parse_date_time(
     str_value: &str,
     query_location: &QueryLocation,
 ) -> Result<DateTime<FixedOffset>, ParserError> {
@@ -166,10 +118,10 @@ mod test {
 
     use chrono::TimeZone;
     use chrono_tz::{Canada, Tz};
-    use data_engine_expressions::DateTimeValue;
+    use data_engine_expressions::{DateTimeValue, ScalarExpression, StaticScalarExpression};
     use pest::Parser;
 
-    use crate::parser::pest::OplPestParser;
+    use crate::parser::{Rule, expression::parse_tagged_literal, pest::OplPestParser};
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_with_tz(
@@ -212,9 +164,9 @@ mod test {
     }
 
     fn run_test_success(expr: &str, expected: DateTime<FixedOffset>) {
-        let mut result = OplPestParser::parse(Rule::datetime_expression, expr).unwrap();
-        match parse_datetime_expression(result.next().unwrap()).unwrap() {
-            StaticScalarExpression::DateTime(d) => assert_eq!(
+        let mut result = OplPestParser::parse(Rule::tagged_literal, expr).unwrap();
+        match parse_tagged_literal(result.next().unwrap(), QueryLocation::new_fake()).unwrap() {
+            ScalarExpression::Static(StaticScalarExpression::DateTime(d)) => assert_eq!(
                 d.get_value(),
                 expected,
                 "failed to correctly parse expr {expr:?}"
@@ -224,8 +176,8 @@ mod test {
     }
 
     fn run_test_failure(expr: &str) -> ParserError {
-        let mut result = OplPestParser::parse(Rule::datetime_expression, expr).unwrap();
-        parse_datetime_expression(result.next().unwrap()).unwrap_err()
+        let mut result = OplPestParser::parse(Rule::tagged_literal, expr).unwrap();
+        parse_tagged_literal(result.next().unwrap(), QueryLocation::new_fake()).unwrap_err()
     }
 
     #[test]

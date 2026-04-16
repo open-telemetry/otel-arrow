@@ -90,11 +90,15 @@ quiver = { workspace = true }
 blake3.workspace = true
 byte-unit.workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+rustls-symcrypt = { workspace = true, optional = true }
+
 [features]
 test-utils = ["rustls/ring", "otap-df-pdata/testing"]
 crypto-ring = ["rustls/ring", "tokio-rustls/ring"]
 crypto-aws-lc = ["rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs"]
 crypto-openssl = ["dep:rustls-openssl", "tonic/tls-native-roots"]
+crypto-symcrypt = ["dep:rustls-symcrypt", "tonic/tls-native-roots"]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 aws = ["object_store/aws", "object_store/cloud"]
 
