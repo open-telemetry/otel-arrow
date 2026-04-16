@@ -486,35 +486,6 @@ impl PipelineExtensions {
     pub fn keys(&self) -> impl Iterator<Item = &ExtensionId> {
         self.0.keys()
     }
-
-    /// Canonicalize extension type URNs.
-    fn canonicalize_plugin_urns(
-        &mut self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Result<(), Error> {
-        use crate::extension::ExtensionUrn;
-        for (ext_id, ext) in self.0.iter_mut() {
-            let mut updated = (**ext).clone();
-            let normalized = ExtensionUrn::parse(updated.r#type.as_ref()).map_err(|e| {
-                if let Error::InvalidUserConfig { error } = e {
-                    Error::InvalidNodeType {
-                        context: Box::new(Context::new(
-                            pipeline_group_id.clone(),
-                            pipeline_id.clone(),
-                        )),
-                        node_id: ext_id.clone(),
-                        details: error,
-                    }
-                } else {
-                    e
-                }
-            })?;
-            updated.r#type = normalized;
-            *ext = Arc::new(updated);
-        }
-        Ok(())
-    }
 }
 
 impl IntoIterator for PipelineExtensions {
@@ -724,15 +695,16 @@ impl PipelineConfig {
         }
     }
 
-    /// Normalize plugin URNs for pipeline nodes and extensions.
+    /// Normalize plugin URNs for pipeline nodes.
+    ///
+    /// Extensions do not need canonicalization because `ExtensionUrn` is
+    /// already normalized at parse time via `#[serde(try_from = "String")]`.
     fn canonicalize_plugin_urns(
         &mut self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         self.nodes
-            .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
-        self.extensions
             .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)
     }
 
@@ -1045,6 +1017,7 @@ pub struct PipelineConfigBuilder {
     nodes: HashMap<NodeId, NodeUserConfig>,
     extensions: HashMap<ExtensionId, ExtensionUserConfig>,
     duplicate_nodes: Vec<NodeId>,
+    duplicate_extensions: Vec<ExtensionId>,
     pending_connections: Vec<PendingConnection>,
 }
 
@@ -1064,6 +1037,7 @@ impl PipelineConfigBuilder {
             nodes: HashMap::new(),
             extensions: HashMap::new(),
             duplicate_nodes: Vec::new(),
+            duplicate_extensions: Vec::new(),
             pending_connections: Vec::new(),
         }
     }
@@ -1146,7 +1120,7 @@ impl PipelineConfigBuilder {
         let id = id.into();
         let ext_type = ext_type.into();
         if self.extensions.contains_key(&id) {
-            self.duplicate_nodes.push(id.clone());
+            self.duplicate_extensions.push(id.clone());
         } else {
             _ = self.extensions.insert(
                 id.clone(),
@@ -1276,6 +1250,14 @@ impl PipelineConfigBuilder {
             errors.push(Error::DuplicateNode {
                 context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                 node_id: node_id.clone(),
+            });
+        }
+
+        // Report duplicated extensions
+        for ext_id in &self.duplicate_extensions {
+            errors.push(Error::DuplicateExtension {
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                extension_id: ext_id.clone(),
             });
         }
 

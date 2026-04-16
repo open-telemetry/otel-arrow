@@ -15,7 +15,7 @@ use crate::{
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
-    extension::ExtensionWrapper,
+    extension::ExtensionBundle,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
@@ -232,7 +232,7 @@ pub struct ExtensionFactory {
         name: otap_df_config::ExtensionId,
         ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
         extension_config: &ExtensionConfig,
-    ) -> Result<ExtensionWrapper, otap_df_config::error::Error>,
+    ) -> Result<ExtensionBundle, otap_df_config::error::Error>,
     /// Validates the node-specific config statically, without creating the component.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
@@ -2331,7 +2331,7 @@ mod test {
             _: otap_df_config::ExtensionId,
             _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
-        ) -> Result<ExtensionWrapper, otap_df_config::error::Error> {
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
             unimplemented!()
         }
         fn dummy_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
@@ -2370,7 +2370,7 @@ mod test {
             _: otap_df_config::ExtensionId,
             _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
-        ) -> Result<ExtensionWrapper, otap_df_config::error::Error> {
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
             unimplemented!()
         }
         fn dummy_validate(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
