@@ -446,6 +446,9 @@ fn arrow_type_to_any_value_type(dt: &DataType) -> Result<(AttributeValueType, &'
         DataType::Dictionary(_, v) if v.is_integer() => {
             Ok((AttributeValueType::Int, consts::ATTRIBUTE_INT))
         }
+        DataType::Dictionary(_, v) if v.is_binary() => {
+            Ok((AttributeValueType::Bytes, consts::ATTRIBUTE_BYTES))
+        }
         // TODO replace w/ is_integer()
         DataType::Int8
         | DataType::Int16

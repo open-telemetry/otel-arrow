@@ -1118,6 +1118,7 @@ fn decompose_any_value_upsert<'a>(
         .ok_or_else(|| Error::ExecutionError {
             cause: "AnyValue 'type' field is not UInt8".into(),
         })?;
+    println!("new_types type col {:?}", new_types);
 
     // Get the existing type column from the attrs batch (used to build per-type sub-masks).
     let existing_type_col = existing_attrs
@@ -1125,6 +1126,8 @@ fn decompose_any_value_upsert<'a>(
         .ok_or_else(|| Error::ExecutionError {
             cause: "attribute record batch missing 'type' column".into(),
         })?;
+
+    println!("existing type col {:?}", existing_type_col);
 
     let mut upserts = Vec::new();
 
@@ -1141,19 +1144,22 @@ fn decompose_any_value_upsert<'a>(
             n if n == consts::ATTRIBUTE_DOUBLE => AttributeValueType::Double as u8,
             n if n == consts::ATTRIBUTE_BOOL => AttributeValueType::Bool as u8,
             n if n == consts::ATTRIBUTE_BYTES => AttributeValueType::Bytes as u8,
-            n if n == consts::ATTRIBUTE_SER => AttributeValueType::Bytes as u8,
+            n if n == consts::ATTRIBUTE_SER => {
+                return Err(Error::NotYetSupportedError {
+                    message: "Inserting attribute from heterogenous AnyValue \
+                        column for serialized type not yet supported"
+                        .into(),
+                });
+            }
             other => {
                 return Err(Error::ExecutionError {
                     cause: format!("unexpected AnyValue field name '{other}'"),
-                })
+                });
             }
         };
 
         // 1. Build sub-mask: existing_key_mask AND existing_type == discriminant.
-        let type_match_mask = eq(
-            existing_type_col,
-            &UInt8Array::new_scalar(discriminant),
-        )?;
+        let type_match_mask = eq(existing_type_col, &UInt8Array::new_scalar(discriminant))?;
         let sub_mask = and(existing_key_mask, &type_match_mask)?;
 
         // 2. Filter parent_ids to those whose new value has this discriminant.
@@ -2420,6 +2426,15 @@ mod test {
             LogRecord::build()
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
                 .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
         ]);
 
         let query = "logs | extend attributes[\"y\"] = attributes[\"x\"]";
@@ -2445,6 +2460,30 @@ mod test {
             vec![
                 KeyValue::new("x", AnyValue::new_string("hello")),
                 KeyValue::new("y", AnyValue::new_string("hello")),
+            ]
+        );
+        let log_2 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[2];
+        assert_eq!(
+            log_2.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_bytes(b"world")),
+                KeyValue::new("y", AnyValue::new_bytes(b"world")),
+            ]
+        );
+        let log_3 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[3];
+        assert_eq!(
+            log_3.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_double(5.14)),
+                KeyValue::new("y", AnyValue::new_double(5.14)),
+            ]
+        );
+        let log_4 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[4];
+        assert_eq!(
+            log_4.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_bool(true)),
+                KeyValue::new("y", AnyValue::new_bool(true)),
             ]
         );
     }

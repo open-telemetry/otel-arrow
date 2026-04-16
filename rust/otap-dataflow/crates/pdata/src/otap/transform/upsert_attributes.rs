@@ -78,6 +78,7 @@ pub static EMPTY_U32_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|
 /// distinct**. This invariant is not checked inside `upsert_attributes` — callers are responsible
 /// for enforcing it (typically at the planner level). Passing duplicate keys results in undefined
 /// behavior and may result in duplicate attributes.
+#[derive(Debug)]
 pub struct AttributeUpsert<'a, T: ArrowPrimitiveType> {
     /// The attribute key being upserted (e.g., "http.method").
     pub attrs_key: &'a str,
