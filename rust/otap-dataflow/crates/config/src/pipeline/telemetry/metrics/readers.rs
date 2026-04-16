@@ -16,7 +16,7 @@ use crate::pipeline::telemetry::metrics::readers::{
 };
 
 /// OpenTelemetry Metrics Reader configuration.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricsReaderConfig {
     /// Periodic reader that exports metrics at regular intervals.
@@ -36,7 +36,7 @@ impl MetricsReaderConfig {
 }
 
 /// OpenTelemetry Metrics Periodic Reader configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct MetricsReaderPeriodicConfig {
     /// The metrics exporter to use.
     pub exporter: MetricsPeriodicExporterConfig,
@@ -86,7 +86,7 @@ impl<'de> Deserialize<'de> for MetricsReaderConfig {
 }
 
 /// OpenTelemetry Metrics Pull Reader configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct MetricsReaderPullConfig {
     /// The metrics exporter to use.
     pub exporter: MetricsPullExporterConfig,

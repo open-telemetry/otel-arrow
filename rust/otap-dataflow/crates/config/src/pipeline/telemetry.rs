@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, time::Duration};
 
 /// Telemetry backend configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TelemetryConfig {
     /// The size of the reporting channel, measured in the number of internal metric events shared across all cores.
     #[serde(default = "default_reporting_channel_size")]
