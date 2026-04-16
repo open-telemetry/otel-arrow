@@ -54,8 +54,9 @@ pub enum PublishOutcome {
     Published,
     /// Message was dropped because at least one balanced queue was full.
     ///
-    /// For mixed topics, broadcast delivery may still succeed even when this
-    /// outcome is returned.
+    /// In mixed topics, `try_publish` is all-or-nothing: returning this
+    /// outcome means the message was not published to either the balanced or
+    /// broadcast side.
     DroppedOnFull,
 }
 

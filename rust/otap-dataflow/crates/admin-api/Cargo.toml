@@ -12,12 +12,16 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+rustls-symcrypt = { workspace = true, optional = true }
+
 [features]
 default = ["http-client", "crypto-ring"]
 http-client = ["dep:async-trait", "dep:reqwest"]
 crypto-ring = ["dep:rustls", "rustls/ring"]
 crypto-aws-lc = ["dep:rustls", "rustls/aws_lc_rs"]
 crypto-openssl = ["dep:rustls", "dep:rustls-openssl"]
+crypto-symcrypt = ["dep:rustls", "dep:rustls-symcrypt"]
 
 [dependencies]
 otap-df-admin-types = { workspace = true }
