@@ -308,7 +308,7 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
     }
 
     fn accept_pdata(&self) -> bool {
-        // We may need up to one inbound slot and two outbound slots.
+        // We may need up to one inbound slot and three outbound slots.
         //
         // The inbound slot is used to track the inbound request context and is
         // needed if either there are ack/nack interests on the context OR if some of
@@ -320,7 +320,11 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         //
         // A second outbound slot may be needed for the passthrough portion
         // of the inbound data, if any.
-        self.inbound_batches.has_capacity() && self.outbound_batches.remaining_capacity() >= 2
+        //
+        // A third outbound slot is reserved so that there is one available in
+        // case a timer tick fires and triggers a flush before any outbounds have
+        // been cleared by acks or nacks.
+        self.inbound_batches.has_capacity() && self.outbound_batches.remaining_capacity() >= 3
     }
 }
 
@@ -525,7 +529,7 @@ impl TemporalReaggregationProcessor {
         tracker: InboundTracker,
     ) -> Result<CallData, Error> {
         // safety: See [`TemporalReaggregationProcessor::accept_pdata`]
-        // We always expect one inbound slot and two outbound slots to
+        // We always expect one inbound slot and three outbound slots to
         // be available before accepting pdata.
         let inbound_slot = self.inbound_batches.reserve().expect("available");
         let inbound_key = inbound_slot.insert(tracker);
@@ -655,7 +659,7 @@ impl TemporalReaggregationProcessor {
                         self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
 
                     // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
-                    // We always expect one inbound and two outbound slots available
+                    // We always expect one inbound and three outbound slots available
                     // before accepting pdata.
                     let outbound_slot = self.outbound_batches.reserve().expect("available");
                     let outbound_key = outbound_slot.insert(vec![inbound_calldata]);
@@ -3494,6 +3498,29 @@ mod tests {
                 },
             ],
         );
+    }
+
+    /// Test to make sure we accept pdata only when we have at least 3 outbound
+    /// slots available.
+    ///
+    /// See also: https://github.com/open-telemetry/otel-arrow/issues/2653
+    #[test]
+    fn test_outbound_saturated_with_flush() {
+        let config = json!({ "outbound_request_limit": 3 });
+        let actions = vec![
+            // Send a mixed batch (1 aggregatable + 1 passthrough) with
+            // subscriber interest. This allocates 1 outbound slot for the
+            // passthrough, leaving 2 remaining.
+            Action::SendPdata {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+            },
+            Action::DrainPdata { actions: vec![] },
+            // With only 2 outbound slots remaining, the processor should
+            // reject new pdata because a worst-case inbound needs 3 slots.
+            Action::AssertAcceptPdata(false),
+        ];
+        run_test(config, actions);
     }
 
     /// When the processor is idle (no data), `fire_wakeup` should return
