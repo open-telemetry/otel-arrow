@@ -643,6 +643,152 @@ mod tests {
             .expect("transform processor attribute exclude validation failed");
     }
 
+    /// Validates the transform processor with an OPL rename query that renames
+    /// the `thread.id` attribute to `new_thread_id`. The old key must be absent
+    /// and the new key must be present on every log record.
+    #[test]
+    fn validation_transform_processor_attribute_rename() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/transform-rename-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::AttributeDeny {
+                            domains: vec![AttributeDomain::Signal],
+                            keys: vec!["thread.id".into()],
+                        },
+                        ValidationInstructions::AttributeRequireKey {
+                            domains: vec![AttributeDomain::Signal],
+                            keys: vec!["new_thread_id".into()],
+                        },
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor attribute rename validation failed");
+    }
+
+    /// Validates the transform processor with an OPL conditional (if/else) query
+    /// that sets `is_error` to `"true"` for ERROR logs and `"false"` for all
+    /// others. Every log record should have the `is_error` attribute.
+    #[test]
+    fn validation_transform_processor_conditional_set() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file(
+                    "./validation_pipelines/transform-conditional-set-processor.yaml",
+                )
+                .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::AttributeRequireKey {
+                        domains: vec![AttributeDomain::Signal],
+                        keys: vec!["is_error".into()],
+                    }])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor conditional set validation failed");
+    }
+
+    /// Validates the transform processor with chained OPL operations: first
+    /// adds a `processed` attribute, then removes the `thread.id` attribute.
+    /// Both transformations must be reflected in the output.
+    #[test]
+    fn validation_transform_processor_chained_operations() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/transform-chained-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::AttributeRequireKey {
+                            domains: vec![AttributeDomain::Signal],
+                            keys: vec!["processed".into()],
+                        },
+                        ValidationInstructions::AttributeDeny {
+                            domains: vec![AttributeDomain::Signal],
+                            keys: vec!["thread.id".into()],
+                        },
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor chained operations validation failed");
+    }
+
+    /// Validates the transform processor with an OPL set query targeting a
+    /// resource attribute. The `env` key with value `"test"` must be present
+    /// on every resource in the output.
+    #[test]
+    fn validation_transform_processor_resource_attribute_set() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/transform-resource-set-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::AttributeRequireKeyValue {
+                        domains: vec![AttributeDomain::Resource],
+                        pairs: vec![KeyValue::new("env".into(), AnyValue::String("test".into()))],
+                    }])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transform processor resource attribute set validation failed");
+    }
+
     /// Validates that the temporal reaggregation processor passes log signals
     /// through unchanged. The processor only operates on metrics; logs should
     /// be forwarded with no modifications.
