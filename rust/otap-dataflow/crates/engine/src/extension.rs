@@ -131,7 +131,17 @@ impl<R: ControlReceiver> ControlChannel<R> {
                     msg = self.control_rx.as_mut().expect("checked above").recv() => {
                         match msg {
                             Ok(msg) => return Ok(msg),
-                            Err(e) => return Err(e),
+                            Err(_) => {
+                                // Channel closed during grace period — deliver
+                                // the pending shutdown instead of propagating
+                                // the closed error.
+                                let shutdown = self
+                                    .pending_shutdown
+                                    .take()
+                                    .expect("pending_shutdown must exist");
+                                self.shutdown();
+                                return Ok(shutdown);
+                            }
                         }
                     }
                 }
@@ -814,11 +824,11 @@ mod tests {
 
     #[derive(Clone)]
     struct TestLocalExt {
-        counter: CtrlMsgCounters,
+        _counter: CtrlMsgCounters,
     }
     impl TestLocalExt {
         fn new(c: CtrlMsgCounters) -> Self {
-            Self { counter: c }
+            Self { _counter: c }
         }
     }
 
@@ -1094,6 +1104,25 @@ mod tests {
         assert!(ch.recv().await.unwrap().is_shutdown());
         assert!(Instant::now() >= dl);
         drop(sender);
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_delayed_shutdown_sender_dropped() {
+        // Edge case: sender drops during grace period. The pending shutdown
+        // should still be delivered instead of returning RecvError::Closed.
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
+        let dl = Instant::now() + std::time::Duration::from_millis(100);
+        SharedSender::mpsc(tx)
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: dl,
+                reason: "dl".into(),
+            })
+            .await
+            .unwrap();
+        // Sender is dropped here — channel closes during grace period.
+        // recv() should still return the pending shutdown, not Err(Closed).
+        assert!(ch.recv().await.unwrap().is_shutdown());
     }
 
     #[tokio::test]
