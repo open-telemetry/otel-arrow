@@ -677,11 +677,14 @@ impl FilterPlan {
 
         match left_arg {
             BinaryArg::Column(left_column) => Ok(match left_column {
-                ColumnAccessor::ColumnName(left_col_name) => FilterPlan::from(binary_expr(
-                    col(left_col_name),
-                    Operator::RegexMatch,
-                    pattern,
-                )),
+                ColumnAccessor::ColumnName(left_col_name) => {
+                    let col_expr = if left_col_name == BODY_FIELD_NAME {
+                        col(left_col_name).field(consts::ATTRIBUTE_STR)
+                    } else {
+                        col(left_col_name)
+                    };
+                    FilterPlan::from(binary_expr(col_expr, Operator::RegexMatch, pattern))
+                }
                 ColumnAccessor::StructCol(struct_name, struct_field) => {
                     FilterPlan::from(binary_expr(
                         col(struct_name).field(struct_field),
@@ -800,7 +803,13 @@ impl FilterPlan {
     ) -> (Expr, Option<(AttributesIdentifier, String)>) {
         let mut attrs = None;
         let expr = match column_accessor {
-            ColumnAccessor::ColumnName(col_name) => col(col_name),
+            ColumnAccessor::ColumnName(col_name) => {
+                if col_name == BODY_FIELD_NAME {
+                    col(col_name).field(consts::ATTRIBUTE_STR)
+                } else {
+                    col(col_name)
+                }
+            }
             ColumnAccessor::StructCol(struct_name, struct_field) => {
                 col(struct_name).field(struct_field)
             }
@@ -2194,6 +2203,85 @@ mod test {
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[input[1].clone(), input[3].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_using_matches() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_int(418))
+                .event_name("4")
+                .finish(),
+            LogRecord::build().event_name("5").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = "logs | where matches(body, \"hello .*\")";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_using_contains() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_int(418))
+                .event_name("4")
+                .finish(),
+            LogRecord::build().event_name("5").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = "logs | where contains(body, \"hello \")";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+
+        // check it works w/ body on the right
+        let query = "logs | where contains(\"hello world\", body)";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[2].clone(), input[5].clone()]
         );
     }
 
