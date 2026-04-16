@@ -135,6 +135,13 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     pub fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy {
         self.inner.broadcast_on_lag_policy()
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_balanced_available_permits(
+        &self,
+    ) -> Vec<(crate::topic::SubscriptionGroupName, usize)> {
+        self.inner.debug_balanced_available_permits()
+    }
 }
 
 impl<T: Send + Sync + 'static> TrackedTopicPublisher<T> {
