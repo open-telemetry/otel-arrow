@@ -4,9 +4,10 @@
 //! Extension wrapper and infrastructure.
 //!
 //! Extensions are PData-free — they never process pipeline data, only control
-//! messages. This module defines [`ControlChannel`], [`EffectHandler`], and
-//! the [`ExtensionWrapper`] enum that the engine uses to start and manage
-//! extension instances.
+//! messages. This module defines [`EffectHandler`], [`ExtensionWrapper`],
+//! [`ExtensionBundle`], and the builder infrastructure. Control channels
+//! are defined in [`local::extension`](crate::local::extension) and
+//! [`shared::extension`](crate::shared::extension).
 //!
 //! For the local (!Send) and shared (Send) Extension traits, see
 //! [`local::extension`](crate::local::extension) and
@@ -315,7 +316,7 @@ pub enum ExtensionLifecycle<E, R> {
 /// from the data-plane type.
 ///
 /// The first layer is local vs shared (enum variant). The second layer is
-/// active vs passive ([`Lifecycle`]). This two-level structure makes
+/// active vs passive ([`ExtensionLifecycle`]). This two-level structure makes
 /// impossible states unrepresentable while keeping local and shared
 /// concerns cleanly separated.
 pub enum ExtensionWrapper {
