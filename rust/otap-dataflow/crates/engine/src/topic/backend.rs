@@ -34,10 +34,11 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::error::Error;
+use crate::topic::subscription::RecvDelivery;
 use crate::topic::topic::TopicInner;
 use crate::topic::types::{
-    PublishOutcome, RecvItem, SubscriberOptions, TopicOptions, TrackedPublishPermit,
-    TrackedPublishReceipt, TrackedTryPublishOutcome,
+    PublishOutcome, SubscriberOptions, TopicOptions, TrackedPublishPermit, TrackedPublishReceipt,
+    TrackedTryPublishOutcome,
 };
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
@@ -116,6 +117,10 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy;
     /// Close the topic. Existing subscriptions eventually observe closure.
     fn close(&self);
+
+    #[cfg(test)]
+    /// Snapshot the currently available balanced permits by consumer group.
+    fn debug_balanced_available_permits(&self) -> Vec<(SubscriptionGroupName, usize)>;
 }
 
 /// Per-subscription operations. Exclusively owned by one `Subscription`.
@@ -123,8 +128,8 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
 /// `Send` (not `Sync`) -- owned by one `Subscription`, `poll_recv` takes
 /// `&mut self`. `ack`/`nack` take `&self` which is fine.
 pub trait SubscriptionBackend<T: Send + Sync + 'static>: Send {
-    /// Poll for the next receive item.
-    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<RecvItem<T>, Error>>;
+    /// Poll for the next receive item with explicit delivery ownership.
+    fn poll_recv_delivery(&mut self, cx: &mut Context<'_>) -> Poll<Result<RecvDelivery<T>, Error>>;
     /// Ack a previously received message id.
     fn ack(&self, id: u64) -> Result<(), Error>;
     /// `reason` is `Arc<str>` (not `impl Into<Arc<str>>`) for object safety.
