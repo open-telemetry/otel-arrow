@@ -92,7 +92,7 @@ fn create_logs_data(num_logs: usize) -> LogsData {
 
 fn encode_to_proto_bytes(logs: &LogsData) -> bytes::Bytes {
     let mut buf = BytesMut::new();
-    logs.encode(&mut buf).unwrap();
+    logs.encode(&mut buf).expect("LogsData encode failed");
     buf.freeze()
 }
 
@@ -117,7 +117,9 @@ fn bench_pdata_deserialization(c: &mut Criterion) {
                         ))
                     },
                     |payload| {
-                        let records: OtapArrowRecords = black_box(payload).try_into().unwrap();
+                        let records: OtapArrowRecords = black_box(payload)
+                            .try_into()
+                            .expect("OtlpBytes to OtapArrowRecords failed");
                         black_box(records)
                     },
                     BatchSize::SmallInput,
