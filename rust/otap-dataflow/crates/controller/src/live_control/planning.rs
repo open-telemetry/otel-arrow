@@ -222,12 +222,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             )
         };
 
-        let mut candidate_pipeline = request.pipeline.clone();
-        candidate_pipeline
-            .canonicalize_for_pipeline(&pipeline_group_id, &pipeline_id)
-            .map_err(|err| ControlPlaneError::InvalidRequest {
-                message: err.to_string(),
-            })?;
+        let candidate_pipeline = request.pipeline.clone();
         candidate_pipeline
             .validate(&pipeline_group_id, &pipeline_id)
             .map_err(|err| ControlPlaneError::InvalidRequest {

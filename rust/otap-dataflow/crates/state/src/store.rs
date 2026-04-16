@@ -578,6 +578,7 @@ mod tests {
             pipeline_group_id: Cow::Borrowed("group"),
             pipeline_id: Cow::Borrowed("pipeline"),
             core_id,
+            deployment_generation: 0,
         }
     }
 
@@ -721,7 +722,7 @@ mod tests {
             "All {num_cores} cores should reach Running when engine events are reliable. \
              Stuck in Pending: {}",
             status
-                .per_core()
+                .per_instance()
                 .values()
                 .filter(|c| matches!(c.phase, PipelinePhase::Pending))
                 .count(),
@@ -818,7 +819,7 @@ mod tests {
             "All {num_cores} cores should reach Running despite log channel contention. \
              Stuck in Pending: {}",
             status
-                .per_core()
+                .per_instance()
                 .values()
                 .filter(|c| matches!(c.phase, PipelinePhase::Pending))
                 .count(),
