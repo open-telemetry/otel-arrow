@@ -40,6 +40,9 @@ thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
+sysinfo.workspace = true
+dhat = { workspace = true, optional = true }
+cfg-if.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -84,6 +87,7 @@ bitflags = "2.10"
 bytes = "1.11.1"
 bytemuck = "1.24"
 blake3 = "1.5.5"
+cfg-if = "1.0.4"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
@@ -92,6 +96,7 @@ core_affinity = "0.8.3"
 criterion = "0.8.0"
 data-encoding = "2.9.0"
 datafusion = { version = "53.0.0", default-features = false }
+dhat = "0.3.3"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.32"
@@ -151,6 +156,7 @@ prost-types = "0.14"
 quote = "1.0"
 rand = "0.10.0"
 rcgen = "0.14"
+regex = "1.12"
 roaring = "0.11.2"
 ryu = "1"
 rustls = { version = "0.23.22", default-features = false, features = ["std", "tls12"] }
@@ -158,6 +164,7 @@ rustls-pki-types = { version = "1.11", features = ["std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 rustls-native-certs = "0.8.2"
 rustls-openssl = "0.3"
+rustls-symcrypt = "0.2.2"
 schemars = { version = "1.0.0" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
@@ -214,7 +221,11 @@ cpu-time = "1.0.0"
 azure_core = {version = "0.34.0", default-features = false }
 azure_identity = {version = "0.34.0", default-features = false }
 flate2 = "1.1.5"
-reqwest = { version = "0.13.1", features = ["rustls-no-provider", "json", "query", "http2", "stream"] }
+
+# Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
+# TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
+reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
+
 time = "0.3.44"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
@@ -250,6 +261,9 @@ aws = ["otap-df-otap/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+dhat-heap = [
+    "dep:dhat",
+]
 
 # Dev/test tooling (fake data generator).
 dev-tools = ["otap-df-core-nodes/dev-tools"]
@@ -258,6 +272,7 @@ dev-tools = ["otap-df-core-nodes/dev-tools"]
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).
 crypto-ring = ["otap-df-otap/crypto-ring"]
 crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
+crypto-symcrypt = ["otap-df-otap/crypto-symcrypt"]
 crypto-openssl = ["otap-df-otap/crypto-openssl"]
 
 # Contrib exporters (opt-in) - now in contrib-nodes
@@ -269,6 +284,9 @@ contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
 recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
 resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
 
 [workspace.lints.rust]
 # General compatibility lints
@@ -329,6 +347,10 @@ missing_crate_level_docs = "deny"
 
 [profile.release]
 debug = "line-tables-only"  # minimum required for profiling
+
+[profile.profiling]
+inherits = "release"
+debug = 2
 
 # A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
 #[profile.release]

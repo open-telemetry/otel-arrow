@@ -41,6 +41,7 @@ prost = { workspace = true }
 [features]
 crypto-ring = ["otap-df-otap/crypto-ring"]
 crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
+crypto-symcrypt = ["otap-df-otap/crypto-symcrypt"]
 crypto-openssl = ["otap-df-otap/crypto-openssl"]
 
 [dev-dependencies]
