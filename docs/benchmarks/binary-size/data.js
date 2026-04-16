@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776213335100,
+  "lastUpdate": 1776299717490,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3377,6 +3377,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 105.47,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0a7e111744d9275920291d0058baff640e84c6cb",
+          "message": "Set default log level to info in config files (#2663)\n\nDebug log level in config files causes excessive noise from internal\ncrates and dependencies (e.g., `h2`), flooding the console and even\noverwhelming the internal telemetry channel (causing `Channel full,\ndropping observed event` errors).\n\n**Changes:**\n- `rust/otap-dataflow/configs/fake-batch-console.yaml`: Change log level\nfrom `debug` to `info`\n- `rust/otap-dataflow/configs/internal-telemetry.yaml`: Change log level\nfrom `debug` to `info`",
+          "timestamp": "2026-04-15T23:10:49Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0a7e111744d9275920291d0058baff640e84c6cb"
+        },
+        "date": 1776299710630,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 103.15,
             "unit": "MB"
           }
         ]
