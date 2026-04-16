@@ -1689,35 +1689,12 @@ fn transform_keys(
     // we're going to pass over both the values and the offsets, taking any ranges that weren't
     // that are unmodified, while either transforming or omitting ranges that were either replaced
     // or deleted. To get the sorted list of how to handle each range, we merge the plans' ranges
-    let transform_ranges = if collision_delete_ranges.is_empty() {
-        merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref())
-    } else {
-        // Sorted merge of the plan ranges with the collision delete ranges.
-        // Both inputs are already sorted, so we merge in O(n+m) without
-        // materializing an intermediate Vec + sort.
-        let plan_ranges = merge_transform_ranges(replacement_plan.as_ref(), delete_plan.as_ref());
-        let mut merged = Vec::with_capacity(plan_ranges.len() + collision_delete_ranges.len());
-        let mut plan_idx = 0;
-        let mut coll_idx = 0;
-        while plan_idx < plan_ranges.len() && coll_idx < collision_delete_ranges.len() {
-            if plan_ranges[plan_idx].start() <= collision_delete_ranges[coll_idx].start() {
-                merged.push(plan_ranges[plan_idx].clone());
-                plan_idx += 1;
-            } else {
-                merged.push(collision_delete_ranges[coll_idx].clone());
-                coll_idx += 1;
-            }
-        }
-        while plan_idx < plan_ranges.len() {
-            merged.push(plan_ranges[plan_idx].clone());
-            plan_idx += 1;
-        }
-        while coll_idx < collision_delete_ranges.len() {
-            merged.push(collision_delete_ranges[coll_idx].clone());
-            coll_idx += 1;
-        }
-        Cow::Owned(merged)
-    };
+    // along with any collision-delete ranges in a single pass.
+    let transform_ranges = merge_transform_ranges(
+        replacement_plan.as_ref(),
+        delete_plan.as_ref(),
+        collision_delete_ranges,
+    );
 
     // create buffer to contain the new values
     let mut new_values = MutableBuffer::with_capacity(calculate_new_keys_buffer_len(
@@ -2136,34 +2113,9 @@ where
         Vec::new()
     };
 
-    // Merge collision delete ranges (row-level) into the dict key transform ranges
-    // using a sorted merge since both inputs are already in order.
-    let dict_key_transform_ranges = if collision_delete_ranges.is_empty() {
-        dict_key_transform_ranges
-    } else {
-        let mut merged =
-            Vec::with_capacity(dict_key_transform_ranges.len() + collision_delete_ranges.len());
-        let mut left = 0;
-        let mut right = 0;
-        while left < dict_key_transform_ranges.len() && right < collision_delete_ranges.len() {
-            if dict_key_transform_ranges[left].start() <= collision_delete_ranges[right].start() {
-                merged.push(dict_key_transform_ranges[left].clone());
-                left += 1;
-            } else {
-                merged.push(collision_delete_ranges[right].clone());
-                right += 1;
-            }
-        }
-        while left < dict_key_transform_ranges.len() {
-            merged.push(dict_key_transform_ranges[left].clone());
-            left += 1;
-        }
-        while right < collision_delete_ranges.len() {
-            merged.push(collision_delete_ranges[right].clone());
-            right += 1;
-        }
-        merged
-    };
+    // Merge collision delete ranges (row-level) into the dict key transform ranges.
+    let dict_key_transform_ranges =
+        sorted_merge_into_vec(dict_key_transform_ranges, collision_delete_ranges);
 
     // If we're tracking statistics on how many rows were transformed, it's less expensive to
     // compute these statistics from the ranges of transformed dictionary keys. However, if these
@@ -2458,53 +2410,71 @@ impl KeyTransformRange {
     }
 }
 
+/// Merge two sorted `KeyTransformRange` slices into a single `Vec`, preserving sort order.
+fn sorted_merge_into_vec(
+    left: Vec<KeyTransformRange>,
+    right: &[KeyTransformRange],
+) -> Vec<KeyTransformRange> {
+    if right.is_empty() {
+        return left;
+    }
+    if left.is_empty() {
+        return right.to_vec();
+    }
+    let mut merged = Vec::with_capacity(left.len() + right.len());
+    let mut li = 0;
+    let mut ri = 0;
+    while li < left.len() && ri < right.len() {
+        if left[li].start() <= right[ri].start() {
+            merged.push(left[li].clone());
+            li += 1;
+        } else {
+            merged.push(right[ri].clone());
+            ri += 1;
+        }
+    }
+    while li < left.len() {
+        merged.push(left[li].clone());
+        li += 1;
+    }
+    while ri < right.len() {
+        merged.push(right[ri].clone());
+        ri += 1;
+    }
+    merged
+}
+
+/// Merge replacement-plan ranges, delete-plan ranges, and collision-delete ranges
+/// into a single sorted sequence. When only one source has ranges and there are
+/// no collision deletes, a zero-copy `Cow::Borrowed` is returned.
 fn merge_transform_ranges<'a>(
     replacement_plan: Option<&'a KeyReplacementPlan<'_>>,
     delete_plan: Option<&'a KeyDeletePlan<'_>>,
+    collision_delete_ranges: &[KeyTransformRange],
 ) -> Cow<'a, [KeyTransformRange]> {
-    match (replacement_plan, delete_plan) {
-        (Some(replacement_plan), Some(delete_plan)) => {
-            let mut result =
-                Vec::with_capacity(replacement_plan.ranges.len() + delete_plan.ranges.len());
-
-            let mut rep_idx = 0;
-            let mut del_idx = 0;
-
-            while rep_idx < replacement_plan.ranges.len() && del_idx < delete_plan.ranges.len() {
-                let rep_start = replacement_plan.ranges[rep_idx].start();
-                let del_start = delete_plan.ranges[del_idx].start();
-
-                if rep_start <= del_start {
-                    let rep_range = replacement_plan.ranges[rep_idx].clone();
-                    result.push(rep_range);
-                    rep_idx += 1;
-                } else {
-                    let del_range = delete_plan.ranges[del_idx].clone();
-                    result.push(del_range);
-                    del_idx += 1;
-                }
+    // Fast path: borrow directly when only one source is present and no collisions
+    if collision_delete_ranges.is_empty() {
+        return match (replacement_plan, delete_plan) {
+            (Some(rp), None) => Cow::Borrowed(&rp.ranges),
+            (None, Some(dp)) => Cow::Borrowed(&dp.ranges),
+            (None, None) => Cow::Borrowed(&[]),
+            (Some(rp), Some(dp)) => {
+                let merged = sorted_merge_into_vec(rp.ranges.to_vec(), &dp.ranges);
+                Cow::Owned(merged)
             }
-
-            // append any remaining replacements
-            while rep_idx < replacement_plan.ranges.len() {
-                let rep_range = replacement_plan.ranges[rep_idx].clone();
-                result.push(rep_range);
-                rep_idx += 1;
-            }
-
-            // append any remaining deletions
-            while del_idx < delete_plan.ranges.len() {
-                let del_range = delete_plan.ranges[del_idx].clone();
-                result.push(del_range);
-                del_idx += 1;
-            }
-
-            Cow::Owned(result)
-        }
-        (Some(replacement_plan), None) => Cow::Borrowed(&replacement_plan.ranges),
-        (None, Some(delete_plan)) => Cow::Borrowed(&delete_plan.ranges),
-        (None, None) => Cow::Borrowed(&[]),
+        };
     }
+
+    // When collision-delete ranges are present, we always produce an owned Vec.
+    // First merge replacement + delete plans, then merge in collision deletes.
+    let plan_ranges = match (replacement_plan, delete_plan) {
+        (Some(rp), Some(dp)) => sorted_merge_into_vec(rp.ranges.to_vec(), &dp.ranges),
+        (Some(rp), None) => rp.ranges.to_vec(),
+        (None, Some(dp)) => dp.ranges.to_vec(),
+        (None, None) => Vec::new(),
+    };
+
+    Cow::Owned(sorted_merge_into_vec(plan_ranges, collision_delete_ranges))
 }
 
 /// Converts delete transform ranges into "keep" ranges - the inverse ranges that should be retained.
