@@ -13,22 +13,26 @@
 //! [`shared::extension`](crate::shared::extension).
 
 use crate::channel_metrics::ChannelMetricsRegistry;
-use crate::channel_mode::{SharedMode, wrap_control_channel_metrics};
+use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ExtensionConfig;
 use crate::context::PipelineContext;
 use crate::control::ExtensionControlMsg;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::Error;
 use crate::local::extension as local_ext;
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::message::Sender;
 use crate::shared::extension as shared_ext;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use otap_df_channel::error::RecvError;
+use otap_df_channel::mpsc;
 use otap_df_config::ExtensionId;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_telemetry::otel_debug;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::any::TypeId;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -36,26 +40,46 @@ use tokio::time::{Sleep, sleep_until};
 
 // ── ControlChannel ──────────────────────────────────────────────────────────
 
-/// A channel for receiving control messages for extensions.
+/// A shutdown-aware channel for receiving extension control messages.
 ///
-/// Uses [`SharedReceiver`] because extensions can be used by both local and
-/// shared nodes. The engine's control-plane sends from a shared (Send)
-/// context, so even local (!Send) extensions receive control messages
-/// through a shared channel.
+/// Generic over the receiver type `R` to support both local (!Send) and
+/// shared (Send) channels. Concrete types are defined in
+/// [`local::extension::ControlChannel`](crate::local::extension::ControlChannel)
+/// and [`shared::extension::ControlChannel`](crate::shared::extension::ControlChannel).
 ///
 /// When a `Shutdown` message arrives with a future deadline, the channel
 /// continues delivering other control messages until the deadline expires,
 /// then returns the `Shutdown`.
-pub struct ControlChannel {
-    control_rx: Option<SharedReceiver<ExtensionControlMsg>>,
+#[doc(hidden)]
+pub struct ControlChannel<R> {
+    control_rx: Option<R>,
     shutting_down_deadline: Option<Instant>,
     pending_shutdown: Option<ExtensionControlMsg>,
 }
 
-impl ControlChannel {
+/// Trait abstracting over local and shared receivers for control messages.
+#[doc(hidden)]
+pub trait ControlReceiver {
+    /// Receives the next message, or returns an error if the channel is closed.
+    fn recv(&mut self) -> impl Future<Output = Result<ExtensionControlMsg, RecvError>>;
+}
+
+impl ControlReceiver for LocalReceiver<ExtensionControlMsg> {
+    async fn recv(&mut self) -> Result<ExtensionControlMsg, RecvError> {
+        LocalReceiver::recv(self).await
+    }
+}
+
+impl ControlReceiver for SharedReceiver<ExtensionControlMsg> {
+    async fn recv(&mut self) -> Result<ExtensionControlMsg, RecvError> {
+        SharedReceiver::recv(self).await
+    }
+}
+
+impl<R: ControlReceiver> ControlChannel<R> {
     /// Creates a new `ControlChannel` with the given control receiver.
     #[must_use]
-    pub const fn new(control_rx: SharedReceiver<ExtensionControlMsg>) -> Self {
+    pub fn new(control_rx: R) -> Self {
         ControlChannel {
             control_rx: Some(control_rx),
             shutting_down_deadline: None,
@@ -268,15 +292,15 @@ impl<E: 'static> LocalProvider for Passive<std::rc::Rc<E>> {
 /// Generic over the extension trait object type `E`, which is
 /// `Rc<dyn local::Extension>` for local variants and
 /// `Box<dyn shared::Extension>` for shared variants.
-pub enum ExtensionLifecycle<E> {
+pub enum ExtensionLifecycle<E, R> {
     /// Active extension with an event loop and control channel.
     Active {
         /// The extension trait object with start method.
         extension: E,
         /// Control channel sender.
-        control_sender: SharedSender<ExtensionControlMsg>,
+        control_sender: Sender<ExtensionControlMsg>,
         /// Control channel receiver.
-        control_receiver: SharedReceiver<ExtensionControlMsg>,
+        control_receiver: R,
     },
     /// Passive extension — capabilities only, no task spawned.
     Passive,
@@ -306,7 +330,10 @@ pub enum ExtensionWrapper {
         /// Node telemetry guard, set during pipeline wiring.
         telemetry: Option<NodeTelemetryGuard>,
         /// The lifecycle state (active with channels, or passive).
-        lifecycle: ExtensionLifecycle<std::rc::Rc<dyn local_ext::Extension>>,
+        lifecycle: ExtensionLifecycle<
+            std::rc::Rc<dyn local_ext::Extension>,
+            LocalReceiver<ExtensionControlMsg>,
+        >,
     },
     /// A shared (Send) extension variant.
     Shared {
@@ -319,7 +346,8 @@ pub enum ExtensionWrapper {
         /// Node telemetry guard, set during pipeline wiring.
         telemetry: Option<NodeTelemetryGuard>,
         /// The lifecycle state (active with channels, or passive).
-        lifecycle: ExtensionLifecycle<Box<dyn shared_ext::Extension>>,
+        lifecycle:
+            ExtensionLifecycle<Box<dyn shared_ext::Extension>, SharedReceiver<ExtensionControlMsg>>,
     },
 }
 
@@ -386,11 +414,11 @@ impl ExtensionBundleBuilder {
         let local = self.local.map(|l| {
             let lifecycle = match l.extension {
                 Some(ext) => {
-                    let (tx, rx) = tokio::sync::mpsc::channel(cap);
+                    let (tx, rx) = mpsc::Channel::new(cap);
                     ExtensionLifecycle::Active {
                         extension: ext,
-                        control_sender: SharedSender::mpsc(tx),
-                        control_receiver: SharedReceiver::mpsc(rx),
+                        control_sender: Sender::Local(LocalSender::mpsc(tx)),
+                        control_receiver: LocalReceiver::mpsc(rx),
                     }
                 }
                 None => ExtensionLifecycle::Passive,
@@ -410,7 +438,7 @@ impl ExtensionBundleBuilder {
                     let (tx, rx) = tokio::sync::mpsc::channel(cap);
                     ExtensionLifecycle::Active {
                         extension: ext,
-                        control_sender: SharedSender::mpsc(tx),
+                        control_sender: Sender::Shared(SharedSender::mpsc(tx)),
                         control_receiver: SharedReceiver::mpsc(rx),
                     }
                 }
@@ -527,21 +555,22 @@ impl ExtensionWrapper {
                         control_receiver,
                     } => {
                         let capacity = runtime_config.control_channel.capacity as u64;
-                        // Local extensions still use SharedMode because extension
-                        // control channels always use tokio::sync::mpsc (shared/Send)
-                        // — the engine sends control messages from a shared context.
-                        let (s, r) = wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
+                        let (local_sender, local_receiver) = match control_sender {
+                            Sender::Local(s) => (s, control_receiver),
+                            _ => unreachable!("Local variant always has local sender"),
+                        };
+                        let (s, r) = wrap_control_channel_metrics::<LocalMode, ExtensionControlMsg>(
                             name.as_ref(),
                             pipeline_ctx,
                             channel_metrics,
                             channel_metrics_enabled,
                             capacity,
-                            control_sender,
-                            control_receiver,
+                            local_sender,
+                            local_receiver,
                         );
                         ExtensionLifecycle::Active {
                             extension,
-                            control_sender: s,
+                            control_sender: Sender::Local(s),
                             control_receiver: r,
                         }
                     }
@@ -569,18 +598,22 @@ impl ExtensionWrapper {
                         control_receiver,
                     } => {
                         let capacity = runtime_config.control_channel.capacity as u64;
+                        let shared_sender = match control_sender {
+                            Sender::Shared(s) => s,
+                            _ => unreachable!("Shared variant always has shared sender"),
+                        };
                         let (s, r) = wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
                             name.as_ref(),
                             pipeline_ctx,
                             channel_metrics,
                             channel_metrics_enabled,
                             capacity,
-                            control_sender,
+                            shared_sender,
                             control_receiver,
                         );
                         ExtensionLifecycle::Active {
                             extension,
-                            control_sender: s,
+                            control_sender: Sender::Shared(s),
                             control_receiver: r,
                         }
                     }
@@ -617,7 +650,7 @@ impl ExtensionWrapper {
         };
         Some(crate::control::ExtensionControlSender {
             name: name.clone(),
-            sender: crate::message::Sender::Shared(sender.clone()),
+            sender: sender.clone(),
         })
     }
 
@@ -641,7 +674,10 @@ impl ExtensionWrapper {
                 otel_debug!("extension.start.local", name = name.as_ref());
                 let effect_handler = EffectHandler::new(name, metrics_reporter);
                 extension
-                    .start(ControlChannel::new(control_receiver), effect_handler)
+                    .start(
+                        local_ext::ControlChannel::new(control_receiver),
+                        effect_handler,
+                    )
                     .await
             }
             ExtensionWrapper::Shared {
@@ -657,7 +693,10 @@ impl ExtensionWrapper {
                 otel_debug!("extension.start.shared", name = name.as_ref());
                 let effect_handler = EffectHandler::new(name, metrics_reporter);
                 extension
-                    .start(ControlChannel::new(control_receiver), effect_handler)
+                    .start(
+                        shared_ext::ControlChannel::new(control_receiver),
+                        effect_handler,
+                    )
                     .await
             }
             _ => Err(Error::InternalError {
@@ -723,6 +762,7 @@ mod tests {
     use crate::testing::CtrlMsgCounters;
     use async_trait::async_trait;
     use serde_json::Value;
+    use std::time::Instant;
 
     fn test_metrics_reporter() -> MetricsReporter {
         let (tx, _rx) = flume::bounded(1);
@@ -754,7 +794,7 @@ mod tests {
     impl SharedExtension for TestSharedExt {
         async fn start(
             self: Box<Self>,
-            mut ctrl: ControlChannel,
+            mut ctrl: shared_ext::ControlChannel,
             _eh: EffectHandler,
         ) -> Result<TerminalState, Error> {
             loop {
@@ -785,7 +825,7 @@ mod tests {
     impl crate::local::extension::Extension for TestLocalExt {
         async fn start(
             self: std::rc::Rc<Self>,
-            mut ctrl: ControlChannel,
+            mut ctrl: local_ext::ControlChannel,
             _eh: EffectHandler,
         ) -> Result<TerminalState, Error> {
             loop {
@@ -870,7 +910,7 @@ mod tests {
         impl SharedExtension for DualExt {
             async fn start(
                 self: Box<Self>,
-                _ctrl: ControlChannel,
+                _ctrl: shared_ext::ControlChannel,
                 _eh: EffectHandler,
             ) -> Result<TerminalState, Error> {
                 Ok(TerminalState::default())
@@ -881,7 +921,7 @@ mod tests {
         impl crate::local::extension::Extension for DualExt {
             async fn start(
                 self: std::rc::Rc<Self>,
-                _ctrl: ControlChannel,
+                _ctrl: local_ext::ControlChannel,
                 _eh: EffectHandler,
             ) -> Result<TerminalState, Error> {
                 Ok(TerminalState::default())
@@ -1003,7 +1043,7 @@ mod tests {
     #[tokio::test]
     async fn test_ctrl_immediate_shutdown() {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
         SharedSender::mpsc(tx)
             .send(ExtensionControlMsg::Shutdown {
                 deadline: Instant::now(),
@@ -1019,7 +1059,7 @@ mod tests {
     async fn test_ctrl_config_then_shutdown() {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let s = SharedSender::mpsc(tx);
-        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
         s.send(ExtensionControlMsg::Config {
             config: Value::String("h".into()),
         })
@@ -1039,7 +1079,7 @@ mod tests {
     #[tokio::test]
     async fn test_ctrl_delayed_shutdown() {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
         let dl = Instant::now() + std::time::Duration::from_millis(50);
         let sender = SharedSender::mpsc(tx);
         sender
@@ -1058,7 +1098,7 @@ mod tests {
     #[tokio::test]
     async fn test_ctrl_collect_telemetry() {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
         SharedSender::mpsc(tx)
             .send(ExtensionControlMsg::CollectTelemetry {
                 metrics_reporter: test_metrics_reporter(),
@@ -1074,7 +1114,7 @@ mod tests {
     #[tokio::test]
     async fn test_ctrl_closed() {
         let (tx, rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(8);
-        let mut ch = ControlChannel::new(SharedReceiver::mpsc(rx));
+        let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
         drop(tx);
         assert!(ch.recv().await.is_err());
     }
@@ -1084,7 +1124,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let sender = crate::control::ExtensionControlSender {
             name: "st".into(),
-            sender: crate::message::Sender::Shared(SharedSender::mpsc(tx)),
+            sender: Sender::Shared(SharedSender::mpsc(tx)),
         };
         sender
             .send(ExtensionControlMsg::Config {

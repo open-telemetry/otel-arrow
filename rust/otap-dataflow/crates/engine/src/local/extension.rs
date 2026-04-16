@@ -1,13 +1,21 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trait for local (!Send) extensions.
+//! Trait and types for local (!Send) extensions.
 
+use crate::control::ExtensionControlMsg;
 use crate::error::Error;
-use crate::extension::{ControlChannel, EffectHandler};
+use crate::extension::EffectHandler;
+use crate::local::message::LocalReceiver;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use std::rc::Rc;
+
+/// Local (!Send) control channel for extensions.
+///
+/// Wraps a [`LocalReceiver`] with shutdown-grace-period logic.
+/// See [`crate::extension::ControlChannel`] for the implementation.
+pub type ControlChannel = crate::extension::ControlChannel<LocalReceiver<ExtensionControlMsg>>;
 
 /// A trait for pipeline extensions (!Send variant).
 ///

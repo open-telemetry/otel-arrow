@@ -1,12 +1,20 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trait for shared (Send) extensions.
+//! Trait and types for shared (Send) extensions.
 
+use crate::control::ExtensionControlMsg;
 use crate::error::Error;
-use crate::extension::{ControlChannel, EffectHandler};
+use crate::extension::EffectHandler;
+use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
+
+/// Shared (Send) control channel for extensions.
+///
+/// Wraps a [`SharedReceiver`] with shutdown-grace-period logic.
+/// See [`crate::extension::ControlChannel`] for the implementation.
+pub type ControlChannel = crate::extension::ControlChannel<SharedReceiver<ExtensionControlMsg>>;
 
 /// A trait for pipeline extensions (Send variant).
 ///
