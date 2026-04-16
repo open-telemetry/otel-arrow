@@ -1,0 +1,27 @@
+---
+source: example-data-plane/crates/exporters/src/clickhouse_exporter/tables.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS otap.otel_logs_raw (
+    `part_id` FixedString(32) CODEC(ZSTD(1)),
+    `id` UInt16 CODEC(ZSTD(1)),
+    `resource_id` UInt32 CODEC(ZSTD(1)),
+    `ResourceSchemaUrl` LowCardinality(String) CODEC(ZSTD(1)),
+    `scope_id` UInt32 CODEC(ZSTD(1)),
+    `ScopeSchemaUrl` LowCardinality(String) CODEC(ZSTD(1)),
+    `ScopeName` String CODEC(ZSTD(1)),
+    `ScopeVersion` LowCardinality(String) CODEC(ZSTD(1)),
+    `Timestamp` DateTime64(9) CODEC(Delta(8), ZSTD(1)),
+    `TimestampTime` DateTime DEFAULT toDateTime(Timestamp),
+    `TraceId` FixedString(16) CODEC(ZSTD(1)),
+    `SpanId` FixedString(8) CODEC(ZSTD(1)),
+    `SeverityText` LowCardinality(String) CODEC(ZSTD(1)),
+    `SeverityNumber` UInt8,
+    `ServiceName` LowCardinality(String) CODEC(ZSTD(1)),
+    `Body` String CODEC(ZSTD(1)),
+    `EventName` String CODEC(ZSTD(1))
+) ENGINE = MergeTree
+PARTITION BY (toDateTime(toUnixTimestamp(Timestamp)))
+PRIMARY KEY (ServiceName, TimestampTime)
+ORDER BY (ServiceName, TimestampTime, Timestamp)
+;
