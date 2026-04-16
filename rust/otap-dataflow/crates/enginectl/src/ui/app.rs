@@ -6,11 +6,9 @@ use crate::troubleshoot::PipelineDescribeReport;
 use humantime::format_duration;
 use otap_df_admin_api::{engine, groups, pipelines, telemetry};
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::CoreAllocation;
+use otap_df_config::policy::{CoreAllocation, CoreAllocationStrategy};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime};
-
-pub(crate) const UI_TITLE: &str = "OpenTelemetry - Rust Dataflow Engine";
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum View {
@@ -20,7 +18,7 @@ pub(crate) enum View {
 }
 
 impl View {
-    pub(crate) const ALL: [Self; 3] = [Self::Pipelines, Self::Groups, Self::Engine];
+    pub(crate) const ALL: [Self; 3] = [Self::Engine, Self::Groups, Self::Pipelines];
 
     pub(crate) const fn title(self) -> &'static str {
         match self {
@@ -975,6 +973,26 @@ impl AppState {
                     .collect::<Vec<_>>();
                 select_key_edge(&mut self.engine_selected, &keys, end);
             }
+        }
+    }
+
+    pub(crate) fn select_list_index(&mut self, index: usize) -> bool {
+        match self.view {
+            View::Pipelines => self
+                .pipeline_items()
+                .get(index)
+                .map(|item| update_selection(&mut self.pipeline_selected, &item.key))
+                .unwrap_or(false),
+            View::Groups => self
+                .group_items()
+                .get(index)
+                .map(|item| update_selection(&mut self.group_selected, &item.group_id))
+                .unwrap_or(false),
+            View::Engine => self
+                .engine_pipeline_items()
+                .get(index)
+                .map(|item| update_selection(&mut self.engine_selected, &item.key))
+                .unwrap_or(false),
         }
     }
 
@@ -2023,11 +2041,15 @@ impl AppState {
                 reason: "Scaling in the TUI requires an explicit pipeline resources.core_allocation policy.".to_string(),
             });
         };
-        match resources.core_allocation {
-            CoreAllocation::CoreCount { count } => {
-                if count > 0 {
+        match &resources.core_allocation {
+            CoreAllocation {
+                strategy: CoreAllocationStrategy::CoreCount,
+                count: Some(count),
+                ..
+            } => {
+                if *count > 0 {
                     Some(PipelineScaleSupport::Supported {
-                        current_cores: count,
+                        current_cores: *count,
                     })
                 } else {
                     Some(PipelineScaleSupport::Unsupported {
@@ -2037,14 +2059,29 @@ impl AppState {
                     })
                 }
             }
-            CoreAllocation::AllCores => Some(PipelineScaleSupport::Unsupported {
+            CoreAllocation {
+                strategy: CoreAllocationStrategy::AllCores,
+                ..
+            } => Some(PipelineScaleSupport::Unsupported {
                 reason:
                     "Scaling in the TUI is disabled for all_cores allocations. Use a full reconfigure instead."
                         .to_string(),
             }),
-            CoreAllocation::CoreSet { .. } => Some(PipelineScaleSupport::Unsupported {
+            CoreAllocation {
+                strategy: CoreAllocationStrategy::CoreSet,
+                ..
+            } => Some(PipelineScaleSupport::Unsupported {
                 reason:
                     "Scaling in the TUI is disabled for core_set allocations. Use a full reconfigure instead."
+                        .to_string(),
+            }),
+            CoreAllocation {
+                strategy: CoreAllocationStrategy::CoreCount,
+                count: None,
+                ..
+            } => Some(PipelineScaleSupport::Unsupported {
+                reason:
+                    "Scaling in the TUI is disabled because the pipeline resources.core_allocation policy is invalid."
                         .to_string(),
             }),
         }
@@ -2155,6 +2192,15 @@ fn select_key_edge(selection: &mut Option<String>, keys: &[String], end: bool) {
     } else {
         keys[0].clone()
     });
+}
+
+fn update_selection(selection: &mut Option<String>, key: &str) -> bool {
+    if selection.as_deref() == Some(key) {
+        false
+    } else {
+        *selection = Some(key.to_string());
+        true
+    }
 }
 
 fn wrap_index(current: usize, len: usize, delta: isize) -> usize {

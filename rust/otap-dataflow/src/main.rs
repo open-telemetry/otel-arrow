@@ -147,9 +147,8 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
     //  S -> digit | CoreRange | S,",",S
     //  CoreRange -> digit,"..",digit | digit,"..=",digit | digit,"-",digit
     //  digit -> [0-9]+
-    Ok(CoreAllocation::CoreSet {
-        set: s
-            .split(',')
+    Ok(CoreAllocation::core_set(
+        s.split(',')
             .map(|part| {
                 part.trim()
                     .parse::<usize>()
@@ -158,7 +157,7 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
                     .or_else(|_| parse_core_id_range(part))
             })
             .collect::<Result<Vec<CoreRange>, String>>()?,
-    })
+    ))
 }
 
 fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
@@ -262,19 +261,15 @@ mod tests {
     fn parse_core_allocation_ok() {
         assert_eq!(
             parse_core_id_allocation("0..=4,5,6-7"),
-            Ok(CoreAllocation::CoreSet {
-                set: vec![
+            Ok(CoreAllocation::core_set(vec![
                     CoreRange { start: 0, end: 4 },
                     CoreRange { start: 5, end: 5 },
                     CoreRange { start: 6, end: 7 }
-                ]
-            })
+                ]))
         );
         assert_eq!(
             parse_core_id_allocation("0..4"),
-            Ok(CoreAllocation::CoreSet {
-                set: vec![CoreRange { start: 0, end: 4 }]
-            })
+            Ok(CoreAllocation::core_set(vec![CoreRange { start: 0, end: 4 }]))
         );
     }
 
@@ -439,12 +434,10 @@ connections:
         .expect("args should parse");
         assert_eq!(
             args.core_id_range,
-            Some(CoreAllocation::CoreSet {
-                set: vec![
+            Some(CoreAllocation::core_set(vec![
                     CoreRange { start: 1, end: 3 },
                     CoreRange { start: 7, end: 7 }
-                ]
-            })
+                ]))
         );
         assert_eq!(args.num_cores, None);
     }

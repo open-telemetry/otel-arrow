@@ -12,7 +12,7 @@ use self::app::{
     PipelineTab, ProbeFailureRow, StatCard, StatusChip, TimelineRow, Tone, UiAction,
     UiCommandContext, View,
 };
-use self::view::{compute_ui_layout, draw_ui, tab_hit_index};
+use self::view::{compute_ui_layout, draw_ui, state_table_row_hit_index, tab_hit_index};
 use crate::args::{ColorChoice, MetricsShape, UiArgs};
 use crate::error::CliError;
 use crate::style::HumanStyle;
@@ -519,8 +519,8 @@ fn handle_mouse_event(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
 
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => handle_left_click(mouse.column, mouse.row, app),
-        MouseEventKind::ScrollUp => handle_vertical_motion(app, -3),
-        MouseEventKind::ScrollDown => handle_vertical_motion(app, 3),
+        MouseEventKind::ScrollUp => handle_mouse_scroll(mouse.column, mouse.row, app, -3),
+        MouseEventKind::ScrollDown => handle_mouse_scroll(mouse.column, mouse.row, app, 3),
         _ => EventOutcome::Continue,
     }
 }
@@ -558,7 +558,84 @@ fn handle_left_click(column: u16, row: u16, app: &mut AppState) -> EventOutcome 
         };
     }
 
+    if rect_contains(layout.list, column, row) {
+        return handle_list_click(layout.list, row, app);
+    }
+
+    if rect_contains(layout.detail, column, row) {
+        let changed = app.focus != FocusArea::Detail;
+        app.focus = FocusArea::Detail;
+        return if changed {
+            EventOutcome::Refresh
+        } else {
+            EventOutcome::Continue
+        };
+    }
+
     EventOutcome::Continue
+}
+
+fn handle_list_click(area: Rect, row: u16, app: &mut AppState) -> EventOutcome {
+    let item_count = match app.view {
+        View::Pipelines => app.pipeline_items().len(),
+        View::Groups => app.group_items().len(),
+        View::Engine => app.engine_pipeline_items().len(),
+    };
+    let Some(index) = state_table_row_hit_index(area, row, item_count) else {
+        let changed = app.focus != FocusArea::List;
+        app.focus = FocusArea::List;
+        return if changed {
+            EventOutcome::Refresh
+        } else {
+            EventOutcome::Continue
+        };
+    };
+
+    let selection_changed = app.select_list_index(index);
+    let focus_changed = app.focus != FocusArea::List;
+    app.focus = FocusArea::List;
+    app.reset_scroll();
+
+    match app.view {
+        View::Pipelines | View::Groups if selection_changed || focus_changed => {
+            EventOutcome::Refresh
+        }
+        View::Engine => EventOutcome::Continue,
+        _ => EventOutcome::Continue,
+    }
+}
+
+fn handle_mouse_scroll(column: u16, row: u16, app: &mut AppState, delta: isize) -> EventOutcome {
+    let Some((width, height)) = app.terminal_size else {
+        return handle_vertical_motion(app, delta);
+    };
+    let Some(layout) = compute_ui_layout(Rect::new(0, 0, width, height)) else {
+        return handle_vertical_motion(app, delta);
+    };
+
+    if rect_contains(layout.list, column, row) {
+        app.focus = FocusArea::List;
+        app.move_selection(delta);
+        app.reset_scroll();
+        return match app.view {
+            View::Pipelines | View::Groups => EventOutcome::Refresh,
+            View::Engine => EventOutcome::Continue,
+        };
+    }
+
+    if rect_contains(layout.detail, column, row) {
+        app.focus = FocusArea::Detail;
+        return handle_vertical_motion(app, delta);
+    }
+
+    handle_vertical_motion(app, delta)
+}
+
+fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x
+        && column < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
 }
 
 fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcome {
@@ -3462,6 +3539,130 @@ mod tests {
 
         assert_eq!(outcome, EventOutcome::Refresh);
         assert_eq!(app.pipeline_tab, PipelineTab::Metrics);
+        assert_eq!(app.focus, FocusArea::Detail);
+    }
+
+    #[test]
+    fn mouse_click_on_pipeline_list_row_selects_pipeline() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.set_terminal_size(140, 40);
+        let pipeline = serde_json::json!({
+            "conditions": [],
+            "totalCores": 1,
+            "runningCores": 1,
+            "cores": {
+                "0": {
+                    "phase": "running",
+                    "lastHeartbeatTime": "2026-01-01T00:00:00Z",
+                    "conditions": [],
+                    "deletePending": false
+                }
+            }
+        });
+        app.groups_status = Some(groups::Status {
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+            pipelines: [
+                (
+                    "tenant-a:ingest".to_string(),
+                    serde_json::from_value(pipeline.clone())
+                        .expect("pipeline fixture should deserialize"),
+                ),
+                (
+                    "tenant-b:export".to_string(),
+                    serde_json::from_value(pipeline).expect("pipeline fixture should deserialize"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        });
+        app.ensure_selection();
+        let layout = compute_ui_layout(Rect::new(0, 0, 140, 40)).expect("layout should exist");
+
+        let outcome = handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: layout.list.x + 2,
+                row: layout.list.y + 3,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::Refresh);
+        assert_eq!(app.pipeline_selected.as_deref(), Some("tenant-b:export"));
+        assert_eq!(app.focus, FocusArea::List);
+    }
+
+    #[test]
+    fn mouse_scroll_over_list_moves_selection_even_when_detail_has_focus() {
+        let mut app = AppState::new(UiStartView::Groups, true, 200);
+        app.set_terminal_size(140, 40);
+        app.focus = FocusArea::Detail;
+        let pipeline = serde_json::json!({
+            "conditions": [],
+            "totalCores": 1,
+            "runningCores": 1,
+            "cores": {
+                "0": {
+                    "phase": "running",
+                    "lastHeartbeatTime": "2026-01-01T00:00:00Z",
+                    "conditions": [],
+                    "deletePending": false
+                }
+            }
+        });
+        app.groups_status = Some(groups::Status {
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+            pipelines: [
+                (
+                    "tenant-a:ingest".to_string(),
+                    serde_json::from_value(pipeline.clone())
+                        .expect("pipeline fixture should deserialize"),
+                ),
+                (
+                    "tenant-b:export".to_string(),
+                    serde_json::from_value(pipeline).expect("pipeline fixture should deserialize"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        });
+        app.ensure_selection();
+        let layout = compute_ui_layout(Rect::new(0, 0, 140, 40)).expect("layout should exist");
+
+        let outcome = handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: layout.list.x + 2,
+                row: layout.list.y + 2,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::Refresh);
+        assert_eq!(app.group_selected.as_deref(), Some("tenant-b"));
+        assert_eq!(app.focus, FocusArea::List);
+    }
+
+    #[test]
+    fn mouse_click_on_detail_body_switches_focus_to_detail() {
+        let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+        app.set_terminal_size(140, 40);
+        app.focus = FocusArea::List;
+        let layout = compute_ui_layout(Rect::new(0, 0, 140, 40)).expect("layout should exist");
+
+        let outcome = handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: layout.detail.x + 2,
+                row: layout.detail.y + 2,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::Refresh);
         assert_eq!(app.focus, FocusArea::Detail);
     }
 

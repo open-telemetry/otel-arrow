@@ -6,24 +6,25 @@ use super::app::{
     EngineSummaryPane, EngineVitals, EventPane, FindingRow, FocusArea, GroupShutdownPane,
     GroupShutdownRow, GroupSummaryPane, LogFeedState, LogRow, MetricRow, MetricsPane,
     OperationPane, PipelineInventoryRow, PipelineSummaryPane, ProbeFailureRow, StatCard,
-    TimelineRow, Tone, UI_TITLE, View,
+    StatusChip, TimelineRow, Tone, View,
 };
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
 pub(crate) const MIN_TERMINAL_WIDTH: u16 = 100;
 pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 25;
-const HEADER_HEIGHT: u16 = 4;
+const HEADER_HEIGHT: u16 = 2;
 const STATUS_BAR_HEIGHT: u16 = 2;
-const DETAIL_HEADER_HEIGHT: u16 = 2;
+const DETAIL_HEADER_HEIGHT: u16 = 1;
 const DETAIL_TABS_HEIGHT: u16 = 1;
 const ENGINE_VITALS_WIDTH: u16 = 38;
-const TAB_GAP: u16 = 2;
+const TAB_SEPARATOR: &str = " | ";
+const TAB_SEPARATOR_WIDTH: u16 = 3;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UiLayout {
@@ -55,12 +56,12 @@ pub(crate) fn compute_ui_layout(area: Rect) -> Option<UiLayout> {
         .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
         .split(sections[1]);
     let header = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(sections[0]);
+    let header_top = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(ENGINE_VITALS_WIDTH)])
-        .split(sections[0]);
-    let header_left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Length(1)])
         .split(header[0]);
     let detail = Layout::default()
         .direction(Direction::Vertical)
@@ -73,9 +74,9 @@ pub(crate) fn compute_ui_layout(area: Rect) -> Option<UiLayout> {
 
     Some(UiLayout {
         header: sections[0],
-        title_bar: header_left[0],
-        top_tabs: header_left[1],
-        engine_vitals: header[1],
+        title_bar: header_top[0],
+        top_tabs: header[1],
+        engine_vitals: header_top[1],
         list: body[0],
         detail: body[1],
         detail_tabs: detail[1],
@@ -96,6 +97,26 @@ pub(crate) fn tab_hit_index(area: Rect, labels: &[&str], column: u16, row: u16) 
         })
 }
 
+pub(crate) fn state_table_row_hit_index(area: Rect, row: u16, item_count: usize) -> Option<usize> {
+    if item_count == 0 {
+        return None;
+    }
+
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    if inner.height <= 1 {
+        return None;
+    }
+
+    let data_start = inner.y.saturating_add(1);
+    let data_end = inner.y.saturating_add(inner.height);
+    if row < data_start || row >= data_end {
+        return None;
+    }
+
+    let index = usize::from(row.saturating_sub(data_start));
+    (index < item_count).then_some(index)
+}
+
 pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     let area = frame.area();
     let Some(layout) = compute_ui_layout(area) else {
@@ -103,6 +124,7 @@ pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
         return;
     };
 
+    frame.render_widget(Block::default().style(page_style(app.color_enabled)), area);
     draw_header(frame, layout.header, app);
     draw_left_list(frame, layout.list, app);
     draw_detail(frame, layout.detail, app);
@@ -130,17 +152,17 @@ pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+    let top = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(ENGINE_VITALS_WIDTH)])
-        .split(area);
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Length(1)])
         .split(sections[0]);
 
-    draw_title_bar(frame, left[0], app);
-    draw_top_tabs(frame, left[1], app);
-    draw_engine_vitals_panel(frame, sections[1], &app.engine_vitals, app);
+    draw_title_bar(frame, top[0], app);
+    draw_top_tabs(frame, sections[1], app);
+    draw_engine_vitals_panel(frame, top[1], &app.engine_vitals, app);
 }
 
 fn draw_resize_required(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -171,14 +193,16 @@ fn draw_top_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 fn draw_title_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let line = Line::from(vec![
-        Span::styled(UI_TITLE, title_style(app.color_enabled)),
-        Span::styled(" | ", muted_style(app.color_enabled)),
+        Span::styled("Open", open_brand_style(app.color_enabled)),
+        Span::styled("Telemetry", telemetry_brand_style(app.color_enabled)),
+        Span::styled(" - Rust Dataflow Engine", title_style(app.color_enabled)),
+        Span::styled("  |  ", separator_style(app.color_enabled)),
         Span::styled("target ", muted_style(app.color_enabled)),
-        Span::styled(app.target_url(), header_style(app.color_enabled)),
+        Span::styled(app.target_url(), target_style(app.color_enabled)),
     ]);
     let title = Paragraph::new(line)
         .alignment(Alignment::Left)
-        .wrap(Wrap { trim: true });
+        .style(page_style(app.color_enabled));
     frame.render_widget(title, area);
 }
 
@@ -188,42 +212,34 @@ fn draw_engine_vitals_panel(
     vitals: &EngineVitals,
     app: &AppState,
 ) {
-    let title = if vitals.stale {
-        "Engine Vitals (stale)"
-    } else {
-        "Engine Vitals"
-    };
-    let details = vitals
-        .pressure_detail
-        .as_deref()
-        .unwrap_or("limits unavailable");
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("CPU ", muted_style(app.color_enabled)),
-            Span::styled(
-                vitals.cpu_utilization.clone(),
-                tone_style(vitals.cpu_tone, app.color_enabled),
-            ),
-            Span::raw("  "),
-            Span::styled("RSS ", muted_style(app.color_enabled)),
-            Span::styled(
-                vitals.memory_rss.clone(),
-                tone_style(vitals.memory_tone, app.color_enabled),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Pressure ", muted_style(app.color_enabled)),
-            Span::styled(
-                vitals.pressure_state.clone(),
-                tone_style(vitals.pressure_tone, app.color_enabled),
-            ),
-            Span::raw("  "),
-            Span::styled(details.to_string(), muted_style(app.color_enabled)),
-        ]),
+    let mut spans = vec![
+        Span::styled("CPU ", muted_style(app.color_enabled)),
+        Span::styled(
+            vitals.cpu_utilization.clone(),
+            tone_style(vitals.cpu_tone, app.color_enabled),
+        ),
+        Span::styled(TAB_SEPARATOR, separator_style(app.color_enabled)),
+        Span::styled("RSS ", muted_style(app.color_enabled)),
+        Span::styled(
+            vitals.memory_rss.clone(),
+            tone_style(vitals.memory_tone, app.color_enabled),
+        ),
+        Span::styled(TAB_SEPARATOR, separator_style(app.color_enabled)),
+        Span::styled(
+            vitals.pressure_state.clone(),
+            tone_style(vitals.pressure_tone, app.color_enabled),
+        ),
     ];
-    let widget = Paragraph::new(lines)
-        .block(block_with_title(title, false, app.color_enabled))
-        .wrap(Wrap { trim: true });
+    if vitals.stale {
+        spans.push(Span::styled(
+            TAB_SEPARATOR,
+            separator_style(app.color_enabled),
+        ));
+        spans.push(Span::styled("stale", muted_style(app.color_enabled)));
+    }
+    let widget = Paragraph::new(Line::from(spans))
+        .alignment(Alignment::Right)
+        .style(page_style(app.color_enabled));
     frame.render_widget(widget, area);
 }
 
@@ -374,7 +390,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(6),
         ])
@@ -386,56 +402,51 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 fn draw_detail_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let Some(header) = app.active_header() else {
-        let placeholder = Paragraph::new(Line::from(vec![
-            Span::styled(app.current_detail_title(), header_style(app.color_enabled)),
-            Span::raw("  "),
-            Span::styled("Loading current selection…", muted_style(app.color_enabled)),
-        ]))
-        .style(muted_style(app.color_enabled))
-        .wrap(Wrap { trim: true });
-        frame.render_widget(placeholder, area);
-        return;
-    };
+    frame.render_widget(
+        Block::default().style(object_strip_style(app.color_enabled)),
+        area,
+    );
 
-    let title = header.title.clone();
-    let subtitle = header.subtitle.clone().unwrap_or_default();
-    let chips = if header.chips.is_empty() {
-        Line::from("")
+    let (left_line, chip_line, chip_width) = if let Some(header) = app.active_header() {
+        (
+            build_detail_header_line(app, header),
+            Some(Line::from(detail_chip_spans(
+                &header.chips,
+                app.color_enabled,
+            ))),
+            detail_chip_width(&header.chips),
+        )
     } else {
-        Line::from(
-            header
-                .chips
-                .iter()
-                .flat_map(|chip| {
-                    [
-                        Span::styled(
-                            format!(" {}:{} ", chip.label, chip.value),
-                            chip_style(chip.tone, app.color_enabled),
-                        ),
-                        Span::raw(" "),
-                    ]
-                })
-                .collect::<Vec<_>>(),
+        (
+            Line::from(vec![
+                Span::styled(app.current_detail_title(), header_style(app.color_enabled)),
+                Span::styled(TAB_SEPARATOR, separator_style(app.color_enabled)),
+                Span::styled("Loading current selection…", muted_style(app.color_enabled)),
+            ]),
+            None,
+            0,
         )
     };
 
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", app.current_detail_title()),
-                header_style(app.color_enabled),
-            ),
-            Span::raw("  "),
-            Span::styled(title, title_style(app.color_enabled)),
-            Span::raw("  "),
-            Span::styled(subtitle, muted_style(app.color_enabled)),
-        ]),
-        chips,
-    ];
+    let strip = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(chip_width.min(area.width)),
+        ])
+        .split(area);
 
-    let header_widget = Paragraph::new(lines).wrap(Wrap { trim: true });
-    frame.render_widget(header_widget, area);
+    let left = Paragraph::new(left_line)
+        .style(object_strip_style(app.color_enabled))
+        .alignment(Alignment::Left);
+    frame.render_widget(left, strip[0]);
+
+    if let Some(chips) = chip_line {
+        let right = Paragraph::new(chips)
+            .style(object_strip_style(app.color_enabled))
+            .alignment(Alignment::Right);
+        frame.render_widget(right, strip[1]);
+    }
 }
 
 fn draw_detail_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -524,7 +535,7 @@ fn draw_config_pane(frame: &mut Frame<'_>, area: Rect, pane: &ConfigPane, app: &
             .unwrap_or_else(|| "No config note is available.".to_string()),
     )
     .block(block_with_title("Config Note", false, app.color_enabled))
-    .style(muted_style(app.color_enabled))
+    .style(subtle_panel_text_style(app.color_enabled))
     .wrap(Wrap { trim: false });
     frame.render_widget(note, sections[1]);
 
@@ -534,7 +545,7 @@ fn draw_config_pane(frame: &mut Frame<'_>, area: Rect, pane: &ConfigPane, app: &
             false,
             app.color_enabled,
         ))
-        .style(body_style(app.color_enabled))
+        .style(panel_style(app.color_enabled))
         .scroll((app.detail_scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(preview, sections[2]);
@@ -832,7 +843,7 @@ fn draw_group_shutdown_pane(
             .unwrap_or_else(|| "No group shutdown note is available.".to_string()),
     )
     .block(block_with_title("Shutdown Note", false, app.color_enabled))
-    .style(muted_style(app.color_enabled))
+    .style(subtle_panel_text_style(app.color_enabled))
     .wrap(Wrap { trim: false });
     frame.render_widget(note, sections[1]);
 
@@ -876,6 +887,7 @@ fn draw_diagnosis_pane(frame: &mut Frame<'_>, area: Rect, pane: &DiagnosisPane, 
             false,
             app.color_enabled,
         ))
+        .style(panel_style(app.color_enabled))
         .wrap(Wrap { trim: false });
     frame.render_widget(summary, sections[0]);
 
@@ -906,7 +918,7 @@ fn draw_bundle_pane(frame: &mut Frame<'_>, area: Rect, pane: &BundlePane, app: &
 
     let preview = Paragraph::new(pane.preview.clone())
         .block(block_with_title("Bundle Preview", false, app.color_enabled))
-        .style(body_style(app.color_enabled))
+        .style(panel_style(app.color_enabled))
         .scroll((app.detail_scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(preview, sections[1]);
@@ -916,7 +928,7 @@ fn draw_stat_cards(frame: &mut Frame<'_>, area: Rect, cards: &[StatCard], color_
     if cards.is_empty() {
         let placeholder = Paragraph::new("No summary cards available.")
             .block(block_with_title("Overview", false, color_enabled))
-            .style(muted_style(color_enabled));
+            .style(subtle_panel_text_style(color_enabled));
         frame.render_widget(placeholder, area);
         return;
     }
@@ -939,6 +951,8 @@ fn draw_stat_cards(frame: &mut Frame<'_>, area: Rect, cards: &[StatCard], color_
                     tone_style(card.tone, color_enabled).add_modifier(Modifier::BOLD),
                 ),
             ]))
+            .block(card_block(card.tone, color_enabled))
+            .style(card_panel_style(card.tone, color_enabled))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true });
             frame.render_widget(widget, *chunk);
@@ -954,7 +968,8 @@ fn draw_stat_cards(frame: &mut Frame<'_>, area: Rect, cards: &[StatCard], color_
             )),
             Line::from(Span::styled(card.label.clone(), muted_style(color_enabled))),
         ])
-        .block(block_with_title("", false, color_enabled))
+        .block(card_block(card.tone, color_enabled))
+        .style(card_panel_style(card.tone, color_enabled))
         .alignment(Alignment::Center);
         frame.render_widget(widget, *chunk);
     }
@@ -1475,7 +1490,7 @@ fn draw_state_table<const N: usize>(
             "No resources match the current filter."
         })
         .block(block_with_title(title, focused, app.color_enabled))
-        .style(muted_style(app.color_enabled))
+        .style(subtle_panel_text_style(app.color_enabled))
         .alignment(Alignment::Center);
         frame.render_widget(placeholder, area);
         return;
@@ -1484,11 +1499,12 @@ fn draw_state_table<const N: usize>(
     let header = Row::new(
         headers
             .into_iter()
-            .map(|value| Cell::from(value).style(header_style(app.color_enabled))),
+            .map(|value| Cell::from(value).style(table_header_style(app.color_enabled))),
     );
     let table = Table::new(rows, widths)
         .header(header)
         .block(block_with_title(title, focused, app.color_enabled))
+        .style(panel_style(app.color_enabled))
         .column_spacing(1)
         .row_highlight_style(selected_style(app.color_enabled))
         .highlight_symbol("▶ ");
@@ -1510,7 +1526,7 @@ fn draw_table_block<const N: usize>(
     if rows.is_empty() {
         let placeholder = Paragraph::new(empty_message.unwrap_or("No rows are available."))
             .block(block_with_title(title, false, color_enabled))
-            .style(muted_style(color_enabled))
+            .style(subtle_panel_text_style(color_enabled))
             .alignment(Alignment::Center);
         frame.render_widget(placeholder, area);
         return;
@@ -1519,11 +1535,12 @@ fn draw_table_block<const N: usize>(
     let header = Row::new(
         headers
             .into_iter()
-            .map(|value| Cell::from(value).style(header_style(color_enabled))),
+            .map(|value| Cell::from(value).style(table_header_style(color_enabled))),
     );
     let table = Table::new(rows, widths)
         .header(header)
         .block(block_with_title(title, false, color_enabled))
+        .style(panel_style(color_enabled))
         .column_spacing(1);
     frame.render_widget(table, area);
 }
@@ -1534,7 +1551,7 @@ fn draw_empty_overlay(frame: &mut Frame<'_>, area: Rect, message: &str, color_en
     frame.render_widget(
         Paragraph::new(message.to_string())
             .block(block_with_title("Empty", false, color_enabled))
-            .style(muted_style(color_enabled))
+            .style(subtle_panel_text_style(color_enabled))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false }),
         overlay,
@@ -1587,6 +1604,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
     let footer = Paragraph::new(Line::from(spans))
         .block(block_with_title("", false, app.color_enabled))
+        .style(panel_style(app.color_enabled))
         .wrap(Wrap { trim: false });
     frame.render_widget(footer, area);
 }
@@ -1621,6 +1639,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     ];
     let help = Paragraph::new(lines)
         .block(block_with_title("dfctl ui help", false, app.color_enabled))
+        .style(panel_style(app.color_enabled))
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);
     frame.render_widget(help, overlay);
@@ -1674,6 +1693,7 @@ fn draw_command_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
     let command = Paragraph::new(lines)
         .block(block_with_title("Equivalent CLI", false, app.color_enabled))
+        .style(panel_style(app.color_enabled))
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);
     frame.render_widget(command, overlay);
@@ -1691,6 +1711,7 @@ fn draw_filter_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         ]),
     ])
     .block(block_with_title("Filter", false, app.color_enabled))
+    .style(panel_style(app.color_enabled))
     .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);
     frame.render_widget(text, overlay);
@@ -1744,6 +1765,7 @@ fn draw_action_menu_overlay(
 
     let widget = Paragraph::new(lines)
         .block(block_with_title("Actions", false, app.color_enabled))
+        .style(panel_style(app.color_enabled))
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);
     frame.render_widget(widget, overlay);
@@ -1770,6 +1792,7 @@ fn draw_shutdown_confirm_overlay(
         )),
     ])
     .block(block_with_title("Confirm", false, app.color_enabled))
+    .style(panel_style(app.color_enabled))
     .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);
     frame.render_widget(widget, overlay);
@@ -1804,6 +1827,7 @@ fn draw_scale_editor_overlay(
         )),
     ])
     .block(block_with_title("Scale Editor", false, app.color_enabled))
+    .style(panel_style(app.color_enabled))
     .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);
     frame.render_widget(widget, overlay);
@@ -1819,21 +1843,18 @@ fn draw_tab_bar(
     let mut spans = Vec::new();
     for (index, label) in labels.iter().enumerate() {
         let style = if index == selected {
-            selected_style(color_enabled)
+            selected_tab_style(color_enabled)
         } else {
-            header_style(color_enabled)
+            tab_style(color_enabled)
         };
         spans.push(Span::styled(format!(" {label} "), style));
         if index + 1 < labels.len() {
-            spans.push(Span::styled(
-                " ".repeat(TAB_GAP as usize),
-                muted_style(color_enabled),
-            ));
+            spans.push(Span::styled(TAB_SEPARATOR, separator_style(color_enabled)));
         }
     }
 
     let widget = Paragraph::new(Line::from(spans))
-        .style(body_style(color_enabled))
+        .style(page_style(color_enabled))
         .wrap(Wrap { trim: true });
     frame.render_widget(widget, area);
 }
@@ -1855,7 +1876,7 @@ pub(crate) fn tab_regions(area: Rect, labels: &[&str]) -> Vec<Rect> {
         if capped_width > 0 {
             regions.push(Rect::new(x, area.y, capped_width, 1));
         }
-        x = x.saturating_add(width).saturating_add(TAB_GAP);
+        x = x.saturating_add(width).saturating_add(TAB_SEPARATOR_WIDTH);
     }
     regions
 }
@@ -1893,13 +1914,63 @@ fn block_with_title(title: &str, focused: bool, color_enabled: bool) -> Block<'s
     };
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style)
+        .style(panel_style(color_enabled))
         .title(Span::styled(title, header_style(color_enabled)))
+}
+
+fn card_block(tone: Tone, color_enabled: bool) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(card_border_style(tone, color_enabled))
+        .style(card_panel_style(tone, color_enabled))
+}
+
+fn page_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(Color::Rgb(230, 238, 246))
+            .bg(Color::Rgb(9, 14, 20))
+    } else {
+        Style::default()
+    }
+}
+
+fn panel_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(Color::Rgb(230, 238, 246))
+            .bg(Color::Rgb(16, 23, 33))
+    } else {
+        Style::default()
+    }
+}
+
+fn subtle_panel_text_style(color_enabled: bool) -> Style {
+    panel_style(color_enabled).fg(muted_color(color_enabled))
+}
+
+fn card_panel_style(tone: Tone, color_enabled: bool) -> Style {
+    if !color_enabled {
+        return Style::default();
+    }
+
+    let bg = match tone {
+        Tone::Accent => Color::Rgb(18, 42, 52),
+        Tone::Success => Color::Rgb(19, 39, 28),
+        Tone::Warning => Color::Rgb(51, 41, 20),
+        Tone::Failure => Color::Rgb(53, 23, 30),
+        Tone::Muted => Color::Rgb(21, 27, 35),
+        Tone::Neutral => Color::Rgb(18, 26, 36),
+    };
+    Style::default().fg(body_color(color_enabled)).bg(bg)
 }
 
 fn body_style(color_enabled: bool) -> Style {
     if color_enabled {
-        Style::default().fg(Color::White)
+        Style::default().fg(body_color(color_enabled))
     } else {
         Style::default()
     }
@@ -1908,26 +1979,57 @@ fn body_style(color_enabled: bool) -> Style {
 fn title_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::Rgb(140, 224, 255))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
+    }
+}
+
+fn open_brand_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(Color::Rgb(245, 168, 0))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        title_style(color_enabled)
+    }
+}
+
+fn telemetry_brand_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(Color::Rgb(66, 92, 199))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        title_style(color_enabled)
     }
 }
 
 fn header_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
-            .fg(Color::LightCyan)
+            .fg(Color::Rgb(159, 215, 223))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     }
 }
 
+fn table_header_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(Color::Rgb(177, 233, 223))
+            .bg(Color::Rgb(28, 40, 54))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        header_style(color_enabled)
+    }
+}
+
 fn muted_style(color_enabled: bool) -> Style {
     if color_enabled {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(muted_color(color_enabled))
     } else {
         Style::default()
     }
@@ -1935,7 +2037,7 @@ fn muted_style(color_enabled: bool) -> Style {
 
 fn border_style(color_enabled: bool) -> Style {
     if color_enabled {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Color::Rgb(73, 93, 115))
     } else {
         Style::default()
     }
@@ -1944,7 +2046,7 @@ fn border_style(color_enabled: bool) -> Style {
 fn focus_border_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::Rgb(96, 218, 223))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
@@ -1954,21 +2056,71 @@ fn focus_border_style(color_enabled: bool) -> Style {
 fn selected_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::LightCyan)
+            .fg(body_color(color_enabled))
+            .bg(Color::Rgb(29, 74, 91))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
     }
 }
 
+fn tab_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(Color::Rgb(153, 178, 198))
+            .bg(Color::Rgb(25, 34, 46))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        header_style(color_enabled)
+    }
+}
+
+fn selected_tab_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(Color::Rgb(235, 247, 248))
+            .bg(Color::Rgb(33, 94, 110))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        selected_style(color_enabled)
+    }
+}
+
 fn key_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(Color::Rgb(255, 208, 117))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
+    }
+}
+
+fn separator_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default().fg(Color::Rgb(83, 103, 122))
+    } else {
+        Style::default()
+    }
+}
+
+fn target_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(Color::Rgb(188, 204, 223))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        header_style(color_enabled)
+    }
+}
+
+fn object_strip_style(color_enabled: bool) -> Style {
+    if color_enabled {
+        Style::default()
+            .fg(body_color(color_enabled))
+            .bg(Color::Rgb(18, 26, 36))
+    } else {
+        Style::default()
     }
 }
 
@@ -1983,18 +2135,20 @@ fn tone_style(tone: Tone, color_enabled: bool) -> Style {
     }
 
     match tone {
-        Tone::Neutral => Style::default().fg(Color::White),
+        Tone::Neutral => Style::default().fg(body_color(color_enabled)),
         Tone::Accent => Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::Rgb(93, 218, 233))
             .add_modifier(Modifier::BOLD),
         Tone::Success => Style::default()
-            .fg(Color::Green)
+            .fg(Color::Rgb(116, 229, 140))
             .add_modifier(Modifier::BOLD),
         Tone::Warning => Style::default()
-            .fg(Color::Yellow)
+            .fg(Color::Rgb(247, 198, 102))
             .add_modifier(Modifier::BOLD),
-        Tone::Failure => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        Tone::Muted => Style::default().fg(Color::DarkGray),
+        Tone::Failure => Style::default()
+            .fg(Color::Rgb(255, 121, 121))
+            .add_modifier(Modifier::BOLD),
+        Tone::Muted => Style::default().fg(muted_color(color_enabled)),
     }
 }
 
@@ -2004,21 +2158,57 @@ fn chip_style(tone: Tone, color_enabled: bool) -> Style {
     }
 
     let (fg, bg) = match tone {
-        Tone::Neutral => (Color::White, Color::Black),
-        Tone::Accent => (Color::Black, Color::Cyan),
-        Tone::Success => (Color::Black, Color::Green),
-        Tone::Warning => (Color::Black, Color::Yellow),
-        Tone::Failure => (Color::White, Color::Red),
-        Tone::Muted => (Color::White, Color::DarkGray),
+        Tone::Neutral => (Color::Rgb(235, 243, 247), Color::Rgb(39, 50, 64)),
+        Tone::Accent => (Color::Rgb(235, 247, 248), Color::Rgb(33, 94, 110)),
+        Tone::Success => (Color::Rgb(234, 247, 237), Color::Rgb(34, 103, 53)),
+        Tone::Warning => (Color::Rgb(255, 244, 217), Color::Rgb(112, 81, 23)),
+        Tone::Failure => (Color::Rgb(255, 236, 236), Color::Rgb(125, 43, 55)),
+        Tone::Muted => (Color::Rgb(225, 231, 238), Color::Rgb(65, 79, 96)),
     };
     Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
 }
 
 fn stripe_style(index: usize, color_enabled: bool) -> Style {
     if color_enabled && index % 2 == 1 {
-        Style::default().bg(Color::Rgb(18, 21, 26))
+        Style::default().bg(Color::Rgb(21, 30, 42))
     } else {
-        Style::default()
+        Style::default().bg(if color_enabled {
+            Color::Rgb(16, 23, 33)
+        } else {
+            Color::Reset
+        })
+    }
+}
+
+fn card_border_style(tone: Tone, color_enabled: bool) -> Style {
+    if !color_enabled {
+        return Style::default();
+    }
+
+    let color = match tone {
+        Tone::Accent => Color::Rgb(67, 153, 176),
+        Tone::Success => Color::Rgb(71, 142, 89),
+        Tone::Warning => Color::Rgb(169, 128, 53),
+        Tone::Failure => Color::Rgb(168, 73, 89),
+        Tone::Muted => Color::Rgb(84, 96, 111),
+        Tone::Neutral => Color::Rgb(91, 112, 134),
+    };
+    Style::default().fg(color)
+}
+
+fn body_color(color_enabled: bool) -> Color {
+    if color_enabled {
+        Color::Rgb(230, 238, 246)
+    } else {
+        Color::Reset
+    }
+}
+
+fn muted_color(color_enabled: bool) -> Color {
+    if color_enabled {
+        Color::Rgb(129, 145, 163)
+    } else {
+        Color::Reset
     }
 }
 
@@ -2046,6 +2236,68 @@ fn card(label: impl Into<String>, value: impl Into<String>, tone: Tone) -> StatC
         value: value.into(),
         tone,
     }
+}
+
+fn build_detail_header_line(app: &AppState, header: &super::app::DetailHeader) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        app.current_detail_title(),
+        header_style(app.color_enabled),
+    )];
+
+    if !header.title.is_empty() {
+        spans.push(Span::styled(
+            TAB_SEPARATOR,
+            separator_style(app.color_enabled),
+        ));
+        spans.push(Span::styled(
+            header.title.clone(),
+            title_style(app.color_enabled),
+        ));
+    }
+
+    if let Some(subtitle) = header.subtitle.as_deref() {
+        if !subtitle.is_empty() {
+            spans.push(Span::styled(
+                TAB_SEPARATOR,
+                separator_style(app.color_enabled),
+            ));
+            spans.push(Span::styled(
+                subtitle.to_string(),
+                muted_style(app.color_enabled),
+            ));
+        }
+    }
+
+    Line::from(spans)
+}
+
+fn detail_chip_text(chip: &StatusChip) -> String {
+    format!(" {}:{} ", chip.label, chip.value)
+}
+
+fn detail_chip_spans(chips: &[StatusChip], color_enabled: bool) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (index, chip) in chips.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
+            detail_chip_text(chip),
+            chip_style(chip.tone, color_enabled),
+        ));
+    }
+    spans
+}
+
+fn detail_chip_width(chips: &[StatusChip]) -> u16 {
+    let mut width: u16 = 0;
+    for (index, chip) in chips.iter().enumerate() {
+        if index > 0 {
+            width = width.saturating_add(1);
+        }
+        width = width.saturating_add(detail_chip_text(chip).chars().count() as u16);
+    }
+    width
 }
 
 fn slice<T>(rows: &[T], offset: usize, limit: Option<usize>, area_rows: usize) -> &[T] {
@@ -2157,14 +2409,14 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains(UI_TITLE));
+        assert!(rendered.contains("OpenTelemetry - Rust Dataflow Engine"));
         assert!(rendered.contains("Equivalent CLI"));
         assert!(rendered.contains("telemetry logs watch"));
         assert!(rendered.contains("https://admin.example.com:8443/engine-a"));
     }
 
     #[test]
-    fn header_renders_engine_vitals_panel() {
+    fn header_renders_engine_vitals_rail() {
         let backend = TestBackend::new(140, 40);
         let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
         let mut app = AppState::new(UiStartView::Pipelines, true, 200);
@@ -2189,10 +2441,10 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("Engine Vitals"));
         assert!(rendered.contains("23.4%"));
         assert!(rendered.contains("512.0 MiB"));
         assert!(rendered.contains("soft"));
+        assert!(!rendered.contains("Engine Vitals"));
     }
 
     #[test]
@@ -2236,5 +2488,20 @@ mod tests {
         assert!(rendered.contains("Canonical Diff"));
         assert!(rendered.contains("Press Enter to redeploy"));
         assert!(rendered.contains("--- current"));
+    }
+
+    #[test]
+    fn top_level_view_order_is_engine_groups_pipelines() {
+        let titles = View::ALL.map(View::title);
+        assert_eq!(titles, ["Engine", "Groups", "Pipelines"]);
+    }
+
+    #[test]
+    fn tab_regions_account_for_pipe_separators() {
+        let regions = tab_regions(Rect::new(0, 0, 40, 1), &["Engine", "Groups", "Pipelines"]);
+        assert_eq!(regions.len(), 3);
+        assert_eq!(regions[0], Rect::new(0, 0, 8, 1));
+        assert_eq!(regions[1], Rect::new(11, 0, 8, 1));
+        assert_eq!(regions[2], Rect::new(22, 0, 11, 1));
     }
 }
