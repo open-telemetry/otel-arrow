@@ -473,6 +473,31 @@ fn arrow_type_to_any_value_type(dt: &DataType) -> Result<(AttributeValueType, &'
     }
 }
 
+/// Wrap a concrete typed array into an AnyValue struct column.
+///
+/// Produces a [`StructArray`] with:
+/// - A `type` field (UInt8) with a uniform discriminant for every row
+/// - A single value field (named per the AnyValue convention, e.g. `"str"`, `"int"`) holding
+///   the original values
+///
+/// This is the inverse of [`replace_single_any_value_with_concrete`].
+pub(crate) fn wrap_as_any_value_struct(values: &ArrayRef) -> Result<ArrayRef> {
+    let (type_val, field_name) = arrow_type_to_any_value_type(values.data_type())?;
+    let num_rows = values.len();
+
+    // Build uniform type discriminant column
+    let type_arr: ArrayRef = Arc::new(UInt8Array::from(vec![type_val as u8; num_rows]));
+
+    let fields = vec![
+        Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
+        Arc::new(Field::new(field_name, values.data_type().clone(), true)),
+    ];
+    let columns = vec![type_arr, Arc::clone(values)];
+
+    let struct_arr = StructArray::try_new(fields.into(), columns, None)?;
+    Ok(Arc::new(struct_arr))
+}
+
 /// Replace a single AnyValue struct column in a batch with its concrete typed field.
 ///
 /// The resulting column keeps the same name as the struct column but has the concrete Arrow

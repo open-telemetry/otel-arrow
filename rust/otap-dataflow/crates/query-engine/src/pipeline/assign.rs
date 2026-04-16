@@ -58,7 +58,9 @@ use crate::pipeline::expr::{
     SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
-use crate::pipeline::project::{ProjectedSchemaColumn, Projection, is_any_value_data_type};
+use crate::pipeline::project::{
+    ProjectedSchemaColumn, Projection, is_any_value_data_type, wrap_as_any_value_struct,
+};
 use crate::pipeline::state::ExecutionState;
 
 /// Representation of assignment source and destination
@@ -199,11 +201,25 @@ impl AssignPipelineStage {
             // safe to expect here
             .expect("dest column found");
 
+        // AnyValue destinations (e.g., body) need special handling: the result may be a
+        // concrete typed array that needs wrapping into an AnyValue struct, or it may already
+        // be an AnyValue struct that can be assigned directly.
+        if expected_column_logical_type == ExprLogicalType::AnyValue {
+            let root_batch = root_batch.clone();
+            return self.assign_any_value_to_root(
+                otap_batch,
+                eval_result,
+                dest_scope,
+                dest_column_name,
+                &root_batch,
+            );
+        }
+
         let expected_column_data_type = expected_column_logical_type
             .datatype()
             // safety: this will only return None if the logical data type for the field is
-            // ambiguous, which is the case for attributes/AnyValues, but all the fields on the
-            // root batch are known/un-ambiguous, so this will return Some and is safe to expect
+            // ambiguous, which is the case for attributes/AnyValues, but we've handled AnyValue
+            // above, so the remaining types are all concrete and safe to expect here
             .expect("dest column data type");
 
         // coerce static scalar int" if the result was a static scalar integer, it will have been
@@ -289,6 +305,62 @@ impl AssignPipelineStage {
         otap_batch.set(
             root_payload_type,
             try_upsert_column(dest_column_name, values, root_batch)?,
+        )?;
+
+        Ok(otap_batch)
+    }
+
+    /// Assign an expression result to an AnyValue column on the root batch (e.g., `body`).
+    ///
+    /// If the result is already an AnyValue struct, it is assigned directly. Otherwise the
+    /// concrete typed array is wrapped into an AnyValue struct via [`wrap_as_any_value_struct`].
+    fn assign_any_value_to_root(
+        &self,
+        mut otap_batch: OtapArrowRecords,
+        eval_result: PhysicalExprEvalResult,
+        dest_scope: &Rc<DataScope>,
+        dest_column_name: &str,
+        root_batch: &RecordBatch,
+    ) -> Result<OtapArrowRecords> {
+        // Convert the evaluation result to an array (no dict encoding for struct columns)
+        let mut values = eval_result_to_array(&eval_result.values, false, root_batch.num_rows())?;
+
+        // Align row order if the result came from a different data scope (e.g., attributes)
+        let already_aligned = eval_result.data_scope.is_scalar()
+            || eval_result.data_scope.as_ref() == dest_scope.as_ref();
+
+        if !already_aligned {
+            let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+                unreachable!("unexpected data_scope for non-aligned result")
+            };
+
+            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let vals_take_indices = join_exec.rows_to_take(
+                &PhysicalExprEvalResult::new(
+                    ColumnarValue::Scalar(ScalarValue::Null),
+                    Rc::clone(dest_scope),
+                    root_batch,
+                ),
+                &eval_result,
+                &OtapArrowRecords::Logs(Logs::default()),
+            )?;
+
+            values = take(&values, &vals_take_indices, None)?;
+        }
+
+        // If the value is already an AnyValue struct, use it directly. Otherwise coerce
+        // dict encoding to match AnyValue field rules, then wrap into an AnyValue struct.
+        let any_value_column = if is_any_value_data_type(values.data_type()) {
+            values
+        } else {
+            let values = coerce_for_any_value_column(values)?;
+            wrap_as_any_value_struct(&values)?
+        };
+
+        let root_payload_type = otap_batch.root_payload_type();
+        otap_batch.set(
+            root_payload_type,
+            try_upsert_column(dest_column_name, any_value_column, root_batch)?,
         )?;
 
         Ok(otap_batch)
@@ -1146,7 +1218,7 @@ fn decompose_any_value_upsert<'a>(
             n if n == consts::ATTRIBUTE_BYTES => AttributeValueType::Bytes as u8,
             n if n == consts::ATTRIBUTE_SER => {
                 return Err(Error::NotYetSupportedError {
-                    message: "Inserting attribute from heterogenous AnyValue \
+                    message: "Inserting attribute from mixed type AnyValue \
                         column for serialized type not yet supported"
                         .into(),
                 });
@@ -1467,6 +1539,35 @@ fn eval_result_to_array(
                 Ok(Arc::clone(array_vals))
             }
         }
+    }
+}
+
+/// Coerce an array's dictionary encoding to match the rules for AnyValue value fields.
+///
+/// - `Utf8` and `Int64`: dictionary encoding is allowed but must use a `UInt16` key.
+///   If the key type is smaller (e.g. `UInt8`), the array is cast to `Dictionary(UInt16, _)`.
+/// - All other types: dictionary encoding is not allowed. Dict-encoded arrays are cast to
+///   their plain value type.
+/// - Non-dict arrays are returned as-is.
+fn coerce_for_any_value_column(values: ArrayRef) -> Result<ArrayRef> {
+    match values.data_type() {
+        DataType::Dictionary(key_type, value_type) => {
+            let allows_dict = matches!(value_type.as_ref(), DataType::Utf8 | DataType::Int64);
+            if allows_dict {
+                // Dict is allowed but must use u16 key
+                if key_type.as_ref() != &DataType::UInt16 {
+                    let target =
+                        DataType::Dictionary(Box::new(DataType::UInt16), value_type.clone());
+                    Ok(cast(&values, &target)?)
+                } else {
+                    Ok(values)
+                }
+            } else {
+                // Dict not allowed for this value type — downcast to plain
+                Ok(cast(&values, value_type.as_ref())?)
+            }
+        }
+        _ => Ok(values), // not dict-encoded, use as-is
     }
 }
 
@@ -2213,6 +2314,169 @@ mod test {
             logs.column_by_name(consts::SEVERITY_TEXT).is_none(),
             "expected severity_text column to have been removed"
         )
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_when_source_is_non_any_value_col() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("DEBUG").finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let pipeline_expr = OplParser::parse("logs | set body = severity_text")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("INFO"))
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("DEBUG"))
+                .severity_text("DEBUG")
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_when_source_is_single_type_of_anyvalue() {
+        // test all scalar types
+        let sources = [
+            AnyValue::new_int(5),
+            AnyValue::new_string("hello"),
+            AnyValue::new_bytes(b"world"),
+            AnyValue::new_double(5.14),
+            AnyValue::new_bool(true),
+        ];
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        for input_any_val in sources {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x", input_any_val.clone())])
+                    .finish(),
+            ]);
+
+            let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+            let result = pipeline.execute(input).await.unwrap();
+
+            // assert we've inserted a struct column with all the correct args
+            let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+            let logs_body = logs_rb.column_by_name(consts::BODY).unwrap();
+            let DataType::Struct(struct_fields) = logs_body.data_type() else {
+                panic!(
+                    "invalid data type for logs body {:?}",
+                    logs_body.data_type()
+                )
+            };
+            assert_eq!(struct_fields.len(), 2); // type & val
+
+            let expected = vec![
+                LogRecord::build()
+                    .body(input_any_val.clone())
+                    .attributes(vec![KeyValue::new("x", input_any_val.clone())])
+                    .finish(),
+            ];
+            let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+                panic!("invalid signal type");
+            };
+
+            assert_eq!(
+                &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+                &expected,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_when_source_is_anyval_with_heterogenous_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        // assert we've inserted a struct column with all the correct args
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+        let logs_body = logs_rb.column_by_name(consts::BODY).unwrap();
+        let DataType::Struct(struct_fields) = logs_body.data_type() else {
+            panic!(
+                "invalid data type for logs body {:?}",
+                logs_body.data_type()
+            )
+        };
+        assert!(struct_fields.find(consts::ATTRIBUTE_TYPE).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_STR).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_INT).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_DOUBLE).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_BYTES).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_BOOL).is_some());
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .body(AnyValue::new_int(5))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bytes(b"world"))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_double(5.14))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bool(true))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
     }
 
     #[tokio::test]
