@@ -988,31 +988,27 @@ impl ScopedPhysicalExpr {
             // Fast path: no AnyValue columns, evaluate directly
             self.evaluate_on_batch(session_context, &projected_rb)?
         } else {
-            let projection_result = project_any_value_columns(&projected_rb, &any_value_indices)?;
+            let partitions = project_any_value_columns(&projected_rb, &any_value_indices)?;
 
             // TODO: This logic needs to be revisited. When all partitions are empty (all rows
             // have Empty type), returning None may not be the correct semantic — it conflates
             // "attribute key doesn't exist" with "attribute exists but all values are empty".
             // Additionally, the interaction with joins when one side has empty partitions needs
             // more thought (see test_null_propagation_empty_attributes).
-            if projection_result.partitions.is_empty() {
+            if partitions.is_empty() {
                 // All AnyValue rows were empty (type=0) — no values to evaluate
                 return Ok(None);
-            } else if projection_result.partitions.len() == 1 {
+            } else if partitions.len() == 1 {
                 // All AnyValue columns were uniform — single partition, evaluate directly
-                let partition = projection_result
-                    .partitions
-                    .into_iter()
-                    .next()
-                    .expect("non-empty");
+                let partition = partitions.into_iter().next().expect("non-empty");
                 let batch = Self::maybe_downcast_dicts(partition.batch, &self.projection_opts)?;
                 self.evaluate_on_batch(session_context, &batch)?
             } else {
                 // Multiple partitions — evaluate each and stitch results back together
                 let total_rows = projected_rb.num_rows();
-                let mut partition_results = Vec::with_capacity(projection_result.partitions.len());
+                let mut partition_results = Vec::with_capacity(partitions.len());
 
-                for partition in projection_result.partitions {
+                for partition in partitions {
                     let batch = Self::maybe_downcast_dicts(partition.batch, &self.projection_opts)?;
                     let result = self.evaluate_on_batch(session_context, &batch)?;
                     let result_arr = result.into_array(batch.num_rows())?;

@@ -5,7 +5,10 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, RecordBatch, RecordBatchOptions, StructArray};
+use arrow::array::{
+    Array, ArrayRef, MutableArrayData, RecordBatch, RecordBatchOptions, StructArray, UInt8Array,
+    UInt8Builder, make_array,
+};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
@@ -272,7 +275,7 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
 // AnyValue column split/stitch support
 //
 // AnyValue columns are struct columns tagged with `ANY_VALUE_METADATA_KEY` metadata.
-// They contain a `type` discriminant (UInt8) and multiple typed value sub-columns.
+// They contain a `type` discriminant (UInt8) and multiple typed value fields.
 // The routines below split a RecordBatch by AnyValue type signatures so that each
 // partition has concrete (non-union) typed columns, allowing standard expression
 // evaluation. Results are then stitched back to original row order.
@@ -280,26 +283,12 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
 
 use std::ops::Range;
 
-use arrow::array::UInt8Array;
-use arrow::compute::take;
+use otap_df_pdata::otap::transform::util::take_record_batch_ranges;
 use smallvec::SmallVec;
 
 /// Contiguous row ranges sharing an AnyValue type. `SmallVec` avoids heap allocation
 /// for the common case of one or two ranges per type.
 pub(crate) type RowRanges = SmallVec<[Range<usize>; 2]>;
-
-/// A partition of the original batch where all AnyValue columns have been resolved to
-/// concrete typed columns.
-pub(crate) struct AnyValuePartitionedBatch {
-    pub batch: RecordBatch,
-    /// Row ranges in the *original* (pre-split) batch that this partition covers.
-    pub original_row_ranges: RowRanges,
-}
-
-/// Result of [`project_any_value_columns`].
-pub(crate) struct AnyValueProjectionResult {
-    pub partitions: Vec<AnyValuePartitionedBatch>,
-}
 
 /// Per-column analysis of the type distribution within an AnyValue column.
 enum AnyValueTypeDistribution {
@@ -314,7 +303,7 @@ enum AnyValueTypeDistribution {
 /// named `consts::ATTRIBUTE_TYPE` (`"type"`) with `DataType::UInt8`.
 ///
 /// This avoids any explicit metadata bookkeeping — AnyValue columns are recognized
-/// by their characteristic layout (type discriminant + value sub-columns).
+/// by their characteristic layout (type discriminant + value fields).
 pub(crate) fn find_any_value_columns(schema: &Schema) -> Vec<usize> {
     schema
         .fields()
@@ -337,7 +326,7 @@ fn is_any_value_field(field: &Field) -> bool {
     }
 }
 
-/// Extract the `type` sub-column from an AnyValue struct column.
+/// Extract the `type` field from an AnyValue struct column.
 fn extract_type_from_any_value_struct(column: &ArrayRef) -> Result<UInt8Array> {
     let struct_arr = column
         .as_any()
@@ -352,7 +341,7 @@ fn extract_type_from_any_value_struct(column: &ArrayRef) -> Result<UInt8Array> {
     let type_col = struct_arr
         .column_by_name(consts::ATTRIBUTE_TYPE)
         .ok_or_else(|| Error::ExecutionError {
-            cause: "AnyValue struct column is missing the 'type' sub-column".into(),
+            cause: "AnyValue struct is missing the 'type' field".into(),
         })?;
 
     type_col
@@ -361,65 +350,49 @@ fn extract_type_from_any_value_struct(column: &ArrayRef) -> Result<UInt8Array> {
         .cloned()
         .ok_or_else(|| Error::ExecutionError {
             cause: format!(
-                "expected AnyValue 'type' sub-column to be UInt8, got {:?}",
+                "expected AnyValue 'type' field to be UInt8, got {:?}",
                 type_col.data_type()
             ),
         })
 }
 
-/// Analyze the type distribution of a single AnyValue column in a single pass.
+/// Analyze the type distribution of a single AnyValue column.
 ///
-/// Walks the type array linearly, tracking contiguous runs. If all values are the same,
-/// returns [`AnyValueTypeDistribution::Uniform`] without allocating. Otherwise, returns
+/// Uses [`arrow::compute::partition`] to find contiguous runs of the same type value,
+/// then groups those runs by type. If all values share the same type, returns
+/// [`AnyValueTypeDistribution::Uniform`]. Otherwise, returns
 /// [`AnyValueTypeDistribution::Mixed`] with run ranges coalesced per type.
 fn compute_type_distribution(type_array: &UInt8Array) -> Result<AnyValueTypeDistribution> {
     if type_array.is_empty() {
         return Ok(AnyValueTypeDistribution::Uniform(AttributeValueType::Empty));
     }
 
-    let first = type_array.value(0);
-    let mut run_start: usize = 0;
-    let mut current_type = first;
-    let mut is_uniform = true;
+    let type_col: ArrayRef = Arc::new(type_array.clone());
+    let partitions = arrow::compute::partition(&[type_col])?;
+    let ranges = partitions.ranges();
 
-    // We defer building the groups vec until we know we're mixed, to avoid allocating in
-    // the uniform (common) case.
-    let mut groups: Option<Vec<(u8, RowRanges)>> = None;
-
-    for i in 1..type_array.len() {
-        let t = type_array.value(i);
-        if t != current_type {
-            if is_uniform {
-                // First time we see a different type — retroactively start collecting groups
-                is_uniform = false;
-                let mut g = Vec::new();
-                push_range(&mut g, current_type, run_start..i);
-                groups = Some(g);
-            } else {
-                push_range(
-                    groups.as_mut().expect("initialized"),
-                    current_type,
-                    run_start..i,
-                );
-            }
-            current_type = t;
-            run_start = i;
-        }
-    }
-
-    if is_uniform {
+    // Single partition → all rows have the same type value
+    if ranges.len() <= 1 {
+        let first = type_array.value(0);
         let type_val = AttributeValueType::try_from(first).map_err(|_| Error::ExecutionError {
             cause: format!("invalid AnyValue type discriminant: {first}"),
         })?;
         return Ok(AnyValueTypeDistribution::Uniform(type_val));
     }
 
-    // Flush the last run
-    let g = groups.as_mut().expect("initialized");
-    push_range(g, current_type, run_start..type_array.len());
+    // Multiple partitions → group contiguous runs by type value, coalescing non-adjacent
+    // runs that share the same type.
+    let mut groups: Vec<(u8, RowRanges)> = Vec::new();
+    for range in ranges {
+        let type_val = type_array.value(range.start);
+        if let Some((_, row_ranges)) = groups.iter_mut().find(|(t, _)| *t == type_val) {
+            row_ranges.push(range);
+        } else {
+            groups.push((type_val, SmallVec::from_elem(range, 1)));
+        }
+    }
 
     let mixed = groups
-        .expect("initialized")
         .into_iter()
         .map(|(t, ranges)| {
             let type_val = AttributeValueType::try_from(t).map_err(|_| Error::ExecutionError {
@@ -430,17 +403,6 @@ fn compute_type_distribution(type_array: &UInt8Array) -> Result<AnyValueTypeDist
         .collect::<Result<Vec<_>>>()?;
 
     Ok(AnyValueTypeDistribution::Mixed(mixed))
-}
-
-/// Push a range into the groups vec, coalescing with an existing entry for the same type.
-fn push_range(groups: &mut Vec<(u8, RowRanges)>, type_val: u8, range: Range<usize>) {
-    if let Some((_, ranges)) = groups.iter_mut().find(|(t, _)| *t == type_val) {
-        ranges.push(range);
-    } else {
-        let mut ranges = SmallVec::new();
-        ranges.push(range);
-        groups.push((type_val, ranges));
-    }
 }
 
 /// Map the name of an [`AttributeValueType`] to the column name within the AnyValue struct.
@@ -462,10 +424,45 @@ fn any_value_type_to_column_name(type_val: AttributeValueType) -> Result<&'stati
     }
 }
 
-/// Replace a single AnyValue struct column in a batch with its concrete typed sub-column.
+/// Map an Arrow [`DataType`] to the corresponding [`AttributeValueType`] and AnyValue field name.
+///
+/// This is the reverse of [`any_value_type_to_column_name`] — given an expression result's
+/// Arrow type, determine which AnyValue field it belongs in.
+fn arrow_type_to_any_value_type(dt: &DataType) -> Result<(AttributeValueType, &'static str)> {
+    match dt {
+        DataType::Utf8 | DataType::LargeUtf8 => {
+            Ok((AttributeValueType::Str, consts::ATTRIBUTE_STR))
+        }
+        DataType::Dictionary(_, v)
+            if matches!(v.as_ref(), DataType::Utf8 | DataType::LargeUtf8) =>
+        {
+            Ok((AttributeValueType::Str, consts::ATTRIBUTE_STR))
+        }
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => Ok((AttributeValueType::Int, consts::ATTRIBUTE_INT)),
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => {
+            Ok((AttributeValueType::Double, consts::ATTRIBUTE_DOUBLE))
+        }
+        DataType::Boolean => Ok((AttributeValueType::Bool, consts::ATTRIBUTE_BOOL)),
+        DataType::Binary | DataType::LargeBinary => {
+            Ok((AttributeValueType::Bytes, consts::ATTRIBUTE_BYTES))
+        }
+        other => Err(Error::ExecutionError {
+            cause: format!("cannot map Arrow type {:?} to an AnyValue field", other),
+        }),
+    }
+}
+
+/// Replace a single AnyValue struct column in a batch with its concrete typed field.
 ///
 /// The resulting column keeps the same name as the struct column but has the concrete Arrow
-/// type of the selected sub-field. The AnyValue metadata is stripped from the field.
+/// type of the selected field.
 fn replace_single_any_value_with_concrete(
     batch: &RecordBatch,
     col_idx: usize,
@@ -492,7 +489,7 @@ fn replace_single_any_value_with_concrete(
             .column_by_name(sub_col_name)
             .ok_or_else(|| Error::ExecutionError {
                 cause: format!(
-                    "AnyValue struct column '{}' is missing sub-column '{}'",
+                    "AnyValue struct column '{}' is missing field '{}'",
                     struct_field.name(),
                     sub_col_name,
                 ),
@@ -528,32 +525,15 @@ fn replace_single_any_value_with_concrete(
 /// Slice a [`RecordBatch`] to the rows described by `ranges`.
 ///
 /// If the ranges form a single contiguous region, uses the zero-copy `RecordBatch::slice`.
-/// Otherwise, builds an indices array and uses `arrow::compute::take`.
+/// Otherwise, delegates to [`take_record_batch_ranges`] which uses `MutableArrayData::extend`
+/// to copy ranges directly without building intermediate index vectors.
 fn slice_batch_by_ranges(batch: &RecordBatch, ranges: &RowRanges) -> Result<RecordBatch> {
     if ranges.len() == 1 {
         let range = &ranges[0];
         return Ok(batch.slice(range.start, range.end - range.start));
     }
 
-    // Build a UInt32 indices array from the ranges
-    let total_rows: usize = ranges.iter().map(|r| r.len()).sum();
-    let mut indices = Vec::with_capacity(total_rows);
-    for range in ranges {
-        for i in range.clone() {
-            indices.push(i as u32);
-        }
-    }
-    let indices_arr = arrow::array::UInt32Array::from(indices);
-
-    // Take from each column
-    let schema = batch.schema();
-    let new_columns: Vec<ArrayRef> = batch
-        .columns()
-        .iter()
-        .map(|col| take(col.as_ref(), &indices_arr, None).map_err(Error::from))
-        .collect::<Result<_>>()?;
-
-    Ok(RecordBatch::try_new(schema, new_columns)?)
+    Ok(take_record_batch_ranges(batch, ranges.as_slice())?)
 }
 
 /// Map local row ranges within a partition back to the original batch's row indices.
@@ -561,16 +541,13 @@ fn slice_batch_by_ranges(batch: &RecordBatch, ranges: &RowRanges) -> Result<Reco
 /// `partition_ranges` are the ranges this partition covers in the original batch.
 /// `local_ranges` are ranges within this partition's (sub-)batch.
 /// The result is the corresponding ranges in the original batch.
+///
+/// Operates in chunks over the ranges directly — no per-row iteration or intermediate
+/// allocation beyond a small cumulative-length array.
 fn map_local_ranges_to_original(
     partition_ranges: &RowRanges,
     local_ranges: &RowRanges,
 ) -> RowRanges {
-    // Build a flat mapping from local row index -> original row index.
-    // This is necessary because the partition_ranges may not be contiguous, so we can't
-    // just do simple offset arithmetic.
-    //
-    // Optimization: if partition_ranges is a single contiguous range, we can just add the
-    // offset.
     if partition_ranges.len() == 1 {
         let offset = partition_ranges[0].start;
         return local_ranges
@@ -579,37 +556,67 @@ fn map_local_ranges_to_original(
             .collect();
     }
 
-    // General case: build the full mapping
-    let total_partition_rows: usize = partition_ranges.iter().map(|r| r.len()).sum();
-    let mut local_to_original = Vec::with_capacity(total_partition_rows);
+    // Precompute cumulative row counts so we can locate which partition range a local
+    // index falls into. For partition_ranges [5..8, 12..15] this gives [0, 3, 6].
+    let mut cumulative_lens: SmallVec<[usize; 3]> =
+        SmallVec::with_capacity(partition_ranges.len() + 1);
+    cumulative_lens.push(0);
     for range in partition_ranges {
-        for i in range.clone() {
-            local_to_original.push(i);
-        }
+        cumulative_lens.push(cumulative_lens.last().expect("non-empty") + range.len());
     }
 
-    // Now map each local range to original indices. The result ranges may not be contiguous
-    // in the original batch, so we need to coalesce adjacent indices into ranges.
     let mut result = RowRanges::new();
+
     for local_range in local_ranges {
-        for local_idx in local_range.clone() {
-            let original_idx = local_to_original[local_idx];
-            // Try to extend the last range if this index is adjacent
+        // Find which partition range the start of this local range falls into.
+        let mut part_idx = cumulative_lens
+            .partition_point(|&cum| cum <= local_range.start)
+            .saturating_sub(1);
+
+        let mut local_pos = local_range.start;
+        while local_pos < local_range.end {
+            let offset_in_part = local_pos - cumulative_lens[part_idx];
+            let part_range = &partition_ranges[part_idx];
+
+            // How many consecutive local indices we can map from this partition range
+            let remaining_in_part = part_range.len() - offset_in_part;
+            let remaining_in_local = local_range.end - local_pos;
+            let chunk_len = remaining_in_part.min(remaining_in_local);
+
+            let orig_start = part_range.start + offset_in_part;
+            let orig_end = orig_start + chunk_len;
+
+            // Coalesce with the previous range if adjacent in the original batch
             if let Some(last) = result.last_mut() {
-                if last.end == original_idx {
-                    last.end = original_idx + 1;
-                    continue;
+                if last.end == orig_start {
+                    last.end = orig_end;
+                } else {
+                    result.push(orig_start..orig_end);
                 }
+            } else {
+                result.push(orig_start..orig_end);
             }
-            result.push(original_idx..original_idx + 1);
+
+            local_pos += chunk_len;
+            if chunk_len == remaining_in_part {
+                part_idx += 1;
+            }
         }
     }
 
     result
 }
 
+/// A partition of the original batch where all AnyValue columns have been resolved to
+/// concrete typed columns.
+pub(crate) struct AnyValuePartitionedBatch {
+    pub batch: RecordBatch,
+    /// Row ranges in the *original* (pre-split) batch that this partition covers.
+    pub original_row_ranges: RowRanges,
+}
+
 /// Split a [`RecordBatch`] by AnyValue type signatures, resolving each AnyValue struct
-/// column to its concrete typed sub-column.
+/// column to its concrete typed field.
 ///
 /// Processes AnyValue columns one at a time: for each column, uniform partitions get the
 /// struct replaced inline; mixed partitions get split into sub-partitions per type. This
@@ -620,22 +627,15 @@ fn map_local_ranges_to_original(
 pub(crate) fn project_any_value_columns(
     batch: &RecordBatch,
     any_value_indices: &[usize],
-) -> Result<AnyValueProjectionResult> {
+) -> Result<Vec<AnyValuePartitionedBatch>> {
     if any_value_indices.is_empty() {
-        return Ok(AnyValueProjectionResult {
-            partitions: vec![AnyValuePartitionedBatch {
-                batch: batch.clone(),
-                original_row_ranges: SmallVec::from_elem(0..batch.num_rows(), 1),
-            }],
-        });
+        return Ok(vec![AnyValuePartitionedBatch {
+            batch: batch.clone(),
+            original_row_ranges: SmallVec::from_elem(0..batch.num_rows(), 1),
+        }]);
     }
 
-    struct PartitionInProgress {
-        batch: RecordBatch,
-        original_row_ranges: RowRanges,
-    }
-
-    let mut current_partitions = vec![PartitionInProgress {
+    let mut current_partitions = vec![AnyValuePartitionedBatch {
         batch: batch.clone(),
         original_row_ranges: SmallVec::from_elem(0..batch.num_rows(), 1),
     }];
@@ -663,7 +663,7 @@ pub(crate) fn project_any_value_columns(
                         col_idx,
                         type_val,
                     )?;
-                    next_partitions.push(PartitionInProgress {
+                    next_partitions.push(AnyValuePartitionedBatch {
                         batch: updated,
                         original_row_ranges: partition.original_row_ranges,
                     });
@@ -680,7 +680,7 @@ pub(crate) fn project_any_value_columns(
                             &partition.original_row_ranges,
                             &local_ranges,
                         );
-                        next_partitions.push(PartitionInProgress {
+                        next_partitions.push(AnyValuePartitionedBatch {
                             batch: concrete,
                             original_row_ranges: original_ranges,
                         });
@@ -692,15 +692,7 @@ pub(crate) fn project_any_value_columns(
         current_partitions = next_partitions;
     }
 
-    Ok(AnyValueProjectionResult {
-        partitions: current_partitions
-            .into_iter()
-            .map(|p| AnyValuePartitionedBatch {
-                batch: p.batch,
-                original_row_ranges: p.original_row_ranges,
-            })
-            .collect(),
-    })
+    Ok(current_partitions)
 }
 
 /// Stitch partitioned expression evaluation results back into the original row order.
@@ -709,7 +701,9 @@ pub(crate) fn project_any_value_columns(
 /// The result array contains the values for the rows indicated by the ranges.
 ///
 /// If there is a single partition covering all rows, returns its array directly (fast path).
-/// Otherwise, scatters each partition's values back to their original positions.
+/// If all partitions produce the same type, concatenates and reorders them.
+/// If partitions produce different types, builds an AnyValue struct column with a `type`
+/// discriminant and one value field per distinct type.
 pub(crate) fn stitch_partitioned_results(
     partition_results: Vec<(ArrayRef, RowRanges)>,
     total_rows: usize,
@@ -724,62 +718,811 @@ pub(crate) fn stitch_partitioned_results(
         }
     }
 
-    // Collect all (original_row_index, partition_index, offset_within_partition) triples,
-    // sorted by original row index, then build a take-indices array to interleave.
-    //
-    // We build a mapping: for each original row, which partition and which offset within
-    // that partition's result array does it come from.
-    let mut row_assignments: Vec<(usize, usize, usize)> = Vec::with_capacity(total_rows);
+    // Check whether all partitions share the same type.
+    let all_same_type = partition_results
+        .iter()
+        .skip(1)
+        .all(|(arr, _)| arr.data_type() == partition_results[0].0.data_type());
+
+    if all_same_type {
+        stitch_same_type(&partition_results, total_rows)
+    } else {
+        stitch_as_any_value_struct(&partition_results, total_rows)
+    }
+}
+
+/// Stitch partitions that all share the same Arrow data type into a single array in
+/// original row order.
+///
+/// Builds the output array directly via [`MutableArrayData`] in one pass — no intermediate
+/// concatenation or take-indices allocation.
+fn stitch_same_type(
+    partition_results: &[(ArrayRef, RowRanges)],
+    total_rows: usize,
+) -> Result<ArrayRef> {
+    // Build (original_row_idx, partition_idx) pairs sorted by original row order.
+    let mut merged_rows: Vec<(usize, usize)> = Vec::with_capacity(total_rows);
     for (part_idx, (_, ranges)) in partition_results.iter().enumerate() {
-        let mut offset = 0usize;
         for range in ranges {
-            for original_idx in range.clone() {
-                row_assignments.push((original_idx, part_idx, offset));
-                offset += 1;
+            for orig_idx in range.clone() {
+                merged_rows.push((orig_idx, part_idx));
             }
         }
     }
-    row_assignments.sort_unstable_by_key(|(original_idx, _, _)| *original_idx);
+    merged_rows.sort_unstable_by_key(|(orig_idx, _)| *orig_idx);
 
-    // All partitions must have the same data type for stitching to work. If they don't,
-    // the expression evaluation has already produced the wrong types and we should error.
-    let first_type = partition_results[0].0.data_type().clone();
-    for (arr, _) in &partition_results[1..] {
-        if *arr.data_type() != first_type {
-            return Err(Error::ExecutionError {
-                cause: format!(
-                    "cannot stitch AnyValue partitions with different result types: {:?} vs {:?}",
-                    first_type,
-                    arr.data_type()
-                ),
-            });
-        }
-    }
+    // Track per-partition cursors (offset within each partition's array).
+    let mut part_cursors = vec![0usize; partition_results.len()];
 
-    // Concatenate all partition arrays, then take in the correct order
-    let partition_arrays: Vec<&dyn Array> = partition_results
+    // Set up MutableArrayData with all partition arrays as sources.
+    let source_arrays: Vec<&dyn Array> = partition_results
         .iter()
         .map(|(arr, _)| arr.as_ref())
         .collect();
-    let concatenated = arrow::compute::concat(&partition_arrays)?;
+    let source_data: Vec<_> = source_arrays.iter().map(|a| a.to_data()).collect();
+    let source_data_refs: Vec<_> = source_data.iter().collect();
+    let mut mutable = MutableArrayData::new(source_data_refs, false, total_rows);
 
-    // Build the take indices: for each original row (in sorted order), compute the global
-    // index into the concatenated array.
-    //
-    // First, compute the starting offset of each partition within the concatenated array.
-    let mut partition_offsets = Vec::with_capacity(partition_results.len());
-    let mut offset = 0u32;
-    for (arr, _) in &partition_results {
-        partition_offsets.push(offset);
-        offset += arr.len() as u32;
+    // Walk merged_rows, batching consecutive rows from the same partition into single
+    // extend calls.
+    let mut i = 0;
+    while i < merged_rows.len() {
+        let (_, part_idx) = merged_rows[i];
+        let start_offset = part_cursors[part_idx];
+        let mut count = 1;
+        // Batch consecutive rows that come from the same partition with consecutive offsets.
+        while i + count < merged_rows.len() {
+            let (_, next_part) = merged_rows[i + count];
+            if next_part == part_idx && part_cursors[part_idx] + count == start_offset + count {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        mutable.extend(part_idx, start_offset, start_offset + count);
+        part_cursors[part_idx] += count;
+        i += count;
     }
 
-    let take_indices: Vec<u32> = row_assignments
-        .iter()
-        .map(|(_, part_idx, offset_in_part)| partition_offsets[*part_idx] + *offset_in_part as u32)
-        .collect();
-    let take_indices_arr = arrow::array::UInt32Array::from(take_indices);
+    Ok(make_array(mutable.freeze()))
+}
 
-    let result = take(concatenated.as_ref(), &take_indices_arr, None)?;
-    Ok(result)
+/// Stitch partitions with different Arrow data types into an AnyValue struct column.
+///
+/// The struct has:
+/// - A `type` field (UInt8): the [`AttributeValueType`] discriminant per row
+/// - One value field per distinct result type, using standard AnyValue field names
+///   (`str`, `int`, `double`, `bool`, `bytes`)
+///
+/// Each row has its value in the matching field; all other fields are null for that row.
+fn stitch_as_any_value_struct(
+    partition_results: &[(ArrayRef, RowRanges)],
+    total_rows: usize,
+) -> Result<ArrayRef> {
+    // Map each partition to its AnyValue type info.
+    let partition_type_info: Vec<(AttributeValueType, &'static str)> = partition_results
+        .iter()
+        .map(|(arr, _)| arrow_type_to_any_value_type(arr.data_type()))
+        .collect::<Result<_>>()?;
+
+    // Collect the distinct (field_name, AttributeValueType) pairs in insertion order.
+    // We'll create one value column per distinct field name.
+    let mut distinct_fields: Vec<(&'static str, AttributeValueType)> = Vec::new();
+    for &(type_val, field_name) in &partition_type_info {
+        if !distinct_fields.iter().any(|(n, _)| *n == field_name) {
+            distinct_fields.push((field_name, type_val));
+        }
+    }
+
+    // Build a merged list of (original_row_idx, partition_idx) sorted by original row order.
+    // Also track per-partition row cursors so we know the offset within each partition's array.
+    let mut merged_rows: Vec<(usize, usize)> = Vec::with_capacity(total_rows);
+    for (part_idx, (_, ranges)) in partition_results.iter().enumerate() {
+        for range in ranges {
+            for orig_idx in range.clone() {
+                merged_rows.push((orig_idx, part_idx));
+            }
+        }
+    }
+    merged_rows.sort_unstable_by_key(|(orig_idx, _)| *orig_idx);
+
+    // Compute the offset within each partition's array for each merged row.
+    // merged_offsets[i] = offset into partition_results[merged_rows[i].1].0
+    let mut part_cursors = vec![0usize; partition_results.len()];
+    let mut merged_offsets: Vec<usize> = Vec::with_capacity(total_rows);
+    for &(_, part_idx) in &merged_rows {
+        merged_offsets.push(part_cursors[part_idx]);
+        part_cursors[part_idx] += 1;
+    }
+
+    // 1. Build the `type` UInt8 column.
+    let mut type_builder = UInt8Builder::with_capacity(total_rows);
+    for &(_, part_idx) in &merged_rows {
+        type_builder.append_value(partition_type_info[part_idx].0 as u8);
+    }
+    let type_array: ArrayRef = Arc::new(type_builder.finish());
+
+    // 2. Build each value field column using MutableArrayData.
+    //
+    // For each distinct field, we iterate through merged_rows in order. For rows whose
+    // partition maps to this field, we extend from the partition's array. For rows that
+    // don't match, we extend_nulls.
+    let mut value_fields: Vec<Arc<Field>> = Vec::with_capacity(distinct_fields.len());
+    let mut value_columns: Vec<ArrayRef> = Vec::with_capacity(distinct_fields.len());
+
+    for (field_name, _) in &distinct_fields {
+        // Collect the partition indices that map to this field
+        let matching_partitions: SmallVec<[usize; 4]> = partition_type_info
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name))| name == field_name)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        // All matching partitions should have the same data type for this field.
+        // Use the first matching partition's array as the reference type.
+        let first_matching = matching_partitions[0];
+        let field_data_type = partition_results[first_matching].0.data_type().clone();
+
+        // Prepare MutableArrayData source arrays — one per matching partition.
+        let source_arrays: Vec<&dyn Array> = matching_partitions
+            .iter()
+            .map(|&pi| partition_results[pi].0.as_ref())
+            .collect();
+        let source_data: Vec<_> = source_arrays.iter().map(|a| a.to_data()).collect();
+        let source_data_refs: Vec<_> = source_data.iter().collect();
+        let mut mutable = MutableArrayData::new(source_data_refs, true, total_rows);
+
+        // Map partition_idx -> index into the source_arrays vec (for MutableArrayData's
+        // source index parameter).
+        let mut part_to_source: Vec<Option<usize>> = vec![None; partition_results.len()];
+        for (source_idx, &part_idx) in matching_partitions.iter().enumerate() {
+            part_to_source[part_idx] = Some(source_idx);
+        }
+
+        // Walk merged_rows in order, batching consecutive extends/nulls.
+        let mut i = 0;
+        while i < merged_rows.len() {
+            let (_, part_idx) = merged_rows[i];
+            if let Some(source_idx) = part_to_source[part_idx] {
+                // This row matches this field — find how many consecutive rows also match
+                // the same source.
+                let start = i;
+                let start_offset = merged_offsets[i];
+                i += 1;
+                while i < merged_rows.len() {
+                    let (_, next_part_idx) = merged_rows[i];
+                    if part_to_source[next_part_idx] == Some(source_idx)
+                        && merged_offsets[i] == start_offset + (i - start)
+                    {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                mutable.extend(source_idx, start_offset, start_offset + (i - start));
+            } else {
+                // This row doesn't match — count consecutive non-matching rows.
+                let start = i;
+                i += 1;
+                while i < merged_rows.len() {
+                    let (_, next_part_idx) = merged_rows[i];
+                    if part_to_source[next_part_idx].is_none() {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                mutable.extend_nulls(i - start);
+            }
+        }
+
+        value_fields.push(Arc::new(Field::new(*field_name, field_data_type, true)));
+        value_columns.push(make_array(mutable.freeze()));
+    }
+
+    // 3. Assemble the struct.
+    let mut all_fields = vec![Arc::new(Field::new(
+        consts::ATTRIBUTE_TYPE,
+        DataType::UInt8,
+        false,
+    ))];
+    all_fields.extend(value_fields);
+
+    let mut all_columns = vec![type_array];
+    all_columns.extend(value_columns);
+
+    let struct_array = StructArray::try_new(all_fields.into(), all_columns, None)?;
+    Ok(Arc::new(struct_array))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use arrow::array::{Float64Array, Int64Array, StringArray};
+    use smallvec::smallvec;
+
+    /// Helper: build a simple AnyValue struct column from type + value arrays.
+    /// Produces a struct with fields: type (UInt8), str (Utf8, nullable),
+    /// int (Int64, nullable), double (Float64, nullable).
+    fn make_any_value_struct(
+        types: &[u8],
+        str_vals: Vec<Option<&str>>,
+        int_vals: Vec<Option<i64>>,
+        double_vals: Vec<Option<f64>>,
+    ) -> StructArray {
+        let type_arr: ArrayRef = Arc::new(UInt8Array::from(types.to_vec()));
+        let str_arr: ArrayRef = Arc::new(StringArray::from(str_vals));
+        let int_arr: ArrayRef = Arc::new(Int64Array::from(int_vals));
+        let double_arr: ArrayRef = Arc::new(Float64Array::from(double_vals));
+
+        let fields = vec![
+            Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
+            Arc::new(Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true)),
+            Arc::new(Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true)),
+            Arc::new(Field::new(
+                consts::ATTRIBUTE_DOUBLE,
+                DataType::Float64,
+                true,
+            )),
+        ];
+
+        StructArray::try_new(
+            fields.into(),
+            vec![type_arr, str_arr, int_arr, double_arr],
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Helper: build a RecordBatch with a single AnyValue struct column named "value".
+    fn make_any_value_batch(any_value: StructArray) -> RecordBatch {
+        let field = Arc::new(Field::new("value", any_value.data_type().clone(), true));
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![field])),
+            vec![Arc::new(any_value)],
+        )
+        .unwrap()
+    }
+
+    // =========================================================================
+    // compute_type_distribution
+    // =========================================================================
+
+    #[test]
+    fn test_compute_type_distribution_empty() {
+        let arr = UInt8Array::from(Vec::<u8>::new());
+        let dist = compute_type_distribution(&arr).unwrap();
+        assert!(matches!(
+            dist,
+            AnyValueTypeDistribution::Uniform(AttributeValueType::Empty)
+        ));
+    }
+
+    #[test]
+    fn test_compute_type_distribution_single_element() {
+        let arr = UInt8Array::from(vec![2u8]); // Int
+        let dist = compute_type_distribution(&arr).unwrap();
+        assert!(matches!(
+            dist,
+            AnyValueTypeDistribution::Uniform(AttributeValueType::Int)
+        ));
+    }
+
+    #[test]
+    fn test_compute_type_distribution_uniform() {
+        let arr = UInt8Array::from(vec![1u8, 1, 1, 1]); // all Str
+        let dist = compute_type_distribution(&arr).unwrap();
+        assert!(matches!(
+            dist,
+            AnyValueTypeDistribution::Uniform(AttributeValueType::Str)
+        ));
+    }
+
+    #[test]
+    fn test_compute_type_distribution_contiguous_mixed() {
+        // [Str, Str, Int, Int]
+        let arr = UInt8Array::from(vec![1u8, 1, 2, 2]);
+        let dist = compute_type_distribution(&arr).unwrap();
+        match dist {
+            AnyValueTypeDistribution::Mixed(groups) => {
+                assert_eq!(groups.len(), 2);
+
+                let (str_type, str_ranges) = &groups[0];
+                assert_eq!(*str_type, AttributeValueType::Str);
+                assert_eq!(str_ranges.as_slice(), &[0..2]);
+
+                let (int_type, int_ranges) = &groups[1];
+                assert_eq!(*int_type, AttributeValueType::Int);
+                assert_eq!(int_ranges.as_slice(), &[2..4]);
+            }
+            _ => panic!("expected Mixed"),
+        }
+    }
+
+    #[test]
+    fn test_compute_type_distribution_alternating_mixed() {
+        // [Str, Int, Str, Int]
+        let arr = UInt8Array::from(vec![1u8, 2, 1, 2]);
+        let dist = compute_type_distribution(&arr).unwrap();
+        match dist {
+            AnyValueTypeDistribution::Mixed(groups) => {
+                assert_eq!(groups.len(), 2);
+
+                let (str_type, str_ranges) = &groups[0];
+                assert_eq!(*str_type, AttributeValueType::Str);
+                assert_eq!(str_ranges.as_slice(), &[0..1, 2..3]);
+
+                let (int_type, int_ranges) = &groups[1];
+                assert_eq!(*int_type, AttributeValueType::Int);
+                assert_eq!(int_ranges.as_slice(), &[1..2, 3..4]);
+            }
+            _ => panic!("expected Mixed"),
+        }
+    }
+
+    #[test]
+    fn test_compute_type_distribution_three_types_with_runs() {
+        // [Int, Int, Int, Double, Double, Int]
+        let arr = UInt8Array::from(vec![2u8, 2, 2, 3, 3, 2]);
+        let dist = compute_type_distribution(&arr).unwrap();
+        match dist {
+            AnyValueTypeDistribution::Mixed(groups) => {
+                assert_eq!(groups.len(), 2);
+
+                let (int_type, int_ranges) = &groups[0];
+                assert_eq!(*int_type, AttributeValueType::Int);
+                assert_eq!(int_ranges.as_slice(), &[0..3, 5..6]);
+
+                let (dbl_type, dbl_ranges) = &groups[1];
+                assert_eq!(*dbl_type, AttributeValueType::Double);
+                assert_eq!(dbl_ranges.as_slice(), &[3..5]);
+            }
+            _ => panic!("expected Mixed"),
+        }
+    }
+
+    // =========================================================================
+    // is_any_value_field
+    // =========================================================================
+
+    #[test]
+    fn test_is_any_value_field_valid_struct() {
+        let field = Field::new(
+            "value",
+            DataType::Struct(
+                vec![
+                    Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
+                    Arc::new(Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true)),
+                ]
+                .into(),
+            ),
+            true,
+        );
+        assert!(is_any_value_field(&field));
+    }
+
+    #[test]
+    fn test_is_any_value_field_no_type_field() {
+        let field = Field::new(
+            "value",
+            DataType::Struct(
+                vec![Arc::new(Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Utf8,
+                    true,
+                ))]
+                .into(),
+            ),
+            true,
+        );
+        assert!(!is_any_value_field(&field));
+    }
+
+    #[test]
+    fn test_is_any_value_field_wrong_type_datatype() {
+        let field = Field::new(
+            "value",
+            DataType::Struct(
+                vec![Arc::new(Field::new(
+                    consts::ATTRIBUTE_TYPE,
+                    DataType::Int32,
+                    false,
+                ))]
+                .into(),
+            ),
+            true,
+        );
+        assert!(!is_any_value_field(&field));
+    }
+
+    #[test]
+    fn test_is_any_value_field_non_struct() {
+        let field = Field::new("value", DataType::Utf8, true);
+        assert!(!is_any_value_field(&field));
+    }
+
+    // =========================================================================
+    // map_local_ranges_to_original
+    // =========================================================================
+
+    #[test]
+    fn test_map_local_ranges_single_partition_range() {
+        // Partition covers original rows 5..10. Local range 1..4 → original 6..9.
+        let partition_ranges: RowRanges = smallvec![5..10];
+        let local_ranges: RowRanges = smallvec![1..4];
+        let result = map_local_ranges_to_original(&partition_ranges, &local_ranges);
+        assert_eq!(result.as_slice(), &[6..9]);
+    }
+
+    #[test]
+    fn test_map_local_ranges_multi_partition_within_one() {
+        // Partition covers [5..8, 12..15]. Local range 0..2 → original 5..7 (within first range).
+        let partition_ranges: RowRanges = smallvec![5..8, 12..15];
+        let local_ranges: RowRanges = smallvec![0..2];
+        let result = map_local_ranges_to_original(&partition_ranges, &local_ranges);
+        assert_eq!(result.as_slice(), &[5..7]);
+    }
+
+    #[test]
+    fn test_map_local_ranges_spanning_boundary() {
+        // Partition covers [5..8, 12..15]. Local indices 0..6 = all rows.
+        // Local 0..3 → original 5..8, local 3..6 → original 12..15.
+        // These are non-contiguous in original space, so we get two ranges.
+        let partition_ranges: RowRanges = smallvec![5..8, 12..15];
+        let local_ranges: RowRanges = smallvec![0..6];
+        let result = map_local_ranges_to_original(&partition_ranges, &local_ranges);
+        assert_eq!(result.as_slice(), &[5..8, 12..15]);
+    }
+
+    #[test]
+    fn test_map_local_ranges_spanning_partial() {
+        // Partition covers [5..8, 12..15]. Local range 2..5 spans the boundary:
+        // local 2 → original 7, local 3 → original 12, local 4 → original 13.
+        let partition_ranges: RowRanges = smallvec![5..8, 12..15];
+        let local_ranges: RowRanges = smallvec![2..5];
+        let result = map_local_ranges_to_original(&partition_ranges, &local_ranges);
+        assert_eq!(result.as_slice(), &[7..8, 12..14]);
+    }
+
+    #[test]
+    fn test_map_local_ranges_multiple_local_ranges() {
+        // Partition covers [0..5]. Local ranges [1..3, 4..5].
+        let partition_ranges: RowRanges = smallvec![0..5];
+        let local_ranges: RowRanges = smallvec![1..3, 4..5];
+        let result = map_local_ranges_to_original(&partition_ranges, &local_ranges);
+        assert_eq!(result.as_slice(), &[1..3, 4..5]);
+    }
+
+    // =========================================================================
+    // replace_single_any_value_with_concrete
+    // =========================================================================
+
+    #[test]
+    fn test_replace_any_value_with_str() {
+        let struct_col = make_any_value_struct(
+            &[1, 1],                            // type: Str, Str
+            vec![Some("hello"), Some("world")], // str values
+            vec![None, None],                   // int: null
+            vec![None, None],                   // double: null
+        );
+        let batch = make_any_value_batch(struct_col);
+
+        let result =
+            replace_single_any_value_with_concrete(&batch, 0, AttributeValueType::Str).unwrap();
+
+        assert_eq!(result.num_columns(), 1);
+        assert_eq!(result.schema().field(0).name(), "value");
+        assert_eq!(*result.schema().field(0).data_type(), DataType::Utf8);
+
+        let str_col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(str_col.value(0), "hello");
+        assert_eq!(str_col.value(1), "world");
+    }
+
+    #[test]
+    fn test_replace_any_value_with_int() {
+        let struct_col = make_any_value_struct(
+            &[2, 2],                  // type: Int, Int
+            vec![None, None],         // str: null
+            vec![Some(42), Some(99)], // int values
+            vec![None, None],         // double: null
+        );
+        let batch = make_any_value_batch(struct_col);
+
+        let result =
+            replace_single_any_value_with_concrete(&batch, 0, AttributeValueType::Int).unwrap();
+
+        assert_eq!(*result.schema().field(0).data_type(), DataType::Int64);
+        let int_col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(int_col.value(0), 42);
+        assert_eq!(int_col.value(1), 99);
+    }
+
+    // =========================================================================
+    // project_any_value_columns
+    // =========================================================================
+
+    #[test]
+    fn test_project_any_value_no_any_value_columns() {
+        // A batch with no AnyValue struct columns — should pass through as single partition.
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Arc::new(Field::new(
+                "x",
+                DataType::Int64,
+                false,
+            ))])),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let partitions = project_any_value_columns(&batch, &[]).unwrap();
+        assert_eq!(partitions.len(), 1);
+        assert_eq!(partitions[0].batch.num_rows(), 3);
+    }
+
+    #[test]
+    fn test_project_any_value_uniform_type() {
+        // All rows are Str — should produce single partition with concrete Utf8 column.
+        let struct_col = make_any_value_struct(
+            &[1, 1, 1],
+            vec![Some("a"), Some("b"), Some("c")],
+            vec![None, None, None],
+            vec![None, None, None],
+        );
+        let batch = make_any_value_batch(struct_col);
+
+        let partitions = project_any_value_columns(&batch, &[0]).unwrap();
+        assert_eq!(partitions.len(), 1);
+
+        let result = &partitions[0].batch;
+        assert_eq!(result.num_rows(), 3);
+        assert_eq!(*result.schema().field(0).data_type(), DataType::Utf8);
+        assert_eq!(partitions[0].original_row_ranges.as_slice(), &[0..3]);
+    }
+
+    #[test]
+    fn test_project_any_value_mixed_types() {
+        // [Str, Str, Int, Int] — should produce two partitions.
+        let struct_col = make_any_value_struct(
+            &[1, 1, 2, 2],
+            vec![Some("a"), Some("b"), None, None],
+            vec![None, None, Some(10), Some(20)],
+            vec![None, None, None, None],
+        );
+        let batch = make_any_value_batch(struct_col);
+
+        let partitions = project_any_value_columns(&batch, &[0]).unwrap();
+        assert_eq!(partitions.len(), 2);
+
+        // First partition: Str rows
+        let str_part = &partitions[0];
+        assert_eq!(str_part.batch.num_rows(), 2);
+        assert_eq!(
+            *str_part.batch.schema().field(0).data_type(),
+            DataType::Utf8
+        );
+        assert_eq!(str_part.original_row_ranges.as_slice(), &[0..2]);
+
+        // Second partition: Int rows
+        let int_part = &partitions[1];
+        assert_eq!(int_part.batch.num_rows(), 2);
+        assert_eq!(
+            *int_part.batch.schema().field(0).data_type(),
+            DataType::Int64
+        );
+        assert_eq!(int_part.original_row_ranges.as_slice(), &[2..4]);
+    }
+
+    #[test]
+    fn test_project_any_value_all_empty() {
+        // All rows have type=Empty — should produce zero partitions.
+        let struct_col = make_any_value_struct(
+            &[0, 0, 0],
+            vec![None, None, None],
+            vec![None, None, None],
+            vec![None, None, None],
+        );
+        let batch = make_any_value_batch(struct_col);
+
+        let partitions = project_any_value_columns(&batch, &[0]).unwrap();
+        assert_eq!(partitions.len(), 0);
+    }
+
+    #[test]
+    fn test_project_any_value_mixed_with_empty() {
+        // [Int, Empty, Int, Empty] — Empty rows skipped, Int rows kept.
+        let struct_col = make_any_value_struct(
+            &[2, 0, 2, 0],
+            vec![None, None, None, None],
+            vec![Some(10), None, Some(30), None],
+            vec![None, None, None, None],
+        );
+        let batch = make_any_value_batch(struct_col);
+
+        let partitions = project_any_value_columns(&batch, &[0]).unwrap();
+        assert_eq!(partitions.len(), 1);
+
+        let part = &partitions[0];
+        assert_eq!(part.batch.num_rows(), 2);
+        assert_eq!(*part.batch.schema().field(0).data_type(), DataType::Int64);
+        // Original rows 0 and 2 (Empty rows 1 and 3 skipped).
+        assert_eq!(part.original_row_ranges.as_slice(), &[0..1, 2..3]);
+    }
+
+    // =========================================================================
+    // stitch_partitioned_results
+    // =========================================================================
+
+    #[test]
+    fn test_stitch_single_partition_full_range() {
+        let arr: ArrayRef = Arc::new(Int64Array::from(vec![10, 20, 30]));
+        let ranges: RowRanges = smallvec![0..3];
+        let result = stitch_partitioned_results(vec![(arr.clone(), ranges)], 3).unwrap();
+        // Should return the same array (fast path).
+        assert_eq!(result.len(), 3);
+        let result_arr = result.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(result_arr.values(), &[10, 20, 30]);
+    }
+
+    #[test]
+    fn test_stitch_same_type_interleaved() {
+        // Partition 0 covers original rows 0, 2 with values [10, 30].
+        // Partition 1 covers original rows 1, 3 with values [20, 40].
+        // Stitched result should be [10, 20, 30, 40].
+        let arr0: ArrayRef = Arc::new(Int64Array::from(vec![10, 30]));
+        let arr1: ArrayRef = Arc::new(Int64Array::from(vec![20, 40]));
+        let ranges0: RowRanges = smallvec![0..1, 2..3];
+        let ranges1: RowRanges = smallvec![1..2, 3..4];
+
+        let result = stitch_partitioned_results(vec![(arr0, ranges0), (arr1, ranges1)], 4).unwrap();
+
+        assert_eq!(result.len(), 4);
+        let result_arr = result.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(result_arr.values(), &[10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn test_stitch_same_type_contiguous_partitions() {
+        // Partition 0: rows 0..2, values [1, 2]
+        // Partition 1: rows 2..4, values [3, 4]
+        let arr0: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+        let arr1: ArrayRef = Arc::new(Int64Array::from(vec![3, 4]));
+        let ranges0: RowRanges = smallvec![0..2];
+        let ranges1: RowRanges = smallvec![2..4];
+
+        let result = stitch_partitioned_results(vec![(arr0, ranges0), (arr1, ranges1)], 4).unwrap();
+
+        assert_eq!(result.len(), 4);
+        let result_arr = result.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(result_arr.values(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_stitch_mixed_types_produces_any_value_struct() {
+        // Partition 0: rows 0, 2 with Int64 values [10, 30]
+        // Partition 1: rows 1, 3 with Utf8 values ["b", "d"]
+        // Result should be a struct with type, int, str fields.
+        let arr0: ArrayRef = Arc::new(Int64Array::from(vec![10, 30]));
+        let arr1: ArrayRef = Arc::new(StringArray::from(vec!["b", "d"]));
+        let ranges0: RowRanges = smallvec![0..1, 2..3];
+        let ranges1: RowRanges = smallvec![1..2, 3..4];
+
+        let result = stitch_partitioned_results(vec![(arr0, ranges0), (arr1, ranges1)], 4).unwrap();
+
+        // Result should be a struct array
+        let struct_arr = result.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(struct_arr.len(), 4);
+
+        // Check the type discriminant column
+        let type_col = struct_arr
+            .column_by_name(consts::ATTRIBUTE_TYPE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+        assert_eq!(type_col.value(0), AttributeValueType::Int as u8);
+        assert_eq!(type_col.value(1), AttributeValueType::Str as u8);
+        assert_eq!(type_col.value(2), AttributeValueType::Int as u8);
+        assert_eq!(type_col.value(3), AttributeValueType::Str as u8);
+
+        // Check the int field: values at rows 0, 2; null at rows 1, 3
+        let int_col = struct_arr
+            .column_by_name(consts::ATTRIBUTE_INT)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(int_col.value(0), 10);
+        assert!(int_col.is_null(1));
+        assert_eq!(int_col.value(2), 30);
+        assert!(int_col.is_null(3));
+
+        // Check the str field: null at rows 0, 2; values at rows 1, 3
+        let str_col = struct_arr
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(str_col.is_null(0));
+        assert_eq!(str_col.value(1), "b");
+        assert!(str_col.is_null(2));
+        assert_eq!(str_col.value(3), "d");
+    }
+
+    // =========================================================================
+    // arrow_type_to_any_value_type
+    // =========================================================================
+
+    #[test]
+    fn test_arrow_type_to_any_value_type_mappings() {
+        let cases = vec![
+            (
+                DataType::Utf8,
+                AttributeValueType::Str,
+                consts::ATTRIBUTE_STR,
+            ),
+            (
+                DataType::LargeUtf8,
+                AttributeValueType::Str,
+                consts::ATTRIBUTE_STR,
+            ),
+            (
+                DataType::Int64,
+                AttributeValueType::Int,
+                consts::ATTRIBUTE_INT,
+            ),
+            (
+                DataType::Int32,
+                AttributeValueType::Int,
+                consts::ATTRIBUTE_INT,
+            ),
+            (
+                DataType::UInt64,
+                AttributeValueType::Int,
+                consts::ATTRIBUTE_INT,
+            ),
+            (
+                DataType::Float64,
+                AttributeValueType::Double,
+                consts::ATTRIBUTE_DOUBLE,
+            ),
+            (
+                DataType::Float32,
+                AttributeValueType::Double,
+                consts::ATTRIBUTE_DOUBLE,
+            ),
+            (
+                DataType::Boolean,
+                AttributeValueType::Bool,
+                consts::ATTRIBUTE_BOOL,
+            ),
+            (
+                DataType::Binary,
+                AttributeValueType::Bytes,
+                consts::ATTRIBUTE_BYTES,
+            ),
+        ];
+
+        for (dt, expected_type, expected_name) in cases {
+            let (type_val, name) = arrow_type_to_any_value_type(&dt).unwrap();
+            assert_eq!(type_val, expected_type, "failed for {:?}", dt);
+            assert_eq!(name, expected_name, "failed for {:?}", dt);
+        }
+    }
+
+    #[test]
+    fn test_arrow_type_to_any_value_type_unsupported() {
+        let result = arrow_type_to_any_value_type(&DataType::Date32);
+        assert!(result.is_err());
+    }
 }
