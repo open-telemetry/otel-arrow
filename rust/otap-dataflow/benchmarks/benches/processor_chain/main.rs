@@ -24,11 +24,11 @@
 //! negligible relative to real processor work.
 //!
 //! **`processor_chain_low_work` group** (100ns simulated work per processor):
-//! The chain is slower for `len>=2` because it inserts `yield_now().await`
-//! between stages for scheduling fairness.  Each yield is a ~1µs context
-//! switch, which dominates when per-stage work is only 100ns.  The separate
-//! variant has channel send/recv overhead (~200ns/stage) but no yield.
-//! At production work levels (~100µs+) the yield cost is negligible.
+//! The chain uses `consume_budget().await` between stages, which only yields
+//! when Tokio's cooperative scheduling budget is exhausted.  At low work
+//! levels the budget is never exhausted, so the chain avoids context-switch
+//! overhead entirely and beats the separate variant at N>=2 (which still
+//! pays ~200ns/stage in channel send/recv overhead).
 
 #![allow(missing_docs)]
 
@@ -167,7 +167,7 @@ fn bench_processor_chain_high_work(c: &mut Criterion) {
     let mut group = c.benchmark_group("processor_chain_high_work");
     let _ = group.throughput(Throughput::Elements(BATCH_COUNT as u64));
 
-    for chain_len in [1, 2, 3] {
+    for chain_len in [1, 2, 3, 10] {
         // ── Chained: all processors inside a ProcessorChainNode ──
         let _ = group.bench_function(BenchmarkId::new("chained", chain_len), |b| {
             b.to_async(&rt).iter(|| async {
@@ -254,7 +254,7 @@ fn bench_processor_chain_low_work(c: &mut Criterion) {
     let mut group = c.benchmark_group("processor_chain_low_work");
     let _ = group.throughput(Throughput::Elements(BATCH_COUNT as u64));
 
-    for chain_len in [1, 2, 3] {
+    for chain_len in [1, 2, 3, 10] {
         // ── Chained ──
         let _ = group.bench_function(BenchmarkId::new("chained", chain_len), |b| {
             b.to_async(&rt).iter(|| async {

@@ -18,10 +18,15 @@
 //!
 //! # Scheduling fairness
 //!
-//! The chain inserts `yield_now().await` between stages so the executor can
-//! schedule other tasks (receiver accepts, exporter flushes, timer ticks)
-//! between each sub-processor.  This bounds uninterrupted CPU time to a
-//! single sub-processor's work rather than the sum of the chain.
+//! The chain calls [`consume_budget().await`][tokio::task::consume_budget]
+//! between stages.  This decrements Tokio's cooperative-scheduling budget
+//! (shared across the entire task, default = 128) and only actually yields
+//! when the budget is exhausted, so lightweight chains pay almost nothing
+//! (a thread-local counter check) while the task still surrenders the
+//! executor after sustained bursts of work.  The chain's own inter-stage
+//! calls are unlikely to exhaust the budget alone (a 3-stage chain spends
+//! only 2 per message), but they accumulate with channel reads/writes in
+//! the enclosing task loop — ensuring fairness under sustained load.
 //!
 //! # Non-expanding constraint
 //!
@@ -43,7 +48,7 @@ use crate::message::Message;
 use crate::process_duration::ComputeDuration;
 use async_trait::async_trait;
 use otap_df_telemetry::instrument::Timer;
-use tokio::task::yield_now;
+use tokio::task::consume_budget;
 
 /// A processor that chains multiple inline sub-processors sequentially.
 ///
@@ -147,11 +152,29 @@ impl<PData: 'static + Clone + Unwindable> Processor<PData> for ProcessorChainNod
                     let mut current = pdata;
 
                     for (i, sub) in self.sub_processors.iter_mut().enumerate() {
-                        // Yield between stages so the executor can schedule
-                        // other tasks.  This bounds uninterrupted CPU time
-                        // to a single sub-processor's work.
+                        // Give the Tokio executor a chance to run other tasks
+                        // between sub-processors. `consume_budget()` decrements
+                        // a per-task cooperative-scheduling counter (thread-local,
+                        // default budget = 128). When the counter reaches zero
+                        // the future yields back to the executor; otherwise it
+                        // returns Poll::Ready immediately — just a thread-local
+                        // integer decrement (~1-2 ns).
+                        //
+                        // The chain's inter-stage calls alone are unlikely to
+                        // exhaust the budget (a 3-stage chain spends only 2 per
+                        // message — you'd need 129 stages to hit the limit from
+                        // this alone). The real value is that these decrements
+                        // accumulate with channel reads/writes in the enclosing
+                        // task loop, so after ~32 back-to-back messages through
+                        // a 3-stage chain the task yields and lets other tasks
+                        // (receivers, other processors, exporters, timers) run.
+                        //
+                        // This is more efficient than an unconditional `yield_now()`,
+                        // which forced a context switch between every
+                        // pair of stages. That overhead dominated when per-stage
+                        // work was only tens-to-hundreds of nanoseconds.
                         if i > 0 {
-                            yield_now().await;
+                            consume_budget().await;
                         }
 
                         let output = sub.process_inline(current);
