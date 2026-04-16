@@ -441,6 +441,9 @@ jobs:
           vcpkg install openssl:x64-windows-static-md
           echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
         shell: pwsh
+      - name: Install SymCrypt (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-symcrypt
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ./rust/${{ matrix.folder }}
@@ -488,6 +491,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
+      - name: Install SymCrypt (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-symcrypt
       - name: install nextest
         uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
         with:
@@ -607,6 +613,9 @@ jobs:
           vcpkg install openssl:x64-windows-static-md
           echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
         shell: pwsh
+      - name: Install SymCrypt (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-symcrypt
       - name: cargo clippy ${{ matrix.folder }}
         run: |
           cargo clippy --all-targets --all-features --workspace -- -D warnings

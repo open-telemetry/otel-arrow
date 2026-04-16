@@ -5,6 +5,8 @@
 
 use crate::Interests;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::control::WakeupRevision;
 use crate::control::{
     AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
     RuntimeCtrlMsgSender, WakeupSlot,
@@ -447,6 +449,19 @@ impl<PData> EffectHandlerCore<PData> {
             .as_ref()
             .map(|scheduler| scheduler.cancel_wakeup(slot))
             .unwrap_or(false)
+    }
+
+    /// Pop the next wakeup from the local scheduler, regardless of whether
+    /// it is due. Returns `None` when no wakeup is scheduled or when local
+    /// wakeups are not enabled.
+    ///
+    /// This is intended for testing, where the inbox loop is not running and
+    /// wakeups need to be manually delivered.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn pop_wakeup(&self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
+        self.local_scheduler
+            .as_ref()
+            .and_then(|scheduler| scheduler.pop_next())
     }
 
     /// Notifies the runtime control manager that this receiver has completed
