@@ -117,3 +117,7 @@ harness = false
 [[bench]]
 name = "processor_chain"
 harness = false
+
+[[bench]]
+name = "pdata_deserialization"
+harness = false
