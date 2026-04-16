@@ -92,7 +92,14 @@ pub fn apply_cli_overrides(
 /// **Scope:** This is *static* validation only -- it checks that config values
 /// can be deserialized into the expected types.  It does **not** detect runtime
 /// issues such as port conflicts, unreachable endpoints, or missing files.
-pub fn validate_pipeline_components<PData: 'static + Clone + Debug + otap_df_engine::Unwindable>(
+pub fn validate_pipeline_components<
+    PData: 'static
+        + Clone
+        + Debug
+        + otap_df_engine::Unwindable
+        + otap_df_engine::StampOutputPort
+        + otap_df_engine::PrepareSourceSend,
+>(
     pipeline_group_id: &PipelineGroupId,
     pipeline_id: &PipelineId,
     pipeline_cfg: &PipelineConfig,
@@ -189,7 +196,14 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug + otap_df_eng
 /// This is the top-level validation entry point that iterates over all
 /// pipeline groups, all pipelines within each group, and the optional
 /// observability pipeline.
-pub fn validate_engine_components<PData: 'static + Clone + Debug + otap_df_engine::Unwindable>(
+pub fn validate_engine_components<
+    PData: 'static
+        + Clone
+        + Debug
+        + otap_df_engine::Unwindable
+        + otap_df_engine::StampOutputPort
+        + otap_df_engine::PrepareSourceSend,
+>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -220,7 +234,12 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug + otap_df_engin
 /// Parses the chain config, then validates that every sub-processor's URN
 /// is a registered processor component and that its config is valid.
 fn validate_processor_chain_components<
-    PData: 'static + Clone + Debug + otap_df_engine::Unwindable,
+    PData: 'static
+        + Clone
+        + Debug
+        + otap_df_engine::Unwindable
+        + otap_df_engine::StampOutputPort
+        + otap_df_engine::PrepareSourceSend,
 >(
     pipeline_group_id: &PipelineGroupId,
     pipeline_id: &PipelineId,
@@ -293,7 +312,14 @@ fn validate_processor_chain_components<
 /// Useful for diagnostics, `--help` output, or startup banners in any
 /// distribution.
 #[must_use]
-pub fn system_info<PData: 'static + Clone + Debug + otap_df_engine::Unwindable>(
+pub fn system_info<
+    PData: 'static
+        + Clone
+        + Debug
+        + otap_df_engine::Unwindable
+        + otap_df_engine::StampOutputPort
+        + otap_df_engine::PrepareSourceSend,
+>(
     factory: &PipelineFactory<PData>,
     memory_allocator: &str,
 ) -> String {

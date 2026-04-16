@@ -39,6 +39,8 @@
 
 use crate::_private::AckNackRouting;
 use crate::Interests;
+use crate::PrepareSourceSend;
+use crate::StampOutputPort;
 use crate::Unwindable;
 use crate::control::{NackMsg, NodeControlMsg};
 use crate::error::Error;
@@ -92,7 +94,9 @@ impl<PData> ProcessorChainNode<PData> {
 }
 
 #[async_trait(?Send)]
-impl<PData: 'static + Clone + Unwindable> Processor<PData> for ProcessorChainNode<PData> {
+impl<PData: 'static + Clone + Unwindable + StampOutputPort + PrepareSourceSend> Processor<PData>
+    for ProcessorChainNode<PData>
+{
     async fn process(
         &mut self,
         msg: Message<PData>,
@@ -124,8 +128,13 @@ impl<PData: 'static + Clone + Unwindable> Processor<PData> for ProcessorChainNod
             Message::PData(pdata) => {
                 let num_subs = self.sub_processors.len();
                 if num_subs == 0 {
+                    let mut data = pdata;
+                    let node_id = effect_handler.processor_id().index;
+                    let interests = effect_handler.node_interests();
+                    data.prepare_source_send(interests, node_id);
                     effect_handler
-                        .send_message(pdata)
+                        .router
+                        .send_default_stamped(data)
                         .await
                         .map_err(Error::from)?;
                     return Ok(());
@@ -185,8 +194,16 @@ impl<PData: 'static + Clone + Unwindable> Processor<PData> for ProcessorChainNod
                         }
                     }
 
+                    // Stamp source-node metadata and output port index
+                    // so that ack/nack unwinding records producer metrics
+                    // for this chain node.
+                    let node_id = effect_handler.processor_id().index;
+                    let interests = effect_handler.node_interests();
+                    current.prepare_source_send(interests, node_id);
+
                     effect_handler
-                        .send_message(current)
+                        .router
+                        .send_default_stamped(current)
                         .await
                         .map_err(Error::from)?;
                     Ok(())

@@ -374,6 +374,31 @@ impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
 }
 
+/// Trait for stamping source-node metadata before sending PData downstream.
+///
+/// Called by the processor chain (and potentially other composite nodes)
+/// before sending a message via a stamped output path.  This pushes a
+/// context frame onto the PData so that ack/nack unwinding can record
+/// producer metrics for the sending node.
+///
+/// Mirrors [`ReceivedAtNode`] (which stamps the *receiving* side).
+pub trait PrepareSourceSend {
+    /// Tag this PData with the sending node's identity and interests.
+    ///
+    /// Implementations should push or update a context frame that carries
+    /// `PRODUCER_METRICS` and `ENTRY_TIMESTAMP` flags so the downstream
+    /// ack path can attribute the message to this node.
+    fn prepare_source_send(&mut self, node_interests: Interests, node_id: usize);
+}
+
+impl PrepareSourceSend for () {
+    fn prepare_source_send(&mut self, _node_interests: Interests, _node_id: usize) {}
+}
+
+impl PrepareSourceSend for String {
+    fn prepare_source_send(&mut self, _node_interests: Interests, _node_id: usize) {}
+}
+
 /// Effect handler extensions for producers specific to data type.
 #[async_trait(?Send)]
 pub trait ProducerEffectHandlerExtension<PData> {
@@ -501,7 +526,9 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData: 'static + Clone + Debug + Unwindable> PipelineFactory<PData> {
+impl<PData: 'static + Clone + Debug + Unwindable + StampOutputPort + PrepareSourceSend>
+    PipelineFactory<PData>
+{
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(
@@ -1963,7 +1990,7 @@ struct HyperEdgeWiring<PData> {
 
 impl<PData> HyperEdgeWiring<PData>
 where
-    PData: 'static + Clone + Debug,
+    PData: 'static + Clone + Debug + Unwindable + StampOutputPort + PrepareSourceSend,
 {
     fn apply(
         self,
@@ -2109,7 +2136,7 @@ impl ResolvedHyperEdgeRuntime {
         core_id: usize,
     ) -> Result<HyperEdgeWiring<PData>, Error>
     where
-        PData: 'static + Clone + Debug + Unwindable,
+        PData: 'static + Clone + Debug + Unwindable + StampOutputPort + PrepareSourceSend,
     {
         let channel_id = self.channel_id();
         let ResolvedHyperEdgeRuntime {
