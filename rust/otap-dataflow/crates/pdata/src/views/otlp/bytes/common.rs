@@ -165,26 +165,22 @@ impl FieldRanges for InstrumentationScopeFieldOffsets {
         };
 
         match field_num {
-            INSTRUMENTATION_SCOPE_NAME => {
-                if wire_type == wire_types::LEN {
+            INSTRUMENTATION_SCOPE_NAME
+                if wire_type == wire_types::LEN => {
                     self.name.set(range);
                 }
-            }
-            INSTRUMENTATION_SCOPE_VERSION => {
-                if wire_type == wire_types::LEN {
+            INSTRUMENTATION_SCOPE_VERSION
+                if wire_type == wire_types::LEN => {
                     self.version.set(range);
                 }
-            }
-            INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT => {
-                if wire_type == wire_types::VARINT {
+            INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT
+                if wire_type == wire_types::VARINT => {
                     self.dropped_attributes_count.set(range);
                 }
-            }
-            INSTRUMENTATION_SCOPE_ATTRIBUTES => {
-                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
+            INSTRUMENTATION_SCOPE_ATTRIBUTES
+                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN => {
                     self.first_attribute.set(range);
                 }
-            }
             _ => {
                 // ignore unknown field_num
             }

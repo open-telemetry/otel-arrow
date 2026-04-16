@@ -101,11 +101,10 @@ impl FieldRanges for ResourceLogsFieldOffsets {
             match field_num {
                 RESOURCE_LOGS_RESOURCE => self.resource.set(range),
                 RESOURCE_LOGS_SCHEMA_URL => self.schema_url.set(range),
-                RESOURCE_LOGS_SCOPE_LOGS => {
-                    if self.first_scope_logs.get().is_none() {
+                RESOURCE_LOGS_SCOPE_LOGS
+                    if self.first_scope_logs.get().is_none() => {
                         self.first_scope_logs.set(range);
                     }
-                }
                 _ => { /* ignore */ }
             }
         }
@@ -153,11 +152,10 @@ impl FieldRanges for ScopeLogsFieldOffsets {
             match field_num {
                 SCOPE_LOG_SCOPE => self.scope.set(range),
                 SCOPE_LOGS_SCHEMA_URL => self.schema_url.set(range),
-                SCOPE_LOGS_LOG_RECORDS => {
-                    if self.first_log_record.get().is_none() {
+                SCOPE_LOGS_LOG_RECORDS
+                    if self.first_log_record.get().is_none() => {
                         self.first_log_record.set(range)
                     }
-                }
                 _ => { /* ignore unknown field */ }
             }
         }
