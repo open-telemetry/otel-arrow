@@ -485,8 +485,22 @@ pub(crate) fn wrap_as_any_value_struct(values: &ArrayRef) -> Result<ArrayRef> {
     let (type_val, field_name) = arrow_type_to_any_value_type(values.data_type())?;
     let num_rows = values.len();
 
+    // lift the nulls off the original column for use in the the struct
+    let nulls = values.nulls().cloned();
+
     // Build uniform type discriminant column
-    let type_arr: ArrayRef = Arc::new(UInt8Array::from(vec![type_val as u8; num_rows]));
+    let mut types = vec![type_val as u8; num_rows];
+    if let Some(nulls) = &nulls {
+        let mut last_valid_end = 0;
+        for (start, end) in nulls.valid_slices() {
+            types[last_valid_end..start].fill(AttributeValueType::Empty as u8);
+            last_valid_end = end;
+        }
+        // Fill trailing nulls after the last valid slice
+        types[last_valid_end..num_rows].fill(AttributeValueType::Empty as u8);
+    }
+
+    let type_arr: ArrayRef = Arc::new(UInt8Array::from(types));
 
     let fields = vec![
         Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
@@ -494,7 +508,7 @@ pub(crate) fn wrap_as_any_value_struct(values: &ArrayRef) -> Result<ArrayRef> {
     ];
     let columns = vec![type_arr, Arc::clone(values)];
 
-    let struct_arr = StructArray::try_new(fields.into(), columns, None)?;
+    let struct_arr = StructArray::try_new(fields.into(), columns, nulls)?;
     Ok(Arc::new(struct_arr))
 }
 

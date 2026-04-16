@@ -1655,7 +1655,7 @@ fn try_upsert_column(
 #[cfg(test)]
 mod test {
     use arrow::{
-        array::{StringArray, UInt16Array},
+        array::{Array, StringArray, StructArray, UInt8Array, UInt16Array},
         compute::{
             filter_record_batch,
             kernels::{cast, cmp::eq},
@@ -1667,6 +1667,7 @@ mod test {
     use otap_df_pdata::{
         OtapArrowRecords,
         otap::Logs,
+        otlp::attributes::AttributeValueType,
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
@@ -2545,7 +2546,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_assign_use_expressions_when_any_value_mixed_types() {
+    async fn test_assign_expressions_when_any_value_mixed_types() {
         let logs_data = to_logs_data(vec![
             LogRecord::build().body(AnyValue::new_int(2)).finish(),
             LogRecord::build().body(AnyValue::new_double(5.14)).finish(),
@@ -2571,6 +2572,111 @@ mod test {
             LogRecord::build().body(AnyValue::new_int(8)).finish(),
             LogRecord::build().body(AnyValue::new_double(8.36)).finish(),
         ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_set_body_with_null_rows() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("1")
+                .finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build()
+                .severity_text("DEBUG")
+                .event_name("3")
+                .finish(),
+            LogRecord::build().event_name("4").finish(),
+        ]);
+
+        let query = "logs | extend body = severity_text";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        // check the structure of the actual column
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        let body_column = logs
+            .column_by_name("body")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+
+        assert!(body_column.is_valid(0));
+        assert!(body_column.is_null(1));
+        assert!(body_column.is_valid(2));
+
+        // check that we correctly put "empty" for the type
+        let type_field = body_column
+            .column_by_name(consts::ATTRIBUTE_TYPE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+        let expected_types = UInt8Array::from_iter_values([
+            AttributeValueType::Str as u8,
+            AttributeValueType::Empty as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Empty as u8,
+        ]);
+        assert_eq!(type_field, &expected_types);
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("INFO"))
+                .severity_text("INFO")
+                .event_name("1")
+                .finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("DEBUG"))
+                .severity_text("DEBUG")
+                .event_name("3")
+                .finish(),
+            LogRecord::build().event_name("4").finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_set_body_with_all_nulls() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("1")
+                .finish(),
+        ]);
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        // check the structure of the actual column
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert!(logs.column_by_name("body").is_none());
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![LogRecord::build().event_name("1").finish()];
 
         assert_eq!(
             &result_logs_data.resource_logs[0].scope_logs[0].log_records,
