@@ -569,7 +569,7 @@ fn sort_attrs_type_and_keys_to_indices(
                 }
 
                 let mut with_indices = to_sort.into_iter().enumerate().collect::<Vec<_>>();
-                with_indices.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                with_indices.sort_unstable_by_key(|a| a.1);
 
                 Ok(PrimitiveArray::from_iter_values(
                     with_indices.into_iter().map(|(rank, _)| rank as u32),
@@ -600,7 +600,7 @@ fn sort_attrs_type_and_keys_to_indices(
                 }
 
                 let mut with_indices = to_sort.into_iter().enumerate().collect::<Vec<_>>();
-                with_indices.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                with_indices.sort_unstable_by_key(|a| a.1);
 
                 Ok(PrimitiveArray::from_iter_values(
                     with_indices.into_iter().map(|(rank, _)| rank as u32),
@@ -642,7 +642,7 @@ fn sort_attrs_type_and_keys_to_indices(
             }
 
             let mut with_indices = to_sort.into_iter().enumerate().collect::<Vec<_>>();
-            with_indices.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+            with_indices.sort_unstable_by_key(|a| a.1);
 
             Ok(PrimitiveArray::from_iter_values(
                 with_indices.into_iter().map(|(rank, _)| rank as u32),
@@ -1178,7 +1178,7 @@ impl AttrValuesSorter {
                         }
                     });
                 } else {
-                    self.rank_sort.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                    self.rank_sort.sort_unstable_by_key(|a| a.1);
                 }
 
                 // take the sorted values segment
@@ -2824,12 +2824,10 @@ mod test {
         let mut parent_id_keys = Vec::new();
         let mut values = Vec::new();
         let mut current_id = 1u32;
-        let mut gap = 1;
-        for i in 0u8..=255u8 {
+        for (gap, i) in (1..).zip(0u8..=255u8) {
             parent_id_keys.push(i);
             parent_ids.push(current_id);
             current_id += gap;
-            gap += 1;
             values.push("a".to_string());
         }
         values.push("b".into());

@@ -745,7 +745,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
                 tracked: false,
                 payload: Arc::clone(&msg),
             };
-            for (group, permit) in groups.as_ref().iter().zip(permits.into_iter()) {
+            for (group, permit) in groups.as_ref().iter().zip(permits) {
                 send_queued_envelope(&group.tx, envelope.clone(), permit)?;
             }
         }
@@ -778,7 +778,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
                 tracked: true,
                 payload: Arc::clone(&msg),
             };
-            for (group, admission_permit) in groups.as_ref().iter().zip(permits.into_iter()) {
+            for (group, admission_permit) in groups.as_ref().iter().zip(permits) {
                 send_queued_envelope(&group.tx, envelope.clone(), admission_permit)?;
             }
             self.broadcast_ring.publish(Envelope {
@@ -823,7 +823,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         if blocking_group.is_some() {
             Ok((PublishOutcome::DroppedOnFull, id))
         } else {
-            for (group, permit) in groups.as_ref().iter().zip(permits.into_iter()) {
+            for (group, permit) in groups.as_ref().iter().zip(permits) {
                 send_queued_envelope(&group.tx, envelope.clone(), permit)?;
             }
             self.broadcast_ring.publish(Envelope {
@@ -858,7 +858,7 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
                 tracked: true,
                 payload: Arc::clone(&msg),
             };
-            for (group, admission_permit) in groups.as_ref().iter().zip(permits.into_iter()) {
+            for (group, admission_permit) in groups.as_ref().iter().zip(permits) {
                 send_queued_envelope(&group.tx, envelope.clone(), admission_permit)?;
             }
             self.broadcast_ring.publish(Envelope {
