@@ -2887,7 +2887,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_inserting_attribute_when_source_is_anyval_with_heterogenous_types() {
+    async fn test_inserting_attribute_when_source_is_anyval_with_mixed_types() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
