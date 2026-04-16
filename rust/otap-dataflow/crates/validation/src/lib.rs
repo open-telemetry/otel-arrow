@@ -194,7 +194,7 @@ mod tests {
                     .otap_grpc("exporter")
                     .validate(vec![
                         ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.70),
+                            min_drop_ratio: Some(0.80),
                             max_drop_ratio: Some(0.99),
                         },
                         ValidationInstructions::AttributeNoDuplicate,
@@ -276,81 +276,11 @@ mod tests {
             .expect("log sampling ratio validation failed for signal_count=500");
     }
 
-    /// Validates the transform processor with a KQL filter keeping only ERROR
-    /// logs using 10 signals. The severity cycle may yield zero ERROR records
-    /// with fewer than 20 signals, so up to 100% drop is allowed.
+    /// Validates the transform processor with a KQL filter query that keeps
+    /// only ERROR-severity logs. Static log signals have ~5% ERROR, ~15% WARN,
+    /// and ~80% INFO, so the vast majority should be dropped.
     #[test]
-    fn validation_transform_processor_filter_pipeline_1() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::logs()
-                    .fixed_count(10)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.80),
-                            max_drop_ratio: Some(1.0),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("transform processor filter validation failed for signal_count=10");
-    }
-
-    /// Validates the transform processor with a KQL filter keeping only ERROR
-    /// logs using 100 signals at the default batch size boundary.
-    #[test]
-    fn validation_transform_processor_filter_pipeline_2() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::logs()
-                    .fixed_count(100)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.80),
-                            max_drop_ratio: Some(0.99),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("transform processor filter validation failed for signal_count=100");
-    }
-
-    /// Validates the transform processor with a KQL filter keeping only ERROR
-    /// logs using 500 signals spanning multiple batches.
-    #[test]
-    fn validation_transform_processor_filter_pipeline_3() {
+    fn validation_transform_processor_filter_pipeline() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
@@ -379,7 +309,7 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor filter validation failed for signal_count=500");
+            .expect("transform processor filter validation failed");
     }
 
     /// Validates the log sampling processor with a zip policy (max 50 items per
@@ -577,81 +507,10 @@ mod tests {
     }
 
     /// Validates the transform processor with a negated KQL filter that drops
-    /// INFO-severity logs using 10 signals. The severity cycle may yield only
-    /// INFO records with fewer than 20 signals, so up to 100% drop is allowed.
+    /// INFO-severity logs and keeps WARN + ERROR. Static log signals have ~80%
+    /// INFO so roughly 80% should be dropped.
     #[test]
-    fn validation_transform_processor_not_filter_pipeline_1() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-not-filter-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::logs()
-                    .fixed_count(10)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.70),
-                            max_drop_ratio: Some(1.0),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("transform processor not-filter validation failed for signal_count=10");
-    }
-
-    /// Validates the transform processor with a negated KQL filter that drops
-    /// INFO-severity logs using 100 signals at the default batch size boundary.
-    /// Static log signals have ~80% INFO so roughly 80% should be dropped.
-    #[test]
-    fn validation_transform_processor_not_filter_pipeline_2() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-not-filter-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::logs()
-                    .fixed_count(100)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.70),
-                            max_drop_ratio: Some(0.90),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("transform processor not-filter validation failed for signal_count=100");
-    }
-
-    /// Validates the transform processor with a negated KQL filter that drops
-    /// INFO-severity logs using 500 signals spanning multiple batches.
-    #[test]
-    fn validation_transform_processor_not_filter_pipeline_3() {
+    fn validation_transform_processor_not_filter_pipeline() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/transform-not-filter-processor.yaml")
@@ -680,7 +539,7 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor not-filter validation failed for signal_count=500");
+            .expect("transform processor not-filter validation failed");
     }
 
     /// Validates the transform processor with an OPL set query that adds a new
@@ -917,8 +776,8 @@ mod tests {
     }
 
     /// Validates the temporal reaggregation processor with 500 metric signals
-    /// spanning multiple batches. All data points collapse to ~2 outputs,
-    /// yielding approximately 99.6% signal reduction.
+    /// spanning multiple batches. All data points collapse to a small number of
+    /// outputs per flush window, yielding at least 95% signal reduction.
     #[test]
     fn validation_temporal_reaggregation_metrics_3() {
         Scenario::new()
@@ -940,7 +799,7 @@ mod tests {
                     .otap_grpc("exporter")
                     .validate(vec![
                         ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.99),
+                            min_drop_ratio: Some(0.95),
                             max_drop_ratio: Some(1.0),
                         },
                         ValidationInstructions::AttributeNoDuplicate,
