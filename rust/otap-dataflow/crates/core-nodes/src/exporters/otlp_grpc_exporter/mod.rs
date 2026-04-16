@@ -10,8 +10,13 @@
 //! progress.
 
 use async_trait::async_trait;
+
+use futures_timer::Delay;
+use std::io::ErrorKind;
+
 use bytes::Bytes;
 use futures::future::FutureExt;
+use futures::pin_mut;
 use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -46,7 +51,7 @@ use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
@@ -169,6 +174,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut inflight_exports = InFlightExports::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
+        let timer_cancel_fut = async {
+            let _ = timer_cancel_handle.cancel().await;
+            futures::future::pending::<()>().await
+        }
+        .fuse();
+        pin_mut!(timer_cancel_fut);
+
         // Main loop: 1) finish ready completions, 2) biased wait for either a completion
         // or the next message, 3) dispatch work while respecting the in-flight budget.
         loop {
@@ -235,19 +247,43 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         pending_msg.is_none(),
                         "pending message should have been drained before shutdown"
                     );
-                    while !inflight_exports.is_empty() {
-                        if let Some(completed) = inflight_exports.next_completion().await {
-                            let client = finalize_completed_export(
-                                completed,
-                                &effect_handler,
-                                &mut self.pdata_metrics,
-                            )
-                            .await;
-                            grpc_clients.release(client);
+
+                    let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
+
+                    // Stop telemetry loop concurrently with flushing; do not block shutdown on cancel
+                    let mut timer_cancelled = false;
+
+                    loop {
+                        // If the exports are completed in time, we exit the loop to evaluate the
+                        // rest of the possible races
+                        if inflight_exports.is_empty() && timer_cancelled {
+                            break;
                         }
+
+                        futures::select_biased! {
+                            completed = inflight_exports.next_completion().fuse() => {
+                                if let Some(completed) = completed {
+                                    let client = finalize_completed_export(
+                                        completed,
+                                        &effect_handler,
+                                        &mut self.pdata_metrics,
+                                    )
+                                    .await;
+                                    grpc_clients.release(client);
+                                }
+                            },
+                            _ = timer_cancel_fut => {
+                                timer_cancelled = true
+                            }
+                            _timeout = timeout =>
+                            {
+                                    self.pdata_metrics.add_failed(SignalType::Metrics, 1);
+
+                                    return Err(Error::IoError { node: exporter_id.clone(), error: std::io::Error::from(ErrorKind::TimedOut) })
+                            },
+
+                        };
                     }
-                    _ = timer_cancel_handle.cancel().await;
-                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
