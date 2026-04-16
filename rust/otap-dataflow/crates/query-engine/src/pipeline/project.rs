@@ -3,6 +3,7 @@
 
 //! Projection utilities for extracting required columns from RecordBatches
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -17,8 +18,10 @@ use datafusion::error::DataFusionError;
 use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::Expr;
 use datafusion::scalar::ScalarValue;
+use otap_df_pdata::otap::transform::util::take_record_batch_ranges;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::schema::consts;
+use smallvec::SmallVec;
 
 use crate::error::{Error, Result};
 
@@ -281,11 +284,6 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
 // evaluation. Results are then stitched back to original row order.
 // =============================================================================
 
-use std::ops::Range;
-
-use otap_df_pdata::otap::transform::util::take_record_batch_ranges;
-use smallvec::SmallVec;
-
 /// Contiguous row ranges sharing an AnyValue type. `SmallVec` avoids heap allocation
 /// for the common case of one or two ranges per type.
 pub(crate) type RowRanges = SmallVec<[Range<usize>; 2]>;
@@ -314,16 +312,23 @@ pub(crate) fn find_any_value_columns(schema: &Schema) -> Vec<usize> {
         .collect()
 }
 
-/// Returns `true` if a field has the shape of an AnyValue column: a struct containing
-/// a `"type"` sub-field of `UInt8`.
-fn is_any_value_field(field: &Field) -> bool {
-    if let DataType::Struct(sub_fields) = field.data_type() {
-        sub_fields
+/// Returns `true` if the given [`DataType`] has the shape of an AnyValue: a struct containing
+/// a `"type"` field of `UInt8`.
+pub(crate) fn is_any_value_data_type(dt: &DataType) -> bool {
+    if let DataType::Struct(fields) = dt {
+        fields
             .iter()
-            .any(|sf| sf.name() == consts::ATTRIBUTE_TYPE && *sf.data_type() == DataType::UInt8)
+            .any(|f| f.name() == consts::ATTRIBUTE_TYPE && *f.data_type() == DataType::UInt8)
     } else {
         false
     }
+}
+
+/// Returns `true` if a field has the shape of an AnyValue column.
+///
+/// Delegates to [`is_any_value_data_type`].
+pub(crate) fn is_any_value_field(field: &Field) -> bool {
+    is_any_value_data_type(field.data_type())
 }
 
 /// Extract the `type` field from an AnyValue struct column.
@@ -438,6 +443,10 @@ fn arrow_type_to_any_value_type(dt: &DataType) -> Result<(AttributeValueType, &'
         {
             Ok((AttributeValueType::Str, consts::ATTRIBUTE_STR))
         }
+        DataType::Dictionary(_, v) if v.is_integer() => {
+            Ok((AttributeValueType::Int, consts::ATTRIBUTE_INT))
+        }
+        // TODO replace w/ is_integer()
         DataType::Int8
         | DataType::Int16
         | DataType::Int32
@@ -446,6 +455,8 @@ fn arrow_type_to_any_value_type(dt: &DataType) -> Result<(AttributeValueType, &'
         | DataType::UInt16
         | DataType::UInt32
         | DataType::UInt64 => Ok((AttributeValueType::Int, consts::ATTRIBUTE_INT)),
+
+        // TODO replace with is_float()?
         DataType::Float16 | DataType::Float32 | DataType::Float64 => {
             Ok((AttributeValueType::Double, consts::ATTRIBUTE_DOUBLE))
         }
@@ -939,7 +950,7 @@ fn stitch_as_any_value_struct(
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Float64Array, Int64Array, StringArray};
+    use arrow::array::{Float64Array, Int64Array, StringArray, UInt8Array};
     use smallvec::smallvec;
 
     /// Helper: build a simple AnyValue struct column from type + value arrays.

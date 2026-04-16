@@ -21,6 +21,7 @@ use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
     RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
+use arrow::compute::kernels::boolean::and;
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::{cast, filter, max, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
@@ -57,7 +58,7 @@ use crate::pipeline::expr::{
     SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
-use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
+use crate::pipeline::project::{ProjectedSchemaColumn, Projection, is_any_value_data_type};
 use crate::pipeline::state::ExecutionState;
 
 /// Representation of assignment source and destination
@@ -522,6 +523,23 @@ impl AssignPipelineStage {
 
                 ColumnarValue::Array(take(&result_values, &vals_take_indices, None)?)
             };
+
+            // If the expression produced an AnyValue struct (mixed types across partitions),
+            // decompose it into one AttributeUpsert per distinct value type so that
+            // upsert_attributes sees only concrete, single-typed values.
+            if let ColumnarValue::Array(ref arr) = aligned_values {
+                if is_any_value_data_type(arr.data_type()) {
+                    let per_type = decompose_any_value_upsert(
+                        attrs_key,
+                        &existing_key_mask,
+                        arr,
+                        &parent_ids,
+                        attrs_record_batch,
+                    )?;
+                    attrs_upserts.extend(per_type);
+                    continue;
+                }
+            }
 
             attrs_upserts.push(AttributeUpsert {
                 attrs_key,
@@ -1057,6 +1075,118 @@ impl NextIdTracker {
         self.curr_max = Some(next_id);
         Some(next_id)
     }
+}
+
+/// Decompose an AnyValue struct result into one [`AttributeUpsert`] per distinct value type.
+///
+/// When an expression produces an AnyValue struct (because different rows had different input
+/// types, producing different output types), we cannot pass it directly to `upsert_attributes`
+/// which expects a single concrete typed value. Instead we split by type discriminant:
+///
+/// For each value field in the struct (e.g. `str`, `int`, `double`):
+///
+/// 1. Build a type-specific `existing_key_mask` by ANDing the original key mask with
+///    `existing_type_col == discriminant`. This ensures the sub-upserts have non-overlapping
+///    ownership of existing rows (required by `upsert_attributes`).
+///
+/// 2. Filter `parent_ids` to only those whose new value has this discriminant.
+///
+/// 3. Extract the concrete value column for this type from the struct.
+fn decompose_any_value_upsert<'a>(
+    attrs_key: &'a str,
+    existing_key_mask: &BooleanArray,
+    any_value_arr: &ArrayRef,
+    parent_ids: &UInt16Array,
+    existing_attrs: &RecordBatch,
+) -> Result<Vec<AttributeUpsert<'a, UInt16Type>>> {
+    let struct_arr = any_value_arr
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "expected AnyValue result to be a StructArray".into(),
+        })?;
+
+    // Extract the new-values type discriminant (one per aligned parent_id row).
+    let new_type_col = struct_arr
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "AnyValue struct is missing the 'type' field".into(),
+        })?;
+    let new_types = new_type_col
+        .as_any()
+        .downcast_ref::<UInt8Array>()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "AnyValue 'type' field is not UInt8".into(),
+        })?;
+
+    // Get the existing type column from the attrs batch (used to build per-type sub-masks).
+    let existing_type_col = existing_attrs
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "attribute record batch missing 'type' column".into(),
+        })?;
+
+    let mut upserts = Vec::new();
+
+    // Walk each value field in the struct (skip the `type` discriminant field itself).
+    for (field_idx, field) in struct_arr.fields().iter().enumerate() {
+        if field.name() == consts::ATTRIBUTE_TYPE {
+            continue;
+        }
+
+        // Determine the discriminant for this value field.
+        let discriminant: u8 = match field.name().as_str() {
+            n if n == consts::ATTRIBUTE_STR => AttributeValueType::Str as u8,
+            n if n == consts::ATTRIBUTE_INT => AttributeValueType::Int as u8,
+            n if n == consts::ATTRIBUTE_DOUBLE => AttributeValueType::Double as u8,
+            n if n == consts::ATTRIBUTE_BOOL => AttributeValueType::Bool as u8,
+            n if n == consts::ATTRIBUTE_BYTES => AttributeValueType::Bytes as u8,
+            n if n == consts::ATTRIBUTE_SER => AttributeValueType::Bytes as u8,
+            other => {
+                return Err(Error::ExecutionError {
+                    cause: format!("unexpected AnyValue field name '{other}'"),
+                })
+            }
+        };
+
+        // 1. Build sub-mask: existing_key_mask AND existing_type == discriminant.
+        let type_match_mask = eq(
+            existing_type_col,
+            &UInt8Array::new_scalar(discriminant),
+        )?;
+        let sub_mask = and(existing_key_mask, &type_match_mask)?;
+
+        // 2. Filter parent_ids to those whose new value has this discriminant.
+        //    new_types has one entry per parent_id row.
+        let new_type_match = eq(new_types, &UInt8Array::new_scalar(discriminant))?;
+        let filtered_parent_ids = filter(parent_ids, &new_type_match)?;
+        let filtered_parent_ids = filtered_parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "filtered parent_ids is not UInt16".into(),
+            })?
+            .clone();
+
+        // Skip this type if there are no rows to upsert (no existing rows with this type
+        // and no new values with this type).
+        if sub_mask.true_count() == 0 && filtered_parent_ids.is_empty() {
+            continue;
+        }
+
+        // 3. Extract the concrete value column and filter to matching rows.
+        let value_col = struct_arr.column(field_idx);
+        let filtered_values = filter(value_col.as_ref(), &new_type_match)?;
+
+        upserts.push(AttributeUpsert {
+            attrs_key,
+            existing_key_mask: sub_mask,
+            new_values: ColumnarValue::Array(filtered_values),
+            upsert_parent_ids: filtered_parent_ids,
+        });
+    }
+
+    Ok(upserts)
 }
 
 /// Validate that the results of the passed expression can be assigned to the destination.
@@ -2279,6 +2409,44 @@ mod test {
     #[tokio::test]
     async fn test_upserts_attribute_computed_from_self_kql_parser() {
         test_upserts_attribute_computed_from_self::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_inserting_attribute_when_source_is_anyval_with_heterogenous_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"y\"] = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_int(5)),
+                KeyValue::new("y", AnyValue::new_int(5)),
+            ]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("hello")),
+                KeyValue::new("y", AnyValue::new_string("hello")),
+            ]
+        );
     }
 
     async fn test_set_attributes_on_spans<P: Parser>() {
