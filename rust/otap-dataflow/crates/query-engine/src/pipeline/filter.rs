@@ -2285,6 +2285,37 @@ mod test {
         );
     }
 
+    #[tokio::test]
+    async fn test_filter_logs_by_body_using_expression() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+        ];
+
+        let query = r#"logs | where replace(body, "hello", "bonjour") == "bonjour world""#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
+
+        // check it works when the expressions on either side of predicate are flipped
+        let query = r#"logs | where "bonjour world" == replace(body, "hello", "bonjour")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
+    }
+
     async fn test_filter_text_contains<P: Parser>(
         q_event_name_contains_error: &str,
         q_1234_contains_event_name: &str,
