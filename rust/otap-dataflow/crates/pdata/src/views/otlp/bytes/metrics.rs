@@ -103,10 +103,9 @@ impl FieldRanges for ResourceMetricsFieldRanges {
             match field_num {
                 RESOURCE_METRICS_RESOURCE => self.resource.set(Some(range)),
                 RESOURCE_METRICS_SCHEMA_URL => self.schema_url.set(Some(range)),
-                RESOURCE_METRICS_SCOPE_METRICS
-                    if self.first_scope_metrics.get().is_none() => {
-                        self.first_scope_metrics.set(Some(range))
-                    }
+                RESOURCE_METRICS_SCOPE_METRICS if self.first_scope_metrics.get().is_none() => {
+                    self.first_scope_metrics.set(Some(range))
+                }
                 _ => { /* ignore */ }
             }
         }
@@ -155,10 +154,9 @@ impl FieldRanges for ScopeMetricsFieldRanges {
             match field_num {
                 SCOPE_METRICS_SCOPE => self.scope.set(Some(range)),
                 SCOPE_METRICS_SCHEMA_URL => self.schema_url.set(Some(range)),
-                SCOPE_METRICS_METRICS
-                    if self.first_metric.get().is_none() => {
-                        self.first_metric.set(Some(range))
-                    }
+                SCOPE_METRICS_METRICS if self.first_metric.get().is_none() => {
+                    self.first_metric.set(Some(range))
+                }
                 _ => { /* ignore */ }
             }
         }
@@ -230,10 +228,9 @@ impl FieldRanges for MetricFieldRanges {
                 | METRIC_HISTOGRAM
                 | METRIC_EXPONENTIAL_HISTOGRAM
                 | METRIC_SUMMARY => self.data.set(Some((range, field_num))),
-                METRIC_METADATA
-                    if self.first_metadata.get().is_none() => {
-                        self.first_metadata.set(Some(range))
-                    }
+                METRIC_METADATA if self.first_metadata.get().is_none() => {
+                    self.first_metadata.set(Some(range))
+                }
                 _ => { /* ignore */ }
             }
         }
@@ -279,10 +276,9 @@ impl FieldRanges for GaugeFieldRanges {
             };
 
             match field_num {
-                GAUGE_DATA_POINTS
-                    if self.first_data_point.get().is_none() => {
-                        self.first_data_point.set(Some(range))
-                    }
+                GAUGE_DATA_POINTS if self.first_data_point.get().is_none() => {
+                    self.first_data_point.set(Some(range))
+                }
                 _ => { /* ignore */ }
             }
         }
@@ -328,18 +324,17 @@ impl FieldRanges for SumFieldRanges {
         };
 
         match field_num {
-            SUM_AGGREGATION_TEMPORALITY
-                if wire_type == wire_types::VARINT => {
-                    self.aggregation_temporality.set(Some(range))
-                }
-            SUM_IS_MONOTONIC
-                if wire_type == wire_types::VARINT => {
-                    self.is_monotonic.set(Some(range))
-                }
+            SUM_AGGREGATION_TEMPORALITY if wire_type == wire_types::VARINT => {
+                self.aggregation_temporality.set(Some(range))
+            }
+            SUM_IS_MONOTONIC if wire_type == wire_types::VARINT => {
+                self.is_monotonic.set(Some(range))
+            }
             SUM_DATA_POINTS
-                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() => {
-                    self.first_data_point.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() =>
+            {
+                self.first_data_point.set(Some(range))
+            }
             _ => { /* ignore */ }
         }
     }
@@ -382,14 +377,14 @@ impl FieldRanges for HistogramFieldRanges {
         };
 
         match field_num {
-            HISTOGRAM_AGGREGATION_TEMPORALITY
-                if wire_type == wire_types::VARINT => {
-                    self.aggregation_temporality.set(Some(range))
-                }
+            HISTOGRAM_AGGREGATION_TEMPORALITY if wire_type == wire_types::VARINT => {
+                self.aggregation_temporality.set(Some(range))
+            }
             HISTOGRAM_DATA_POINTS
-                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() => {
-                    self.first_data_point.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() =>
+            {
+                self.first_data_point.set(Some(range))
+            }
             _ => { /* ignore */ }
         }
     }
@@ -432,14 +427,14 @@ impl FieldRanges for ExpHistogramFieldRanges {
         };
 
         match field_num {
-            EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY
-                if wire_type == wire_types::VARINT => {
-                    self.aggregation_temporality.set(Some(range))
-                }
+            EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY if wire_type == wire_types::VARINT => {
+                self.aggregation_temporality.set(Some(range))
+            }
             EXPONENTIAL_HISTOGRAM_DATA_POINTS
-                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() => {
-                    self.first_data_point.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() =>
+            {
+                self.first_data_point.set(Some(range))
+            }
             _ => { /* ignore */ }
         }
     }
@@ -478,9 +473,10 @@ impl FieldRanges for SummaryFieldRanges {
 
         match field_num {
             SUMMARY_DATA_POINTS
-                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() => {
-                    self.first_data_point.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_data_point.get().is_none() =>
+            {
+                self.first_data_point.set(Some(range))
+            }
             _ => { /* ignore */ }
         }
     }
@@ -542,32 +538,28 @@ impl FieldRanges for NumberDataPointFieldRanges {
         };
 
         match field_num {
-            NUMBER_DP_START_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.start_time_unix_nano.set(Some(range))
-                }
-            NUMBER_DP_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.time_unix_nano.set(Some(range))
-                }
+            NUMBER_DP_START_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.start_time_unix_nano.set(Some(range))
+            }
+            NUMBER_DP_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.time_unix_nano.set(Some(range))
+            }
 
-            NUMBER_DP_AS_DOUBLE | NUMBER_DP_AS_INT
-                if wire_type == wire_types::FIXED64 => {
-                    self.value.set(Some((range, field_num)));
-                }
+            NUMBER_DP_AS_DOUBLE | NUMBER_DP_AS_INT if wire_type == wire_types::FIXED64 => {
+                self.value.set(Some((range, field_num)));
+            }
             NUMBER_DP_ATTRIBUTES
-                if wire_type == wire_types::LEN && self.first_attribute.get().is_none() => {
-                    self.first_attribute.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_attribute.get().is_none() =>
+            {
+                self.first_attribute.set(Some(range))
+            }
             NUMBER_DP_EXEMPLARS
-                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() => {
-                    self.first_exemplar.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() =>
+            {
+                self.first_exemplar.set(Some(range))
+            }
 
-            NUMBER_DP_FLAGS
-                if wire_type == wire_types::VARINT => {
-                    self.flags.set(Some(range))
-                }
+            NUMBER_DP_FLAGS if wire_type == wire_types::VARINT => self.flags.set(Some(range)),
             _ => { /* ignore */ }
         }
     }
@@ -631,56 +623,41 @@ impl FieldRanges for HistogramDataPointFieldRanges {
         };
 
         match field_num {
-            HISTOGRAM_DP_START_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.start_time_unix_nano.set(Some(range));
-                }
-            HISTOGRAM_DP_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.time_unix_nano.set(Some(range))
-                }
-            HISTOGRAM_DP_COUNT
-                if wire_type == wire_types::FIXED64 => {
-                    self.count.set(Some(range))
-                }
-            HISTOGRAM_DP_SUM
-                if wire_type == wire_types::FIXED64 => {
-                    self.sum.set(Some(range))
-                }
-            HISTOGRAM_DP_FLAGS
-                if wire_type == wire_types::VARINT => {
-                    self.flags.set(Some(range))
-                }
+            HISTOGRAM_DP_START_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.start_time_unix_nano.set(Some(range));
+            }
+            HISTOGRAM_DP_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.time_unix_nano.set(Some(range))
+            }
+            HISTOGRAM_DP_COUNT if wire_type == wire_types::FIXED64 => self.count.set(Some(range)),
+            HISTOGRAM_DP_SUM if wire_type == wire_types::FIXED64 => self.sum.set(Some(range)),
+            HISTOGRAM_DP_FLAGS if wire_type == wire_types::VARINT => self.flags.set(Some(range)),
             HISTOGRAM_DP_EXPLICIT_BOUNDS
                 if (wire_type == wire_types::LEN || wire_type == wire_types::FIXED64)
-                    && self.first_explicit_bounds.get().is_none()
-                => {
-                    let packed = wire_type == wire_types::LEN;
-                    self.first_explicit_bounds.set(Some((range, packed)));
-                }
+                    && self.first_explicit_bounds.get().is_none() =>
+            {
+                let packed = wire_type == wire_types::LEN;
+                self.first_explicit_bounds.set(Some((range, packed)));
+            }
             HISTOGRAM_DP_BUCKET_COUNTS
                 if (wire_type == wire_types::LEN || wire_type == wire_types::FIXED64)
-                    && self.first_bucket_counts.get().is_none()
-                => {
-                    let packed = wire_type == wire_types::LEN;
-                    self.first_bucket_counts.set(Some((range, packed)));
-                }
-            HISTOGRAM_DP_MIN
-                if wire_type == wire_types::FIXED64 => {
-                    self.min.set(Some(range))
-                }
-            HISTOGRAM_DP_MAX
-                if wire_type == wire_types::FIXED64 => {
-                    self.max.set(Some(range))
-                }
+                    && self.first_bucket_counts.get().is_none() =>
+            {
+                let packed = wire_type == wire_types::LEN;
+                self.first_bucket_counts.set(Some((range, packed)));
+            }
+            HISTOGRAM_DP_MIN if wire_type == wire_types::FIXED64 => self.min.set(Some(range)),
+            HISTOGRAM_DP_MAX if wire_type == wire_types::FIXED64 => self.max.set(Some(range)),
             HISTOGRAM_DP_ATTRIBUTES
-                if wire_type == wire_types::LEN && self.first_attributes.get().is_none() => {
-                    self.first_attributes.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_attributes.get().is_none() =>
+            {
+                self.first_attributes.set(Some(range))
+            }
             HISTOGRAM_DP_EXEMPLARS
-                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() => {
-                    self.first_exemplar.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() =>
+            {
+                self.first_exemplar.set(Some(range))
+            }
 
             _ => { /* ignore */ }
         }
@@ -761,62 +738,46 @@ impl FieldRanges for ExpHistogramDataPointFieldRanges {
         };
 
         match field_num {
-            EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.start_time_unix_nano.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.time_unix_nano.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_COUNT
-                if wire_type == wire_types::FIXED64 => {
-                    self.count.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_SUM
-                if wire_type == wire_types::FIXED64 => {
-                    self.sum.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_SCALE
-                if wire_type == wire_types::VARINT => {
-                    self.scale.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_ZERO_COUNT
-                if wire_type == wire_types::FIXED64 => {
-                    self.zero_count.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_NEGATIVE
-                if wire_type == wire_types::LEN => {
-                    self.negative.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_POSITIVE
-                if wire_type == wire_types::LEN => {
-                    self.positive.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_FLAGS
-                if wire_type == wire_types::VARINT => {
-                    self.flags.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_MIN
-                if wire_type == wire_types::FIXED64 => {
-                    self.min.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_MAX
-                if wire_type == wire_types::FIXED64 => {
-                    self.max.set(Some(range))
-                }
-            EXP_HISTOGRAM_DP_ZERO_THRESHOLD
-                if wire_type == wire_types::FIXED64 => {
-                    self.zero_threshold.set(Some(range))
-                }
+            EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.start_time_unix_nano.set(Some(range))
+            }
+            EXP_HISTOGRAM_DP_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.time_unix_nano.set(Some(range))
+            }
+            EXP_HISTOGRAM_DP_COUNT if wire_type == wire_types::FIXED64 => {
+                self.count.set(Some(range))
+            }
+            EXP_HISTOGRAM_DP_SUM if wire_type == wire_types::FIXED64 => self.sum.set(Some(range)),
+            EXP_HISTOGRAM_DP_SCALE if wire_type == wire_types::VARINT => {
+                self.scale.set(Some(range))
+            }
+            EXP_HISTOGRAM_DP_ZERO_COUNT if wire_type == wire_types::FIXED64 => {
+                self.zero_count.set(Some(range))
+            }
+            EXP_HISTOGRAM_DP_NEGATIVE if wire_type == wire_types::LEN => {
+                self.negative.set(Some(range))
+            }
+            EXP_HISTOGRAM_DP_POSITIVE if wire_type == wire_types::LEN => {
+                self.positive.set(Some(range))
+            }
+            EXP_HISTOGRAM_DP_FLAGS if wire_type == wire_types::VARINT => {
+                self.flags.set(Some(range))
+            }
+            EXP_HISTOGRAM_DP_MIN if wire_type == wire_types::FIXED64 => self.min.set(Some(range)),
+            EXP_HISTOGRAM_DP_MAX if wire_type == wire_types::FIXED64 => self.max.set(Some(range)),
+            EXP_HISTOGRAM_DP_ZERO_THRESHOLD if wire_type == wire_types::FIXED64 => {
+                self.zero_threshold.set(Some(range))
+            }
             EXP_HISTOGRAM_DP_ATTRIBUTES
-                if wire_type == wire_types::LEN && self.first_attributes.get().is_none() => {
-                    self.first_attributes.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_attributes.get().is_none() =>
+            {
+                self.first_attributes.set(Some(range))
+            }
             EXP_HISTOGRAM_DP_EXEMPLARS
-                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() => {
-                    self.first_exemplar.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_exemplar.get().is_none() =>
+            {
+                self.first_exemplar.set(Some(range))
+            }
             _ => { /* ignore */ }
         }
     }
@@ -861,17 +822,16 @@ impl FieldRanges for BucketsFieldRanges {
         };
 
         match field_num {
-            EXP_HISTOGRAM_BUCKET_OFFSET
-                if wire_type == wire_types::VARINT => {
-                    self.offset.set(Some(range));
-                }
+            EXP_HISTOGRAM_BUCKET_OFFSET if wire_type == wire_types::VARINT => {
+                self.offset.set(Some(range));
+            }
             EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS
                 if (wire_type == wire_types::LEN || wire_type == wire_types::VARINT)
-                    && self.first_bucket_count.get().is_none()
-                => {
-                    let packed = wire_type == wire_types::LEN;
-                    self.first_bucket_count.set(Some((range, packed)))
-                }
+                    && self.first_bucket_count.get().is_none() =>
+            {
+                let packed = wire_type == wire_types::LEN;
+                self.first_bucket_count.set(Some((range, packed)))
+            }
             _ => { /* ignore */ }
         }
     }
@@ -934,34 +894,25 @@ impl FieldRanges for SummaryDataPointFieldRanges {
         };
 
         match field_num {
-            SUMMARY_DP_START_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.start_time_unix_nano.set(Some(range))
-                }
-            SUMMARY_DP_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.time_unix_nano.set(Some(range))
-                }
-            SUMMARY_DP_COUNT
-                if wire_type == wire_types::FIXED64 => {
-                    self.count.set(Some(range))
-                }
-            SUMMARY_DP_SUM
-                if wire_type == wire_types::FIXED64 => {
-                    self.sum.set(Some(range))
-                }
-            SUMMARY_DP_FLAGS
-                if wire_type == wire_types::VARINT => {
-                    self.flags.set(Some(range))
-                }
+            SUMMARY_DP_START_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.start_time_unix_nano.set(Some(range))
+            }
+            SUMMARY_DP_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.time_unix_nano.set(Some(range))
+            }
+            SUMMARY_DP_COUNT if wire_type == wire_types::FIXED64 => self.count.set(Some(range)),
+            SUMMARY_DP_SUM if wire_type == wire_types::FIXED64 => self.sum.set(Some(range)),
+            SUMMARY_DP_FLAGS if wire_type == wire_types::VARINT => self.flags.set(Some(range)),
             SUMMARY_DP_ATTRIBUTES
-                if wire_type == wire_types::LEN && self.first_attribute.get().is_none() => {
-                    self.first_attribute.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_attribute.get().is_none() =>
+            {
+                self.first_attribute.set(Some(range))
+            }
             SUMMARY_DP_QUANTILE_VALUES
-                if wire_type == wire_types::LEN && self.first_quantile_value.get().is_none() => {
-                    self.first_quantile_value.set(Some(range))
-                }
+                if wire_type == wire_types::LEN && self.first_quantile_value.get().is_none() =>
+            {
+                self.first_quantile_value.set(Some(range))
+            }
             _ => { /* ignore */ }
         }
     }
@@ -1058,26 +1009,20 @@ impl FieldRanges for ExemplarFieldRanges {
         };
 
         match field_num {
-            EXEMPLAR_TIME_UNIX_NANO
-                if wire_type == wire_types::FIXED64 => {
-                    self.time_unix_nano.set(Some(range))
-                }
-            EXEMPLAR_SPAN_ID
-                if wire_type == wire_types::LEN => {
-                    self.span_id.set(Some(range))
-                }
-            EXEMPLAR_TRACE_ID
-                if wire_type == wire_types::LEN => {
-                    self.trace_id.set(Some(range))
-                }
-            EXEMPLAR_AS_DOUBLE | EXEMPLAR_AS_INT
-                if wire_type == wire_types::FIXED64 => {
-                    self.value.set(Some((range, field_num)));
-                }
+            EXEMPLAR_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.time_unix_nano.set(Some(range))
+            }
+            EXEMPLAR_SPAN_ID if wire_type == wire_types::LEN => self.span_id.set(Some(range)),
+            EXEMPLAR_TRACE_ID if wire_type == wire_types::LEN => self.trace_id.set(Some(range)),
+            EXEMPLAR_AS_DOUBLE | EXEMPLAR_AS_INT if wire_type == wire_types::FIXED64 => {
+                self.value.set(Some((range, field_num)));
+            }
             EXEMPLAR_FILTERED_ATTRIBUTES
-                if wire_type == wire_types::LEN && self.first_filtered_attribute.get().is_none() => {
-                    self.first_filtered_attribute.set(Some(range))
-                }
+                if wire_type == wire_types::LEN
+                    && self.first_filtered_attribute.get().is_none() =>
+            {
+                self.first_filtered_attribute.set(Some(range))
+            }
             _ => { /* ignore */ }
         }
     }

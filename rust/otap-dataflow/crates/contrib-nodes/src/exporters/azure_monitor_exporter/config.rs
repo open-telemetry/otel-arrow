@@ -265,10 +265,9 @@ impl Config {
 
         for (key, value) in &self.api.schema.log_record_mapping {
             match value {
-                Value::String(s)
-                    if !seen.insert(s.clone()) => {
-                        _ = duplicates.insert(s.clone());
-                    }
+                Value::String(s) if !seen.insert(s.clone()) => {
+                    _ = duplicates.insert(s.clone());
+                }
                 Value::Object(map) => {
                     if key != "attributes" {
                         return Err(Error::Config(
