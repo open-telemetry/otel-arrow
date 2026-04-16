@@ -76,9 +76,7 @@ use otap_df_pdata::arrays::{
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{
-    ANY_VALUE_METADATA_KEY, ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME,
-};
+use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
@@ -908,9 +906,7 @@ impl ScopedPhysicalExpr {
         let (source_rb, result_data_scope) = match &mut self.source {
             PhysicalExprDataSource::DataSource(data_scope_id) => {
                 let input_rb = match data_scope_id.as_ref() {
-                    DataScope::Root => otap_batch
-                        .root_record_batch()
-                        .map(|rb| Cow::Owned(Self::tag_body_as_any_value(rb))),
+                    DataScope::Root => otap_batch.root_record_batch().map(Cow::Borrowed),
                     DataScope::Attributes(attrs_id, key) => {
                         let attrs_payload_type = match *attrs_id {
                             AttributesIdentifier::Root => match otap_batch.root_payload_type() {
@@ -1082,36 +1078,8 @@ impl ScopedPhysicalExpr {
         )?)
     }
 
-    /// If the record batch has a `body` column that is a struct (as in Logs), tag it with
-    /// AnyValue metadata so downstream splitting can resolve it to a concrete typed column.
-    ///
-    /// For non-Logs batches or batches without a body column, returns the batch unchanged.
-    fn tag_body_as_any_value(batch: &RecordBatch) -> RecordBatch {
-        let schema = batch.schema();
-        let body_idx = match schema.index_of(consts::BODY) {
-            Ok(idx) => idx,
-            Err(_) => return batch.clone(), // No body column
-        };
-
-        let body_field = schema.field(body_idx);
-        if !matches!(body_field.data_type(), DataType::Struct(_)) {
-            return batch.clone(); // Body is not a struct
-        }
-
-        // Build new schema with AnyValue metadata on the body field
-        let mut new_fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-        let mut metadata = body_field.metadata().clone();
-        _ = metadata.insert(ANY_VALUE_METADATA_KEY.to_string(), "true".to_string());
-        let new_body_field = Arc::new(body_field.as_ref().clone().with_metadata(metadata));
-        new_fields[body_idx] = new_body_field;
-
-        // Create new batch with updated schema — columns are unchanged (zero-copy)
-        RecordBatch::try_new(Arc::new(Schema::new(new_fields)), batch.columns().to_vec())
-            .expect("schema update should not fail")
-    }
-
     /// Filters the record batch by key, and then projects the type and value columns into a
-    /// struct column named "value" tagged with AnyValue metadata.
+    /// struct column named "value".
     ///
     /// For example, if we had an input batch like:
     /// key:        ["a", "a", "b", "b"]
@@ -1161,16 +1129,13 @@ impl ScopedPhysicalExpr {
         )));
         columns.push(parent_id_col);
 
-        // Create the struct field with AnyValue metadata
-        let mut metadata = std::collections::HashMap::new();
-        _ = metadata.insert(ANY_VALUE_METADATA_KEY.to_string(), "true".to_string());
-        let struct_field = Field::new(
+        // The struct column is detected as AnyValue by its shape (struct containing a `type`
+        // sub-field of UInt8) — no explicit metadata tagging needed.
+        fields.push(Arc::new(Field::new(
             VALUE_COLUMN_NAME,
             any_value_struct.data_type().clone(),
             true,
-        )
-        .with_metadata(metadata);
-        fields.push(Arc::new(struct_field));
+        )));
         columns.push(Arc::new(any_value_struct));
 
         let schema = Arc::new(Schema::new(fields));

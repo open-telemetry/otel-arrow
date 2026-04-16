@@ -284,8 +284,6 @@ use arrow::array::UInt8Array;
 use arrow::compute::take;
 use smallvec::SmallVec;
 
-use crate::consts::ANY_VALUE_METADATA_KEY;
-
 /// Contiguous row ranges sharing an AnyValue type. `SmallVec` avoids heap allocation
 /// for the common case of one or two ranges per type.
 pub(crate) type RowRanges = SmallVec<[Range<usize>; 2]>;
@@ -312,19 +310,31 @@ enum AnyValueTypeDistribution {
     Mixed(Vec<(AttributeValueType, RowRanges)>),
 }
 
-/// Return the column indices in `schema` whose fields carry the AnyValue metadata tag.
+/// Detect AnyValue columns by structural shape: a struct field containing a sub-field
+/// named `consts::ATTRIBUTE_TYPE` (`"type"`) with `DataType::UInt8`.
+///
+/// This avoids any explicit metadata bookkeeping — AnyValue columns are recognized
+/// by their characteristic layout (type discriminant + value sub-columns).
 pub(crate) fn find_any_value_columns(schema: &Schema) -> Vec<usize> {
     schema
         .fields()
         .iter()
         .enumerate()
-        .filter(|(_, f)| {
-            f.metadata()
-                .get(ANY_VALUE_METADATA_KEY)
-                .is_some_and(|v| v == "true")
-        })
+        .filter(|(_, f)| is_any_value_field(f))
         .map(|(i, _)| i)
         .collect()
+}
+
+/// Returns `true` if a field has the shape of an AnyValue column: a struct containing
+/// a `"type"` sub-field of `UInt8`.
+fn is_any_value_field(field: &Field) -> bool {
+    if let DataType::Struct(sub_fields) = field.data_type() {
+        sub_fields
+            .iter()
+            .any(|sf| sf.name() == consts::ATTRIBUTE_TYPE && *sf.data_type() == DataType::UInt8)
+    } else {
+        false
+    }
 }
 
 /// Extract the `type` sub-column from an AnyValue struct column.
