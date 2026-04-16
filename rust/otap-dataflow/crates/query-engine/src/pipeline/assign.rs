@@ -42,7 +42,8 @@ use otap_df_pdata::otap::transform::upsert_attributes::{
 };
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otap_df_pdata::schema::consts::metadata;
+use otap_df_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -609,6 +610,8 @@ impl AssignPipelineStage {
                         attrs_record_batch,
                     )?;
                     attrs_upserts.extend(per_type);
+
+                    println!("attrs_upserts = {attrs_upserts:#?}");
                     continue;
                 }
             }
@@ -709,11 +712,24 @@ impl AssignPipelineStage {
             }
         };
 
+        let mut batch_with_new_ids = try_upsert_column(consts::ID, new_ids, root_record_batch)?;
+        let schema = batch_with_new_ids.schema_ref().as_ref();
+        if get_field_metadata(schema, consts::ID, metadata::COLUMN_ENCODING).is_none() {
+            let new_schema = update_field_metadata(
+                schema,
+                consts::ID,
+                metadata::COLUMN_ENCODING,
+                metadata::encodings::PLAIN,
+            );
+            let (_, columns, _) = batch_with_new_ids.into_parts();
+            // safety: it is safe to update create a new record batch with the same previous
+            // schema nd columns with just updated metadata
+            batch_with_new_ids =
+                RecordBatch::try_new(Arc::new(new_schema), columns).expect("can replace schema");
+        }
+
         // replace the ID column and replace the root batch
-        otap_batch.set(
-            otap_batch.root_payload_type(),
-            try_upsert_column(consts::ID, new_ids, root_record_batch)?,
-        )?;
+        otap_batch.set(otap_batch.root_payload_type(), batch_with_new_ids)?;
 
         Ok(())
     }
@@ -1190,16 +1206,12 @@ fn decompose_any_value_upsert<'a>(
         .ok_or_else(|| Error::ExecutionError {
             cause: "AnyValue 'type' field is not UInt8".into(),
         })?;
-    println!("new_types type col {:?}", new_types);
-
     // Get the existing type column from the attrs batch (used to build per-type sub-masks).
     let existing_type_col = existing_attrs
         .column_by_name(consts::ATTRIBUTE_TYPE)
         .ok_or_else(|| Error::ExecutionError {
             cause: "attribute record batch missing 'type' column".into(),
         })?;
-
-    println!("existing type col {:?}", existing_type_col);
 
     let mut upserts = Vec::new();
 
@@ -2405,7 +2417,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_assign_logs_body_when_source_is_anyval_with_heterogenous_types() {
+    async fn test_assign_logs_body_when_source_is_anyval_with_mixed_types() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
@@ -2471,6 +2483,93 @@ mod test {
                 .body(AnyValue::new_bool(true))
                 .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
                 .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_attribute_from_logs_body_when_mixed_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().body(AnyValue::new_int(5)).finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bytes(b"world"))
+                .finish(),
+            LogRecord::build().body(AnyValue::new_double(5.14)).finish(),
+            LogRecord::build().body(AnyValue::new_bool(true)).finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"x\"] = body";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .body(AnyValue::new_int(5))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bytes(b"world"))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_double(5.14))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bool(true))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_use_expressions_when_any_value_mixed_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().body(AnyValue::new_int(2)).finish(),
+            LogRecord::build().body(AnyValue::new_double(5.14)).finish(),
+            LogRecord::build().body(AnyValue::new_int(4)).finish(),
+            LogRecord::build().body(AnyValue::new_double(4.18)).finish(),
+        ]);
+
+        let query = "logs | extend body = body + body";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build().body(AnyValue::new_int(4)).finish(),
+            LogRecord::build()
+                .body(AnyValue::new_double(10.28))
+                .finish(),
+            LogRecord::build().body(AnyValue::new_int(8)).finish(),
+            LogRecord::build().body(AnyValue::new_double(8.36)).finish(),
         ];
 
         assert_eq!(
