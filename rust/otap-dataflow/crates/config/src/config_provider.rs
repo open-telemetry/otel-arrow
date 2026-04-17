@@ -11,7 +11,7 @@
 //! | `file:/path/to/config.yaml` | Read config from a local file |
 //! | `env:MY_VAR` | Read config from an environment variable |
 //! | `yaml:key::value` | Inline YAML with `::` as nested-key separator |
-//! | `http://host/path` | Fetch config via unauthenticated HTTP GET (30s timeout) |
+//! | `http://host/path` | Fetch config via unauthenticated HTTP GET (30s per-request timeout, retries with exponential backoff) |
 //! | `/path/to/config.yaml` | Bare path, treated as `file:` |
 //! | `./relative/config.yaml` | Relative path, treated as `file:` |
 //!
@@ -168,37 +168,48 @@ impl ConfigProvider for YamlConfigProvider {
 /// Reads configuration from an unauthenticated HTTP GET.
 ///
 /// The response body is treated as YAML unless the `Content-Type` header is
-/// `application/json`. A 30-second request timeout is applied. Standard HTTP
-/// redirects are followed by the underlying client. `https:`, authentication,
-/// and custom timeouts are intentionally deferred to a future phase.
+/// `application/json`. A 30-second per-request timeout is applied and standard
+/// HTTP redirects are followed by the underlying client. `https:`,
+/// authentication, and custom timeouts are deferred to a future phase.
+///
+/// On a network error or a non-2xx status (404, 5xx, etc.) the provider retries
+/// with exponential backoff starting at 500ms and capped at 60s per sleep. The
+/// default maximum attempt count is [`u64::MAX`] so startup blocks until the
+/// remote config server becomes available; use [`Self::with_max_attempts`] to
+/// bound this.
 pub struct HttpConfigProvider {
     client: reqwest::blocking::Client,
+    max_attempts: u64,
 }
 
 impl HttpConfigProvider {
-    /// Build a provider with the default 30-second request timeout.
+    /// Start delay for exponential backoff between retries.
+    const BASE_BACKOFF: Duration = Duration::from_millis(500);
+    /// Upper bound on the sleep between retries regardless of attempt count.
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+    /// Build a provider that retries failed fetches indefinitely with
+    /// exponential backoff (default: [`u64::MAX`] attempts).
     #[must_use]
     pub fn new() -> Self {
+        Self::with_max_attempts(u64::MAX)
+    }
+
+    /// Build a provider with an explicit cap on retry attempts. `max_attempts`
+    /// counts the first try as an attempt, so `1` disables retries entirely.
+    #[must_use]
+    pub fn with_max_attempts(max_attempts: u64) -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest blocking client should always build");
-        Self { client }
-    }
-}
-
-impl Default for HttpConfigProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ConfigProvider for HttpConfigProvider {
-    fn scheme(&self) -> &str {
-        "http"
+        Self {
+            client,
+            max_attempts,
+        }
     }
 
-    fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error> {
+    fn try_fetch(&self, uri: &str) -> Result<ResolvedConfig, Error> {
         let response = self
             .client
             .get(uri)
@@ -235,6 +246,54 @@ impl ConfigProvider for HttpConfigProvider {
             content,
             format,
         })
+    }
+
+    /// Sleep duration before the next attempt, doubling until capped.
+    fn backoff_for(attempt: u64) -> Duration {
+        // Cap the shift at 20 so the multiplier stays well below u32::MAX
+        // before we clamp to MAX_BACKOFF below.
+        let shift = attempt.min(20) as u32;
+        let multiplier = 1u64 << shift;
+        let scaled = Self::BASE_BACKOFF
+            .checked_mul(multiplier.try_into().unwrap_or(u32::MAX))
+            .unwrap_or(Self::MAX_BACKOFF);
+        scaled.min(Self::MAX_BACKOFF)
+    }
+}
+
+impl Default for HttpConfigProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConfigProvider for HttpConfigProvider {
+    fn scheme(&self) -> &str {
+        "http"
+    }
+
+    fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error> {
+        if self.max_attempts == 0 {
+            return Err(Error::ConfigHttpRequestFailed {
+                uri: uri.to_string(),
+                details: "max_attempts is 0".to_string(),
+            });
+        }
+
+        let mut last_err: Option<Error> = None;
+        for attempt in 0..self.max_attempts {
+            match self.try_fetch(uri) {
+                Ok(resolved) => return Ok(resolved),
+                Err(e) => {
+                    last_err = Some(e);
+                    // Don't sleep after the final attempt.
+                    if attempt + 1 < self.max_attempts {
+                        std::thread::sleep(Self::backoff_for(attempt));
+                    }
+                }
+            }
+        }
+        Err(last_err.expect("loop ran at least once so last_err is set"))
     }
 }
 
@@ -663,9 +722,13 @@ groups:
             .await;
 
         let uri = format!("{}/missing", mock_server.uri());
-        let result = tokio::task::spawn_blocking(move || HttpConfigProvider::new().resolve(&uri))
-            .await
-            .expect("spawn_blocking join");
+        // `with_max_attempts(1)` disables retries; otherwise the default
+        // `u64::MAX` would keep the test running forever.
+        let result = tokio::task::spawn_blocking(move || {
+            HttpConfigProvider::with_max_attempts(1).resolve(&uri)
+        })
+        .await
+        .expect("spawn_blocking join");
         match result {
             Err(Error::ConfigHttpRequestFailed { details, .. }) => {
                 assert!(
@@ -675,5 +738,58 @@ groups:
             }
             other => panic!("expected ConfigHttpRequestFailed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn http_provider_retries_on_transient_failure() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        ensure_crypto_provider();
+        let mock_server = MockServer::start().await;
+        // First two requests return 503, then fall through to the success mock.
+        Mock::given(method("GET"))
+            .and(path("/flaky"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/flaky"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(b"version: v1\n".to_vec(), "application/yaml"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let uri = format!("{}/flaky", mock_server.uri());
+        let resolved = tokio::task::spawn_blocking(move || {
+            HttpConfigProvider::with_max_attempts(4)
+                .resolve(&uri)
+                .expect("third attempt should succeed")
+        })
+        .await
+        .expect("spawn_blocking join");
+        assert_eq!(resolved.content, "version: v1\n");
+    }
+
+    #[test]
+    fn http_provider_backoff_grows_and_caps() {
+        assert_eq!(
+            HttpConfigProvider::backoff_for(0),
+            Duration::from_millis(500)
+        );
+        assert_eq!(HttpConfigProvider::backoff_for(1), Duration::from_secs(1));
+        assert_eq!(HttpConfigProvider::backoff_for(2), Duration::from_secs(2));
+        // Beyond ~7 attempts the 60s cap takes over.
+        assert_eq!(
+            HttpConfigProvider::backoff_for(20),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            HttpConfigProvider::backoff_for(u64::MAX),
+            Duration::from_secs(60)
+        );
     }
 }
