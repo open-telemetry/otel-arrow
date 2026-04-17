@@ -789,4 +789,54 @@ groups:
             Duration::from_secs(60)
         );
     }
+
+    #[test]
+    fn http_provider_default_matches_new() {
+        ensure_crypto_provider();
+        let p = HttpConfigProvider::default();
+        assert_eq!(p.max_attempts, u64::MAX);
+        assert_eq!(p.scheme(), "http");
+    }
+
+    #[test]
+    fn http_provider_zero_attempts_returns_error() {
+        ensure_crypto_provider();
+        let p = HttpConfigProvider::with_max_attempts(0);
+        let result = p.resolve("http://127.0.0.1:1/never-called");
+        match result {
+            Err(Error::ConfigHttpRequestFailed { details, .. }) => {
+                assert!(
+                    details.contains("max_attempts is 0"),
+                    "details should explain the zero-attempts case: {details}"
+                );
+            }
+            other => panic!("expected ConfigHttpRequestFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_provider_surfaces_network_error() {
+        ensure_crypto_provider();
+        // Bind a listener to grab a free port, then drop it so the port is
+        // closed when the resolver tries to connect.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind free port");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+        let uri = format!("http://{addr}/nope");
+
+        let result = tokio::task::spawn_blocking(move || {
+            HttpConfigProvider::with_max_attempts(1).resolve(&uri)
+        })
+        .await
+        .expect("spawn_blocking join");
+        match result {
+            Err(Error::ConfigHttpRequestFailed { details, .. }) => {
+                assert!(
+                    !details.is_empty(),
+                    "details should surface the network error"
+                );
+            }
+            other => panic!("expected ConfigHttpRequestFailed, got {other:?}"),
+        }
+    }
 }
