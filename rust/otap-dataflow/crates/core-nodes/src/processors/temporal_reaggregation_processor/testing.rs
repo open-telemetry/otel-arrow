@@ -54,6 +54,9 @@ pub(super) enum Action {
     /// Send a message to the processor
     SendControl(NodeControlMsg<OtapPdata>),
 
+    /// Fire the next pending wakeup from the processor's local scheduler.
+    FireWakeup,
+
     /// Drain one output from the processor and apply actions to it.
     /// Use multiple `DrainPdata` in sequence to drain multiple outputs.
     DrainPdata { actions: Vec<PdataAction> },
@@ -64,6 +67,9 @@ pub(super) enum Action {
     /// Assert on upstream ack/nack messages received via the pipeline
     /// completion channel.
     AssertUpstream(UpstreamExpectation),
+
+    /// Assert the value of the processor's `accept_pdata` gate.
+    AssertAcceptPdata(bool),
 }
 
 /// An action to perform on a single drained output.
@@ -74,6 +80,8 @@ pub(super) enum PdataAction {
     AssertEquivalent(OtapPayload),
     /// Assert whether this output has subscriber interest.
     AssertSubscribers(bool),
+    /// Run a custom assertion on the drained output.
+    AssertCustom(Box<dyn FnOnce(&OtapPdata)>),
     /// Nack this output with the given reason.
     Nack(&'static str),
     /// Ack this output.
@@ -154,6 +162,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                                         .await
                                         .expect("process ack");
                                 }
+                                PdataAction::AssertCustom(f) => {
+                                    f(&output);
+                                }
                                 PdataAction::AssertEquivalent(expected_payload) => {
                                     let actual = payload_to_otlp(output.payload_ref());
                                     let expected = payload_to_otlp(&expected_payload);
@@ -174,6 +185,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                         ctx.process(Message::Control(ctrl))
                             .await
                             .expect("process control message");
+                    }
+                    Action::FireWakeup => {
+                        let _ = ctx.fire_wakeup().await.expect("fire wakeup");
                     }
                     Action::AssertUpstream(expectation) => {
                         // Drain any pending upstream messages first
@@ -202,6 +216,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                     Action::AssertNoPdata => {
                         assert!(output_buffer.is_empty());
                         assert!(ctx.drain_pdata().await.is_empty());
+                    }
+                    Action::AssertAcceptPdata(expected) => {
+                        assert_eq!(ctx.accept_pdata(), expected, "accept_pdata mismatch");
                     }
                 }
             }

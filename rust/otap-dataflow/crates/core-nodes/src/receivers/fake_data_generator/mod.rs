@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
 use otap_df_channel::error::RecvError;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
@@ -56,6 +57,7 @@ pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:receiver:traffic_genera
 pub struct FakeGeneratorReceiver {
     /// Configuration for the fake data generator
     config: Config,
+
     /// Metrics for the fake data generator
     metrics: MetricSet<FakeSignalReceiverMetrics>,
 }
@@ -105,6 +107,40 @@ impl FakeGeneratorReceiver {
             })?,
         ))
     }
+
+    fn create_signal_generator(&self, id: NodeId) -> Result<SignalGenerator, Error> {
+        let traffic_config = self.config.get_traffic_config();
+        let signal_generator = match self.config.data_source() {
+            DataSource::SemanticConventions => {
+                let registry = self
+                    .config
+                    .get_registry()
+                    .map_err(|err| Error::ReceiverError {
+                        receiver: id,
+                        kind: ReceiverErrorKind::Configuration,
+                        error: err,
+                        source_detail: String::new(),
+                    })?
+                    .expect("SemanticConventions data source should return Some registry");
+                SignalGenerator::SemanticConventions(registry)
+            }
+            DataSource::Static => {
+                let entries = self.config.resource_attributes().to_vec();
+                let rotation = build_rotation_table(&entries);
+                SignalGenerator::Static {
+                    entries,
+                    rotation,
+                    log_body_size_bytes: traffic_config.log_body_size_bytes(),
+                    num_log_attributes: traffic_config.num_log_attributes(),
+                    use_trace_context: traffic_config.use_trace_context(),
+                    num_metric_attributes: traffic_config.num_metric_attributes(),
+                    num_data_points_per_metric: traffic_config.num_data_points_per_metric(),
+                }
+            }
+        };
+
+        Ok(signal_generator)
+    }
 }
 
 /// Abstraction over signal generation to support different data sources
@@ -122,6 +158,10 @@ enum SignalGenerator {
         num_log_attributes: Option<usize>,
         /// Whether to populate trace_id/span_id on log records
         use_trace_context: bool,
+        /// Number of metric attributes per data point (None = default attributes)
+        num_metric_attributes: Option<usize>,
+        /// Number of data points per metric (None = default)
+        num_data_points_per_metric: Option<usize>,
     },
 }
 
@@ -161,9 +201,16 @@ impl SignalGenerator {
             SignalGenerator::SemanticConventions(registry) => {
                 OtlpProtoMessage::Metrics(semconv_signal::semconv_otlp_metrics(count, registry))
             }
-            SignalGenerator::Static { .. } => OtlpProtoMessage::Metrics(
-                static_signal::static_otlp_metrics(count, self.attrs_for_batch(batch_index)),
-            ),
+            SignalGenerator::Static {
+                num_metric_attributes,
+                num_data_points_per_metric,
+                ..
+            } => OtlpProtoMessage::Metrics(static_signal::static_otlp_metrics_with_config(
+                count,
+                *num_metric_attributes,
+                *num_data_points_per_metric,
+                self.attrs_for_batch(batch_index),
+            )),
         }
     }
 
@@ -340,39 +387,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        //start event loop
         let traffic_config = self.config.get_traffic_config();
-        let data_source = self.config.data_source().clone();
         let generation_strategy = self.config.generation_strategy().clone();
 
         // Create the appropriate signal generator based on data source
-        let signal_generator = match data_source {
-            DataSource::SemanticConventions => {
-                let registry = self
-                    .config
-                    .get_registry()
-                    .map_err(|err| Error::ReceiverError {
-                        receiver: effect_handler.receiver_id(),
-                        kind: ReceiverErrorKind::Configuration,
-                        error: err,
-                        source_detail: String::new(),
-                    })?
-                    .expect("SemanticConventions data source should return Some registry");
-                SignalGenerator::SemanticConventions(registry)
-            }
-            DataSource::Static => {
-                let entries = self.config.resource_attributes().to_vec();
-                let rotation = build_rotation_table(&entries);
-                SignalGenerator::Static {
-                    entries,
-                    rotation,
-                    log_body_size_bytes: traffic_config.log_body_size_bytes(),
-                    num_log_attributes: traffic_config.num_log_attributes(),
-                    use_trace_context: traffic_config.use_trace_context(),
-                }
-            }
-        };
-
+        let signal_generator = self.create_signal_generator(effect_handler.receiver_id())?;
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
         let max_signal_count = traffic_config.get_max_signal_count();
         let signals_per_second = traffic_config.get_signal_rate();
@@ -438,16 +457,14 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
 
         loop {
             let wait_till = Instant::now() + one_second_duration;
-            tokio::select! {
-                biased; //prioritize ctrl_msg over all other blocks
-                // Process internal event
-                ctrl_msg = ctrl_msg_recv.recv() => {
-                    if let Some(terminal) = handle_control_msg(ctrl_msg, &effect_handler, &mut self.metrics).await? {
-                        return Ok(terminal);
-                    }
-                }
-                // generate and send signal based on provided configuration
-                signal_status = send_signals(
+
+            if max_signal_count.is_none_or(|max| max > signal_count) {
+                // Pin the send future so it survives across select iterations.
+                // Non-terminal control messages (e.g. CollectTelemetry) are
+                // serviced while the send is blocked on backpressure, but the
+                // send itself is never cancelled — only DrainIngress/Shutdown
+                // abort early via the `return Ok(terminal)` path.
+                let send_fut = send_signals(
                     effect_handler.clone(),
                     max_signal_count,
                     &mut signal_count,
@@ -460,63 +477,107 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     &batch_cache,
                     enable_ack_nack,
                     &prebuilt_transport_headers,
-                ), if max_signal_count.is_none_or(|max| max > signal_count) => {
-                    // if signals per second is set then we should rate limit
-                    match signal_status {
-                        Ok(_) => {
-                            self.metrics.logs_produced.add(log_count as u64);
-                            self.metrics.metrics_produced.add(metric_count as u64);
-                            self.metrics.spans_produced.add(trace_count as u64);
-                            if signals_per_second.is_some() {
-                                // check if need to sleep
-                                let remaining_time = wait_till - Instant::now();
-                                if remaining_time.as_secs_f64() > 0.0 {
-                                    otel_debug!(
-                                        "fake_data_generator.rate_limit.sleep",
-                                        sleep_duration_ms = remaining_time.as_millis() as u64,
-                                        "Sleeping to maintain configured signal rate"
-                                    );
-                                    // Keep the original sleep deadline if non-terminal control
-                                    // messages arrive. Only DrainIngress/Shutdown should interrupt
-                                    // the rate-limit wait early.
-                                    let sleep_until = sleep(remaining_time);
-                                    tokio::pin!(sleep_until);
+                );
+                tokio::pin!(send_fut);
 
-                                    loop {
-                                        tokio::select! {
-                                            biased;
-                                            ctrl_msg = ctrl_msg_recv.recv() => {
-                                                if let Some(terminal) = handle_control_msg(ctrl_msg, &effect_handler, &mut self.metrics).await? {
-                                                    return Ok(terminal);
-                                                }
-                                            }
-                                            _ = &mut sleep_until => break,
-                                        }
-                                    }
-                                }
-                                // ToDo: Handle negative time, not able to keep up with specified rate limit
-                            } else {
-                                otel_debug!(
-                                    "fake_data_generator.rate_limit.uncapped",
-                                    "Rate limiting disabled, continuing immediately"
-                                );
+                let signal_status = loop {
+                    tokio::select! {
+                        biased;
+                        ctrl_msg = ctrl_msg_recv.recv() => {
+                            if let Some(terminal) = handle_control_msg(ctrl_msg, &effect_handler, &mut self.metrics).await? {
+                                return Ok(terminal);
                             }
+                            // Non-terminal message handled; continue polling
+                            // send_fut on the next iteration.
                         }
-                        Err(e) => {
-                            let source_detail = format_error_sources(&e);
-                            return Err(Error::ReceiverError {
-                                receiver: effect_handler.receiver_id(),
-                                kind: ReceiverErrorKind::Other,
-                                error: e.to_string(),
-                                source_detail,
-                            });
+                        result = &mut send_fut => {
+                            break result;
                         }
                     }
+                };
+
+                match signal_status {
+                    Ok(produced) => {
+                        // Apply the accumulated counts to the metric set now that
+                        // the send future has completed and released its borrows.
+                        self.metrics.logs_produced.add(produced.logs);
+                        self.metrics.metrics_produced.add(produced.metrics);
+                        self.metrics.spans_produced.add(produced.traces);
+
+                        if signals_per_second.is_some() {
+                            // check if need to sleep
+                            let remaining_time = wait_till - Instant::now();
+                            if remaining_time.as_secs_f64() > 0.0 {
+                                otel_debug!(
+                                    "fake_data_generator.rate_limit.sleep",
+                                    sleep_duration_ms = remaining_time.as_millis() as u64,
+                                    "Sleeping to maintain configured signal rate"
+                                );
+                                // Keep the original sleep deadline if non-terminal control
+                                // messages arrive. Only DrainIngress/Shutdown should interrupt
+                                // the rate-limit wait early.
+                                let sleep_until = sleep(remaining_time);
+                                tokio::pin!(sleep_until);
+
+                                loop {
+                                    tokio::select! {
+                                        biased;
+                                        ctrl_msg = ctrl_msg_recv.recv() => {
+                                            if let Some(terminal) = handle_control_msg(ctrl_msg, &effect_handler, &mut self.metrics).await? {
+                                                return Ok(terminal);
+                                            }
+                                        }
+                                        _ = &mut sleep_until => break,
+                                    }
+                                }
+                            }
+                            // ToDo: Handle negative time, not able to keep up with specified rate limit
+                        } else {
+                            otel_debug!(
+                                "fake_data_generator.rate_limit.uncapped",
+                                "Rate limiting disabled, continuing immediately"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let source_detail = format_error_sources(&e);
+                        return Err(Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
+                            error: e.to_string(),
+                            source_detail,
+                        });
+                    }
                 }
-
-
+            } else {
+                // max_signal_count reached — only service control messages
+                // (needed for graceful shutdown).
+                let ctrl_msg = ctrl_msg_recv.recv().await;
+                if let Some(terminal) =
+                    handle_control_msg(ctrl_msg, &effect_handler, &mut self.metrics).await?
+                {
+                    return Ok(terminal);
+                }
             }
         }
+    }
+}
+
+/// Accumulator for counts of items actually sent downstream.
+/// Used to decouple metric recording from the send path, avoiding
+/// borrow conflicts with the `MetricSet` in the main event loop.
+#[derive(Default)]
+struct ProducedCounts {
+    logs: u64,
+    metrics: u64,
+    traces: u64,
+}
+
+impl std::ops::AddAssign for ProducedCounts {
+    fn add_assign(&mut self, rhs: Self) {
+        self.logs += rhs.logs;
+        self.metrics += rhs.metrics;
+        self.traces += rhs.traces;
     }
 }
 
@@ -534,7 +595,7 @@ async fn send_signals(
     batch_cache: &Option<BatchCache>,
     enable_ack_nack: bool,
     prebuilt_transport_headers: &Option<TransportHeaders>,
-) -> Result<(), Error> {
+) -> Result<ProducedCounts, Error> {
     match batch_cache {
         Some(cache) => {
             send_cached_signals(
@@ -569,14 +630,20 @@ async fn send_signals(
     }
 }
 
-/// Send one generated pdata message, optionally subscribing to Ack/Nack interests
-/// and attaching prebuilt transport headers.
+/// Send one generated pdata message, optionally subscribing to Ack/Nack interests.
+///
+/// On success returns a [`ProducedCounts`] with the **actual** item count from
+/// the payload (not the configured count), so the metric accurately reflects
+/// what was delivered downstream.
 async fn send_generated_pdata(
     effect_handler: &local::EffectHandler<OtapPdata>,
     mut pdata: OtapPdata,
     enable_ack_nack: bool,
     prebuilt_transport_headers: &Option<TransportHeaders>,
-) -> Result<(), Error> {
+) -> Result<ProducedCounts, Error> {
+    let signal_type = pdata.signal_type();
+    let num_items = pdata.num_items() as u64;
+
     if let Some(headers) = prebuilt_transport_headers {
         pdata.set_transport_headers(headers.clone());
     }
@@ -588,7 +655,15 @@ async fn send_generated_pdata(
         );
     }
     effect_handler.send_message_with_source_node(pdata).await?;
-    Ok(())
+
+    let mut counts = ProducedCounts::default();
+    match signal_type {
+        SignalType::Logs => counts.logs = num_items,
+        SignalType::Metrics => counts.metrics = num_items,
+        SignalType::Traces => counts.traces = num_items,
+    }
+
+    Ok(counts)
 }
 
 /// Send signals from pre-generated cache (PreGenerated strategy).
@@ -603,13 +678,14 @@ async fn send_cached_signals(
     cache: &BatchCache,
     enable_ack_nack: bool,
     prebuilt_transport_headers: &Option<TransportHeaders>,
-) -> Result<(), Error> {
+) -> Result<ProducedCounts, Error> {
     let total_per_iteration = (metric_count + trace_count + log_count) as u64;
+    let mut produced = ProducedCounts::default();
 
     // Check if we've reached max signal count
     if let Some(max_count) = max_signal_count {
         if *signal_count >= max_count {
-            return Ok(());
+            return Ok(produced);
         }
     }
 
@@ -618,13 +694,8 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.metrics {
             let send_count = metric_count / cache.metrics_batch_size;
             for _ in 0..send_count {
-                send_generated_pdata(
-                    &effect_handler,
-                    batch.clone(),
-                    enable_ack_nack,
-                    prebuilt_transport_headers,
-                )
-                .await?;
+                produced +=
+                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack, prebuilt_transport_headers).await?;
             }
         }
     }
@@ -634,13 +705,8 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.traces {
             let send_count = trace_count / cache.traces_batch_size;
             for _ in 0..send_count {
-                send_generated_pdata(
-                    &effect_handler,
-                    batch.clone(),
-                    enable_ack_nack,
-                    prebuilt_transport_headers,
-                )
-                .await?;
+                produced +=
+                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack, prebuilt_transport_headers).await?;
             }
         }
     }
@@ -650,19 +716,14 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.logs {
             let send_count = log_count / cache.logs_batch_size;
             for _ in 0..send_count {
-                send_generated_pdata(
-                    &effect_handler,
-                    batch.clone(),
-                    enable_ack_nack,
-                    prebuilt_transport_headers,
-                )
-                .await?;
+                produced +=
+                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack, prebuilt_transport_headers).await?;
             }
         }
     }
 
     *signal_count += total_per_iteration;
-    Ok(())
+    Ok(produced)
 }
 
 /// generate and send signals (Fresh strategy - original behavior)
@@ -678,10 +739,11 @@ async fn generate_signal_fresh(
     generator: &SignalGenerator,
     enable_ack_nack: bool,
     prebuilt_transport_headers: &Option<TransportHeaders>,
-) -> Result<(), Error> {
+) -> Result<ProducedCounts, Error> {
+    let mut produced = ProducedCounts::default();
     // nothing to send
     if max_batch_size == 0 {
-        return Ok(());
+        return Ok(produced);
     }
 
     let metric_count_split = metric_count / max_batch_size;
@@ -695,13 +757,13 @@ async fn generate_signal_fresh(
         // don't generate signals if we reached max signal
         let mut current_count = *signal_count;
         if current_count >= max_count {
-            return Ok(());
+            return Ok(produced);
         }
         // update the counts here to allow us to reach the max_signal_count
 
         for _ in 0..metric_count_split {
             if max_count >= current_count + max_batch_size as u64 {
-                send_generated_pdata(
+                produced += send_generated_pdata(
                     &effect_handler,
                     generator
                         .generate_metrics(max_batch_size, *batch_rotation_index)
@@ -723,7 +785,7 @@ async fn generate_signal_fresh(
                             error: "failed to convert u64 to usize".to_string(),
                             source_detail: String::new(),
                         })?;
-                send_generated_pdata(
+                produced += send_generated_pdata(
                     &effect_handler,
                     generator
                         .generate_metrics(remaining_count, *batch_rotation_index)
@@ -736,12 +798,12 @@ async fn generate_signal_fresh(
 
                 // no more signals we have reached the max
                 *signal_count = max_count;
-                return Ok(());
+                return Ok(produced);
             }
         }
         if metric_count_remainder > 0 && max_count >= current_count + metric_count_remainder as u64
         {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_metrics(metric_count_remainder, *batch_rotation_index)
@@ -757,7 +819,7 @@ async fn generate_signal_fresh(
         // generate and send traces
         for _ in 0..trace_count_split {
             if max_count >= current_count + max_batch_size as u64 {
-                send_generated_pdata(
+                produced += send_generated_pdata(
                     &effect_handler,
                     generator
                         .generate_traces(max_batch_size, *batch_rotation_index)
@@ -778,7 +840,7 @@ async fn generate_signal_fresh(
                             error: "failed to convert u64 to usize".to_string(),
                             source_detail: String::new(),
                         })?;
-                send_generated_pdata(
+                produced += send_generated_pdata(
                     &effect_handler,
                     generator
                         .generate_traces(remaining_count, *batch_rotation_index)
@@ -790,11 +852,11 @@ async fn generate_signal_fresh(
                 *batch_rotation_index += 1;
                 // no more signals we have reached the max
                 *signal_count = max_count;
-                return Ok(());
+                return Ok(produced);
             }
         }
         if trace_count_remainder > 0 && max_count >= current_count + trace_count_remainder as u64 {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_traces(trace_count_remainder, *batch_rotation_index)
@@ -810,7 +872,7 @@ async fn generate_signal_fresh(
         // generate and send logs
         for _ in 0..log_count_split {
             if max_count >= current_count + max_batch_size as u64 {
-                send_generated_pdata(
+                produced += send_generated_pdata(
                     &effect_handler,
                     generator
                         .generate_logs(max_batch_size, *batch_rotation_index)
@@ -831,7 +893,7 @@ async fn generate_signal_fresh(
                             error: "failed to convert u64 to usize".to_string(),
                             source_detail: String::new(),
                         })?;
-                send_generated_pdata(
+                produced += send_generated_pdata(
                     &effect_handler,
                     generator
                         .generate_logs(remaining_count, *batch_rotation_index)
@@ -843,11 +905,11 @@ async fn generate_signal_fresh(
                 *batch_rotation_index += 1;
                 // no more signals we have reached the max
                 *signal_count = max_count;
-                return Ok(());
+                return Ok(produced);
             }
         }
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_logs(log_count_remainder, *batch_rotation_index)
@@ -864,7 +926,7 @@ async fn generate_signal_fresh(
     } else {
         // generate and send metric
         for _ in 0..metric_count_split {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_metrics(max_batch_size, *batch_rotation_index)
@@ -877,7 +939,7 @@ async fn generate_signal_fresh(
             *signal_count += max_batch_size as u64;
         }
         if metric_count_remainder > 0 {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_metrics(metric_count_remainder, *batch_rotation_index)
@@ -892,7 +954,7 @@ async fn generate_signal_fresh(
 
         // generate and send traces
         for _ in 0..trace_count_split {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_traces(max_batch_size, *batch_rotation_index)
@@ -905,7 +967,7 @@ async fn generate_signal_fresh(
             *signal_count += max_batch_size as u64;
         }
         if trace_count_remainder > 0 {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_traces(trace_count_remainder, *batch_rotation_index)
@@ -920,7 +982,7 @@ async fn generate_signal_fresh(
 
         // generate and send logs
         for _ in 0..log_count_split {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_logs(max_batch_size, *batch_rotation_index)
@@ -933,7 +995,7 @@ async fn generate_signal_fresh(
             *signal_count += max_batch_size as u64;
         }
         if log_count_remainder > 0 {
-            send_generated_pdata(
+            produced += send_generated_pdata(
                 &effect_handler,
                 generator
                     .generate_logs(log_count_remainder, *batch_rotation_index)
@@ -947,7 +1009,7 @@ async fn generate_signal_fresh(
         }
     }
 
-    Ok(())
+    Ok(produced)
 }
 
 #[cfg(test)]
@@ -1624,6 +1686,8 @@ mod tests {
             log_body_size_bytes: None,
             num_log_attributes: None,
             use_trace_context: false,
+            num_metric_attributes: None,
+            num_data_points_per_metric: None,
         };
 
         // attrs_for_batch should rotate through the two sets
@@ -1678,6 +1742,8 @@ mod tests {
             log_body_size_bytes: None,
             num_log_attributes: None,
             use_trace_context: false,
+            num_metric_attributes: None,
+            num_data_points_per_metric: None,
         };
         assert!(generator.attrs_for_batch(0).is_none());
         assert!(generator.attrs_for_batch(1).is_none());

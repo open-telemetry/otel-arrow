@@ -24,7 +24,7 @@ pub use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBroadcastOnLagPolicy, TopicQueueOnFullPolicy,
 };
 pub use otap_df_config::{SubscriptionGroupName, TopicName};
-pub use subscription::Subscription;
+pub use subscription::{Delivery, RecvDelivery, Subscription};
 pub use topic_set::TopicSet;
 pub use types::{
     Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,

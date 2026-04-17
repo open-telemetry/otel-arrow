@@ -319,10 +319,10 @@ groups:
 
     #[test]
     fn http_admin_bind_override_sets_custom_bind() {
-        let settings = http_admin_bind_override(Some("0.0.0.0:18080".to_string()));
+        let settings = http_admin_bind_override(Some("127.0.0.1:18080".to_string()));
         assert_eq!(
             settings.map(|s| s.bind_address),
-            Some("0.0.0.0:18080".to_string())
+            Some("127.0.0.1:18080".to_string())
         );
     }
 
@@ -335,7 +335,7 @@ groups:
     fn apply_cli_overrides_updates_top_level_resources_and_http_admin() {
         let mut cfg =
             OtelDataflowSpec::from_yaml(minimal_engine_yaml()).expect("base config should parse");
-        apply_cli_overrides(&mut cfg, Some(3), None, Some("0.0.0.0:28080".to_string()));
+        apply_cli_overrides(&mut cfg, Some(3), None, Some("127.0.0.1:28080".to_string()));
 
         assert_eq!(
             Policies::resolve([&cfg.policies]).resources.core_allocation,
@@ -346,7 +346,7 @@ groups:
                 .http_admin
                 .as_ref()
                 .map(|s| s.bind_address.as_str()),
-            Some("0.0.0.0:28080")
+            Some("127.0.0.1:28080")
         );
 
         let resolved = cfg.resolve();

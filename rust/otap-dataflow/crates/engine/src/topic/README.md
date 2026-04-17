@@ -285,8 +285,9 @@ let _topic = broker.create_topic(
 - `try_publish(msg)`
   - Never awaits.
   - Returns `PublishOutcome::Published` or `PublishOutcome::DroppedOnFull`.
-- In `Mixed` mode, `try_publish` can return `DroppedOnFull` because
-  balanced queues are full while broadcast delivery may still succeed.
+- In `Mixed` mode, `try_publish` is all-or-nothing across balanced and
+  broadcast delivery. If any balanced queue is full, it returns
+  `DroppedOnFull` and does not publish to broadcast.
 - Messages are not retained for future subscribers: subscribing later
   does not replay pre-subscribe history.
 
