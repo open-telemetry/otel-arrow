@@ -59,7 +59,10 @@ use crate::pipeline::expr::{
     SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
-use crate::pipeline::project::anyval::{is_any_value_data_type, wrap_as_any_value_struct};
+use crate::pipeline::project::anyval::{
+    extract_type_from_any_value_struct, fill_null_type_as_empty, is_any_value_data_type,
+    wrap_as_any_value_struct,
+};
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
 
@@ -351,7 +354,9 @@ impl AssignPipelineStage {
         // If the value is already an AnyValue struct, use it directly. Otherwise coerce
         // dict encoding to match AnyValue field rules, then wrap into an AnyValue struct.
         let any_value_column = if is_any_value_data_type(values.data_type()) {
-            values
+            // for any rows that didn't have the attribute value that produced this AnyValue array
+            //after joining here we may end up with nulls in the type column. Need to fill them
+            fill_null_type_as_empty(&values)?
         } else {
             let values = coerce_for_any_value_column(values)?;
             wrap_as_any_value_struct(&values)?
@@ -2371,6 +2376,7 @@ mod test {
             AnyValue::new_bytes(b"world"),
             AnyValue::new_double(5.14),
             AnyValue::new_bool(true),
+            AnyValue { value: None },
         ];
 
         let query = "logs | extend body = attributes[\"x\"]";
@@ -2396,7 +2402,11 @@ mod test {
                     logs_body.data_type()
                 )
             };
-            assert_eq!(struct_fields.len(), 2); // type & val
+            if input_any_val.value.is_some() {
+                assert_eq!(struct_fields.len(), 2); // type & val
+            } else {
+                assert_eq!(struct_fields.len(), 1); // just type - empty values  = no column
+            }
 
             let expected = vec![
                 LogRecord::build()
@@ -2432,6 +2442,9 @@ mod test {
                 .finish(),
             LogRecord::build()
                 .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue { value: None })])
                 .finish(),
         ]);
 
@@ -2481,6 +2494,128 @@ mod test {
             LogRecord::build()
                 .body(AnyValue::new_bool(true))
                 .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue { value: None })
+                .attributes(vec![KeyValue::new("x", AnyValue { value: None })])
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_from_attr_mixed_types_where_some_rows_dont_have_attr() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_bytes(b"world"))])
+                .event_name("4")
+                .finish(),
+        ]);
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        // because of the join we do between the attribute parent_ids and
+        let expected = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .body(AnyValue::new_int(5))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .body(AnyValue::new_bytes(b"world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_bytes(b"world"))])
+                .event_name("4")
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_from_attr_uniform_type_where_some_rows_dont_have_attr() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(6))])
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_int(7))])
+                .event_name("4")
+                .finish(),
+        ]);
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        // because of the join we do between the attribute parent_ids and
+        let expected = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .body(AnyValue::new_int(5))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(6))])
+                .body(AnyValue::new_int(6))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_int(7))])
+                .event_name("4")
                 .finish(),
         ];
 

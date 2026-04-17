@@ -997,7 +997,6 @@ impl ScopedPhysicalExpr {
             self.evaluate_on_batch(session_context, &projected_rb)?
         } else {
             let partitions = project_any_value_columns(&projected_rb, &any_value_indices)?;
-            println!("partitions = {:?}", partitions);
 
             if partitions.len() == 1 {
                 // All AnyValue columns were uniform — single partition, evaluate directly

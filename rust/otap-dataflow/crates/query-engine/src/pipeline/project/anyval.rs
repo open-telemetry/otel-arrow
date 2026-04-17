@@ -59,7 +59,7 @@ pub(crate) fn is_any_value_data_type(dt: &DataType) -> bool {
 }
 
 /// Extract the `type` field from an AnyValue struct column.
-fn extract_type_from_any_value_struct(column: &ArrayRef) -> Result<UInt8Array> {
+pub(crate) fn extract_type_from_any_value_struct(column: &ArrayRef) -> Result<UInt8Array> {
     let struct_arr = column
         .as_any()
         .downcast_ref::<StructArray>()
@@ -86,6 +86,46 @@ fn extract_type_from_any_value_struct(column: &ArrayRef) -> Result<UInt8Array> {
                 type_col.data_type()
             ),
         })
+}
+
+pub(crate) fn fill_null_type_as_empty(column: &ArrayRef) -> Result<ArrayRef> {
+    let type_col = extract_type_from_any_value_struct(&column)?;
+    if type_col.null_count() == 0 {
+        // nothing to do
+        return Ok(Arc::clone(column));
+    }
+
+    // safety: this will be Some because if we're here it means null_count != 0
+    let type_nulls = type_col.nulls().expect("there are nulls");
+
+    // set AttributeValueType::Empty at all the null indices
+    let mut new_types = type_col.values().to_vec();
+    let mut last_valid_end = 0;
+    for (start, end) in type_nulls.valid_slices() {
+        new_types[last_valid_end..start].fill(AttributeValueType::Empty as u8);
+        last_valid_end = end;
+    }
+    new_types[last_valid_end..column.len()].fill(AttributeValueType::Empty as u8);
+
+    let struct_arr = column
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: format!(
+                "expected AnyValue column to be a Struct, got {:?}",
+                column.data_type()
+            ),
+        })?;
+
+    let (fields, mut columns, nulls) = struct_arr.clone().into_parts();
+    // safety: if the fields didn't contain type col, we would have already returned an error
+    let (field_index, _) = fields
+        .find(consts::ATTRIBUTE_TYPE)
+        .expect("contains type col");
+    // fields[field_index]
+    columns[field_index] = Arc::new(UInt8Array::from(new_types));
+
+    Ok(Arc::new(StructArray::new(fields, columns, nulls)))
 }
 
 /// Contiguous row ranges sharing an AnyValue type.
