@@ -13,7 +13,7 @@ mod session;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -393,6 +393,71 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                             }
                             Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                                 let _ = telemetry_timer_handle.cancel().await;
+                                if let Some(session) = session.as_mut() {
+                                    if Instant::now() < deadline {
+                                        let drain_stats = session
+                                            .drain_once(&drain_cfg, &mut drained_records)
+                                            .map_err(|error| Error::ReceiverError {
+                                                receiver: effect_handler.receiver_id(),
+                                                kind: ReceiverErrorKind::Transport,
+                                                error: "failed to drain Linux userevents perf ring during ingress drain".to_owned(),
+                                                source_detail: format_error_sources(&error),
+                                            })?;
+
+                                        let received_samples = drain_stats.received_samples;
+                                        let mut dropped_memory_pressure: u64 = 0;
+                                        let dropped_no_subscription =
+                                            drain_stats.dropped_no_subscription;
+                                        let mut cs_decode_fallbacks: u64 = 0;
+                                        for raw in drained_records.drain(..) {
+                                            if self.admission_state.should_shed_ingress() {
+                                                dropped_memory_pressure += 1;
+                                                continue;
+                                            }
+
+                                            let subscription_index = raw.subscription_index;
+                                            let subscription = &self.subscriptions[subscription_index];
+                                            let tracepoint = Arc::clone(
+                                                &self.subscription_tracepoints[subscription_index],
+                                            );
+
+                                            let (decoded, cs_failed) =
+                                                DecodedUsereventsRecord::from_raw(
+                                                    tracepoint,
+                                                    raw,
+                                                    &subscription.format,
+                                                );
+                                            if cs_failed {
+                                                cs_decode_fallbacks += 1;
+                                            }
+                                            builder.append(decoded);
+                                            if builder.len() >= batch_cfg.max_size {
+                                                flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
+                                            }
+                                        }
+
+                                        let mut metrics = self.metrics.borrow_mut();
+                                        if drain_stats.lost_samples > 0 {
+                                            metrics.lost_perf_samples.add(drain_stats.lost_samples);
+                                        }
+                                        if received_samples > 0 {
+                                            metrics.received_samples.add(received_samples);
+                                        }
+                                        if dropped_memory_pressure > 0 {
+                                            metrics
+                                                .dropped_memory_pressure
+                                                .add(dropped_memory_pressure);
+                                        }
+                                        if dropped_no_subscription > 0 {
+                                            metrics
+                                                .dropped_no_subscription
+                                                .add(dropped_no_subscription);
+                                        }
+                                        if cs_decode_fallbacks > 0 {
+                                            metrics.cs_decode_fallbacks.add(cs_decode_fallbacks);
+                                        }
+                                    }
+                                }
                                 if self.admission_state.should_shed_ingress() {
                                     drop_batch(&self.metrics, &mut builder);
                                 } else {

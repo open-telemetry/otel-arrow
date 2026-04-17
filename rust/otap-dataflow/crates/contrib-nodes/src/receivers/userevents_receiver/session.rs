@@ -73,6 +73,48 @@ mod imp {
     }
 
     impl UsereventsSession {
+        fn drain_once_impl(
+            &mut self,
+            config: &DrainConfig,
+            out: &mut Vec<RawUsereventsRecord>,
+        ) -> io::Result<SessionDrainStats> {
+            let drained = self.inner.drain(
+                config.max_records_per_turn,
+                config.max_bytes_per_turn,
+                config.max_drain_ns,
+            )?;
+
+            out.clear();
+            out.reserve(drained.events.len());
+            let mut stats = SessionDrainStats {
+                received_samples: drained.events.len() as u64,
+                dropped_no_subscription: 0,
+                lost_samples: drained.lost_samples,
+            };
+            for event in drained.events {
+                if let EventSource::UserEvents(source) = event.source {
+                    let Some(subscription_index) =
+                        self.tracepoint_index.get(source.tracepoint.as_str()).copied()
+                    else {
+                        stats.dropped_no_subscription += 1;
+                        continue;
+                    };
+                    out.push(RawUsereventsRecord {
+                        subscription_index,
+                        timestamp_unix_nano: event.timestamp_unix_nano,
+                        cpu: event.cpu.unwrap_or_default(),
+                        pid: event.pid.unwrap_or_default(),
+                        tid: event.tid.unwrap_or_default(),
+                        sample_id: source.sample_id,
+                        payload_size: event.payload.len(),
+                        payload: event.payload,
+                    });
+                }
+            }
+
+            Ok(stats)
+        }
+
         pub(crate) fn open(
             subscriptions: &[SubscriptionConfig],
             config: &SessionConfig,
@@ -121,41 +163,8 @@ mod imp {
             let poll_interval = Duration::from_millis(1);
 
             loop {
-                let drained = self.inner.drain(
-                    config.max_records_per_turn,
-                    config.max_bytes_per_turn,
-                    config.max_drain_ns,
-                )?;
-                if !drained.events.is_empty() || drained.lost_samples > 0 {
-                    out.clear();
-                    out.reserve(drained.events.len());
-                    let mut stats = SessionDrainStats {
-                        received_samples: drained.events.len() as u64,
-                        dropped_no_subscription: 0,
-                        lost_samples: drained.lost_samples,
-                    };
-                    for event in drained.events {
-                        if let EventSource::UserEvents(source) = event.source {
-                            let Some(subscription_index) = self
-                                .tracepoint_index
-                                .get(source.tracepoint.as_str())
-                                .copied()
-                            else {
-                                stats.dropped_no_subscription += 1;
-                                continue;
-                            };
-                            out.push(RawUsereventsRecord {
-                                subscription_index,
-                                timestamp_unix_nano: event.timestamp_unix_nano,
-                                cpu: event.cpu.unwrap_or_default(),
-                                pid: event.pid.unwrap_or_default(),
-                                tid: event.tid.unwrap_or_default(),
-                                sample_id: source.sample_id,
-                                payload_size: event.payload.len(),
-                                payload: event.payload,
-                            });
-                        }
-                    }
+                let stats = self.drain_once_impl(config, out)?;
+                if !out.is_empty() || stats.lost_samples > 0 {
                     return Ok(stats);
                 }
 
@@ -164,6 +173,14 @@ mod imp {
                 // Tracking issue: https://github.com/microsoft/one-collect/issues/254
                 time::sleep(poll_interval).await;
             }
+        }
+
+        pub(crate) fn drain_once(
+            &mut self,
+            config: &DrainConfig,
+            out: &mut Vec<RawUsereventsRecord>,
+        ) -> io::Result<SessionDrainStats> {
+            self.drain_once_impl(config, out)
         }
 
         pub(crate) fn subscription_count(&self) -> usize {
@@ -224,6 +241,15 @@ mod imp {
         }
 
         pub(crate) async fn drain_ready(
+            &mut self,
+            _config: &DrainConfig,
+            out: &mut Vec<RawUsereventsRecord>,
+        ) -> io::Result<SessionDrainStats> {
+            out.clear();
+            Ok(SessionDrainStats::default())
+        }
+
+        pub(crate) fn drain_once(
             &mut self,
             _config: &DrainConfig,
             out: &mut Vec<RawUsereventsRecord>,
