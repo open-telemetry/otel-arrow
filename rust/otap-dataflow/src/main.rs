@@ -61,10 +61,10 @@ use {
     std::sync::{LazyLock, Mutex},
 };
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(windows, not(feature = "dhat-heap"), feature = "mimalloc"))]
 use mimalloc::MiMalloc;
 
-#[cfg(all(not(windows), feature = "jemalloc"))]
+#[cfg(all(not(windows), not(feature = "dhat-heap"), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
 
 // -----------------------------------------------------------------------------
@@ -88,7 +88,7 @@ cfg_if! {
         }
 
     // Windows default: mimalloc
-    } else if #[cfg(feature = "mimalloc")] {
+    } else if #[cfg(all(windows, feature = "mimalloc"))] {
         #[global_allocator]
         static GLOBAL: MiMalloc = MiMalloc;
 
