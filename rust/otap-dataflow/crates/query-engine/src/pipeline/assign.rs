@@ -24,7 +24,7 @@ use arrow::array::{
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::kernels::merge::merge;
-use arrow::compute::{and_not, cast, filter, max, partition, take};
+use arrow::compute::{and_not, cast, filter, max, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use async_trait::async_trait;
 use data_engine_expressions::QueryLocation;
@@ -1210,10 +1210,6 @@ fn decompose_any_value_upsert<'a>(
     any_value_arr: &ArrayRef,
     parent_ids: &UInt16Array,
 ) -> Result<Vec<AttributeUpsert<'a, UInt16Type>>> {
-    if any_value_arr.len() == 0 {
-        return Ok(Vec::new());
-    }
-
     let struct_arr = any_value_arr
         .as_any()
         .downcast_ref::<StructArray>()
