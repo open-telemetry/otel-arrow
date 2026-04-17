@@ -367,7 +367,7 @@ impl FilterPlan {
                             let any_val_field_name =
                                 try_static_scalar_to_any_val_column(&left_lit)?;
                             let left_expr = try_static_scalar_to_literal_for_column(
-                                &any_val_field_name,
+                                any_val_field_name,
                                 &left_lit,
                             )?;
                             BinaryExpr::new(

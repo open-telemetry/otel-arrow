@@ -22,7 +22,6 @@ use arrow::array::{
     RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::kernels::boolean::and;
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::kernels::merge::merge;
 use arrow::compute::{and_not, cast, filter, max, take};
@@ -229,8 +228,9 @@ impl AssignPipelineStage {
 
         // try to coerce AnyValue into a single column
         if let ColumnarValue::Array(values) = &eval_result.values {
-            if is_any_value_data_type(&values.data_type()) {
-                let coerced_value_col = coerce_value_column_from_any_value_struct_column(values)?;
+            if is_any_value_data_type(values.data_type()) {
+                let coerced_value_col =
+                    attempt_coerce_value_column_from_any_value_struct_column(values)?;
                 eval_result.values = ColumnarValue::Array(coerced_value_col);
             }
         }
@@ -616,14 +616,12 @@ impl AssignPipelineStage {
             // upsert_attributes sees only concrete, single-typed values.
             if let ColumnarValue::Array(ref arr) = aligned_values {
                 if is_any_value_data_type(arr.data_type()) {
-                    // TODO not sure this is actually needed ....
-                    let type_filled_arr = fill_null_type_as_empty(&arr)?;
+                    let type_filled_arr = fill_null_type_as_empty(arr)?;
                     let per_type = decompose_any_value_upsert(
                         attrs_key,
                         &existing_key_mask,
                         &type_filled_arr,
                         &parent_ids,
-                        attrs_record_batch,
                     )?;
                     attrs_upserts.extend(per_type);
 
@@ -1200,20 +1198,16 @@ fn decompose_any_value_upsert<'a>(
     existing_key_mask: &BooleanArray,
     any_value_arr: &ArrayRef,
     parent_ids: &UInt16Array,
-    existing_attrs: &RecordBatch,
 ) -> Result<Vec<AttributeUpsert<'a, UInt16Type>>> {
     // TODO if there's only one values column, an optimization here is to keep that column
     // and merge any empties into the null buffer ...
 
-    println!("existing_key_mask = {:?}", existing_key_mask);
     let struct_arr = any_value_arr
         .as_any()
         .downcast_ref::<StructArray>()
         .ok_or_else(|| Error::ExecutionError {
             cause: "expected AnyValue result to be a StructArray".into(),
         })?;
-
-    arrow::util::pretty::print_columns("struct_arr", &[any_value_arr.clone()]).unwrap();
 
     // Extract the new-values type discriminant (one per aligned parent_id row).
     let new_type_col = struct_arr
@@ -1227,16 +1221,6 @@ fn decompose_any_value_upsert<'a>(
         .ok_or_else(|| Error::ExecutionError {
             cause: "AnyValue 'type' field is not UInt8".into(),
         })?;
-    // Get the existing type column from the attrs batch (used to build per-type sub-masks).
-    let existing_type_col = existing_attrs
-        .column_by_name(consts::ATTRIBUTE_TYPE)
-        .ok_or_else(|| Error::ExecutionError {
-            cause: "attribute record batch missing 'type' column".into(),
-        })?;
-
-    println!("new_type_col = {:?}", new_type_col);
-    println!("existing_type_col = {:?}", existing_type_col);
-
     let mut upserts = Vec::new();
 
     // Walk each value field in the struct (skip the `type` discriminant field itself).
@@ -1266,33 +1250,25 @@ fn decompose_any_value_upsert<'a>(
             }
         };
 
-        // 1. Build sub-mask: existing_key_mask AND existing_type == discriminant.
-        let type_match_mask = eq(existing_type_col, &UInt8Array::new_scalar(discriminant))?;
-        println!("type_match_mask = {:?}", type_match_mask);
-        let sub_mask = and(existing_key_mask, &type_match_mask)?;
-        println!("sub_mask = {:?}", sub_mask);
-
-        // 2. Filter parent_ids to those whose new value has this discriminant.
-        //    new_types has one entry per parent_id row.
         let new_type_match = eq(new_types, &UInt8Array::new_scalar(discriminant))?;
 
-        let sub_mask2 = merge(
-            &existing_key_mask,
+        // 1. Build sub-mask: existing_key_mask AND existing_type == discriminant.
+        let typed_existing_key_mask = merge(
+            existing_key_mask,
             &new_type_match,
             &BooleanArray::new_scalar(false),
         )?;
-        let sub_mask2 = sub_mask2
+        let typed_existing_key_mask = typed_existing_key_mask
             .as_any()
             .downcast_ref::<BooleanArray>()
-            .unwrap()
+            // safety: since the inputs to "merge" that were used to create this were boolean
+            // arrays, we can safely assume this will also be a boolean array
+            .expect("merged mask boolean")
             .clone();
-        println!("sub_mask2 = {sub_mask2:?}");
 
-        println!("parent_ids = {parent_ids:?}");
-        println!("new_type_match = {new_type_match:?}");
+        // 2. Filter parent_ids to those whose new value has this discriminant.
+        //    new_types has one entry per parent_id row.
         let filtered_parent_ids = filter(parent_ids, &new_type_match)?;
-        // let filtered_parent_ids = filter(parent_ids, &sub_mask2)?;
-        println!("filtered_parent_ids = {filtered_parent_ids:?}");
 
         let filtered_parent_ids = filtered_parent_ids
             .as_any()
@@ -1304,7 +1280,7 @@ fn decompose_any_value_upsert<'a>(
 
         // Skip this type if there are no rows to upsert (no existing rows with this type
         // and no new values with this type).
-        if sub_mask.true_count() == 0 && filtered_parent_ids.is_empty() {
+        if typed_existing_key_mask.true_count() == 0 && filtered_parent_ids.is_empty() {
             continue;
         }
 
@@ -1314,13 +1290,13 @@ fn decompose_any_value_upsert<'a>(
 
         upserts.push(AttributeUpsert {
             attrs_key,
-            // existing_key_mask: sub_mask,
-            existing_key_mask: sub_mask2,
+            existing_key_mask: typed_existing_key_mask,
             new_values: ColumnarValue::Array(filtered_values),
             upsert_parent_ids: filtered_parent_ids,
         });
     }
 
+    // handle attributes or nulls (which we'll also interpret to mean empty attribute)
     let mut empty = eq(
         &new_type_col,
         &UInt8Array::new_scalar(AttributeValueType::Empty as u8),
@@ -1336,15 +1312,16 @@ fn decompose_any_value_upsert<'a>(
         )?;
     }
 
-    // handle empty and nulls
     if empty.has_true() {
-        let sub_mask2 = merge(&existing_key_mask, &empty, &BooleanArray::new_scalar(false))?;
-        let sub_mask2 = sub_mask2
+        let typed_existing_key_mask =
+            merge(existing_key_mask, &empty, &BooleanArray::new_scalar(false))?;
+        let typed_existing_key_mask = typed_existing_key_mask
             .as_any()
             .downcast_ref::<BooleanArray>()
-            .unwrap()
+            // safety: since the inputs to "merge" that were used to create this were boolean
+            // arrays, we can safely assume this will also be a boolean array
+            .expect("merged mask boolean")
             .clone();
-        println!("sub_mask2 = {sub_mask2:?}");
 
         let filtered_parent_ids = filter(parent_ids, &empty)?;
         let filtered_parent_ids = filtered_parent_ids
@@ -1357,7 +1334,7 @@ fn decompose_any_value_upsert<'a>(
 
         upserts.push(AttributeUpsert {
             attrs_key,
-            existing_key_mask: sub_mask2,
+            existing_key_mask: typed_existing_key_mask,
             new_values: ColumnarValue::Scalar(ScalarValue::Null),
             upsert_parent_ids: filtered_parent_ids,
         });
@@ -1670,7 +1647,10 @@ fn coerce_to_any_value_struct_column(values: ArrayRef) -> Result<ArrayRef> {
     }
 }
 
-fn coerce_value_column_from_any_value_struct_column(values: &ArrayRef) -> Result<ArrayRef> {
+/// Attempt to coerce the values array (a struct array representing an AnyValue) into the concrete
+/// values type. If the passed array contains multiple types, the original array is returned
+/// because coercion was not successful.
+fn attempt_coerce_value_column_from_any_value_struct_column(values: &ArrayRef) -> Result<ArrayRef> {
     // TODO clean this up
     let rb = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new(
@@ -1679,15 +1659,16 @@ fn coerce_value_column_from_any_value_struct_column(values: &ArrayRef) -> Result
             true,
         )])),
         vec![Arc::clone(values)],
-    )
-    .unwrap();
-    let partitions = project_any_value_columns(&rb, &[0]).unwrap();
-    if partitions.len() == 1 {
-        Ok(Arc::clone(partitions[0].batch.column(0)))
+    )?;
+    let partitions = project_any_value_columns(&rb, &[0])?;
+    let result = if partitions.len() == 1 {
+        partitions[0].batch.column(0)
     } else {
-        // TODO clean this up
-        panic!()
-    }
+        // just return the original array
+        values
+    };
+
+    Ok(Arc::clone(result))
 }
 
 /// Inserts the column into the record batch if the column does not exist, otherwise replaces the

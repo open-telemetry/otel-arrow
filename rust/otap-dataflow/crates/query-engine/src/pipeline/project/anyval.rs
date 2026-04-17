@@ -89,7 +89,7 @@ pub(crate) fn extract_type_from_any_value_struct(column: &ArrayRef) -> Result<UI
 }
 
 pub(crate) fn fill_null_type_as_empty(column: &ArrayRef) -> Result<ArrayRef> {
-    let type_col = extract_type_from_any_value_struct(&column)?;
+    let type_col = extract_type_from_any_value_struct(column)?;
     if type_col.null_count() == 0 {
         // nothing to do
         return Ok(Arc::clone(column));
@@ -844,6 +844,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn test_compute_type_distribution_contiguous_mixed() {
         // [Str, Str, Int, Int]
         let arr = UInt8Array::from(vec![1u8, 1, 2, 2]);
@@ -886,6 +887,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn test_compute_type_distribution_three_types_with_runs() {
         // [Int, Int, Int, Double, Double, Int]
         let arr = UInt8Array::from(vec![2u8, 2, 2, 3, 3, 2]);
@@ -971,6 +973,7 @@ mod test {
     // =========================================================================
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn test_map_local_ranges_single_partition_range() {
         // Partition covers original rows 5..10. Local range 1..4 → original 6..9.
         let partition_ranges: RowRanges = smallvec![5..10];
@@ -980,6 +983,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn test_map_local_ranges_multi_partition_within_one() {
         // Partition covers [5..8, 12..15]. Local range 0..2 → original 5..7 (within first range).
         let partition_ranges: RowRanges = smallvec![5..8, 12..15];
@@ -1094,6 +1098,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn test_project_any_value_uniform_type() {
         // All rows are Str — should produce single partition with concrete Utf8 column.
         let struct_col = make_any_value_struct(
@@ -1114,6 +1119,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn test_project_any_value_mixed_types() {
         // [Str, Str, Int, Int] — should produce two partitions.
         let struct_col = make_any_value_struct(
@@ -1143,7 +1149,7 @@ mod test {
             *int_part.batch.schema().field(0).data_type(),
             DataType::Int64
         );
-        assert_eq!(int_part.original_row_ranges.as_slice(), &[2..4]);
+        assert_eq!(int_part.original_row_ranges.as_slice(), &[(2..4)]);
     }
 
     #[test]
