@@ -610,7 +610,6 @@ impl AssignPipelineStage {
                     )?;
                     attrs_upserts.extend(per_type);
 
-                    println!("attrs_upserts = {attrs_upserts:#?}");
                     continue;
                 }
             }
@@ -2501,6 +2500,7 @@ mod test {
             LogRecord::build()
                 .body(AnyValue::new_bytes(b"world"))
                 .finish(),
+            LogRecord::build().finish(),
             LogRecord::build().body(AnyValue::new_double(5.14)).finish(),
             LogRecord::build().body(AnyValue::new_bool(true)).finish(),
         ]);
@@ -2528,6 +2528,7 @@ mod test {
                 .body(AnyValue::new_bytes(b"world"))
                 .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
                 .finish(),
+            LogRecord::build().attributes(vec![]).finish(),
             LogRecord::build()
                 .body(AnyValue::new_double(5.14))
                 .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])

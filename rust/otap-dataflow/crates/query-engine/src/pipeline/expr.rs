@@ -1286,9 +1286,7 @@ impl PhysicalExprEvalResult {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{
-        BinaryArray, Float64Array, Int32Array, Int64Array, StructArray, UInt8Array,
-    };
+    use arrow::array::{BinaryArray, Float64Array, Int32Array, Int64Array, StructArray};
     use arrow::compute::take;
     use data_engine_expressions::{
         BinaryMathematicalScalarExpression, IntegerScalarExpression,
