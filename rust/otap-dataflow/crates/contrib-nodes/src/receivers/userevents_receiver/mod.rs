@@ -128,6 +128,15 @@ struct DrainConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct BatchConfig {
+    // NOTE: These batches are in-memory only. Unlike a network receiver such as
+    // syslog, there is typically no practical sender-side retry or replay path
+    // for user_events payloads after this process crashes. Syslog transport
+    // also does not generally provide per-message acknowledgements, but some
+    // senders/agents may buffer and retry on reconnect; user_events producers
+    // normally cannot. Larger `max_size` / `max_duration` values therefore
+    // increase the amount of irrecoverable data that can be lost before a flush.
+    // TODO: Revisit these batching tradeoffs if we add durable buffering or
+    // upstream retry/replay support for this ingestion path.
     #[serde(default = "default_batch_max_size")]
     max_size: u16,
     #[serde(default = "default_batch_max_duration")]
