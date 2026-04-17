@@ -233,12 +233,15 @@ impl ScopedLogicalExpr {
                 PhysicalExprDataSource::MultiJoin(physical_children)
             }
         };
+        let eval_anyval_as_struct = expr_can_handle_anyval_as_struct(&self.logical_expr);
+
         let projection = Projection::try_new(&self.logical_expr)?;
 
         Ok(ScopedPhysicalExpr {
             source,
             logical_expr: self.logical_expr,
             physical_expr: None, // computed when data received
+            eval_anyval_as_struct,
             projection,
             projection_opts: ProjectionOptions {
                 downcast_dicts: self.requires_dict_downcast,
@@ -843,6 +846,12 @@ impl ExprPhysicalPlanner {
     }
 }
 
+fn expr_can_handle_anyval_as_struct(expr: &Expr) -> bool {
+    // if we're simply returning the column, keep the column as an AnyValue struct and let
+    // consumers expressions project it into a concrete type if they need to
+    matches!(expr, Expr::Column(_))
+}
+
 /// A node in the expression tree used for expression evaluation.
 ///
 /// This encapsulates a datafusion PhysicalExpr that evaluates some section of the overall
@@ -877,6 +886,10 @@ pub(crate) struct ScopedPhysicalExpr {
     /// Options for projection, including whether to remove dictionary encoding (which is required
     /// for arrow numeric compute kernels).
     pub(crate) projection_opts: ProjectionOptions,
+
+    /// Whether or not to evaluate the expression on AnyValue columns as structs, or otherwise
+    /// convert the AnyValue column into one or more simple columns representing the concrete type
+    eval_anyval_as_struct: bool,
 }
 
 /// Identifies the source for the input to the physical expression
@@ -936,14 +949,6 @@ impl ScopedPhysicalExpr {
                 let right_result = right.execute(otap_batch, session_context)?;
                 match (left_result, right_result) {
                     (Some(left_result), Some(right_result)) => {
-                        println!(
-                            "left = {:?}, parent_ids = {:?}",
-                            left_result.values, left_result.parent_ids
-                        );
-                        println!(
-                            "right = {:?}, parent_ids = {:?}",
-                            right_result.values, right_result.parent_ids
-                        );
                         let (joined_rb, result_data_scope) =
                             join(&left_result, &right_result, otap_batch)?;
                         (Some(Cow::Owned(joined_rb)), result_data_scope)
@@ -992,8 +997,8 @@ impl ScopedPhysicalExpr {
         // to be resolved to concrete types before expression evaluation.
         let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
 
-        let result_vals = if any_value_indices.is_empty() {
-            // Fast path: no AnyValue columns, evaluate directly
+        let result_vals = if any_value_indices.is_empty() || self.eval_anyval_as_struct {
+            // Fast path: no need to project AnyValue columns to concrete type columns
             self.evaluate_on_batch(session_context, &projected_rb)?
         } else {
             let partitions = project_any_value_columns(&projected_rb, &any_value_indices)?;
@@ -1014,8 +1019,6 @@ impl ScopedPhysicalExpr {
                     let result_arr = result.into_array(batch.num_rows())?;
                     partition_results.push((result_arr, partition.original_row_ranges));
                 }
-
-                println!("{:?}", partition_results);
 
                 let stitched = stitch_partitioned_results(partition_results, total_rows)?;
                 ColumnarValue::Array(stitched)
