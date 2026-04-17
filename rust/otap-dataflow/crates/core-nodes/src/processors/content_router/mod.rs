@@ -36,6 +36,21 @@
 //!   different destinations, the entire batch is permanently NACKed. Batches
 //!   where all resources are consistently unmatched (missing key / no match)
 //!   are **not** considered mixed and are routed to the default output.
+//!
+//! # Selected-Route Admission
+//!
+//! Once a route has been selected, `content_router` uses non-blocking admission
+//! to the chosen output. This keeps routing decisions separate from downstream
+//! liveness:
+//!
+//! - a writable selected route is forwarded normally
+//! - a selected route that is full is rejected immediately with a retryable
+//!   route-local NACK
+//! - a selected route that is closed is rejected immediately with a retryable
+//!   route-local NACK
+//!
+//! The processor still returns `Ok(())` after those route-local rejections so a
+//! blocked tenant route cannot stall unrelated healthy routes.
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -53,6 +68,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension, ProcessorFactory,
+    RouteAdmission,
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
@@ -122,6 +138,12 @@ pub struct ContentRouterMetrics {
     /// Number of messages that failed due to internal conversion errors.
     #[metric(unit = "{msg}")]
     pub signals_conversion_error: Counter<u64>,
+    /// Number of messages rejected because the selected route was full.
+    #[metric(unit = "{msg}")]
+    pub signals_rejected_route_full: Counter<u64>,
+    /// Number of messages rejected because the selected route was closed.
+    #[metric(unit = "{msg}")]
+    pub signals_rejected_route_closed: Counter<u64>,
 }
 
 /// Configuration for the ContentRouter processor.
@@ -497,6 +519,48 @@ impl ContentRouter {
             }
         }
     }
+
+    async fn handle_rejected_route(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        port: &str,
+        admission: RouteAdmission<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        match admission {
+            RouteAdmission::Accepted => Ok(()),
+            RouteAdmission::RejectedFull(data) => {
+                if let Some(m) = self.metrics.as_mut() {
+                    m.signals_nacked.inc();
+                    m.signals_rejected_route_full.inc();
+                }
+                // Selected-route overload is a route-local retryable failure:
+                // the message is refused explicitly, but the router stays live
+                // so unrelated routes can continue to make progress.
+                effect_handler
+                    .notify_nack(NackMsg::new(
+                        format!("content_router route overload: output port '{port}' is full"),
+                        data,
+                    ))
+                    .await?;
+                Ok(())
+            }
+            RouteAdmission::RejectedClosed(data) => {
+                if let Some(m) = self.metrics.as_mut() {
+                    m.signals_nacked.inc();
+                    m.signals_rejected_route_closed.inc();
+                }
+                // A closed selected route is treated the same way as overload:
+                // reject that message locally and return success from the node.
+                effect_handler
+                    .notify_nack(NackMsg::new(
+                        format!("content_router route unavailable: output port '{port}' is closed"),
+                        data,
+                    ))
+                    .await?;
+                Ok(())
+            }
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -523,25 +587,27 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     m.signals_received.inc();
                 }
 
+                // Resolve routing once up front, then handle route-selection
+                // failures separately from downstream admission failures.
                 let resolution = self.resolve_route(&data);
 
                 match resolution {
                     RouteResolution::Matched(port) => {
-                        match effect_handler
-                            .send_message_with_source_node_to(port, data)
-                            .await
-                        {
-                            Ok(()) => {
+                        // Named-route admission is non-blocking so a blocked
+                        // tenant route cannot stall the whole router task.
+                        let admission = effect_handler
+                            .try_admit_message_with_source_node_to(port.clone(), data)
+                            .map_err(EngineError::from)?;
+                        match admission {
+                            RouteAdmission::Accepted => {
                                 if let Some(m) = self.metrics.as_mut() {
                                     m.signals_routed.inc();
                                 }
                                 Ok(())
                             }
-                            Err(e) => {
-                                if let Some(m) = self.metrics.as_mut() {
-                                    m.signals_nacked.inc();
-                                }
-                                Err(e.into())
+                            rejected => {
+                                self.handle_rejected_route(effect_handler, port.as_str(), rejected)
+                                    .await
                             }
                         }
                     }
@@ -551,23 +617,27 @@ impl local::Processor<OtapPdata> for ContentRouter {
                                 m.signals_no_routing_key.inc();
                             }
                         }
-                        // Try default output if configured
-                        if let Some(ref default_port) = self.default_output {
-                            match effect_handler
-                                .send_message_with_source_node_to(default_port.clone(), data)
-                                .await
-                            {
-                                Ok(()) => {
+                        // Default-route admission follows the same contract as
+                        // matched-route admission once the default port has
+                        // been selected.
+                        if let Some(default_port) = self.default_output.clone() {
+                            let admission = effect_handler
+                                .try_admit_message_with_source_node_to(default_port.clone(), data)
+                                .map_err(EngineError::from)?;
+                            match admission {
+                                RouteAdmission::Accepted => {
                                     if let Some(m) = self.metrics.as_mut() {
                                         m.signals_routed_default.inc();
                                     }
                                     Ok(())
                                 }
-                                Err(e) => {
-                                    if let Some(m) = self.metrics.as_mut() {
-                                        m.signals_nacked.inc();
-                                    }
-                                    Err(e.into())
+                                rejected => {
+                                    self.handle_rejected_route(
+                                        effect_handler,
+                                        default_port.as_str(),
+                                        rejected,
+                                    )
+                                    .await
                                 }
                             }
                         } else {
@@ -1366,9 +1436,14 @@ mod tests {
 
     mod telemetry {
         use super::*;
+        use otap_df_channel::error::RecvError;
         use otap_df_channel::mpsc;
+        use otap_df_engine::Interests;
         use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::control::NodeControlMsg;
+        use otap_df_engine::control::{
+            NodeControlMsg, PipelineCompletionMsg, PipelineCompletionMsgReceiver,
+            pipeline_completion_msg_channel,
+        };
         use otap_df_engine::local::message::LocalSender;
         use otap_df_engine::local::processor::{
             EffectHandler as LocalEffectHandler, Processor as _,
@@ -1376,6 +1451,7 @@ mod tests {
         use otap_df_engine::message::{Message, Sender};
         use otap_df_engine::testing::setup_test_runtime;
         use otap_df_otap::pdata::OtapPdata;
+        use otap_df_otap::testing::{TestCallData, next_nack};
         use otap_df_telemetry::InternalTelemetrySystem;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;
@@ -1409,6 +1485,57 @@ mod tests {
         fn stop_telemetry(reporter: MetricsReporter, collector_task: JoinHandle<()>) {
             drop(reporter);
             collector_task.abort();
+        }
+
+        fn logs_pdata(route_value: &str) -> OtapPdata {
+            let bytes = create_logs_with_resource_attr("service.namespace", route_value);
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into())
+        }
+
+        fn subscribed_logs_pdata(route_value: &str, upstream_node_id: usize) -> OtapPdata {
+            logs_pdata(route_value).test_subscribe_to(
+                Interests::NACKS,
+                TestCallData::default().into(),
+                upstream_node_id,
+            )
+        }
+
+        async fn flush_metrics(
+            router: &mut ContentRouter,
+            effect_handler: &mut LocalEffectHandler<OtapPdata>,
+            reporter: MetricsReporter,
+            telemetry_registry: &TelemetryRegistryHandle,
+        ) -> HashMap<String, u64> {
+            router
+                .process(
+                    Message::Control(NodeControlMsg::CollectTelemetry {
+                        metrics_reporter: reporter,
+                    }),
+                    effect_handler,
+                )
+                .await
+                .expect("collect telemetry failed");
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            collect_metrics_map(telemetry_registry)
+        }
+
+        async fn expect_nack(
+            completion_rx: &mut PipelineCompletionMsgReceiver<OtapPdata>,
+            upstream_node_id: usize,
+        ) -> NackMsg<OtapPdata> {
+            match completion_rx
+                .recv()
+                .await
+                .expect("pipeline-completion channel closed unexpectedly")
+            {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                    assert_eq!(node_id, upstream_node_id);
+                    nack
+                }
+                other => panic!("expected DeliverNack, got {other:?}"),
+            }
         }
 
         #[test]
@@ -1571,6 +1698,424 @@ mod tests {
                     1
                 );
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+
+                stop_telemetry(reporter, collector_task);
+            }));
+        }
+
+        /// Scenario: a resource attribute resolves to a named route whose
+        /// channel is already full.
+        /// Guarantees: the router emits a retryable local NACK for that one
+        /// message, records route-full telemetry, and stays live.
+        #[test]
+        fn test_matched_route_full_nacks_locally_and_records_metrics() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+                let controller = ControllerContext::new(telemetry_registry.clone());
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+                let node_id = test_node("content_router_matched_full_test");
+
+                let config = ContentRouterConfig {
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+                    routes: HashMap::from([("/sub/c".to_string(), "tenant_c".to_string())]),
+                    default_output: None,
+                    case_sensitive: true,
+                };
+                let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
+
+                let (tx, _rx) = mpsc::Channel::new(1);
+                tx.send(logs_pdata("/sub/c"))
+                    .expect("prefill should occupy the downstream route");
+                let mut senders = HashMap::new();
+                let _ = senders.insert("tenant_c".into(), Sender::Local(LocalSender::mpsc(tx)));
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
+
+                let upstream_node_id = 71usize;
+                router
+                    .process(
+                        Message::PData(subscribed_logs_pdata("/sub/c", upstream_node_id)),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("full matched route should be nacked locally");
+
+                let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+                assert_eq!(
+                    nack.reason,
+                    "content_router route overload: output port 'tenant_c' is full"
+                );
+                assert!(
+                    !nack.permanent,
+                    "route-full rejection should remain retryable"
+                );
+                assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
+                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
+                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.full")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.closed")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+
+                stop_telemetry(reporter, collector_task);
+            }));
+        }
+
+        /// Scenario: a resource attribute resolves to a named route whose
+        /// receiver has already been dropped.
+        /// Guarantees: the router emits a retryable local NACK for that one
+        /// message, records route-closed telemetry, and stays live.
+        #[test]
+        fn test_matched_route_closed_nacks_locally_and_records_metrics() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+                let controller = ControllerContext::new(telemetry_registry.clone());
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+                let node_id = test_node("content_router_matched_closed_test");
+
+                let config = ContentRouterConfig {
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+                    routes: HashMap::from([("/sub/c".to_string(), "tenant_c".to_string())]),
+                    default_output: None,
+                    case_sensitive: true,
+                };
+                let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
+
+                let (tx, rx) = mpsc::Channel::new(1);
+                drop(rx);
+                let mut senders = HashMap::new();
+                let _ = senders.insert("tenant_c".into(), Sender::Local(LocalSender::mpsc(tx)));
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
+
+                let upstream_node_id = 72usize;
+                router
+                    .process(
+                        Message::PData(subscribed_logs_pdata("/sub/c", upstream_node_id)),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("closed matched route should be nacked locally");
+
+                let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+                assert_eq!(
+                    nack.reason,
+                    "content_router route unavailable: output port 'tenant_c' is closed"
+                );
+                assert!(
+                    !nack.permanent,
+                    "route-closed rejection should remain retryable"
+                );
+                assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
+                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
+                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.full")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.closed")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+
+                stop_telemetry(reporter, collector_task);
+            }));
+        }
+
+        /// Scenario: no configured route matches, `default_output` is selected,
+        /// and that default route is already full.
+        /// Guarantees: default-route admission follows the same route-local
+        /// retryable NACK contract as matched-route admission.
+        #[test]
+        fn test_default_route_full_nacks_locally_and_records_metrics() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+                let controller = ControllerContext::new(telemetry_registry.clone());
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+                let node_id = test_node("content_router_default_full_test");
+
+                let config = ContentRouterConfig {
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+                    routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
+                    default_output: Some("fallback".to_string()),
+                    case_sensitive: true,
+                };
+                let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
+
+                let (tx, _rx) = mpsc::Channel::new(1);
+                tx.send(logs_pdata("/sub/unknown"))
+                    .expect("prefill should occupy the default route");
+                let mut senders = HashMap::new();
+                let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
+
+                let upstream_node_id = 73usize;
+                router
+                    .process(
+                        Message::PData(subscribed_logs_pdata("/sub/unknown", upstream_node_id)),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("full default route should be nacked locally");
+
+                let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+                assert_eq!(
+                    nack.reason,
+                    "content_router route overload: output port 'fallback' is full"
+                );
+                assert!(
+                    !nack.permanent,
+                    "default-route full rejection should remain retryable"
+                );
+                assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
+                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics.get("signals.routed.default").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.full")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.closed")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+
+                stop_telemetry(reporter, collector_task);
+            }));
+        }
+
+        /// Scenario: no configured route matches, `default_output` is selected,
+        /// and that default route has already closed.
+        /// Guarantees: default-route admission follows the same route-local
+        /// retryable NACK contract as matched-route admission.
+        #[test]
+        fn test_default_route_closed_nacks_locally_and_records_metrics() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+                let controller = ControllerContext::new(telemetry_registry.clone());
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+                let node_id = test_node("content_router_default_closed_test");
+
+                let config = ContentRouterConfig {
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+                    routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
+                    default_output: Some("fallback".to_string()),
+                    case_sensitive: true,
+                };
+                let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
+
+                let (tx, rx) = mpsc::Channel::new(1);
+                drop(rx);
+                let mut senders = HashMap::new();
+                let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
+
+                let upstream_node_id = 74usize;
+                router
+                    .process(
+                        Message::PData(subscribed_logs_pdata("/sub/unknown", upstream_node_id)),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("closed default route should be nacked locally");
+
+                let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+                assert_eq!(
+                    nack.reason,
+                    "content_router route unavailable: output port 'fallback' is closed"
+                );
+                assert!(
+                    !nack.permanent,
+                    "default-route closed rejection should remain retryable"
+                );
+                assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
+                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics.get("signals.routed.default").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.full")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.closed")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+
+                stop_telemetry(reporter, collector_task);
+            }));
+        }
+
+        /// Scenario: one matched tenant route is saturated while another
+        /// matched tenant route is healthy.
+        /// Guarantees: rejection on the blocked route does not stall the
+        /// healthy route, and the router continues forwarding unrelated
+        /// traffic.
+        #[test]
+        fn test_full_route_does_not_block_healthy_route() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+                let controller = ControllerContext::new(telemetry_registry.clone());
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+                let node_id = test_node("content_router_isolation_test");
+
+                let config = ContentRouterConfig {
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+                    routes: HashMap::from([
+                        ("/sub/a".to_string(), "tenant_a".to_string()),
+                        ("/sub/c".to_string(), "tenant_c".to_string()),
+                    ]),
+                    default_output: None,
+                    case_sensitive: true,
+                };
+                let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
+
+                let (tx_blocked, _rx_blocked) = mpsc::Channel::new(1);
+                tx_blocked
+                    .send(logs_pdata("/sub/c"))
+                    .expect("prefill should occupy the blocked route");
+                let (tx_healthy, rx_healthy) = mpsc::Channel::new(1);
+
+                let mut senders = HashMap::new();
+                let _ = senders.insert(
+                    "tenant_c".into(),
+                    Sender::Local(LocalSender::mpsc(tx_blocked)),
+                );
+                let _ = senders.insert(
+                    "tenant_a".into(),
+                    Sender::Local(LocalSender::mpsc(tx_healthy)),
+                );
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
+
+                let upstream_node_id = 75usize;
+                router
+                    .process(
+                        Message::PData(subscribed_logs_pdata("/sub/c", upstream_node_id)),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("blocked route should nack locally without failing the router");
+
+                router
+                    .process(Message::PData(logs_pdata("/sub/a")), &mut eh)
+                    .await
+                    .expect("healthy route should still be admitted");
+
+                let _healthy = rx_healthy
+                    .recv()
+                    .await
+                    .expect("healthy route should continue receiving traffic");
+
+                let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+                assert_eq!(
+                    nack.reason,
+                    "content_router route overload: output port 'tenant_c' is full"
+                );
+                assert!(
+                    !nack.permanent,
+                    "route-full rejection should remain retryable"
+                );
+                assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
+                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 2);
+                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 1);
+                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.full")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.closed")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));

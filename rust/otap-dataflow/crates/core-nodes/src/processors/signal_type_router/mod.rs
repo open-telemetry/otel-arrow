@@ -3,9 +3,29 @@
 
 //! Signal type router processor for OTAP pipelines.
 //!
-//! Simplest behavior: pass-through using engine wiring.
-//! All signals are forwarded unchanged via the engine-provided default output port
-//! (or error if multiple ports are connected without a default).
+//! Routes OTAP payloads to well-known named output ports based on signal type:
+//! `logs`, `metrics`, and `traces`.
+//!
+//! The router prefers the signal-type-specific named output when that port is
+//! connected. If the named port is not wired, it falls back to the node default
+//! output when one exists.
+//!
+//! # Selected-Route Admission
+//!
+//! After the router picks a named or default route, admission to that selected
+//! route is non-blocking:
+//!
+//! - a writable selected route is forwarded normally
+//! - a selected route that is full is rejected immediately with a retryable
+//!   route-local NACK
+//! - a selected route that is closed is rejected immediately with a retryable
+//!   route-local NACK
+//!
+//! The processor still returns `Ok(())` after those route-local rejections so a
+//! blocked signal-specific route does not stall traffic for other signal types.
+//!
+//! If neither a signal-specific named route nor a default output exists, the
+//! message is dropped with the historical routing-failure behavior.
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -13,13 +33,16 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ProcessorFactory};
+use otap_df_engine::{
+    ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension, ProcessorFactory,
+    RouteAdmission,
+};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
@@ -73,6 +96,36 @@ pub struct SignalTypeRouterMetrics {
     #[metric(unit = "{msg}")]
     pub signals_routed_default_traces: Counter<u64>,
 
+    /// Number of log messages NACKed due to route-local rejection.
+    #[metric(unit = "{msg}")]
+    pub signals_nacked_logs: Counter<u64>,
+    /// Number of metric messages NACKed due to route-local rejection.
+    #[metric(unit = "{msg}")]
+    pub signals_nacked_metrics: Counter<u64>,
+    /// Number of trace messages NACKed due to route-local rejection.
+    #[metric(unit = "{msg}")]
+    pub signals_nacked_traces: Counter<u64>,
+
+    /// Number of log messages rejected because the selected route was full.
+    #[metric(unit = "{msg}")]
+    pub signals_rejected_route_full_logs: Counter<u64>,
+    /// Number of metric messages rejected because the selected route was full.
+    #[metric(unit = "{msg}")]
+    pub signals_rejected_route_full_metrics: Counter<u64>,
+    /// Number of trace messages rejected because the selected route was full.
+    #[metric(unit = "{msg}")]
+    pub signals_rejected_route_full_traces: Counter<u64>,
+
+    /// Number of log messages rejected because the selected route was closed.
+    #[metric(unit = "{msg}")]
+    pub signals_rejected_route_closed_logs: Counter<u64>,
+    /// Number of metric messages rejected because the selected route was closed.
+    #[metric(unit = "{msg}")]
+    pub signals_rejected_route_closed_metrics: Counter<u64>,
+    /// Number of trace messages rejected because the selected route was closed.
+    #[metric(unit = "{msg}")]
+    pub signals_rejected_route_closed_traces: Counter<u64>,
+
     /// Number of log messages dropped due to routing failure.
     #[metric(unit = "{msg}")]
     pub signals_dropped_logs: Counter<u64>,
@@ -104,6 +157,27 @@ impl SignalTypeRouterMetrics {
             otap_df_config::SignalType::Logs => self.signals_routed_default_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_routed_default_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_routed_default_traces.inc(),
+        }
+    }
+    const fn inc_nacked(&mut self, st: otap_df_config::SignalType) {
+        match st {
+            otap_df_config::SignalType::Logs => self.signals_nacked_logs.inc(),
+            otap_df_config::SignalType::Metrics => self.signals_nacked_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_nacked_traces.inc(),
+        }
+    }
+    const fn inc_rejected_route_full(&mut self, st: otap_df_config::SignalType) {
+        match st {
+            otap_df_config::SignalType::Logs => self.signals_rejected_route_full_logs.inc(),
+            otap_df_config::SignalType::Metrics => self.signals_rejected_route_full_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_rejected_route_full_traces.inc(),
+        }
+    }
+    const fn inc_rejected_route_closed(&mut self, st: otap_df_config::SignalType) {
+        match st {
+            otap_df_config::SignalType::Logs => self.signals_rejected_route_closed_logs.inc(),
+            otap_df_config::SignalType::Metrics => self.signals_rejected_route_closed_metrics.inc(),
+            otap_df_config::SignalType::Traces => self.signals_rejected_route_closed_traces.inc(),
         }
     }
     const fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
@@ -150,6 +224,52 @@ impl SignalTypeRouter {
             metrics: Some(metrics),
         }
     }
+
+    async fn handle_rejected_route(
+        &mut self,
+        signal_type: otap_df_config::SignalType,
+        port: &str,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        admission: RouteAdmission<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        match admission {
+            RouteAdmission::Accepted => Ok(()),
+            RouteAdmission::RejectedFull(data) => {
+                if let Some(m) = self.metrics.as_mut() {
+                    m.inc_nacked(signal_type);
+                    m.inc_rejected_route_full(signal_type);
+                }
+                // Selected-route overload is isolated to that one message. The
+                // router emits a retryable local NACK and returns success so
+                // other signal types can continue flowing.
+                effect_handler
+                    .notify_nack(NackMsg::new(
+                        format!("signal_type_router route overload: output port '{port}' is full"),
+                        data,
+                    ))
+                    .await?;
+                Ok(())
+            }
+            RouteAdmission::RejectedClosed(data) => {
+                if let Some(m) = self.metrics.as_mut() {
+                    m.inc_nacked(signal_type);
+                    m.inc_rejected_route_closed(signal_type);
+                }
+                // A closed selected route follows the same isolation policy as
+                // overload: refuse that message locally without stalling the
+                // router task.
+                effect_handler
+                    .notify_nack(NackMsg::new(
+                        format!(
+                            "signal_type_router route unavailable: output port '{port}' is closed"
+                        ),
+                        data,
+                    ))
+                    .await?;
+                Ok(())
+            }
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -177,45 +297,73 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                     m.inc_received(st);
                 }
 
-                // Determine desired output port by signal type
+                // Resolve the preferred named route first. Falling back is only
+                // allowed when the named port is not wired at all, not when the
+                // named route exists but is blocked or closed.
                 let desired_port = match st {
                     otap_df_config::SignalType::Traces => PORT_TRACES,
                     otap_df_config::SignalType::Metrics => PORT_METRICS,
                     otap_df_config::SignalType::Logs => PORT_LOGS,
                 };
 
-                // Probe connections to decide if named route exists (avoid falling back on unrelated errors)
+                // Probe wiring first so send failures on the named port stay
+                // route-local instead of being misinterpreted as a signal to
+                // fall back to the default output.
                 let has_port = effect_handler
                     .connected_ports()
                     .iter()
                     .any(|p| p.as_ref() == desired_port);
 
                 if has_port {
-                    match effect_handler
-                        .send_message_with_source_node_to(desired_port, data)
-                        .await
-                    {
-                        Ok(()) => {
+                    // Named-route admission is non-blocking for the same
+                    // liveness reason as content_router.
+                    let admission = effect_handler
+                        .try_admit_message_with_source_node_to(desired_port, data)
+                        .map_err(EngineError::from)?;
+                    match admission {
+                        RouteAdmission::Accepted => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_routed_named(st);
                             }
                             Ok(())
                         }
-                        Err(e) => {
-                            if let Some(m) = self.metrics.as_mut() {
-                                m.inc_dropped(st);
-                            }
-                            Err(e.into())
+                        rejected => {
+                            self.handle_rejected_route(st, desired_port, effect_handler, rejected)
+                                .await
                         }
                     }
-                } else {
-                    match effect_handler.send_message_with_source_node(data).await {
-                        Ok(()) => {
+                } else if let Some(default_port) = effect_handler.default_port() {
+                    // Once the default route has been selected, it uses the
+                    // same non-blocking admission and route-local rejection
+                    // policy as the named route.
+                    let admission = effect_handler
+                        .try_admit_message_with_source_node_to(default_port.clone(), data)
+                        .map_err(EngineError::from)?;
+                    match admission {
+                        RouteAdmission::Accepted => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_routed_default(st);
                             }
                             Ok(())
                         }
+                        rejected => {
+                            self.handle_rejected_route(
+                                st,
+                                default_port.as_ref(),
+                                effect_handler,
+                                rejected,
+                            )
+                            .await
+                        }
+                    }
+                } else {
+                    // Preserve the historical "no selected route exists"
+                    // behavior. This path is distinct from selected-route
+                    // overload/closed handling above.
+                    match effect_handler.send_message_with_source_node(data).await {
+                        Ok(()) => unreachable!(
+                            "default route send should not succeed when no default output is selected"
+                        ),
                         Err(e) => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_dropped(st);
@@ -365,9 +513,14 @@ mod tests {
 
     mod telemetry {
         use super::*;
+        use otap_df_channel::error::RecvError;
         use otap_df_channel::mpsc;
+        use otap_df_engine::Interests;
         use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::control::NodeControlMsg;
+        use otap_df_engine::control::{
+            NodeControlMsg, PipelineCompletionMsg, PipelineCompletionMsgReceiver,
+            pipeline_completion_msg_channel,
+        };
         use otap_df_engine::local::message::LocalSender;
         use otap_df_engine::local::processor::{
             EffectHandler as LocalEffectHandler, Processor as _,
@@ -375,6 +528,7 @@ mod tests {
         use otap_df_engine::message::{Message, Sender};
         use otap_df_engine::testing::setup_test_runtime;
         use otap_df_otap::pdata::OtapPdata;
+        use otap_df_otap::testing::{TestCallData, next_nack};
         use otap_df_pdata::otap::{Logs, OtapArrowRecords};
         use otap_df_telemetry::InternalTelemetrySystem;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -412,6 +566,177 @@ mod tests {
         fn stop_telemetry(reporter: MetricsReporter, collector_task: JoinHandle<()>) {
             drop(reporter);
             collector_task.abort();
+        }
+
+        fn subscribed_pdata(payload: OtapArrowRecords, upstream_node_id: usize) -> OtapPdata {
+            OtapPdata::new_default(payload.into()).test_subscribe_to(
+                Interests::NACKS,
+                TestCallData::default().into(),
+                upstream_node_id,
+            )
+        }
+
+        async fn expect_nack(
+            completion_rx: &mut PipelineCompletionMsgReceiver<OtapPdata>,
+            upstream_node_id: usize,
+        ) -> NackMsg<OtapPdata> {
+            match completion_rx
+                .recv()
+                .await
+                .expect("pipeline-completion channel closed unexpectedly")
+            {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                    assert_eq!(node_id, upstream_node_id);
+                    nack
+                }
+                other => panic!("expected DeliverNack, got {other:?}"),
+            }
+        }
+
+        fn signal_name(st: otap_df_config::SignalType) -> &'static str {
+            match st {
+                otap_df_config::SignalType::Logs => "logs",
+                otap_df_config::SignalType::Metrics => "metrics",
+                otap_df_config::SignalType::Traces => "traces",
+            }
+        }
+
+        fn signal_payload(st: otap_df_config::SignalType) -> OtapArrowRecords {
+            match st {
+                otap_df_config::SignalType::Logs => OtapArrowRecords::Logs(Logs::default()),
+                otap_df_config::SignalType::Metrics => {
+                    OtapArrowRecords::Metrics(Default::default())
+                }
+                otap_df_config::SignalType::Traces => OtapArrowRecords::Traces(Default::default()),
+            }
+        }
+
+        fn signal_named_port(st: otap_df_config::SignalType) -> &'static str {
+            match st {
+                otap_df_config::SignalType::Logs => PORT_LOGS,
+                otap_df_config::SignalType::Metrics => PORT_METRICS,
+                otap_df_config::SignalType::Traces => PORT_TRACES,
+            }
+        }
+
+        async fn flush_metrics(
+            router: &mut SignalTypeRouter,
+            effect_handler: &mut LocalEffectHandler<OtapPdata>,
+            reporter: MetricsReporter,
+            telemetry_registry: &TelemetryRegistryHandle,
+        ) -> HashMap<String, u64> {
+            router
+                .process(
+                    Message::Control(NodeControlMsg::CollectTelemetry {
+                        metrics_reporter: reporter,
+                    }),
+                    effect_handler,
+                )
+                .await
+                .expect("collect telemetry failed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            collect_metrics_map(telemetry_registry)
+        }
+
+        async fn assert_full_rejection_for_route(
+            st: otap_df_config::SignalType,
+            route_port: &'static str,
+            test_name: &'static str,
+            upstream_node_id: usize,
+        ) {
+            let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+            let controller = ControllerContext::new(telemetry_registry.clone());
+            let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+            let node_id = test_node(test_name);
+
+            let mut router =
+                SignalTypeRouter::with_pipeline_ctx(pipeline, SignalTypeRouterConfig::default());
+
+            let (tx, _rx) = mpsc::Channel::new(1);
+            tx.send(OtapPdata::new_default(signal_payload(st).into()))
+                .expect("prefill should occupy the selected route");
+
+            let mut senders = HashMap::new();
+            let _ = senders.insert(route_port.into(), Sender::Local(LocalSender::mpsc(tx)));
+            let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+            let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+            eh.set_pipeline_completion_msg_sender(completion_tx);
+
+            router
+                .process(
+                    Message::PData(subscribed_pdata(signal_payload(st), upstream_node_id)),
+                    &mut eh,
+                )
+                .await
+                .expect("full selected route should nack locally");
+
+            let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+            assert_eq!(
+                nack.reason,
+                format!("signal_type_router route overload: output port '{route_port}' is full")
+            );
+            assert!(
+                !nack.permanent,
+                "route-full rejection should remain retryable"
+            );
+            assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+            let metrics =
+                flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry).await;
+            let signal = signal_name(st);
+            assert_eq!(
+                metrics
+                    .get(format!("signals.received.{signal}").as_str())
+                    .copied()
+                    .unwrap_or(0),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .get(format!("signals.routed.named.{signal}").as_str())
+                    .copied()
+                    .unwrap_or(0),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .get(format!("signals.routed.default.{signal}").as_str())
+                    .copied()
+                    .unwrap_or(0),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .get(format!("signals.nacked.{signal}").as_str())
+                    .copied()
+                    .unwrap_or(0),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .get(format!("signals.rejected.route.full.{signal}").as_str())
+                    .copied()
+                    .unwrap_or(0),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .get(format!("signals.rejected.route.closed.{signal}").as_str())
+                    .copied()
+                    .unwrap_or(0),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .get(format!("signals.dropped.{signal}").as_str())
+                    .copied()
+                    .unwrap_or(0),
+                0
+            );
+
+            stop_telemetry(reporter, collector_task);
         }
 
         #[test]
@@ -490,6 +815,10 @@ mod tests {
             }));
         }
 
+        /// Scenario: the signal-type-specific `logs` route is wired, selected,
+        /// and already closed.
+        /// Guarantees: the router emits a retryable local NACK, records
+        /// route-closed telemetry for logs, and does not fall back.
         #[test]
         fn test_metrics_named_logs_failure() {
             let (rt, local) = setup_test_runtime();
@@ -513,10 +842,27 @@ mod tests {
                 let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
 
-                let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
-                let res = router.process(Message::PData(pdata), &mut eh).await;
-                assert!(res.is_err(), "expected send failure on closed named port");
+                let upstream_node_id = 81usize;
+                let pdata =
+                    subscribed_pdata(OtapArrowRecords::Logs(Logs::default()), upstream_node_id);
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("closed named route should nack locally");
+
+                let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+                assert_eq!(
+                    nack.reason,
+                    "signal_type_router route unavailable: output port 'logs' is closed"
+                );
+                assert!(
+                    !nack.permanent,
+                    "route-closed rejection should remain retryable"
+                );
+                assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
 
                 // Flush metrics
                 router
@@ -549,10 +895,40 @@ mod tests {
                         .unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 1);
+                assert_eq!(metrics.get("signals.nacked.logs").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.full.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.closed.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
+        }
+
+        /// Scenario: the signal-type-specific `logs` route is wired, selected,
+        /// and already full.
+        /// Guarantees: the router emits a retryable local NACK, records
+        /// route-full telemetry for logs, and does not fall back.
+        #[test]
+        fn test_metrics_named_logs_full() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(assert_full_rejection_for_route(
+                otap_df_config::SignalType::Logs,
+                signal_named_port(otap_df_config::SignalType::Logs),
+                "signal_router_named_logs_full",
+                83,
+            )));
         }
 
         #[test]
@@ -623,6 +999,10 @@ mod tests {
             }));
         }
 
+        /// Scenario: the `logs` named route is absent, the default route is
+        /// selected, and that default route is already closed.
+        /// Guarantees: default-route admission follows the same retryable
+        /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_logs_failure() {
             let (rt, local) = setup_test_runtime();
@@ -646,13 +1026,27 @@ mod tests {
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
 
-                let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
-                let res = router.process(Message::PData(pdata), &mut eh).await;
-                assert!(
-                    res.is_err(),
-                    "expected failure on default route when receiver closed"
+                let upstream_node_id = 82usize;
+                let pdata =
+                    subscribed_pdata(OtapArrowRecords::Logs(Logs::default()), upstream_node_id);
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("closed default route should nack locally");
+
+                let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+                assert_eq!(
+                    nack.reason,
+                    "signal_type_router route unavailable: output port 'out' is closed"
                 );
+                assert!(
+                    !nack.permanent,
+                    "route-closed rejection should remain retryable"
+                );
+                assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
 
                 router
                     .process(
@@ -684,7 +1078,160 @@ mod tests {
                         .unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 1);
+                assert_eq!(metrics.get("signals.nacked.logs").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.full.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.closed.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
+
+                stop_telemetry(reporter, collector_task);
+            }));
+        }
+
+        /// Scenario: the `logs` named route is absent, the default route is
+        /// selected, and that default route is already full.
+        /// Guarantees: default-route admission follows the same retryable
+        /// route-local NACK contract as named-route admission.
+        #[test]
+        fn test_metrics_default_logs_full() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(assert_full_rejection_for_route(
+                otap_df_config::SignalType::Logs,
+                "out",
+                "signal_router_default_logs_full",
+                84,
+            )));
+        }
+
+        /// Scenario: the selected `logs` route is full while the selected
+        /// `metrics` route remains healthy.
+        /// Guarantees: route-local rejection for logs does not stall metrics
+        /// traffic, and the router stays live for other signal types.
+        #[test]
+        fn test_full_named_logs_route_does_not_block_healthy_named_metrics_route() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(async move {
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+                let controller = ControllerContext::new(telemetry_registry.clone());
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+                let node_id = test_node("signal_router_isolation_test");
+
+                let mut router = SignalTypeRouter::with_pipeline_ctx(
+                    pipeline,
+                    SignalTypeRouterConfig::default(),
+                );
+
+                let (tx_logs, _rx_logs) = mpsc::Channel::new(1);
+                tx_logs
+                    .send(OtapPdata::new_default(
+                        signal_payload(otap_df_config::SignalType::Logs).into(),
+                    ))
+                    .expect("prefill should occupy the blocked logs route");
+                let (tx_metrics, rx_metrics) = mpsc::Channel::new(1);
+
+                let mut senders = HashMap::new();
+                let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
+                let _ = senders.insert(
+                    PORT_METRICS.into(),
+                    Sender::Local(LocalSender::mpsc(tx_metrics)),
+                );
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
+
+                let upstream_node_id = 85usize;
+                router
+                    .process(
+                        Message::PData(subscribed_pdata(
+                            signal_payload(otap_df_config::SignalType::Logs),
+                            upstream_node_id,
+                        )),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("blocked logs route should nack locally without failing the router");
+
+                router
+                    .process(
+                        Message::PData(OtapPdata::new_default(
+                            signal_payload(otap_df_config::SignalType::Metrics).into(),
+                        )),
+                        &mut eh,
+                    )
+                    .await
+                    .expect("healthy metrics route should still be admitted");
+
+                let _healthy = rx_metrics
+                    .recv()
+                    .await
+                    .expect("healthy metrics route should continue receiving traffic");
+
+                let nack = expect_nack(&mut completion_rx, upstream_node_id).await;
+                assert_eq!(
+                    nack.reason,
+                    "signal_type_router route overload: output port 'logs' is full"
+                );
+                assert!(
+                    !nack.permanent,
+                    "route-full rejection should remain retryable"
+                );
+                assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
+                assert_eq!(
+                    metrics.get("signals.received.logs").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.received.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.named.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.routed.named.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(metrics.get("signals.nacked.logs").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    metrics
+                        .get("signals.rejected.route.full.logs")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics.get("signals.dropped.metrics").copied().unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -747,6 +1294,10 @@ mod tests {
             }));
         }
 
+        /// Scenario: the signal-type-specific `traces` route is wired,
+        /// selected, and already closed.
+        /// Guarantees: the router emits a retryable local NACK, records
+        /// route-closed telemetry for traces, and does not fall back.
         #[test]
         fn test_metrics_named_traces_failure() {
             let (rt, local) = setup_test_runtime();
@@ -771,8 +1322,10 @@ mod tests {
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
-                let res = router.process(Message::PData(pdata), &mut eh).await;
-                assert!(res.is_err(), "expected failure on named traces port");
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("closed named traces route should nack locally");
 
                 router
                     .process(
@@ -795,10 +1348,38 @@ mod tests {
                     m.get("signals.routed.default.traces").copied().unwrap_or(0),
                     0
                 );
-                assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 1);
+                assert_eq!(m.get("signals.nacked.traces").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    m.get("signals.rejected.route.full.traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.rejected.route.closed.traces")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
+        }
+
+        /// Scenario: the signal-type-specific `traces` route is wired,
+        /// selected, and already full.
+        /// Guarantees: the router emits a retryable local NACK, records
+        /// route-full telemetry for traces, and does not fall back.
+        #[test]
+        fn test_metrics_named_traces_full() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(assert_full_rejection_for_route(
+                otap_df_config::SignalType::Traces,
+                signal_named_port(otap_df_config::SignalType::Traces),
+                "signal_router_named_traces_full",
+                86,
+            )));
         }
 
         #[test]
@@ -857,6 +1438,10 @@ mod tests {
             }));
         }
 
+        /// Scenario: the `traces` named route is absent, the default route is
+        /// selected, and that default route is already closed.
+        /// Guarantees: default-route admission follows the same retryable
+        /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_traces_failure() {
             let (rt, local) = setup_test_runtime();
@@ -881,8 +1466,10 @@ mod tests {
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
-                let res = router.process(Message::PData(pdata), &mut eh).await;
-                assert!(res.is_err(), "expected failure on default traces route");
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("closed default traces route should nack locally");
 
                 router
                     .process(
@@ -905,10 +1492,38 @@ mod tests {
                     m.get("signals.routed.default.traces").copied().unwrap_or(0),
                     0
                 );
-                assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 1);
+                assert_eq!(m.get("signals.nacked.traces").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    m.get("signals.rejected.route.full.traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.rejected.route.closed.traces")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
+        }
+
+        /// Scenario: the `traces` named route is absent, the default route is
+        /// selected, and that default route is already full.
+        /// Guarantees: default-route admission follows the same retryable
+        /// route-local NACK contract as named-route admission.
+        #[test]
+        fn test_metrics_default_traces_full() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(assert_full_rejection_for_route(
+                otap_df_config::SignalType::Traces,
+                "out",
+                "signal_router_default_traces_full",
+                87,
+            )));
         }
 
         // -------- Metrics tests --------
@@ -970,6 +1585,10 @@ mod tests {
             }));
         }
 
+        /// Scenario: the signal-type-specific `metrics` route is wired,
+        /// selected, and already closed.
+        /// Guarantees: the router emits a retryable local NACK, records
+        /// route-closed telemetry for metrics, and does not fall back.
         #[test]
         fn test_metrics_named_metrics_failure() {
             let (rt, local) = setup_test_runtime();
@@ -994,8 +1613,10 @@ mod tests {
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
-                let res = router.process(Message::PData(pdata), &mut eh).await;
-                assert!(res.is_err(), "expected failure on named metrics port");
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("closed named metrics route should nack locally");
 
                 router
                     .process(
@@ -1020,10 +1641,38 @@ mod tests {
                         .unwrap_or(0),
                     0
                 );
-                assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 1);
+                assert_eq!(m.get("signals.nacked.metrics").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    m.get("signals.rejected.route.full.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.rejected.route.closed.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
+        }
+
+        /// Scenario: the signal-type-specific `metrics` route is wired,
+        /// selected, and already full.
+        /// Guarantees: the router emits a retryable local NACK, records
+        /// route-full telemetry for metrics, and does not fall back.
+        #[test]
+        fn test_metrics_named_metrics_full() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(assert_full_rejection_for_route(
+                otap_df_config::SignalType::Metrics,
+                signal_named_port(otap_df_config::SignalType::Metrics),
+                "signal_router_named_metrics_full",
+                88,
+            )));
         }
 
         #[test]
@@ -1084,6 +1733,10 @@ mod tests {
             }));
         }
 
+        /// Scenario: the `metrics` named route is absent, the default route is
+        /// selected, and that default route is already closed.
+        /// Guarantees: default-route admission follows the same retryable
+        /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_metrics_failure() {
             let (rt, local) = setup_test_runtime();
@@ -1108,8 +1761,10 @@ mod tests {
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
-                let res = router.process(Message::PData(pdata), &mut eh).await;
-                assert!(res.is_err(), "expected failure on default metrics route");
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("closed default metrics route should nack locally");
 
                 router
                     .process(
@@ -1134,10 +1789,38 @@ mod tests {
                         .unwrap_or(0),
                     0
                 );
-                assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 1);
+                assert_eq!(m.get("signals.nacked.metrics").copied().unwrap_or(0), 1);
+                assert_eq!(
+                    m.get("signals.rejected.route.full.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.rejected.route.closed.metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
+        }
+
+        /// Scenario: the `metrics` named route is absent, the default route is
+        /// selected, and that default route is already full.
+        /// Guarantees: default-route admission follows the same retryable
+        /// route-local NACK contract as named-route admission.
+        #[test]
+        fn test_metrics_default_metrics_full() {
+            let (rt, local) = setup_test_runtime();
+            rt.block_on(local.run_until(assert_full_rejection_for_route(
+                otap_df_config::SignalType::Metrics,
+                "out",
+                "signal_router_default_metrics_full",
+                89,
+            )));
         }
     }
 }
