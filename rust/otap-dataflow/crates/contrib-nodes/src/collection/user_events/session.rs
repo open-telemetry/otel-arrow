@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::collection::{
-    CollectedDrain, CollectedEvent, CollectInitError, EventSource, UserEventsSource,
+    CollectInitError, CollectedDrain, CollectedEvent, EventSource, UserEventsSource,
 };
 
 #[cfg(target_os = "linux")]
@@ -62,7 +62,15 @@ impl UserEventsSession {
             .with_page_count(page_count)
             .with_tracepoint_events(RingBufBuilder::for_tracepoint());
         for cpu in &config.cpu_ids {
-            builder = builder.with_target_cpu(*cpu as u16);
+            let cpu = u16::try_from(*cpu).map_err(|_| {
+                CollectInitError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "target CPU id `{cpu}` exceeds supported u16 range for one_collect user_events collection"
+                    ),
+                ))
+            })?;
+            builder = builder.with_target_cpu(cpu);
         }
 
         let mut session = builder.build().map_err(CollectInitError::Io)?;

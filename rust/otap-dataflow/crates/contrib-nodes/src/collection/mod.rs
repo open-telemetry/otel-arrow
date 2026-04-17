@@ -5,5 +5,5 @@ pub(crate) mod common;
 pub(crate) mod user_events;
 
 pub(crate) use common::{
-    CollectedDrain, CollectedEvent, CollectInitError, EventSource, UserEventsSource,
+    CollectInitError, CollectedDrain, CollectedEvent, EventSource, UserEventsSource,
 };

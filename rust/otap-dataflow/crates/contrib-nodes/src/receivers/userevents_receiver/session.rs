@@ -93,8 +93,10 @@ mod imp {
             };
             for event in drained.events {
                 if let EventSource::UserEvents(source) = event.source {
-                    let Some(subscription_index) =
-                        self.tracepoint_index.get(source.tracepoint.as_str()).copied()
+                    let Some(subscription_index) = self
+                        .tracepoint_index
+                        .get(source.tracepoint.as_str())
+                        .copied()
                     else {
                         stats.dropped_no_subscription += 1;
                         continue;
