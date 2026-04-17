@@ -59,9 +59,8 @@ use crate::pipeline::expr::{
     SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
-use crate::pipeline::project::{
-    ProjectedSchemaColumn, Projection, is_any_value_data_type, wrap_as_any_value_struct,
-};
+use crate::pipeline::project::anyval::{is_any_value_data_type, wrap_as_any_value_struct};
+use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
 
 /// Representation of assignment source and destination

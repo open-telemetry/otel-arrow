@@ -84,10 +84,10 @@ use crate::pipeline::expr::types::{
 };
 use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
-use crate::pipeline::project::{
-    Projection, ProjectionOptions, find_any_value_columns, project_any_value_columns,
-    stitch_partitioned_results,
+use crate::pipeline::project::anyval::{
+    find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
 };
+use crate::pipeline::project::{Projection, ProjectionOptions};
 
 pub(crate) mod join;
 pub(crate) mod types;
@@ -1305,8 +1305,6 @@ mod test {
         },
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
-
-    use otap_df_pdata::otlp::attributes::AttributeValueType;
 
     use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
     use crate::pipeline::Pipeline;
@@ -2948,92 +2946,6 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let result = run_scalar_expr_test(input_expr, &otap_batch);
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_null_propagation_empty_attributes() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(3)),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue { value: None }),
-                    KeyValue::new("k2", AnyValue { value: None }),
-                    KeyValue::new("k3", AnyValue::new_int(3)),
-                ])
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        // ensure the attribute values are what we expect
-        let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
-        let type_col = log_attrs
-            .column_by_name(consts::ATTRIBUTE_TYPE)
-            .unwrap()
-            .as_any()
-            .downcast_ref::<UInt8Array>()
-            .unwrap();
-        // assert_eq!(type_col.value(1), AttributeValueType::Empty as u8);
-        // assert_eq!(type_col.value(3), AttributeValueType::Empty as u8);
-
-        let result = run_scalar_expr_test(input_expr, &otap_batch);
-
-        println!("result = {result:?}");
-
-        // The old behavior returned None because try_project_attrs would see the first type
-        // value as Empty and bail out early. The new behavior correctly processes k2's
-        // non-empty rows (Int(7) for parent_id=1). Since k1 only exists for parent_id=0
-        // and k2's non-empty value is for parent_id=1, the join produces rows where one
-        // side is null, resulting in null values for the addition.
-        match result {
-            None => {} // acceptable: join found no data
-            Some(ColumnarValue::Array(arr)) => {
-                // All values should be null since k1 and k2 never co-exist for the same
-                // parent_id
-                assert_eq!(arr.null_count(), arr.len(), "expected all-null result");
-            }
-            Some(ColumnarValue::Scalar(scalar)) => {
-                assert!(scalar.is_null(), "expected null scalar result");
-            }
-        }
     }
 
     #[test]
