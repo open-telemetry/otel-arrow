@@ -783,10 +783,7 @@ groups:
         assert_eq!(HttpConfigProvider::backoff_for(1), Duration::from_secs(1));
         assert_eq!(HttpConfigProvider::backoff_for(2), Duration::from_secs(2));
         // Beyond ~7 attempts the 60s cap takes over.
-        assert_eq!(
-            HttpConfigProvider::backoff_for(20),
-            Duration::from_secs(60)
-        );
+        assert_eq!(HttpConfigProvider::backoff_for(20), Duration::from_secs(60));
         assert_eq!(
             HttpConfigProvider::backoff_for(u64::MAX),
             Duration::from_secs(60)
