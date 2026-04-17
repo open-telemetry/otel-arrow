@@ -24,7 +24,7 @@ use arrow::array::{
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::kernels::merge::merge;
-use arrow::compute::{and_not, cast, filter, max, take};
+use arrow::compute::{and_not, cast, filter, max, partition, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use async_trait::async_trait;
 use data_engine_expressions::QueryLocation;
@@ -1199,8 +1199,9 @@ fn decompose_any_value_upsert<'a>(
     any_value_arr: &ArrayRef,
     parent_ids: &UInt16Array,
 ) -> Result<Vec<AttributeUpsert<'a, UInt16Type>>> {
-    // TODO if there's only one values column, an optimization here is to keep that column
-    // and merge any empties into the null buffer ...
+    if any_value_arr.len() == 0 {
+        return Ok(Vec::new());
+    }
 
     let struct_arr = any_value_arr
         .as_any()
@@ -1221,6 +1222,41 @@ fn decompose_any_value_upsert<'a>(
         .ok_or_else(|| Error::ExecutionError {
             cause: "AnyValue 'type' field is not UInt8".into(),
         })?;
+
+    // check if all the values we're inserting actually have the same type. If so, we don't need to
+    // split apart the upsert into multiple for each type, which is faster and will be the common
+    // case if the source was an attributes with some given key
+    let partitions = partition(&[Arc::clone(new_type_col)])?;
+    if partitions.len() == 1 {
+        let attr_type = AttributeValueType::try_from(new_types.value(0)).map_err(|e| {
+            Error::ExecutionError {
+                cause: e.to_string(),
+            }
+        })?;
+        let values_col = match attr_type {
+            AttributeValueType::Bool => struct_arr.column_by_name(consts::ATTRIBUTE_BOOL),
+            AttributeValueType::Str => struct_arr.column_by_name(consts::ATTRIBUTE_STR),
+            AttributeValueType::Int => struct_arr.column_by_name(consts::ATTRIBUTE_INT),
+            AttributeValueType::Double => struct_arr.column_by_name(consts::ATTRIBUTE_DOUBLE),
+            AttributeValueType::Bytes => struct_arr.column_by_name(consts::ATTRIBUTE_BYTES),
+            AttributeValueType::Slice => struct_arr.column_by_name(consts::ATTRIBUTE_SER),
+            AttributeValueType::Map => struct_arr.column_by_name(consts::ATTRIBUTE_SER),
+            AttributeValueType::Empty => None,
+        };
+
+        let values_col = values_col
+            .cloned()
+            .unwrap_or_else(|| Arc::new(NullArray::new(struct_arr.len())));
+
+        // TODO we could avoid clones here if args were passed by value
+        return Ok(vec![AttributeUpsert {
+            attrs_key,
+            existing_key_mask: existing_key_mask.clone(),
+            new_values: ColumnarValue::Array(values_col),
+            upsert_parent_ids: parent_ids.clone(),
+        }]);
+    }
+
     let mut upserts = Vec::new();
 
     // Walk each value field in the struct (skip the `type` discriminant field itself).
