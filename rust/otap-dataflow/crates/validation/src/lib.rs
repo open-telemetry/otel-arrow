@@ -276,14 +276,15 @@ mod tests {
             .expect("log sampling ratio validation failed for signal_count=500");
     }
 
-    /// Validates the transform processor with a KQL filter query that keeps
-    /// only ERROR-severity logs. Static log signals have ~5% ERROR, ~15% WARN,
-    /// and ~80% INFO, so the vast majority should be dropped.
+    /// Tests the transform processor KQL `where ==` operation. Filters logs
+    /// keeping only ERROR-severity records. Static logs are ~5% ERROR, ~15%
+    /// WARN, ~80% INFO, so the vast majority should be dropped.
+    /// Query: `logs | where severity_text == "ERROR"`
     #[test]
-    fn validation_transform_processor_filter_pipeline() {
+    fn validation_transform_kql_where_eq() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/transform-kql-where-eq-processor.yaml")
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
@@ -309,7 +310,7 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor filter validation failed");
+            .expect("transform kql where-eq validation failed");
     }
 
     /// Validates the log sampling processor with a zip policy (max 50 items per
@@ -506,15 +507,18 @@ mod tests {
             .expect("log sampling full passthrough validation failed");
     }
 
-    /// Validates the transform processor with a negated KQL filter that drops
-    /// INFO-severity logs and keeps WARN + ERROR. Static log signals have ~80%
-    /// INFO so roughly 80% should be dropped.
+    /// Tests the transform processor KQL `where !=` operation. Filters logs
+    /// dropping INFO-severity records and keeping WARN + ERROR. Static logs
+    /// are ~80% INFO so roughly 80% should be dropped.
+    /// Query: `logs | where severity_text != "INFO"`
     #[test]
-    fn validation_transform_processor_not_filter_pipeline() {
+    fn validation_transform_kql_where_neq() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-not-filter-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
+                Pipeline::from_file(
+                    "./validation_pipelines/transform-kql-where-neq-processor.yaml",
+                )
+                .expect("failed to read pipeline yaml"),
             )
             .add_generator(
                 "traffic_gen",
@@ -539,18 +543,20 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor not-filter validation failed");
+            .expect("transform kql where-neq validation failed");
     }
 
-    /// Validates the transform processor with an OPL set query that adds a new
-    /// attribute to every log record. All logs should pass through (no
-    /// filtering) and the new attribute key must be present on every record.
+    /// Tests the transform processor OPL `set` operation on a signal attribute.
+    /// Adds a new `processed_by` attribute to every log record.
+    /// Query: `logs | set attributes["processed_by"] = "transform"`
     #[test]
-    fn validation_transform_processor_attribute_set_pipeline() {
+    fn validation_transform_opl_set_attribute() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-set-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
+                Pipeline::from_file(
+                    "./validation_pipelines/transform-opl-set-attribute-processor.yaml",
+                )
+                .expect("failed to read pipeline yaml"),
             )
             .add_generator(
                 "traffic_gen",
@@ -571,17 +577,17 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor attribute set validation failed");
+            .expect("transform opl set-attribute validation failed");
     }
 
-    /// Validates that the transform processor passes non-matching signal types
-    /// through unchanged. The query is scoped to `logs |`, so trace signals
-    /// should be forwarded with no modifications.
+    /// Tests the transform processor KQL signal scoping passthrough. The query
+    /// is scoped to `logs |`, so trace signals should be forwarded unchanged.
+    /// Query: `logs | where severity_text == "ERROR"` (KQL, but traces sent)
     #[test]
-    fn validation_transform_processor_passthrough_traces() {
+    fn validation_transform_kql_passthrough_traces() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/transform-kql-where-eq-processor.yaml")
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
@@ -601,18 +607,20 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor passthrough traces validation failed");
+            .expect("transform kql passthrough traces validation failed");
     }
 
-    /// Validates the transform processor with an OPL exclude query that removes
-    /// the `thread.id` attribute from every log record. The `thread.name`
-    /// attribute should still be present after the transform.
+    /// Tests the transform processor OPL `exclude` operation. Removes the
+    /// `thread.id` attribute from every log record while preserving `thread.name`.
+    /// Query: `logs | exclude attributes["thread.id"]`
     #[test]
-    fn validation_transform_processor_attribute_exclude() {
+    fn validation_transform_opl_exclude_attribute() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-exclude-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
+                Pipeline::from_file(
+                    "./validation_pipelines/transform-opl-exclude-attribute-processor.yaml",
+                )
+                .expect("failed to read pipeline yaml"),
             )
             .add_generator(
                 "traffic_gen",
@@ -640,18 +648,21 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor attribute exclude validation failed");
+            .expect("transform opl exclude-attribute validation failed");
     }
 
-    /// Validates the transform processor with an OPL rename query that renames
-    /// the `thread.id` attribute to `new_thread_id`. The old key must be absent
+    /// Tests the transform processor OPL `rename` operation. Renames the
+    /// `thread.id` attribute to `new_thread_id`. The old key must be absent
     /// and the new key must be present on every log record.
+    /// Query: `logs | rename attributes["new_thread_id"] = attributes["thread.id"]`
     #[test]
-    fn validation_transform_processor_attribute_rename() {
+    fn validation_transform_opl_rename_attribute() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-rename-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
+                Pipeline::from_file(
+                    "./validation_pipelines/transform-opl-rename-attribute-processor.yaml",
+                )
+                .expect("failed to read pipeline yaml"),
             )
             .add_generator(
                 "traffic_gen",
@@ -679,18 +690,21 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor attribute rename validation failed");
+            .expect("transform opl rename-attribute validation failed");
     }
 
-    /// Validates the transform processor with an OPL conditional (if/else) query
-    /// that sets `is_error` to `"true"` for ERROR logs and `"false"` for all
-    /// others. Every log record should have the `is_error` attribute.
+    /// Tests the transform processor OPL `if/else` conditional with `set`.
+    /// Sets `is_error` to `"true"` for ERROR logs and `"false"` for all others.
+    /// Every log record should have the `is_error` attribute regardless of
+    /// severity.
+    /// Query: `logs | if (severity_text == "ERROR") { set attributes["is_error"]
+    ///   = "true" } else { set attributes["is_error"] = "false" }`
     #[test]
-    fn validation_transform_processor_conditional_set() {
+    fn validation_transform_opl_conditional_set() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file(
-                    "./validation_pipelines/transform-conditional-set-processor.yaml",
+                    "./validation_pipelines/transform-opl-conditional-set-processor.yaml",
                 )
                 .expect("failed to read pipeline yaml"),
             )
@@ -714,18 +728,22 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor conditional set validation failed");
+            .expect("transform opl conditional-set validation failed");
     }
 
-    /// Validates the transform processor with chained OPL operations: first
-    /// adds a `processed` attribute, then removes the `thread.id` attribute.
-    /// Both transformations must be reflected in the output.
+    /// Tests the transform processor with chained OPL `set` + `exclude`
+    /// operations. First adds a `processed` attribute, then removes
+    /// `thread.id`. Both transformations must be reflected in the output.
+    /// Query: `logs | set attributes["processed"] = "yes" | exclude
+    ///   attributes["thread.id"]`
     #[test]
-    fn validation_transform_processor_chained_operations() {
+    fn validation_transform_opl_chained_set_exclude() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-chained-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
+                Pipeline::from_file(
+                    "./validation_pipelines/transform-opl-chained-set-exclude-processor.yaml",
+                )
+                .expect("failed to read pipeline yaml"),
             )
             .add_generator(
                 "traffic_gen",
@@ -753,18 +771,20 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor chained operations validation failed");
+            .expect("transform opl chained set+exclude validation failed");
     }
 
-    /// Validates the transform processor with an OPL set query targeting a
-    /// resource attribute. The `env` key with value `"test"` must be present
-    /// on every resource in the output.
+    /// Tests the transform processor OPL `set` operation on a resource
+    /// attribute. Adds `env` = `"test"` to every resource.
+    /// Query: `logs | set resource.attributes["env"] = "test"`
     #[test]
-    fn validation_transform_processor_resource_attribute_set() {
+    fn validation_transform_opl_set_resource_attribute() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/transform-resource-set-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
+                Pipeline::from_file(
+                    "./validation_pipelines/transform-opl-set-resource-attribute-processor.yaml",
+                )
+                .expect("failed to read pipeline yaml"),
             )
             .add_generator(
                 "traffic_gen",
@@ -786,7 +806,7 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("transform processor resource attribute set validation failed");
+            .expect("transform opl set-resource-attribute validation failed");
     }
 
     /// Validates that the temporal reaggregation processor passes log signals
@@ -992,6 +1012,81 @@ mod tests {
             )
             .run()
             .expect("temporal reaggregation resource preservation validation failed");
+    }
+
+    /// Validates that the temporal reaggregation processor preserves data point
+    /// attributes through the aggregation and flush cycle. Static metrics have
+    /// `http.method` and `http.route` on every data point, and these must be
+    /// present in the flushed output after deduplication.
+    #[test]
+    fn validation_temporal_reaggregation_metrics_attribute_preservation() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::metrics()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::AttributeRequireKeyValue {
+                        domains: vec![AttributeDomain::Signal],
+                        pairs: vec![
+                            KeyValue::new("http.method".into(), AnyValue::String("GET".into())),
+                            KeyValue::new("http.route".into(), AnyValue::String("/api".into())),
+                        ],
+                    }])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("temporal reaggregation metrics attribute preservation validation failed");
+    }
+
+    /// Validates that the temporal reaggregation processor preserves resource
+    /// attributes through the aggregation and flush cycle for metric signals.
+    /// Unlike `resource_preservation` which tests the passthrough path (logs),
+    /// this test exercises the aggregation path where metrics are buffered,
+    /// rebuilt by the builder, and flushed.
+    #[test]
+    fn validation_temporal_reaggregation_metrics_resource_attributes() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
+                    .expect("failed to read pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::metrics()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::AttributeRequireKeyValue {
+                        domains: vec![AttributeDomain::Resource],
+                        pairs: vec![KeyValue::new(
+                            "service.name".into(),
+                            AnyValue::String("load-generator".into()),
+                        )],
+                    }])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("temporal reaggregation metrics resource attributes validation failed");
     }
 
     #[test]
