@@ -226,7 +226,8 @@ impl AssignPipelineStage {
             // above, so the remaining types are all concrete and safe to expect here
             .expect("dest column data type");
 
-        // try to coerce AnyValue into a single column
+        // if we've received an AnyValue as the assignment source, but the destination is not an
+        // AnyValue, we coerce attempt to coerce it into a single value
         if let ColumnarValue::Array(values) = &eval_result.values {
             if is_any_value_data_type(values.data_type()) {
                 let coerced_value_col =
@@ -565,9 +566,9 @@ impl AssignPipelineStage {
             self.id_bitmap_pool.release(update_parent_id_set);
             let parent_ids = UInt16Array::from(parent_ids);
 
-            // Attempt to coerce the AnyValue into a single column. We do this as an optimization.
-            // This makes the join faster because we can take fewer columns, and it also makes it
-            // so we avoid entering decompose_any_value_upsert upsert
+            // Attempt to coerce the AnyValue into a single column. In this case, we do this as an
+            // optimization: this makes the join faster because we can take fewer columns, and it
+            // also makes it so we avoid entering `decompose_any_value_upsert` upsert.
             if let ColumnarValue::Array(ref arr) = eval_result.values {
                 if is_any_value_data_type(arr.data_type()) {
                     let coerced_value_col =
@@ -622,9 +623,9 @@ impl AssignPipelineStage {
                 ColumnarValue::Array(take(&result_values, &vals_take_indices, None)?)
             };
 
-            // If the expression produced an AnyValue struct (mixed types across partitions),
-            // decompose it into one AttributeUpsert per distinct value type so that
-            // upsert_attributes sees only concrete, single-typed values.
+            // If the expression produced an AnyValue struct and we were not already able to
+            // coerce it into a single array of a single concrete type array, we split the upsert
+            // for this attribute into multiple upserts for each type:
             if let ColumnarValue::Array(ref arr) = aligned_values {
                 if is_any_value_data_type(arr.data_type()) {
                     let type_filled_arr = fill_null_type_as_empty(arr)?;
@@ -736,6 +737,8 @@ impl AssignPipelineStage {
             }
         };
 
+        // If we've created a new column, it won't have the metadata indicating the Id column is
+        // not delta encoded. Insert the metadata here if it is needed:
         let mut batch_with_new_ids = try_upsert_column(consts::ID, new_ids, root_record_batch)?;
         let schema = batch_with_new_ids.schema_ref().as_ref();
         if get_field_metadata(schema, consts::ID, metadata::COLUMN_ENCODING).is_none() {
@@ -1195,7 +1198,7 @@ impl NextIdTracker {
 /// types, producing different output types), we cannot pass it directly to `upsert_attributes`
 /// which expects a single concrete typed value. Instead we split by type discriminant:
 ///
-/// For each value field in the struct (e.g. `str`, `int`, `double`):
+/// For each value field in the struct (e.g. `str`, `int`, `double`, `empty`):
 ///
 /// 1. Build a type-specific `existing_key_mask` by ANDing the original key mask with
 ///    `existing_type_col == discriminant`. This ensures the sub-upserts have non-overlapping
@@ -1204,6 +1207,7 @@ impl NextIdTracker {
 /// 2. Filter `parent_ids` to only those whose new value has this discriminant.
 ///
 /// 3. Extract the concrete value column for this type from the struct.
+///
 fn decompose_any_value_upsert<'a>(
     attrs_key: &'a str,
     existing_key_mask: &BooleanArray,
@@ -1660,15 +1664,17 @@ fn coerce_to_any_value_struct_column(values: ArrayRef) -> Result<ArrayRef> {
 /// values type. If the passed array contains multiple types, the original array is returned
 /// because coercion was not successful.
 fn attempt_coerce_value_column_from_any_value_struct_column(values: &ArrayRef) -> Result<ArrayRef> {
-    // TODO clean this up
+    // build a temporary record batch containing the column to maybe partition by type
     let rb = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new(
-            "_tmp",
+            "",
             values.data_type().clone(),
             true,
         )])),
         vec![Arc::clone(values)],
     )?;
+
+    // attempt to partition the AnyValue column by type
     let partitions = project_any_value_columns(&rb, &[0])?;
     let result = if partitions.len() == 1 {
         partitions[0].batch.column(0)
