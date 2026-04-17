@@ -20,6 +20,7 @@ use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
+use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
 use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
@@ -234,6 +235,13 @@ impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
 }
 
 impl<PData: Debug + 'static> TestPhase<PData> {
+    /// Sets a capture policy on the receiver wrapper for transport header testing.
+    #[must_use]
+    pub fn with_capture_policy(mut self, policy: Option<HeaderCapturePolicy>) -> Self {
+        self.receiver = self.receiver.with_capture_policy(policy);
+        self
+    }
+
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where
