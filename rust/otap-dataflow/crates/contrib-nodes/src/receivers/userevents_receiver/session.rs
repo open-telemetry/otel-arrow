@@ -13,7 +13,7 @@ mod imp {
 
     use tokio::time;
 
-    use crate::collection::one_collect_adapter::{
+    use super::one_collect_adapter::{
         CollectInitError, EventSource, OneCollectUserEventsSession, UserEventsSessionConfig,
         UserEventsSubscription,
     };

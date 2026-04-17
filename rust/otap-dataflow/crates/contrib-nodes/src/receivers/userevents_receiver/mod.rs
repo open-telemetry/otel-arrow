@@ -8,6 +8,7 @@
 mod arrow_records_encoder;
 mod decoder;
 mod metrics;
+mod one_collect_adapter;
 mod session;
 
 use std::cell::RefCell;

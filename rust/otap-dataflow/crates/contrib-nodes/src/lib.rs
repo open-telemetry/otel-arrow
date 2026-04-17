@@ -3,12 +3,6 @@
 
 //! Implementation of the Contrib nodes (receiver, exporter, processor).
 
-#[cfg(all(
-    feature = "userevents-receiver",
-    any(target_os = "linux", target_os = "windows")
-))]
-mod collection;
-
 /// Exporter implementations for contrib nodes.
 pub mod exporters;
 
