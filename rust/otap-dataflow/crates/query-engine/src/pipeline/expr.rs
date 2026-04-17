@@ -936,6 +936,14 @@ impl ScopedPhysicalExpr {
                 let right_result = right.execute(otap_batch, session_context)?;
                 match (left_result, right_result) {
                     (Some(left_result), Some(right_result)) => {
+                        println!(
+                            "left = {:?}, parent_ids = {:?}",
+                            left_result.values, left_result.parent_ids
+                        );
+                        println!(
+                            "right = {:?}, parent_ids = {:?}",
+                            right_result.values, right_result.parent_ids
+                        );
                         let (joined_rb, result_data_scope) =
                             join(&left_result, &right_result, otap_batch)?;
                         (Some(Cow::Owned(joined_rb)), result_data_scope)
@@ -989,16 +997,9 @@ impl ScopedPhysicalExpr {
             self.evaluate_on_batch(session_context, &projected_rb)?
         } else {
             let partitions = project_any_value_columns(&projected_rb, &any_value_indices)?;
+            println!("partitions = {:?}", partitions);
 
-            // TODO: This logic needs to be revisited. When all partitions are empty (all rows
-            // have Empty type), returning None may not be the correct semantic — it conflates
-            // "attribute key doesn't exist" with "attribute exists but all values are empty".
-            // Additionally, the interaction with joins when one side has empty partitions needs
-            // more thought (see test_null_propagation_empty_attributes).
-            if partitions.is_empty() {
-                // All AnyValue rows were empty (type=0) — no values to evaluate
-                return Ok(None);
-            } else if partitions.len() == 1 {
+            if partitions.len() == 1 {
                 // All AnyValue columns were uniform — single partition, evaluate directly
                 let partition = partitions.into_iter().next().expect("non-empty");
                 let batch = Self::maybe_downcast_dicts(partition.batch, &self.projection_opts)?;
@@ -1014,6 +1015,8 @@ impl ScopedPhysicalExpr {
                     let result_arr = result.into_array(batch.num_rows())?;
                     partition_results.push((result_arr, partition.original_row_ranges));
                 }
+
+                println!("{:?}", partition_results);
 
                 let stitched = stitch_partitioned_results(partition_results, total_rows)?;
                 ColumnarValue::Array(stitched)
@@ -2947,13 +2950,7 @@ mod test {
         assert!(result.is_none());
     }
 
-    // TODO: this test relied on the old try_project_attrs behavior where the first type value
-    // being Empty would cause the entire attribute lookup to return None. With the new AnyValue
-    // struct projection, non-empty rows are correctly preserved. The test expectations need to
-    // be reworked to account for the new semantics where Empty-type attribute rows are skipped
-    // but non-empty rows for the same key are still evaluated.
     #[test]
-    #[ignore]
     fn test_null_propagation_empty_attributes() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -2991,13 +2988,14 @@ mod test {
             LogRecord::build()
                 .attributes(vec![
                     KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue { value: None }),
+                    KeyValue::new("k2", AnyValue::new_int(3)),
                 ])
                 .finish(),
             LogRecord::build()
                 .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(7)),
+                    KeyValue::new("k1", AnyValue { value: None }),
                     KeyValue::new("k2", AnyValue { value: None }),
+                    KeyValue::new("k3", AnyValue::new_int(3)),
                 ])
                 .severity_text("DEBUG")
                 .finish(),
@@ -3013,10 +3011,12 @@ mod test {
             .as_any()
             .downcast_ref::<UInt8Array>()
             .unwrap();
-        assert_eq!(type_col.value(1), AttributeValueType::Empty as u8);
-        assert_eq!(type_col.value(3), AttributeValueType::Empty as u8);
+        // assert_eq!(type_col.value(1), AttributeValueType::Empty as u8);
+        // assert_eq!(type_col.value(3), AttributeValueType::Empty as u8);
 
         let result = run_scalar_expr_test(input_expr, &otap_batch);
+
+        println!("result = {result:?}");
 
         // The old behavior returned None because try_project_attrs would see the first type
         // value as Empty and bail out early. The new behavior correctly processes k2's

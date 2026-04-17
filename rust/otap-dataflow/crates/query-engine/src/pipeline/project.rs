@@ -7,8 +7,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, MutableArrayData, RecordBatch, RecordBatchOptions, StructArray, UInt8Array,
-    UInt8Builder, make_array,
+    Array, ArrayRef, MutableArrayData, NullArray, RecordBatch, RecordBatchOptions, StructArray,
+    UInt8Array, UInt8Builder, make_array,
 };
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};
@@ -433,21 +433,23 @@ fn any_value_type_to_column_name(type_val: AttributeValueType) -> Result<&'stati
 ///
 /// This is the reverse of [`any_value_type_to_column_name`] — given an expression result's
 /// Arrow type, determine which AnyValue field it belongs in.
-fn arrow_type_to_any_value_type(dt: &DataType) -> Result<(AttributeValueType, &'static str)> {
+fn arrow_type_to_any_value_type(
+    dt: &DataType,
+) -> Result<(AttributeValueType, Option<&'static str>)> {
     match dt {
         DataType::Utf8 | DataType::LargeUtf8 => {
-            Ok((AttributeValueType::Str, consts::ATTRIBUTE_STR))
+            Ok((AttributeValueType::Str, Some(consts::ATTRIBUTE_STR)))
         }
         DataType::Dictionary(_, v)
             if matches!(v.as_ref(), DataType::Utf8 | DataType::LargeUtf8) =>
         {
-            Ok((AttributeValueType::Str, consts::ATTRIBUTE_STR))
+            Ok((AttributeValueType::Str, Some(consts::ATTRIBUTE_STR)))
         }
         DataType::Dictionary(_, v) if v.is_integer() => {
-            Ok((AttributeValueType::Int, consts::ATTRIBUTE_INT))
+            Ok((AttributeValueType::Int, Some(consts::ATTRIBUTE_INT)))
         }
         DataType::Dictionary(_, v) if v.is_binary() => {
-            Ok((AttributeValueType::Bytes, consts::ATTRIBUTE_BYTES))
+            Ok((AttributeValueType::Bytes, Some(consts::ATTRIBUTE_BYTES)))
         }
         // TODO replace w/ is_integer()
         DataType::Int8
@@ -457,16 +459,17 @@ fn arrow_type_to_any_value_type(dt: &DataType) -> Result<(AttributeValueType, &'
         | DataType::UInt8
         | DataType::UInt16
         | DataType::UInt32
-        | DataType::UInt64 => Ok((AttributeValueType::Int, consts::ATTRIBUTE_INT)),
+        | DataType::UInt64 => Ok((AttributeValueType::Int, Some(consts::ATTRIBUTE_INT))),
 
         // TODO replace with is_float()?
         DataType::Float16 | DataType::Float32 | DataType::Float64 => {
-            Ok((AttributeValueType::Double, consts::ATTRIBUTE_DOUBLE))
+            Ok((AttributeValueType::Double, Some(consts::ATTRIBUTE_DOUBLE)))
         }
-        DataType::Boolean => Ok((AttributeValueType::Bool, consts::ATTRIBUTE_BOOL)),
+        DataType::Boolean => Ok((AttributeValueType::Bool, Some(consts::ATTRIBUTE_BOOL))),
         DataType::Binary | DataType::LargeBinary => {
-            Ok((AttributeValueType::Bytes, consts::ATTRIBUTE_BYTES))
+            Ok((AttributeValueType::Bytes, Some(consts::ATTRIBUTE_BYTES)))
         }
+        DataType::Null => Ok((AttributeValueType::Empty, None)),
         other => Err(Error::ExecutionError {
             cause: format!("cannot map Arrow type {:?} to an AnyValue field", other),
         }),
@@ -502,11 +505,23 @@ pub(crate) fn wrap_as_any_value_struct(values: &ArrayRef) -> Result<ArrayRef> {
 
     let type_arr: ArrayRef = Arc::new(UInt8Array::from(types));
 
-    let fields = vec![
-        Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
-        Arc::new(Field::new(field_name, values.data_type().clone(), true)),
-    ];
-    let columns = vec![type_arr, Arc::clone(values)];
+    let mut fields = vec![Arc::new(Field::new(
+        consts::ATTRIBUTE_TYPE,
+        DataType::UInt8,
+        false,
+    ))];
+    let mut columns = vec![type_arr];
+
+    // if this attribute type represents a column (e.g. if it's not a Null array representing
+    // empty attributes), push the values field and column
+    if let Some(field_name) = field_name {
+        fields.push(Arc::new(Field::new(
+            field_name,
+            values.data_type().clone(),
+            true,
+        )));
+        columns.push(Arc::clone(values))
+    }
 
     let struct_arr = StructArray::try_new(fields.into(), columns, nulls)?;
     Ok(Arc::new(struct_arr))
@@ -536,8 +551,10 @@ fn replace_single_any_value_with_concrete(
             ),
         })?;
 
-    let sub_col_name = any_value_type_to_column_name(type_val)?;
-    let concrete_col =
+    let concrete_col = if type_val == AttributeValueType::Empty {
+        Arc::new(NullArray::new(batch.num_rows()))
+    } else {
+        let sub_col_name = any_value_type_to_column_name(type_val)?;
         struct_arr
             .column_by_name(sub_col_name)
             .ok_or_else(|| Error::ExecutionError {
@@ -546,7 +563,9 @@ fn replace_single_any_value_with_concrete(
                     struct_field.name(),
                     sub_col_name,
                 ),
-            })?;
+            })?
+            .clone()
+    };
 
     // Build new fields/columns, replacing the struct column at col_idx
     let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len());
@@ -662,6 +681,7 @@ fn map_local_ranges_to_original(
 
 /// A partition of the original batch where all AnyValue columns have been resolved to
 /// concrete typed columns.
+#[derive(Debug)]
 pub(crate) struct AnyValuePartitionedBatch {
     pub batch: RecordBatch,
     /// Row ranges in the *original* (pre-split) batch that this partition covers.
@@ -703,14 +723,11 @@ pub(crate) fn project_any_value_columns(
             }
 
             let type_array = extract_type_from_any_value_struct(partition.batch.column(col_idx))?;
+            println!("type_array = {:?}", type_array);
             let distribution = compute_type_distribution(&type_array)?;
 
             match distribution {
                 AnyValueTypeDistribution::Uniform(type_val) => {
-                    if matches!(type_val, AttributeValueType::Empty) {
-                        // All rows are empty — skip this partition
-                        continue;
-                    }
                     let updated = replace_single_any_value_with_concrete(
                         &partition.batch,
                         col_idx,
@@ -723,9 +740,6 @@ pub(crate) fn project_any_value_columns(
                 }
                 AnyValueTypeDistribution::Mixed(type_groups) => {
                     for (type_val, local_ranges) in type_groups {
-                        if matches!(type_val, AttributeValueType::Empty) {
-                            continue;
-                        }
                         let sub_batch = slice_batch_by_ranges(&partition.batch, &local_ranges)?;
                         let concrete =
                             replace_single_any_value_with_concrete(&sub_batch, col_idx, type_val)?;
@@ -853,7 +867,7 @@ fn stitch_as_any_value_struct(
     total_rows: usize,
 ) -> Result<ArrayRef> {
     // Map each partition to its AnyValue type info.
-    let partition_type_info: Vec<(AttributeValueType, &'static str)> = partition_results
+    let partition_type_info: Vec<(AttributeValueType, Option<&'static str>)> = partition_results
         .iter()
         .map(|(arr, _)| arrow_type_to_any_value_type(arr.data_type()))
         .collect::<Result<_>>()?;
@@ -862,8 +876,10 @@ fn stitch_as_any_value_struct(
     // We'll create one value column per distinct field name.
     let mut distinct_fields: Vec<(&'static str, AttributeValueType)> = Vec::new();
     for &(type_val, field_name) in &partition_type_info {
-        if !distinct_fields.iter().any(|(n, _)| *n == field_name) {
-            distinct_fields.push((field_name, type_val));
+        if let Some(field_name) = field_name {
+            if !distinct_fields.iter().any(|(n, _)| *n == field_name) {
+                distinct_fields.push((field_name, type_val));
+            }
         }
     }
 
@@ -908,7 +924,7 @@ fn stitch_as_any_value_struct(
         let matching_partitions: SmallVec<[usize; 4]> = partition_type_info
             .iter()
             .enumerate()
-            .filter(|(_, (_, name))| name == field_name)
+            .filter(|(_, (_, name))| name == &Some(*field_name))
             .map(|(idx, _)| idx)
             .collect();
 
@@ -1569,7 +1585,7 @@ mod test {
         for (dt, expected_type, expected_name) in cases {
             let (type_val, name) = arrow_type_to_any_value_type(&dt).unwrap();
             assert_eq!(type_val, expected_type, "failed for {:?}", dt);
-            assert_eq!(name, expected_name, "failed for {:?}", dt);
+            assert_eq!(name, Some(expected_name), "failed for {:?}", dt);
         }
     }
 
