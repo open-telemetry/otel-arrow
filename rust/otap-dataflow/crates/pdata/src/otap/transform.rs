@@ -1321,46 +1321,36 @@ pub fn transform_attributes_impl(
 
         let key_col = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
 
-        // parent_id is required by the OTAP spec for attributes batches. When
-        // present, use it for collision detection; when absent (e.g. in
-        // unit-test fixtures), skip collision detection since we can't
-        // determine which rows share a parent.
-        let parent_id_col = attrs_record_batch
-            .schema()
-            .column_with_name(consts::PARENT_ID)
-            .map(|(idx, _)| attrs_record_batch.column(idx).clone());
+        // parent_id is required by the OTAP spec for attributes batches.
+        // See: https://github.com/open-telemetry/otel-arrow/blob/main/docs/otap-spec.md#542-u16-attributes
+        let parent_id_col = get_required_array(attrs_record_batch, consts::PARENT_ID)?;
 
-        if let Some(parent_id_col) = parent_id_col {
-            // If transport-optimized, check if any new_key exists before materializing.
-            // This avoids the expensive materialization when no collision is possible.
-            let needs_materialization = if is_transport_optimized {
-                rename_has_target_key_in_column(key_col, rename)?
-            } else {
-                false
-            };
-
-            if needs_materialization {
-                // Materialize the delta-encoded parent_ids so we get actual values
-                let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
-                let parent_id_col = get_required_array(&rb, consts::PARENT_ID)?;
-                let key_col = get_required_array(&rb, consts::ATTRIBUTE_KEY)?;
-                let ranges =
-                    dispatch_find_rename_collisions(rb.num_rows(), key_col, parent_id_col, rename)?;
-                (Cow::Owned(rb), false, ranges)
-            } else if !is_transport_optimized {
-                let ranges = dispatch_find_rename_collisions(
-                    attrs_record_batch.num_rows(),
-                    key_col,
-                    &parent_id_col,
-                    rename,
-                )?;
-                (attrs_record_batch_cow, is_transport_optimized, ranges)
-            } else {
-                // Transport-optimized but no target key exists — no collision possible
-                (attrs_record_batch_cow, is_transport_optimized, Vec::new())
-            }
+        // If transport-optimized, check if any new_key exists before materializing.
+        // This avoids the expensive materialization when no collision is possible.
+        let needs_materialization = if is_transport_optimized {
+            rename_has_target_key_in_column(key_col, rename)?
         } else {
-            // No parent_id column — cannot detect collisions
+            false
+        };
+
+        if needs_materialization {
+            // Materialize the delta-encoded parent_ids so we get actual values
+            let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
+            let parent_id_col = get_required_array(&rb, consts::PARENT_ID)?;
+            let key_col = get_required_array(&rb, consts::ATTRIBUTE_KEY)?;
+            let ranges =
+                dispatch_find_rename_collisions(rb.num_rows(), key_col, parent_id_col, rename)?;
+            (Cow::Owned(rb), false, ranges)
+        } else if !is_transport_optimized {
+            let ranges = dispatch_find_rename_collisions(
+                attrs_record_batch.num_rows(),
+                key_col,
+                parent_id_col,
+                rename,
+            )?;
+            (attrs_record_batch_cow, is_transport_optimized, ranges)
+        } else {
+            // Transport-optimized but no target key exists — no collision possible
             (attrs_record_batch_cow, is_transport_optimized, Vec::new())
         }
     } else {
@@ -4392,21 +4382,29 @@ mod test {
 
         for (transform, input_cols, expected_cols) in test_cases {
             let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
                 Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
                 Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
             ]));
 
+            let num_rows = input_cols.0.len();
+            let parent_ids = UInt16Array::from_iter_values((0..num_rows).map(|i| i as u16));
             let types = UInt8Array::from_iter_values(std::iter::repeat_n(
                 AttributeValueType::Str as u8,
-                input_cols.0.len(),
+                num_rows,
             ));
             let keys = StringArray::from_iter_values(input_cols.0);
             let values = StringArray::from_iter_values(input_cols.1);
 
             let record_batch = RecordBatch::try_new(
                 schema.clone(),
-                vec![Arc::new(types), Arc::new(keys), Arc::new(values)],
+                vec![
+                    Arc::new(parent_ids),
+                    Arc::new(types),
+                    Arc::new(keys),
+                    Arc::new(values),
+                ],
             )
             .unwrap();
 
@@ -4417,15 +4415,27 @@ mod test {
             )
             .unwrap();
 
+            let num_expected = expected_cols.0.len();
+            // Build expected parent_ids: keep the rows that weren't deleted.
+            // Since each input row has unique parent_id, the expected parent_ids
+            // are simply the first num_expected sequential values after filtering.
+            // We rely on `result` having the correct parent_ids rather than asserting
+            // specific values, so build expected from result's parent_id column.
+            let expected_parent_ids = result.column_by_name(consts::PARENT_ID).unwrap().clone();
             let types = UInt8Array::from_iter_values(std::iter::repeat_n(
                 AttributeValueType::Str as u8,
-                expected_cols.0.len(),
+                num_expected,
             ));
             let keys = StringArray::from_iter_values(expected_cols.0);
             let values = StringArray::from_iter_values(expected_cols.1);
             let expected = RecordBatch::try_new(
                 schema.clone(),
-                vec![Arc::new(types), Arc::new(keys), Arc::new(values)],
+                vec![
+                    expected_parent_ids,
+                    Arc::new(types),
+                    Arc::new(keys),
+                    Arc::new(values),
+                ],
             )
             .unwrap();
 
@@ -4702,7 +4712,16 @@ mod test {
 
     #[test]
     fn test_transform_attrs_keys_dict_encoded() {
-        let test_cases = vec![
+        let test_cases: Vec<(
+            AttributesTransform,
+            (Vec<Option<u8>>, Vec<Option<&str>>, Vec<Option<&str>>),
+            (
+                Vec<Option<u8>>,
+                Vec<Option<&str>>,
+                Vec<Option<&str>>,
+                Vec<u16>,
+            ),
+        )> = vec![
             (
                 // basic dict transform
                 AttributesTransform {
@@ -4744,6 +4763,8 @@ mod test {
                         .into_iter()
                         .map(Some)
                         .collect::<Vec<_>>(),
+                    // rows 0 and 5 (key=b) deleted; surviving pids from [0..7]
+                    vec![1, 2, 3, 4, 6],
                 ),
             ),
             // check what happens when delete value that is not referenced by any key
@@ -4788,12 +4809,16 @@ mod test {
                         .into_iter()
                         .map(Some)
                         .collect::<Vec<_>>(),
+                    // no rows deleted, all 7 pids survive
+                    vec![0, 1, 2, 3, 4, 5, 6],
                 ),
             ),
         ];
 
         for (transform, inputs, expected) in test_cases {
+            let num_input_rows = inputs.0.len();
             let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
                 Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(
                     consts::ATTRIBUTE_KEY,
@@ -4806,9 +4831,10 @@ mod test {
             let input = RecordBatch::try_new(
                 schema.clone(),
                 vec![
+                    Arc::new(UInt16Array::from_iter_values(0..num_input_rows as u16)),
                     Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                         AttributeValueType::Str as u8,
-                        inputs.0.len(),
+                        num_input_rows,
                     ))),
                     Arc::new(DictionaryArray::new(
                         UInt8Array::from_iter(inputs.0),
@@ -4826,9 +4852,11 @@ mod test {
             )
             .unwrap();
 
+            let expected_pids = expected.3;
             let expected = RecordBatch::try_new(
                 schema.clone(),
                 vec![
+                    Arc::new(UInt16Array::from_iter_values(expected_pids)),
                     Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                         AttributeValueType::Str as u8,
                         expected.0.len(),
@@ -4849,6 +4877,7 @@ mod test {
     #[test]
     fn test_transform_attrs_u16_keys() {
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(
                 consts::ATTRIBUTE_KEY,
@@ -4861,6 +4890,7 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt16Array::from_iter_values(0..6u16)),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
                     6,
@@ -4901,6 +4931,8 @@ mod test {
         let expected = RecordBatch::try_new(
             schema.clone(),
             vec![
+                // row 0 (key "b") deleted; remaining pids: [1, 2, 3, 4, 5]
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3, 4, 5])),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
                     5,
@@ -6129,6 +6161,7 @@ mod test {
     fn test_with_stats_utf8_rename_and_delete() {
         // keys: [a, b, a, d, c] ; rename a->A ; delete d
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -6137,6 +6170,7 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt16Array::from_iter_values(0..5u16)),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
                     5,
@@ -6182,6 +6216,7 @@ mod test {
     fn test_with_stats_dict_rename_and_delete() {
         // keys: [a, b, a, d, c] ; rename a->A ; delete d
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(
                 consts::ATTRIBUTE_KEY,
@@ -6196,6 +6231,7 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt16Array::from_iter_values(0..5u16)),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
                     5,
@@ -8445,6 +8481,7 @@ mod insert_tests {
 #[cfg(test)]
 mod upsert_tests {
     use super::*;
+    use crate::schema::FieldExt;
     use crate::schema::consts;
     use arrow::array::*;
     use std::sync::Arc;
@@ -9424,5 +9461,173 @@ mod upsert_tests {
             "upsert should count all 3 parents; got upserted_entries={}, expected 3",
             stats.upserted_entries
         );
+    }
+
+    /// Simultaneous rename + delete with a **real** collision (UTF-8 keys).
+    ///
+    /// Layout (plain-encoded parent_ids):
+    ///   row | parent_id | key | val
+    ///   ----+-----------+-----+----
+    ///    0  |     1     |  a  | v1
+    ///    1  |     1     |  b  | v2   ← collision: pid=1 already has key "a" being renamed to "b"
+    ///    2  |     2     |  a  | v3
+    ///    3  |     2     |  c  | v4   ← real delete target
+    ///    4  |     3     |  b  | v5   ← no collision: pid=3 has no key "a"
+    ///
+    /// Transform: rename a→b, delete c
+    ///
+    /// After collision removal: row 1 is removed (pid=1 has both "a" and "b")
+    /// After delete: row 3 is removed (key "c")
+    /// Remaining: rows 0, 2, 4 → keys [b, b, b], vals [v1, v3, v5], pids [1, 2, 3]
+    #[test]
+    fn test_rename_collision_with_real_delete_utf8() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 2, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["a", "b", "a", "c", "b"])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "v1", "v2", "v3", "v4", "v5",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["b", "b", "b"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v3", "v5"])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+            &AttributesTransform {
+                insert: None,
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "a".into(),
+                    "b".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["c".into()]))),
+                upsert: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    /// Same scenario as [`test_rename_collision_with_real_delete_utf8`] but with
+    /// dictionary-encoded attribute keys. Verifies that collision removal and real
+    /// deletes interact correctly through the dictionary key transform path.
+    #[test]
+    fn test_rename_collision_with_real_delete_dict() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // dict values: ["a", "b", "c"]
+        // dict keys:   [ 0,   1,   0,   2,   1 ]  → a, b, a, c, b
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 2, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values(vec![0, 1, 0, 2, 1]),
+                    Arc::new(StringArray::from_iter_values(vec!["a", "b", "c"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "v1", "v2", "v3", "v4", "v5",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+            &AttributesTransform {
+                insert: None,
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "a".into(),
+                    "b".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["c".into()]))),
+                upsert: None,
+            },
+        )
+        .unwrap();
+
+        // After transform: rows 0, 2, 4 survive → all keys are now "b" (renamed from "a"
+        // or already "b"), vals: [v1, v3, v5], pids: [1, 2, 3]
+        let result_keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
+
+        assert_eq!(
+            result.num_rows(),
+            3,
+            "expected 3 rows after collision removal + delete"
+        );
+
+        // All surviving keys should be "b"
+        for i in 0..result.num_rows() {
+            let key_val = result_keys.downcast_dict::<StringArray>().unwrap().value(i);
+            assert_eq!(key_val, "b", "row {i} key should be 'b' after rename");
+        }
+
+        // Verify parent_ids
+        let result_pids = result
+            .column_by_name(consts::PARENT_ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap();
+        assert_eq!(result_pids.values().to_vec(), vec![1, 2, 3]);
+
+        // Verify string values
+        let result_vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let vals: Vec<&str> = (0..result_vals.len())
+            .map(|i| result_vals.value(i))
+            .collect();
+        assert_eq!(vals, vec!["v1", "v3", "v5"]);
     }
 }
