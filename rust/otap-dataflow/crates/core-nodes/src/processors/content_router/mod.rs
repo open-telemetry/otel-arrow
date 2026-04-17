@@ -10,7 +10,7 @@
 //!
 //! # Example Use Case
 //!
-//! Multi-tenant routing where each tenant's data goes to a dedicated exporter:
+//! Value-based routing where each matched route goes to a dedicated exporter:
 //!
 //! ```yaml
 //! processors:
@@ -49,8 +49,14 @@
 //! - a selected route that is closed is rejected immediately with a retryable
 //!   route-local NACK
 //!
+//! This is better than the previous awaited-send behaviour because the router
+//! processes input serially. Waiting on one blocked selected route created
+//! head-of-line blocking in the router task, so unrelated routes could stop
+//! making progress behind the stalled send. Non-blocking admission keeps that
+//! failure isolated to the selected route.
+//!
 //! The processor still returns `Ok(())` after those route-local rejections so a
-//! blocked tenant route cannot stall unrelated healthy routes.
+//! blocked route cannot stall unrelated healthy routes.
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -594,7 +600,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                 match resolution {
                     RouteResolution::Matched(port) => {
                         // Named-route admission is non-blocking so a blocked
-                        // tenant route cannot stall the whole router task.
+                        // selected route cannot stall the whole router task.
                         let admission = effect_handler
                             .try_admit_message_with_source_node_to(port.clone(), data)
                             .map_err(EngineError::from)?;
@@ -2019,8 +2025,8 @@ mod tests {
             }));
         }
 
-        /// Scenario: one matched tenant route is saturated while another
-        /// matched tenant route is healthy.
+        /// Scenario: one matched route is saturated while another matched
+        /// route is healthy.
         /// Guarantees: rejection on the blocked route does not stall the
         /// healthy route, and the router continues forwarding unrelated
         /// traffic.

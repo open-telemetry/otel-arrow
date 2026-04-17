@@ -21,6 +21,12 @@
 //! - a selected route that is closed is rejected immediately with a retryable
 //!   route-local NACK
 //!
+//! This is better than the previous awaited-send behaviour because the router
+//! processes input serially. Waiting on one blocked signal-specific route
+//! created head-of-line blocking in the router task, so other healthy signal
+//! types could stop making progress behind that stalled send. Non-blocking
+//! admission keeps the failure local to the selected route.
+//!
 //! The processor still returns `Ok(())` after those route-local rejections so a
 //! blocked signal-specific route does not stall traffic for other signal types.
 //!

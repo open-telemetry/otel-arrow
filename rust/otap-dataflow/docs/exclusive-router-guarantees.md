@@ -105,12 +105,12 @@ For `content_router`, one plausible future configuration shape would be:
 
 ```yaml
 config:
-  routing_key:
-    resource_attribute: service.namespace
-  routes:
-    tenant-a: tenant_a
-    tenant-b: tenant_b
-    tenant-c: tenant_c
+    routing_key:
+      resource_attribute: service.namespace
+    routes:
+      service-a: service_a
+      service-b: service_b
+      service-c: service_c
   default_output: unmatched
   admission_policy:
     on_blocked_route: reject_immediately
