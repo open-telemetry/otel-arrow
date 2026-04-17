@@ -110,29 +110,32 @@ Intended for payloads produced by
 
 Current behavior:
 
-- maps severity from the tracepoint level suffix, such as `_L2K1`
-- promotes a default Common Schema event name of `Log`
-- emits Common Schema-prefixed attributes like `cs.__csver__` and
-  `cs.part_b.*`
-- attempts simple UTF-8 extraction of `name=` and `message=` or `body=`
-  pairs when present
-
-Full binary Common Schema and EventHeader decoding is still future work.
+- decodes EventHeader-encoded Common Schema log payloads
+- promotes `event_name`, `severityNumber`, `severityText`, `body`, and
+  `eventId` from Common Schema PartB
+- maps PartA fields including timestamp, trace/span context, and service
+  metadata when present
+- flattens eligible PartC scalar attributes into emitted log attributes
+- falls back to preserving the payload as base64-encoded data when Common
+  Schema decoding fails
 
 ### `eventheader_flat`
 
 Intended for generic EventHeader-based producers.
 
-Current behavior is conservative. It records the decode mode and flatten prefix
-but does not yet perform full field extraction from EventHeader payload bytes.
+Current behavior decodes EventHeader payload bytes to JSON and flattens the
+result into attributes using the configured prefix. Richer typed promotions and
+semantic mapping are still future work.
 
 ### `custom_eventheader`
 
 Intended for producer-specific mappings where configured fields should
 eventually be promoted into OTel log fields.
 
-Current behavior stores the configured mapping intent as metadata but does not
-yet execute the full mapping over parsed EventHeader payloads.
+When EventHeader JSON decoding succeeds, the receiver applies the configured
+`body_field`, `event_name_field`, severity field mappings, and
+`attributes_from` extraction to the emitted log record. Unsupported mappings
+and richer semantic promotions remain future work.
 
 ## Output Shape
 
@@ -158,7 +161,6 @@ Depending on configured format, it may also include:
 - `cs.__csver__`
 - `cs.part_b._typeName`
 - `cs.part_b.name`
-- `cs.part_b.body`
 
 ## Runtime Behavior
 

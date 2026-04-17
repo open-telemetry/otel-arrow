@@ -423,11 +423,6 @@ fn decode_eventheader_json(tracepoint: &str, payload: &[u8]) -> Option<Value> {
     serde_json::from_str(&json).ok()
 }
 
-fn try_extract_common_schema_body_fields(_payload: &[u8]) -> Option<(String, String)> {
-    // Removed: text pattern matching is incorrect for binary EventHeader payloads.
-    None
-}
-
 /// Decoded Common Schema OTel Logs record extracted from EventHeader binary payload.
 ///
 /// TODO(perf): This intermediate owned decode struct is intentionally kept for now because it

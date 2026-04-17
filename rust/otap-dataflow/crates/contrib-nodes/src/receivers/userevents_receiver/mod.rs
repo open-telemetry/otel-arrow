@@ -374,7 +374,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
             otel_info!(
                 "userevents_receiver.start",
                 node = node_name.as_str(),
-                pipeline_core = node_name.as_str(),
+                pipeline_core = self.cpu_id,
                 message = "Linux userevents receiver started"
             );
 
