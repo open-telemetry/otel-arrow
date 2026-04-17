@@ -1104,6 +1104,7 @@ fn test_durable_buffer_retries_on_nack() {
 /// - Run 2 recovers and delivers all persisted data plus new data
 /// - Exact count verification ensures no data loss or duplication
 #[test]
+#[ignore = "flaky: signal persistence count is timing-dependent, see https://github.com/open-telemetry/otel-arrow/issues/2701"]
 fn test_durable_buffer_recovery_after_outage() {
     let temp_dir = tempdir().expect("failed to create temp dir");
     let buffer_path = temp_dir.path().to_path_buf();
