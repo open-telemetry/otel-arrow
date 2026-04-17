@@ -216,11 +216,17 @@ impl OneCollectUserEventsSession {
         max_bytes: usize,
         max_drain_ns: Duration,
     ) -> io::Result<CollectedDrain> {
+        let started = Instant::now();
+        // Use bounded parsing so the drain returns promptly even under continuous
+        // writer load. `parse_all()` only stops when the ring buffers drain fully,
+        // which can starve the pop loop below when producers emit faster than we
+        // can empty the rings. `max_drain_ns` is the total work budget for this
+        // drain call, so any time spent parsing reduces the time left to pop the
+        // callback queue below.
         self.session
-            .parse_all()
+            .parse_for_duration(max_drain_ns)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
 
-        let started = Instant::now();
         let mut drained_bytes = 0usize;
         let mut events = Vec::new();
         let mut pending = self.pending.borrow_mut();
