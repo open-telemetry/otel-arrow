@@ -233,11 +233,25 @@ pub enum Error {
     },
 
     /// A config URI uses an unrecognized scheme.
-    #[error("Unknown config URI scheme '{scheme}:'. Supported schemes are: file:, env:")]
+    #[error(
+        "Unknown config URI scheme '{scheme}:'. Supported schemes are: file:, env:, yaml:, http:"
+    )]
     #[diagnostic(code(data_plane::config_uri_unknown_scheme), url(docsrs))]
     ConfigUriUnknownScheme {
         /// The unrecognized scheme prefix.
         scheme: String,
+    },
+
+    /// An http: config URI could not be fetched.
+    #[error(
+        "Could not fetch config from '{uri}': {details}\n\nHint: Check the URL is reachable and responds within 30s. `https://` and authenticated endpoints are not supported yet."
+    )]
+    #[diagnostic(code(data_plane::config_http_request_failed), url(docsrs))]
+    ConfigHttpRequestFailed {
+        /// The URI that failed to fetch.
+        uri: String,
+        /// A description of the failure (network error, non-2xx status, etc.).
+        details: String,
     },
 
     /// An env: config URI references an environment variable that is not set.
