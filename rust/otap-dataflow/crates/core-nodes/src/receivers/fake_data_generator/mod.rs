@@ -319,7 +319,7 @@ impl BatchCache {
 
 /// Builds transport headers from the user-configured map.
 ///
-/// Keys with `Some(value)` produce fixed header values. 
+/// Keys with `Some(value)` produce fixed header values.
 /// Keys with `None` produce 16 random bytes
 ///
 /// Returns `None` when the config map is empty (zero overhead).
@@ -694,8 +694,13 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.metrics {
             let send_count = metric_count / cache.metrics_batch_size;
             for _ in 0..send_count {
-                produced +=
-                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack, prebuilt_transport_headers).await?;
+                produced += send_generated_pdata(
+                    &effect_handler,
+                    batch.clone(),
+                    enable_ack_nack,
+                    prebuilt_transport_headers,
+                )
+                .await?;
             }
         }
     }
@@ -705,8 +710,13 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.traces {
             let send_count = trace_count / cache.traces_batch_size;
             for _ in 0..send_count {
-                produced +=
-                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack, prebuilt_transport_headers).await?;
+                produced += send_generated_pdata(
+                    &effect_handler,
+                    batch.clone(),
+                    enable_ack_nack,
+                    prebuilt_transport_headers,
+                )
+                .await?;
             }
         }
     }
@@ -716,8 +726,13 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.logs {
             let send_count = log_count / cache.logs_batch_size;
             for _ in 0..send_count {
-                produced +=
-                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack, prebuilt_transport_headers).await?;
+                produced += send_generated_pdata(
+                    &effect_handler,
+                    batch.clone(),
+                    enable_ack_nack,
+                    prebuilt_transport_headers,
+                )
+                .await?;
             }
         }
     }
@@ -1853,10 +1868,7 @@ mod tests {
         let config = Config::new(traffic_config, registry_path)
             .with_data_source(DataSource::Static)
             .with_generation_strategy(GenerationStrategy::Fresh)
-            .with_transport_headers(HashMap::from([(
-                "x-request-id".to_string(),
-                None,
-            )]));
+            .with_transport_headers(HashMap::from([("x-request-id".to_string(), None)]));
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
