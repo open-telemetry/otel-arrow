@@ -340,6 +340,14 @@ impl otap_df_engine::StampOutputPort for OtapPdata {
     }
 }
 
+impl otap_df_engine::PrepareSourceSend for OtapPdata {
+    fn prepare_source_send(&mut self, node_interests: Interests, node_id: usize) {
+        // Delegates to the inherent method which handles SOURCE_TAGGING,
+        // PRODUCER_METRICS, and ENTRY_TIMESTAMP interest gating.
+        OtapPdata::prepare_source_send(self, node_interests, node_id);
+    }
+}
+
 /// Context + container for telemetry data
 #[derive(Clone, Debug)]
 pub struct OtapPdata {

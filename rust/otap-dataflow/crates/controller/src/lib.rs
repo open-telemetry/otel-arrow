@@ -64,7 +64,9 @@ use otap_df_config::{
     TopicName, pipeline::PipelineConfig,
 };
 use otap_df_engine::PipelineFactory;
+use otap_df_engine::PrepareSourceSend;
 use otap_df_engine::ReceivedAtNode;
+use otap_df_engine::StampOutputPort;
 use otap_df_engine::Unwindable;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
@@ -264,8 +266,17 @@ fn engine_context() -> LogContext {
     }
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
-    Controller<PData>
+impl<
+    PData: 'static
+        + Clone
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + ReceivedAtNode
+        + Unwindable
+        + StampOutputPort
+        + PrepareSourceSend,
+> Controller<PData>
 {
     /// Creates a new controller with the given pipeline factory.
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {

@@ -20,10 +20,12 @@ use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
+use otap_df_engine::Interests;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NackMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::inline_processor::{InlineOutput, InlineProcessor};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
@@ -205,6 +207,10 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
                  proc_cfg: &ProcessorConfig| {
             create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        create_inline: Some(|pipeline_ctx, _node, node_config, _proc_cfg| {
+            let proc = CondenseAttributesProcessor::from_config(pipeline_ctx, &node_config.config)?;
+            Ok(Box::new(proc) as Box<dyn InlineProcessor<OtapPdata>>)
+        }),
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: |config| Config::from_config(config).map(|_| ()),
     };
@@ -671,6 +677,77 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                 }
             }
         }
+    }
+}
+
+impl InlineProcessor<OtapPdata> for CondenseAttributesProcessor {
+    fn process_inline(&mut self, pdata: OtapPdata) -> Result<InlineOutput<OtapPdata>, Error> {
+        let signal = pdata.signal_type();
+        let (context, payload) = pdata.into_parts();
+
+        let mut records: OtapArrowRecords = payload.try_into()?;
+        let input_items = records.num_items() as u64;
+
+        otel_debug!("condense_attributes_processor.processing", input_items);
+
+        let result = self
+            .compute_duration
+            .timed(Interests::PROCESS_DURATION, || match signal {
+                SignalType::Logs => self.condense(&mut records),
+                _ => Err(Error::InternalError {
+                    message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
+                        .to_string(),
+                }),
+            });
+
+        match result {
+            Ok(condensed) => {
+                let output_items = records.num_items() as u64;
+                otel_debug!(
+                    "condense_attributes_processor.success",
+                    input_items,
+                    output_items,
+                    condensed_items = condensed
+                );
+                Ok(InlineOutput::Forward(OtapPdata::new(
+                    context,
+                    records.into(),
+                )))
+            }
+            Err(e) => {
+                let message = e.to_string();
+                otel_error!(
+                    "condense_attributes_processor.failure",
+                    input_items,
+                    signal = ?signal,
+                    message,
+                );
+                Err(e)
+            }
+        }
+    }
+
+    fn compute_duration(&self) -> Option<&ComputeDuration> {
+        Some(&self.compute_duration)
+    }
+
+    fn on_config(&mut self, config: Value) {
+        match Config::from_config(&config) {
+            Ok(new_config) => {
+                otel_info!("condense_attributes_processor.reconfigured");
+                self.config = new_config;
+            }
+            Err(e) => {
+                otel_warn!(
+                    "condense_attributes_processor.reconfigure_error",
+                    message = %e
+                );
+            }
+        }
+    }
+
+    fn collect_telemetry(&mut self, reporter: &mut otap_df_telemetry::reporter::MetricsReporter) {
+        self.compute_duration.report(reporter);
     }
 }
 
@@ -1358,6 +1435,26 @@ mod condense_tests {
                 assert!(attrs.iter().all(|kv| kv.key != "ignored"));
             })
             .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_process_inline_forward() {
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";"
+        });
+        let mut processor =
+            CondenseAttributesProcessor::from_config_for_test(&cfg).expect("valid config");
+
+        let input =
+            build_log_with_attrs(vec![KeyValue::new("attr1", AnyValue::new_string("value1"))]);
+        let mut bytes = BytesMut::new();
+        input.encode(&mut bytes).expect("encode");
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Forward(_))));
     }
 }
 

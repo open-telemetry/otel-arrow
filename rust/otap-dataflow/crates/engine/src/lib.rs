@@ -9,15 +9,19 @@ use crate::{
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    config::{ExporterConfig, ProcessorChainConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
-    local::message::{LocalReceiver, LocalSender},
+    local::{
+        message::{LocalReceiver, LocalSender},
+        processor_chain::ProcessorChainNode,
+    },
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
+    process_duration::ComputeDuration,
     processor::{ProcessorWrapper, validate_local_wakeup_requirements},
     receiver::ReceiverWrapper,
     runtime_pipeline::{PipeNode, RuntimePipeline},
@@ -70,6 +74,7 @@ pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
 pub(crate) mod indexed_min_heap;
+pub mod inline_processor;
 pub mod local;
 pub mod memory_limiter;
 pub mod node;
@@ -84,6 +89,7 @@ pub mod terminal_state;
 pub mod testing;
 pub mod topic;
 pub mod wiring_contract;
+pub use inline_processor::{InlineOutput, InlineProcessor};
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
 
@@ -146,6 +152,20 @@ pub struct ProcessorFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
+    /// Optional factory for creating an [`InlineProcessor`] instance.
+    ///
+    /// When `Some`, this processor can be used inside a `processor_chain:inlined`.
+    /// The chain calls this factory directly instead of going through `create`
+    /// and extracting the inner processor. When `None`, the processor cannot be
+    /// used inside a chain.
+    pub create_inline: Option<
+        fn(
+            pipeline: PipelineContext,
+            node: NodeId,
+            node_config: Arc<NodeUserConfig>,
+            processor_config: &ProcessorConfig,
+        ) -> Result<Box<dyn InlineProcessor<PData>>, otap_df_config::error::Error>,
+    >,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -162,6 +182,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
         ProcessorFactory {
             name: self.name,
             create: self.create,
+            create_inline: self.create_inline,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -353,6 +374,31 @@ impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
 }
 
+/// Trait for stamping source-node metadata before sending PData downstream.
+///
+/// Called by the processor chain (and potentially other composite nodes)
+/// before sending a message via a stamped output path.  This pushes a
+/// context frame onto the PData so that ack/nack unwinding can record
+/// producer metrics for the sending node.
+///
+/// Mirrors [`ReceivedAtNode`] (which stamps the *receiving* side).
+pub trait PrepareSourceSend {
+    /// Tag this PData with the sending node's identity and interests.
+    ///
+    /// Implementations should push or update a context frame that carries
+    /// `PRODUCER_METRICS` and `ENTRY_TIMESTAMP` flags so the downstream
+    /// ack path can attribute the message to this node.
+    fn prepare_source_send(&mut self, node_interests: Interests, node_id: usize);
+}
+
+impl PrepareSourceSend for () {
+    fn prepare_source_send(&mut self, _node_interests: Interests, _node_id: usize) {}
+}
+
+impl PrepareSourceSend for String {
+    fn prepare_source_send(&mut self, _node_interests: Interests, _node_id: usize) {}
+}
+
 /// Effect handler extensions for producers specific to data type.
 #[async_trait(?Send)]
 pub trait ProducerEffectHandlerExtension<PData> {
@@ -480,7 +526,9 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
+impl<PData: 'static + Clone + Debug + Unwindable + StampOutputPort + PrepareSourceSend>
+    PipelineFactory<PData>
+{
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(
@@ -628,9 +676,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     (NodeType::Exporter, pn)
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
-                    return Err(Error::UnsupportedNodeKind {
-                        kind: "ProcessorChain".into(),
-                    });
+                    let pn = PipeNode::new(processor_count);
+                    processor_count += 1;
+                    (NodeType::Processor, pn)
                 }
                 otap_df_config::node::NodeKind::Extension => {
                     return Err(Error::ExtensionInNodesSection { node: name.clone() });
@@ -731,8 +779,25 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     exporters.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
-                    // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
-                    unreachable!("rejected in first pass");
+                    let wrapper = self.build_node_wrapper(
+                        &mut build_state,
+                        &base_ctx,
+                        // Treat processor chains as processors for telemetry purposes since they occupy a single node slot in the pipeline and have similar performance characteristics.
+                        // This simplifies telemetry without losing meaningful insights, since processor chains are essentially a grouping of processors.
+                        NodeType::Processor,
+                        node_id.clone(),
+                        channel_metrics_enabled,
+                        || {
+                            self.create_processor_chain(
+                                &base_ctx,
+                                node_id.clone(),
+                                node_config.clone(),
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
+                            )
+                        },
+                    )?;
+                    processors.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::Extension => {
                     return Err(Error::ExtensionInNodesSection { node: name.clone() });
@@ -825,9 +890,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .wiring_contract
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
-                    return Err(Error::UnsupportedNodeKind {
-                        kind: "ProcessorChain".into(),
-                    });
+                    // Processor chains have unrestricted wiring (same as a
+                    // generic processor — one input, one output by default).
+                    wiring_contract::WiringContract::UNRESTRICTED
                 }
                 otap_df_config::node::NodeKind::Extension => {
                     // Extensions don't participate in wiring contracts.
@@ -1490,6 +1555,168 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         Ok(processor)
     }
 
+    /// Creates a processor chain node by instantiating each sub-processor
+    /// and wrapping them in a [`ProcessorChainNode`].
+    fn create_processor_chain(
+        &self,
+        pipeline_ctx: &PipelineContext,
+        node_id: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
+    ) -> Result<ProcessorWrapper<PData>, Error> {
+        let chain_name = node_id.name.clone();
+        let pipeline_group_id = pipeline_ctx.pipeline_group_id();
+        let pipeline_id = pipeline_ctx.pipeline_id();
+        let core_id = pipeline_ctx.core_id();
+
+        otel_debug!(
+            "processor_chain.create.start",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = chain_name.as_ref(),
+        );
+
+        // Only the :inlined variant is currently supported.
+        let node_urn = node_config.r#type.as_str();
+        if !node_urn.ends_with(":inlined") {
+            return Err(Error::ConfigError(Box::new(
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "Unsupported processor_chain variant `{node_urn}`. \
+                         Only `processor_chain:inlined` is supported."
+                    ),
+                },
+            )));
+        }
+
+        // Parse the chain config from the node's config blob.
+        let chain_config: ProcessorChainConfig = serde_json::from_value(node_config.config.clone())
+            .map_err(|e| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!("invalid processor_chain config: {e}"),
+                }))
+            })?;
+
+        if chain_config.processors.is_empty() {
+            return Err(Error::ConfigError(Box::new(
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: "processor_chain must contain at least one processor".to_string(),
+                },
+            )));
+        }
+
+        // Composite compute duration registered under the chain's entity.
+        let composite_duration = ComputeDuration::new(pipeline_ctx);
+
+        // Create each sub-processor using its inline factory.
+        let mut sub_processors: Vec<Box<dyn InlineProcessor<PData>>> =
+            Vec::with_capacity(chain_config.processors.len());
+        for (sub_name_key, sub_cfg) in &chain_config.processors {
+            let sub_name: Cow<'static, str> =
+                format!("{}/{}", chain_name.as_ref(), sub_name_key).into();
+
+            let sub_urn = sub_cfg.r#type.clone();
+
+            let sub_node_config = Arc::new(sub_cfg.clone());
+
+            let sub_node_id = NodeId {
+                index: node_id.index,
+                name: sub_name.clone(),
+            };
+
+            let sub_processor_config = ProcessorConfig::with_channel_capacities(
+                sub_node_id.name.clone(),
+                control_channel_capacity,
+                pdata_channel_capacity,
+            );
+
+            let factory = self
+                .get_processor_factory_map()
+                .get(sub_urn.as_str())
+                .ok_or(Error::UnknownProcessor {
+                    plugin_urn: sub_urn.clone(),
+                })?;
+
+            let create_inline = factory.create_inline.ok_or_else(|| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "processor `{}` (urn: {}) does not support inline execution \
+                             and cannot be used inside a processor_chain. Only processors \
+                             that provide a `create_inline` factory are supported.",
+                        sub_name_key,
+                        sub_urn.as_str(),
+                    ),
+                }))
+            })?;
+
+            // Only register a distinct telemetry entity for each sub-processor
+            // when enable_sub_processor_telemetry is enabled. Otherwise the sub-processor's
+            // internal metrics (e.g. ComputeDuration) would be registered but
+            // never reported, producing phantom entities with zero values.
+            let inline_processor = if chain_config.enable_sub_processor_telemetry {
+                let sub_ctx = pipeline_ctx.with_node_context(
+                    sub_name,
+                    sub_urn,
+                    otap_df_config::node::NodeKind::Processor,
+                    sub_cfg.identity_attributes(),
+                );
+                let sub_entity_key = sub_ctx.register_node_entity();
+                let sub_telemetry_handle =
+                    NodeTelemetryHandle::new(sub_ctx.metrics_registry(), sub_entity_key);
+
+                with_node_telemetry_handle(sub_telemetry_handle, || {
+                    create_inline(sub_ctx, sub_node_id, sub_node_config, &sub_processor_config)
+                })
+                .map_err(|e| Error::ConfigError(Box::new(e)))?
+            } else {
+                // No entity registration — run the factory with the chain's
+                // pipeline context so register_metrics calls are attributed
+                // to the chain node. Internal metrics will not be reported
+                // (collect_telemetry is not called when enable_sub_processor_telemetry
+                // is false), but this avoids orphaned entities.
+                create_inline(
+                    pipeline_ctx.clone(),
+                    sub_node_id,
+                    sub_node_config,
+                    &sub_processor_config,
+                )
+                .map_err(|e| Error::ConfigError(Box::new(e)))?
+            };
+
+            sub_processors.push(inline_processor);
+        }
+
+        let chain_node = ProcessorChainNode::new(
+            sub_processors,
+            composite_duration,
+            chain_config.enable_sub_processor_telemetry,
+        );
+
+        let processor_config = ProcessorConfig::with_channel_capacities(
+            chain_name.clone(),
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
+
+        otel_debug!(
+            "processor_chain.create.complete",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = chain_name.as_ref(),
+            sub_processor_count = chain_config.processors.len(),
+        );
+
+        Ok(ProcessorWrapper::local(
+            chain_node,
+            node_id,
+            node_config,
+            &processor_config,
+        ))
+    }
+
     /// Creates an exporter node and adds it to the list of runtime nodes.
     fn create_exporter(
         &self,
@@ -1763,7 +1990,7 @@ struct HyperEdgeWiring<PData> {
 
 impl<PData> HyperEdgeWiring<PData>
 where
-    PData: 'static + Clone + Debug,
+    PData: 'static + Clone + Debug + Unwindable + StampOutputPort + PrepareSourceSend,
 {
     fn apply(
         self,
@@ -1909,7 +2136,7 @@ impl ResolvedHyperEdgeRuntime {
         core_id: usize,
     ) -> Result<HyperEdgeWiring<PData>, Error>
     where
-        PData: 'static + Clone + Debug,
+        PData: 'static + Clone + Debug + Unwindable + StampOutputPort + PrepareSourceSend,
     {
         let channel_id = self.channel_id();
         let ResolvedHyperEdgeRuntime {

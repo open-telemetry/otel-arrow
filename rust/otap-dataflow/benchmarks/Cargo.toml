@@ -24,11 +24,12 @@ prost = { workspace = true }
 otap-df-control-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-channel = { workspace = true }
-otap-df-engine = { workspace = true }
+otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-telemetry = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
 otap-df-pdata-views = { workspace = true }
 
+async-trait.workspace = true
 smallvec.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry"] }
@@ -111,4 +112,12 @@ harness = false
 
 [[bench]]
 name = "topic_broadcast"
+harness = false
+
+[[bench]]
+name = "processor_chain"
+harness = false
+
+[[bench]]
+name = "pdata_deserialization"
 harness = false

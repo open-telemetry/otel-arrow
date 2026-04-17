@@ -94,6 +94,23 @@ impl ComputeDuration {
         }
     }
 
+    /// Record a pre-measured elapsed duration into the appropriate
+    /// accumulator based on outcome.
+    ///
+    /// This is the manual counterpart to [`timed`](Self::timed) for
+    /// call-sites that cannot use the closure-based API (e.g. because
+    /// the timer must span `.await` points).
+    pub fn record(&self, elapsed_nanos: f64, success: bool) {
+        let acc = if success {
+            &self.acc_success
+        } else {
+            &self.acc_failed
+        };
+        let mut val = acc.get();
+        val.record(elapsed_nanos);
+        acc.set(val);
+    }
+
     /// Report accumulated duration metrics to the collector.
     ///
     /// Drains both accumulators into the metric set, then reports
@@ -104,6 +121,18 @@ impl ComputeDuration {
         let failed = self.acc_failed.replace(Mmsc::default());
         self.metrics.compute_duration_failed.merge(failed);
         let _ = reporter.report(&mut self.metrics);
+    }
+
+    /// Returns a snapshot of the success accumulator (test only).
+    #[cfg(test)]
+    pub(crate) fn snapshot_success(&self) -> Mmsc {
+        self.acc_success.get()
+    }
+
+    /// Returns a snapshot of the failed accumulator (test only).
+    #[cfg(test)]
+    pub(crate) fn snapshot_failed(&self) -> Mmsc {
+        self.acc_failed.get()
     }
 }
 

@@ -23,6 +23,7 @@ otap-df-telemetry = { workspace = true }
 otap-df-admin = { workspace = true }
 
 sysinfo = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 core_affinity = { workspace = true }

@@ -7,7 +7,9 @@
 //! focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
 //! settings.
 
+use indexmap::IndexMap;
 use otap_df_config::NodeId;
+use otap_df_config::node::NodeUserConfig;
 
 /// Default control channel capacity used by legacy constructor paths.
 const DEFAULT_CONTROL_CHANNEL_CAPACITY: usize = 32;
@@ -205,5 +207,97 @@ impl ExtensionConfig {
                 capacity: control_channel_capacity,
             },
         }
+    }
+}
+
+/// User-facing configuration for a processor node chain
+///
+/// Deserialized from the `config` blob of a `processor_chain:*` node
+///
+/// ```yaml
+/// my_chain:
+///   type: processor_chain:inlined
+///   config:
+///     processors:
+///       insert_B:
+///         type: processor:attribute
+///         config: { ... }
+///       condense:
+///         type: processor:condense_attributes
+///         config: { ... }
+/// ```
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ProcessorChainConfig {
+    /// Sub-processors keyed by name, in declaration order.
+    ///
+    /// The map key is used as the `node.id` suffix in telemetry
+    /// (e.g. `chain/insert_B`). Insertion order is preserved by
+    /// [`IndexMap`] and determines execution order.
+    pub processors: IndexMap<String, NodeUserConfig>,
+    /// When `true`, the chain calls `collect_telemetry` on each
+    /// sub-processor during `CollectTelemetry` control messages,
+    /// exposing per-stage internal metrics.
+    ///
+    /// Defaults to `false` — only the chain's composite
+    /// `ComputeDuration` is reported.
+    #[serde(default)]
+    pub enable_sub_processor_telemetry: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn processor_chain_config_from_json() {
+        let json = serde_json::json!({
+            "processors": {
+                "attr": { "type": "processor:attribute", "config": { "actions": [] } },
+                "dbg": { "type": "processor:debug", "config": { "verbosity": "basic" } }
+            }
+        });
+
+        let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(cfg.processors.len(), 2);
+
+        let keys: Vec<&String> = cfg.processors.keys().collect();
+        assert_eq!(keys, vec!["attr", "dbg"]);
+
+        assert_eq!(
+            cfg.processors["attr"].r#type.as_str(),
+            "urn:otel:processor:attribute"
+        );
+        assert_eq!(
+            cfg.processors["dbg"].r#type.as_str(),
+            "urn:otel:processor:debug"
+        );
+        assert!(cfg.processors["attr"].config.is_object());
+    }
+
+    #[test]
+    fn processor_chain_config_default_config() {
+        let json = serde_json::json!({
+            "processors": {
+                "dbg": { "type": "processor:debug" }
+            }
+        });
+
+        let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(cfg.processors.len(), 1);
+        assert!(cfg.processors["dbg"].config.is_null());
+    }
+
+    #[test]
+    fn processor_chain_config_empty_map() {
+        let json = serde_json::json!({ "processors": {} });
+        let cfg: ProcessorChainConfig = serde_json::from_value(json).unwrap();
+        assert!(cfg.processors.is_empty());
+    }
+
+    #[test]
+    fn processor_chain_config_missing_processors_field() {
+        let json = serde_json::json!({});
+        let result = serde_json::from_value::<ProcessorChainConfig>(json);
+        assert!(result.is_err());
     }
 }

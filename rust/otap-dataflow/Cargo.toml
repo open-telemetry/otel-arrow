@@ -108,6 +108,7 @@ hashbrown = { version = "0.17", features = ["equivalent"] }
 http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
+indexmap = { version = "2.13.1", features = ["serde"] }
 iso8601 = "0.6.3"
 itoa = "1"
 itertools = "0.14.0"

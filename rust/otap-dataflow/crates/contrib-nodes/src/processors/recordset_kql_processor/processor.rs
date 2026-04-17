@@ -16,10 +16,11 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, ProcessorFactory,
+    ConsumerEffectHandlerExtension, Interests, ProcessorFactory,
     context::PipelineContext,
     control::NackMsg,
     error::Error,
+    inline_processor::{InlineOutput, InlineProcessor},
     local::processor::{EffectHandler, Processor},
     message::Message,
     process_duration::ComputeDuration,
@@ -35,6 +36,16 @@ pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset
 pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RECORDSET_KQL_PROCESSOR_URN,
     create: create_recordset_kql_processor,
+    create_inline: Some(|pipeline_ctx, _node, node_config, _proc_cfg| {
+        let config: RecordsetKqlProcessorConfig =
+            serde_json::from_value(node_config.config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?;
+        let proc = RecordsetKqlProcessor::with_pipeline_ctx(pipeline_ctx, config)?;
+        Ok(Box::new(proc) as Box<dyn InlineProcessor<OtapPdata>>)
+    }),
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<RecordsetKqlProcessorConfig>,
 };
@@ -284,6 +295,106 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                 }
             }
         }
+    }
+}
+
+impl InlineProcessor<OtapPdata> for RecordsetKqlProcessor {
+    fn process_inline(&mut self, data: OtapPdata) -> Result<InlineOutput<OtapPdata>, Error> {
+        let signal = data.signal_type();
+        let input_items = data.num_items() as u64;
+
+        let (ctx, payload) = data.into_parts();
+        let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
+
+        let result =
+            self.compute_duration
+                .timed(Interests::PROCESS_DURATION, || match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                        otap_df_telemetry::otel_debug!(
+                            "recordset_kql_processor.processing_logs",
+                            input_items
+                        );
+                        self.process_logs(bytes, signal)
+                    }
+                    OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
+                        message: "Metrics processing not yet implemented in KQL bridge".to_string(),
+                    }),
+                    OtlpProtoBytes::ExportTracesRequest(_bytes) => Err(Error::InternalError {
+                        message: "Traces processing not yet implemented in KQL bridge".to_string(),
+                    }),
+                });
+
+        match result {
+            Ok(processed_bytes) => {
+                let payload: OtapPayload = processed_bytes.into();
+                let output_items = payload.num_items() as u64;
+
+                otap_df_telemetry::otel_debug!(
+                    "recordset_kql_processor.success",
+                    input_items,
+                    output_items,
+                );
+
+                Ok(InlineOutput::Forward(OtapPdata::new(ctx, payload)))
+            }
+            Err(e) => {
+                let message = e.to_string();
+                otap_df_telemetry::otel_error!(
+                    "recordset_kql_processor.failure",
+                    input_items,
+                    message,
+                );
+                Err(e)
+            }
+        }
+    }
+
+    fn compute_duration(&self) -> Option<&ComputeDuration> {
+        Some(&self.compute_duration)
+    }
+
+    fn on_config(&mut self, config: serde_json::Value) {
+        if let Ok(new_config) = serde_json::from_value::<RecordsetKqlProcessorConfig>(config) {
+            if new_config.query != self.config.query
+                || new_config.bridge_options != self.config.bridge_options
+            {
+                let parsed_bridge_options =
+                    match Self::parse_bridge_options(&new_config.bridge_options) {
+                        Err(e) => {
+                            otap_df_telemetry::otel_warn!(
+                                "recordset_kql_processor.reconfigure_error",
+                                message = %e
+                            );
+                            None
+                        }
+                        Ok(v) => v,
+                    };
+
+                match parse_kql_query_into_pipeline(
+                    &new_config.query,
+                    Some(Self::apply_bridge_options_defaults(parsed_bridge_options)),
+                ) {
+                    Ok(pipeline) => {
+                        otap_df_telemetry::otel_info!("recordset_kql_processor.reconfigured");
+                        self.pipeline = pipeline;
+                        self.config = new_config;
+                    }
+                    Err(errors) => {
+                        let message = format!("Failed to parse updated query: {:?}", errors);
+                        otap_df_telemetry::otel_error!(
+                            "recordset_kql_processor.reconfigure_error",
+                            message,
+                        );
+                    }
+                }
+            } else {
+                self.config = new_config;
+            }
+        }
+    }
+
+    fn collect_telemetry(&mut self, reporter: &mut otap_df_telemetry::reporter::MetricsReporter) {
+        self.compute_duration.report(reporter);
     }
 }
 
@@ -1105,5 +1216,24 @@ mod tests {
                 assert!(counts.contains(&1), "Should have a bin with count=1");
             },
         );
+    }
+
+    #[test]
+    fn test_process_inline_forward() {
+        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
+        let config: RecordsetKqlProcessorConfig =
+            serde_json::from_value(serde_json::json!({ "query": "source" })).unwrap();
+        let mut processor =
+            RecordsetKqlProcessor::with_pipeline_ctx(pipeline_ctx, config).expect("valid config");
+
+        let input =
+            build_log_with_attrs(vec![KeyValue::new("key1", AnyValue::new_string("value1"))]);
+        let mut bytes = BytesMut::new();
+        input.encode(&mut bytes).expect("encode");
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Forward(_))));
     }
 }

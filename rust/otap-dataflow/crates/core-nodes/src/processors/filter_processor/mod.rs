@@ -15,11 +15,13 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::Interests;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
+use otap_df_engine::inline_processor::{InlineOutput, InlineProcessor};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
@@ -72,6 +74,10 @@ pub static FILTER_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata>
                  proc_cfg: &ProcessorConfig| {
             create_filter_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        create_inline: Some(|pipeline_ctx, _node, node_config, _proc_cfg| {
+            let proc = FilterProcessor::from_config(pipeline_ctx, &node_config.config)?;
+            Ok(Box::new(proc) as Box<dyn InlineProcessor<OtapPdata>>)
+        }),
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
@@ -200,6 +206,81 @@ impl local::Processor<OtapPdata> for FilterProcessor {
     }
 }
 
+impl InlineProcessor<OtapPdata> for FilterProcessor {
+    fn process_inline(&mut self, pdata: OtapPdata) -> Result<InlineOutput<OtapPdata>, Error> {
+        let signal = pdata.signal_type();
+        let (context, payload) = pdata.into_parts();
+
+        let mut arrow_records: OtapArrowRecords = payload.try_into()?;
+        arrow_records.decode_transport_optimized_ids()?;
+
+        let (filtered_arrow_records, signals_consumed, signals_filtered) = self
+            .compute_duration
+            .timed(Interests::PROCESS_DURATION, || match signal {
+                SignalType::Metrics => Ok((arrow_records, 0, 0)),
+                SignalType::Logs => self
+                    .config
+                    .log_filters()
+                    .filter(arrow_records)
+                    .map_err(|e| {
+                        let source_detail = format_error_sources(&e);
+                        Error::ProcessorError {
+                            processor: NodeId {
+                                index: 0,
+                                name: FILTER_PROCESSOR_URN.into(),
+                            },
+                            kind: ProcessorErrorKind::Other,
+                            error: format!("Filter error: {e}"),
+                            source_detail,
+                        }
+                    }),
+                SignalType::Traces => {
+                    self.config
+                        .trace_filters()
+                        .filter(arrow_records)
+                        .map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: NodeId {
+                                    index: 0,
+                                    name: FILTER_PROCESSOR_URN.into(),
+                                },
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })
+                }
+            })?;
+
+        match signal {
+            SignalType::Metrics => {}
+            SignalType::Logs => {
+                self.metrics.log_signals_consumed.add(signals_consumed);
+                self.metrics.log_signals_filtered.add(signals_filtered);
+            }
+            SignalType::Traces => {
+                self.metrics.span_signals_consumed.add(signals_consumed);
+                self.metrics.span_signals_filtered.add(signals_filtered);
+            }
+        }
+
+        Ok(InlineOutput::Forward(OtapPdata::new(
+            context,
+            filtered_arrow_records.into(),
+        )))
+    }
+
+    fn compute_duration(&self) -> Option<&ComputeDuration> {
+        Some(&self.compute_duration)
+    }
+
+    fn collect_telemetry(&mut self, reporter: &mut otap_df_telemetry::reporter::MetricsReporter) {
+        let _ = reporter.report(&mut self.metrics);
+        self.compute_duration.report(reporter);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::processors::filter_processor::{
@@ -207,6 +288,7 @@ mod tests {
     };
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::inline_processor::{InlineOutput, InlineProcessor};
     use otap_df_engine::message::Message;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
@@ -220,6 +302,7 @@ mod tests {
         traces::{TraceFilter, TraceMatchProperties},
     };
     use otap_df_pdata::proto::opentelemetry::{
+        collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
@@ -231,6 +314,7 @@ mod tests {
     };
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
+    use serde_json;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -1669,5 +1753,27 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario_traces(expected_data))
             .validate(validation_procedure());
+    }
+
+    #[test]
+    fn test_process_inline_forward() {
+        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
+        let cfg = serde_json::json!({});
+        let mut processor = FilterProcessor::from_config(pipeline_ctx, &cfg).expect("valid config");
+
+        let input = ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build().severity_text("INFO").finish()],
+            )],
+        )]);
+        let mut bytes = bytes::BytesMut::new();
+        input.encode(&mut bytes).expect("encode");
+        let pdata =
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+
+        let result = processor.process_inline(pdata);
+        assert!(matches!(result, Ok(InlineOutput::Forward(_))));
     }
 }

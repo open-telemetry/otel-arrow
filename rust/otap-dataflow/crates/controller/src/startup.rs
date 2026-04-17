@@ -25,7 +25,7 @@ use otap_df_config::engine::{
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::{CoreAllocation, ResourcesPolicy};
-use otap_df_config::{PipelineGroupId, PipelineId};
+use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
 use otap_df_engine::PipelineFactory;
 use std::fmt::Debug;
 use sysinfo::System;
@@ -92,7 +92,14 @@ pub fn apply_cli_overrides(
 /// **Scope:** This is *static* validation only -- it checks that config values
 /// can be deserialized into the expected types.  It does **not** detect runtime
 /// issues such as port conflicts, unreachable endpoints, or missing files.
-pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
+pub fn validate_pipeline_components<
+    PData: 'static
+        + Clone
+        + Debug
+        + otap_df_engine::Unwindable
+        + otap_df_engine::StampOutputPort
+        + otap_df_engine::PrepareSourceSend,
+>(
     pipeline_group_id: &PipelineGroupId,
     pipeline_id: &PipelineId,
     pipeline_cfg: &PipelineConfig,
@@ -107,10 +114,31 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                 .get_receiver_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
-            NodeKind::Processor | NodeKind::ProcessorChain => factory
+            NodeKind::Processor => factory
                 .get_processor_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
+            NodeKind::ProcessorChain => {
+                // Only the :inlined variant is currently supported.
+                if !urn_str.ends_with(":inlined") {
+                    return Err(std::io::Error::other(format!(
+                        "Unsupported processor_chain variant `{urn_str}` for node={} in \
+                         pipeline_group={} pipeline={}. Only `processor_chain:inlined` is supported.",
+                        node_id.as_ref(),
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                    ))
+                    .into());
+                }
+                validate_processor_chain_components(
+                    pipeline_group_id,
+                    pipeline_id,
+                    node_id,
+                    &node_cfg.config,
+                    factory,
+                )?;
+                continue;
+            }
             NodeKind::Exporter => factory
                 .get_exporter_factory_map()
                 .get(urn_str)
@@ -128,7 +156,8 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
             None => {
                 let kind_name = match kind {
                     NodeKind::Receiver => "receiver",
-                    NodeKind::Processor | NodeKind::ProcessorChain => "processor",
+                    NodeKind::Processor => "processor",
+                    NodeKind::ProcessorChain => unreachable!(),
                     NodeKind::Exporter => "exporter",
                     NodeKind::Extension => unreachable!("handled above"),
                 };
@@ -167,7 +196,14 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
 /// This is the top-level validation entry point that iterates over all
 /// pipeline groups, all pipelines within each group, and the optional
 /// observability pipeline.
-pub fn validate_engine_components<PData: 'static + Clone + Debug>(
+pub fn validate_engine_components<
+    PData: 'static
+        + Clone
+        + Debug
+        + otap_df_engine::Unwindable
+        + otap_df_engine::StampOutputPort
+        + otap_df_engine::PrepareSourceSend,
+>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -193,6 +229,78 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     Ok(())
 }
 
+/// Validates each sub-processor inside a `processor_chain` node.
+///
+/// Parses the chain config, then validates that every sub-processor's URN
+/// is a registered processor component and that its config is valid.
+fn validate_processor_chain_components<
+    PData: 'static
+        + Clone
+        + Debug
+        + otap_df_engine::Unwindable
+        + otap_df_engine::StampOutputPort
+        + otap_df_engine::PrepareSourceSend,
+>(
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    node_id: &NodeId,
+    config: &serde_json::Value,
+    factory: &PipelineFactory<PData>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let chain_config: otap_df_engine::config::ProcessorChainConfig =
+        serde_json::from_value(config.clone()).map_err(|e| {
+            std::io::Error::other(format!(
+                "Invalid processor_chain config for node={} in pipeline_group={} pipeline={}: {e}",
+                node_id.as_ref(),
+                pipeline_group_id.as_ref(),
+                pipeline_id.as_ref(),
+            ))
+        })?;
+
+    for (i, (sub_name, sub_cfg)) in chain_config.processors.iter().enumerate() {
+        let sub_urn = sub_cfg.r#type.as_str();
+
+        let proc_factory = factory.get_processor_factory_map().get(sub_urn);
+
+        match proc_factory {
+            None => {
+                return Err(std::io::Error::other(format!(
+                    "Unknown processor component `{}` in processor_chain node={} sub_name={sub_name} index={i} pipeline_group={} pipeline={}",
+                    sub_urn,
+                    node_id.as_ref(),
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                ))
+                .into());
+            }
+            Some(f) => {
+                if f.create_inline.is_none() {
+                    return Err(std::io::Error::other(format!(
+                        "processor `{sub_name}` (urn: {sub_urn}) does not support inline execution \
+                         and cannot be used inside a processor_chain in node={} pipeline_group={} pipeline={}. \
+                         Only processors that provide a `create_inline` factory are supported.",
+                        node_id.as_ref(),
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                    ))
+                    .into());
+                }
+
+                (f.validate_config)(&sub_cfg.config).map_err(|e| {
+                    std::io::Error::other(format!(
+                        "Invalid config for sub-processor `{}` in processor_chain node={} sub_name={sub_name} index={i} pipeline_group={} pipeline={}: {e}",
+                        sub_urn,
+                        node_id.as_ref(),
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                    ))
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Returns a human-readable string with system information and all component
 /// URNs registered in the given [`PipelineFactory`].
 ///
@@ -204,7 +312,14 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
 /// Useful for diagnostics, `--help` output, or startup banners in any
 /// distribution.
 #[must_use]
-pub fn system_info<PData: 'static + Clone + Debug>(
+pub fn system_info<
+    PData: 'static
+        + Clone
+        + Debug
+        + otap_df_engine::Unwindable
+        + otap_df_engine::StampOutputPort
+        + otap_df_engine::PrepareSourceSend,
+>(
     factory: &PipelineFactory<PData>,
     memory_allocator: &str,
 ) -> String {

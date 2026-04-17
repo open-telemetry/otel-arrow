@@ -54,6 +54,7 @@ static LOG_SAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdat
                  proc_cfg: &ProcessorConfig| {
             create_log_sampling_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        create_inline: None,
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
