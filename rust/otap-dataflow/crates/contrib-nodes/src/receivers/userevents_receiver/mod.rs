@@ -65,20 +65,7 @@ pub const USEREVENTS_RECEIVER_URN: &str = "urn:otel:receiver:userevents";
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FormatConfig {
     #[default]
-    Raw,
     CommonSchemaOtelLogs,
-    EventheaderFlat {
-        #[serde(default = "default_flatten_prefix")]
-        flatten_prefix: String,
-    },
-    CustomEventheader {
-        body_field: Option<String>,
-        severity_number_field: Option<String>,
-        severity_text_field: Option<String>,
-        event_name_field: Option<String>,
-        #[serde(default)]
-        attributes_from: Vec<String>,
-    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -653,10 +640,6 @@ const fn default_overflow_mode() -> OverflowMode {
     OverflowMode::Drop
 }
 
-fn default_flatten_prefix() -> String {
-    "userevents.field".to_owned()
-}
-
 #[cfg(all(test, target_os = "linux"))]
 mod linux_integration_tests {
     use super::*;
@@ -675,7 +658,7 @@ mod linux_integration_tests {
         };
         let subscriptions = vec![SubscriptionConfig {
             tracepoint,
-            format: FormatConfig::Raw,
+            format: FormatConfig::CommonSchemaOtelLogs,
         }];
 
         let session = UsereventsSession::open(&subscriptions, &config, 0)
@@ -717,9 +700,7 @@ mod config_tests {
             format: None,
             subscriptions: Some(vec![SubscriptionConfig {
                 tracepoint: "user_events:example_L5K1".to_owned(),
-                format: FormatConfig::EventheaderFlat {
-                    flatten_prefix: "custom.field".to_owned(),
-                },
+                format: FormatConfig::CommonSchemaOtelLogs,
             }]),
             session: None,
             drain: None,
@@ -730,22 +711,20 @@ mod config_tests {
         let normalized =
             UsereventsReceiver::normalize_subscriptions(&config).expect("normalized subscriptions");
         assert_eq!(normalized.len(), 1);
-        match &normalized[0].format {
-            FormatConfig::EventheaderFlat { flatten_prefix } => {
-                assert_eq!(flatten_prefix, "custom.field");
-            }
-            other => panic!("unexpected format: {other:?}"),
-        }
+        assert!(matches!(
+            normalized[0].format,
+            FormatConfig::CommonSchemaOtelLogs
+        ));
     }
 
     #[test]
     fn normalize_rejects_both_tracepoint_and_subscriptions() {
         let config = Config {
             tracepoint: Some("user_events:example_L2K1".to_owned()),
-            format: Some(FormatConfig::Raw),
+            format: Some(FormatConfig::CommonSchemaOtelLogs),
             subscriptions: Some(vec![SubscriptionConfig {
                 tracepoint: "user_events:example_L3K1".to_owned(),
-                format: FormatConfig::Raw,
+                format: FormatConfig::CommonSchemaOtelLogs,
             }]),
             session: None,
             drain: None,

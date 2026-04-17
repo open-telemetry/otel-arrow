@@ -26,12 +26,7 @@ Current implementation supports:
 
 - single-tracepoint configuration
 - multi-tracepoint configuration
-- configurable decode modes
-- raw payload preservation
-- partial Common Schema-aware promotion
-
-Current implementation does **not** yet provide full binary EventHeader field
-decoding.
+- structured Common Schema-aware decode for supported log payloads
 
 ## Configuration
 
@@ -68,8 +63,7 @@ nodes:
 
 ### Multiple Tracepoints
 
-Use this when one receiver should listen to several tracepoints with
-per-tracepoint decode settings.
+Use this when one receiver should listen to several tracepoints.
 
 ```yaml
 nodes:
@@ -80,13 +74,9 @@ nodes:
         - tracepoint: "user_events:myprovider_L2K1"
           format:
             type: common_schema_otel_logs
-        - tracepoint: "user_events:app_L5K1"
+        - tracepoint: "user_events:app_L2K1"
           format:
-            type: eventheader_flat
-            flatten_prefix: "userevents.field"
-        - tracepoint: "user_events:legacy_L4K1"
-          format:
-            type: raw
+            type: common_schema_otel_logs
       session:
         per_cpu_buffer_size: 1048576
         wakeup_watermark: 262144
@@ -94,14 +84,7 @@ nodes:
 
 Exactly one of `tracepoint` or `subscriptions` must be configured.
 
-## Decode Modes
-
-### `raw`
-
-The receiver does not interpret the payload. It stores the payload as a
-base64-encoded log body and attaches metadata as attributes.
-
-This is the safest mode for unknown producers.
+## Decode
 
 ### `common_schema_otel_logs`
 
@@ -118,24 +101,6 @@ Current behavior:
 - flattens eligible PartC scalar attributes into emitted log attributes
 - falls back to preserving the payload as base64-encoded data when Common
   Schema decoding fails
-
-### `eventheader_flat`
-
-Intended for generic EventHeader-based producers.
-
-Current behavior decodes EventHeader payload bytes to JSON and flattens the
-result into attributes using the configured prefix. Richer typed promotions and
-semantic mapping are still future work.
-
-### `custom_eventheader`
-
-Intended for producer-specific mappings where configured fields should
-eventually be promoted into OTel log fields.
-
-When EventHeader JSON decoding succeeds, the receiver applies the configured
-`body_field`, `event_name_field`, severity field mappings, and
-`attributes_from` extraction to the emitted log record. Unsupported mappings
-and richer semantic promotions remain future work.
 
 ## Output Shape
 

@@ -8,10 +8,9 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use serde_json::Value;
 use tracepoint_decode::{
     EventHeaderEnumeratorContext, EventHeaderEnumeratorError, EventHeaderEnumeratorState,
-    EventHeaderItemInfo, PerfConvertOptions,
+    EventHeaderItemInfo,
 };
 
 use super::FormatConfig;
@@ -25,12 +24,6 @@ const ATTR_CS_TYPE_NAME: &str = "cs.part_b._typeName";
 const ATTR_CS_PART_B_NAME: &str = "cs.part_b.name";
 const ATTR_LEVEL: &str = "eventheader.level";
 const ATTR_KEYWORD: &str = "eventheader.keyword";
-const ATTR_FLATTEN_PREFIX: &str = "linux.userevents.flatten_prefix";
-const ATTR_CUSTOM_BODY_FIELD: &str = "linux.userevents.custom.body_field";
-const ATTR_CUSTOM_EVENT_NAME_FIELD: &str = "linux.userevents.custom.event_name_field";
-const ATTR_CUSTOM_SEVERITY_NUMBER_FIELD: &str = "linux.userevents.custom.severity_number_field";
-const ATTR_CUSTOM_SEVERITY_TEXT_FIELD: &str = "linux.userevents.custom.severity_text_field";
-const ATTR_CUSTOM_ATTRIBUTES_FROM: &str = "linux.userevents.custom.attributes_from";
 
 // PartA-mapped OTel attribute keys
 const ATTR_TRACE_ID: &str = "trace.id";
@@ -113,14 +106,8 @@ impl DecodedUsereventsRecord {
         format: &FormatConfig,
     ) -> (Self, bool) {
         let identity = TracepointIdentity::parse(tracepoint.as_ref());
-        let mut body_is_base64 = true;
         let mut attributes = Vec::with_capacity(16);
         attributes.push((Cow::Borrowed(ATTR_MODE), format.name().to_owned()));
-        let mut severity_number = None;
-        let mut severity_text: Option<Cow<'static, str>> = None;
-        let mut event_name = None;
-        let mut body: String;
-        let mut cs_failed = false;
 
         if let Some(provider) = identity.provider {
             attributes.push((Cow::Borrowed(ATTR_PROVIDER), provider.to_owned()));
@@ -132,204 +119,92 @@ impl DecodedUsereventsRecord {
             attributes.push((Cow::Borrowed(ATTR_KEYWORD), keyword.to_owned()));
         }
 
-        match format {
-            FormatConfig::Raw => {
-                body = BASE64_STANDARD.encode(&value.payload);
-            }
-            FormatConfig::CommonSchemaOtelLogs => {
-                let mut time_override_nano: Option<i64> = None;
-                let mut flags = None;
-                let mut trace_id_typed: Option<[u8; 16]> = None;
-                let mut span_id_typed: Option<[u8; 8]> = None;
-                if let Some(cs) = decode_cs_otel_logs(tracepoint.as_ref(), &value.payload) {
-                    event_name = Some(cs.event_name.clone());
-                    attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), cs.event_name));
-                    attributes.push((Cow::Borrowed(ATTR_CS_VERSION), "1024".to_owned()));
-                    attributes.push((Cow::Borrowed(ATTR_CS_TYPE_NAME), "Log".to_owned()));
-                    body = cs.body.unwrap_or_default();
-                    body_is_base64 = false;
-                    severity_number = cs.severity_number;
-                    severity_text = cs.severity_text.map(Cow::Owned);
-                    if let Some(name) = cs.part_b_name {
-                        attributes.push((Cow::Borrowed(ATTR_CS_PART_B_NAME), name));
-                    }
-                    if let Some(eid) = cs.event_id {
-                        attributes.push((Cow::Borrowed(ATTR_EVENT_ID), eid.to_string()));
-                    }
-                    if let Some(time_str) = &cs.time {
-                        // TODO(perf): `parse_from_rfc3339` is on the Common Schema decode hot
-                        // path for every record with PartA.time. Keep it for correctness and
-                        // simplicity unless profiling shows it is a material throughput cost; if
-                        // it is, replace it with a fixed-format parser for the exporter's known
-                        // timestamp layout.
-                        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(time_str) {
-                            time_override_nano = dt.timestamp_nanos_opt();
-                        }
-                    }
-                    flags = cs.trace_flags;
-                    trace_id_typed = cs.trace_id;
-                    if let Some(tid_str) = cs.trace_id_text {
-                        attributes.push((Cow::Borrowed(ATTR_TRACE_ID), tid_str));
-                    }
-                    span_id_typed = cs.span_id;
-                    if let Some(sid_str) = cs.span_id_text {
-                        attributes.push((Cow::Borrowed(ATTR_SPAN_ID), sid_str));
-                    }
-                    if let Some(role) = cs.cloud_role {
-                        attributes.push((Cow::Borrowed(ATTR_SERVICE_NAME), role));
-                    }
-                    if let Some(inst) = cs.cloud_role_instance {
-                        attributes.push((Cow::Borrowed(ATTR_SERVICE_INSTANCE_ID), inst));
-                    }
-                    for (k, v) in cs.part_c_attrs {
-                        attributes.push((Cow::Owned(k), v));
-                    }
-                    // Fall back to EventHeader level if PartB had no severity
-                    if severity_number.is_none() {
-                        let mapped = identity
-                            .level
-                            .and_then(common_schema_severity_from_eventheader_level);
-                        severity_number = mapped.map(|(number, _)| number);
-                        if severity_text.is_none() {
-                            severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
-                        }
-                    }
-                } else {
-                    cs_failed = true;
-                    // Fallback: emit base64 body and map severity from EventHeader level
-                    body = BASE64_STANDARD.encode(&value.payload);
-                    event_name = Some("Log".to_owned());
-                    attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), "Log".to_owned()));
-                    attributes.push((Cow::Borrowed(ATTR_CS_VERSION), "1024".to_owned()));
-                    attributes.push((Cow::Borrowed(ATTR_CS_TYPE_NAME), "Log".to_owned()));
-                    let mapped = identity
-                        .level
-                        .and_then(common_schema_severity_from_eventheader_level);
-                    severity_number = mapped.map(|(number, _)| number);
-                    severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
-                    body_is_base64 = true;
-                }
+        let mut time_override_nano: Option<i64> = None;
+        let mut flags = None;
+        let mut trace_id_typed: Option<[u8; 16]> = None;
+        let mut span_id_typed: Option<[u8; 8]> = None;
+        let body: String;
+        let body_is_base64: bool;
+        let event_name: Option<String>;
+        let mut severity_number: Option<i32>;
+        let mut severity_text: Option<Cow<'static, str>>;
+        let cs_failed: bool;
 
-                return (
-                    Self {
-                        tracepoint,
-                        time_unix_nano: time_override_nano
-                            .unwrap_or(value.timestamp_unix_nano as i64),
-                        cpu: value.cpu,
-                        pid: value.pid,
-                        tid: value.tid,
-                        sample_id: value.sample_id,
-                        body,
-                        body_is_base64,
-                        event_name,
-                        payload_size: value.payload_size,
-                        severity_number,
-                        severity_text,
-                        flags,
-                        trace_id: trace_id_typed,
-                        span_id: span_id_typed,
-                        attributes,
-                    },
-                    cs_failed,
-                );
+        if let Some(cs) = decode_cs_otel_logs(tracepoint.as_ref(), &value.payload) {
+            event_name = Some(cs.event_name.clone());
+            attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), cs.event_name));
+            attributes.push((Cow::Borrowed(ATTR_CS_VERSION), "1024".to_owned()));
+            attributes.push((Cow::Borrowed(ATTR_CS_TYPE_NAME), "Log".to_owned()));
+            body = cs.body.unwrap_or_default();
+            body_is_base64 = false;
+            severity_number = cs.severity_number;
+            severity_text = cs.severity_text.map(Cow::Owned);
+            if let Some(name) = cs.part_b_name {
+                attributes.push((Cow::Borrowed(ATTR_CS_PART_B_NAME), name));
             }
-            FormatConfig::EventheaderFlat { flatten_prefix } => {
-                body = BASE64_STANDARD.encode(&value.payload);
-                attributes.push((Cow::Borrowed(ATTR_FLATTEN_PREFIX), flatten_prefix.clone()));
+            if let Some(eid) = cs.event_id {
+                attributes.push((Cow::Borrowed(ATTR_EVENT_ID), eid.to_string()));
+            }
+            if let Some(time_str) = &cs.time {
+                // TODO(perf): `parse_from_rfc3339` is on the Common Schema decode hot
+                // path for every record with PartA.time. Keep it for correctness and
+                // simplicity unless profiling shows it is a material throughput cost; if
+                // it is, replace it with a fixed-format parser for the exporter's known
+                // timestamp layout.
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(time_str) {
+                    time_override_nano = dt.timestamp_nanos_opt();
+                }
+            }
+            flags = cs.trace_flags;
+            trace_id_typed = cs.trace_id;
+            if let Some(tid_str) = cs.trace_id_text {
+                attributes.push((Cow::Borrowed(ATTR_TRACE_ID), tid_str));
+            }
+            span_id_typed = cs.span_id;
+            if let Some(sid_str) = cs.span_id_text {
+                attributes.push((Cow::Borrowed(ATTR_SPAN_ID), sid_str));
+            }
+            if let Some(role) = cs.cloud_role {
+                attributes.push((Cow::Borrowed(ATTR_SERVICE_NAME), role));
+            }
+            if let Some(inst) = cs.cloud_role_instance {
+                attributes.push((Cow::Borrowed(ATTR_SERVICE_INSTANCE_ID), inst));
+            }
+            for (k, v) in cs.part_c_attrs {
+                attributes.push((Cow::Owned(k), v));
+            }
+            // Fall back to EventHeader level if PartB had no severity
+            if severity_number.is_none() {
                 let mapped = identity
                     .level
                     .and_then(common_schema_severity_from_eventheader_level);
-                severity_number = mapped.map(|(number, _)| number);
-                severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
-                if let Some(decoded) = decode_eventheader_json(tracepoint.as_ref(), &value.payload)
-                {
-                    flatten_json(flatten_prefix, &decoded, &mut attributes);
-                    if let Some(name) = get_json_string(decoded.get("name")) {
-                        event_name = Some(name.clone());
-                        attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), name));
-                    }
-                }
+                let fallback_number = mapped.map(|(number, _)| number);
+                let fallback_text = mapped.map(|(_, text)| Cow::Borrowed(text));
+                severity_number = fallback_number;
+                severity_text = severity_text.or(fallback_text);
             }
-            FormatConfig::CustomEventheader {
-                body_field,
-                severity_number_field,
-                severity_text_field,
-                event_name_field,
-                attributes_from,
-            } => {
-                body = BASE64_STANDARD.encode(&value.payload);
-                if let Some(body_field) = body_field {
-                    attributes.push((Cow::Borrowed(ATTR_CUSTOM_BODY_FIELD), body_field.clone()));
-                }
-                if let Some(event_name_field) = event_name_field {
-                    attributes.push((
-                        Cow::Borrowed(ATTR_CUSTOM_EVENT_NAME_FIELD),
-                        event_name_field.clone(),
-                    ));
-                }
-                if let Some(severity_number_field) = severity_number_field {
-                    attributes.push((
-                        Cow::Borrowed(ATTR_CUSTOM_SEVERITY_NUMBER_FIELD),
-                        severity_number_field.clone(),
-                    ));
-                }
-                if let Some(severity_text_field) = severity_text_field {
-                    attributes.push((
-                        Cow::Borrowed(ATTR_CUSTOM_SEVERITY_TEXT_FIELD),
-                        severity_text_field.clone(),
-                    ));
-                }
-                if !attributes_from.is_empty() {
-                    attributes.push((
-                        Cow::Borrowed(ATTR_CUSTOM_ATTRIBUTES_FROM),
-                        attributes_from.join(","),
-                    ));
-                }
-                let mapped = identity
-                    .level
-                    .and_then(common_schema_severity_from_eventheader_level);
-                severity_number = mapped.map(|(number, _)| number);
-                severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
-                if let Some(decoded) = decode_eventheader_json(tracepoint.as_ref(), &value.payload)
-                {
-                    if let Some(event_name_field) = event_name_field {
-                        if let Some(name) = lookup_path_as_string(&decoded, event_name_field) {
-                            event_name = Some(name.clone());
-                            attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), name));
-                        }
-                    }
-                    if let Some(body_field) = body_field {
-                        if let Some(decoded_body) = lookup_path_as_string(&decoded, body_field) {
-                            body = decoded_body;
-                        }
-                    }
-                    if let Some(field) = severity_number_field {
-                        if let Some(number) = lookup_path_as_i32(&decoded, field) {
-                            severity_number = Some(number);
-                        }
-                    }
-                    if let Some(field) = severity_text_field {
-                        if let Some(text) = lookup_path_as_string(&decoded, field) {
-                            severity_text = Some(Cow::Owned(text));
-                        }
-                    }
-                    for path in attributes_from {
-                        if let Some(prefix) = path.strip_suffix(".*") {
-                            if let Some(value) = lookup_path(&decoded, prefix) {
-                                flatten_json(prefix, value, &mut attributes);
-                            }
-                        } else if let Some(value) = lookup_path_as_string(&decoded, path) {
-                            attributes.push((Cow::Owned(path.clone()), value));
-                        }
-                    }
-                }
-            }
+            cs_failed = false;
+        } else {
+            // Fallback: emit base64 body and map severity from EventHeader level
+            body = BASE64_STANDARD.encode(&value.payload);
+            event_name = Some("Log".to_owned());
+            attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), "Log".to_owned()));
+            attributes.push((Cow::Borrowed(ATTR_CS_VERSION), "1024".to_owned()));
+            attributes.push((Cow::Borrowed(ATTR_CS_TYPE_NAME), "Log".to_owned()));
+            let mapped = identity
+                .level
+                .and_then(common_schema_severity_from_eventheader_level);
+            severity_number = mapped.map(|(number, _)| number);
+            severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
+            body_is_base64 = true;
+            cs_failed = true;
         }
 
         (
             Self {
                 tracepoint,
-                time_unix_nano: value.timestamp_unix_nano as i64,
+                time_unix_nano: time_override_nano
+                    .unwrap_or(value.timestamp_unix_nano as i64),
                 cpu: value.cpu,
                 pid: value.pid,
                 tid: value.tid,
@@ -340,12 +215,12 @@ impl DecodedUsereventsRecord {
                 payload_size: value.payload_size,
                 severity_number,
                 severity_text,
-                flags: None,
-                trace_id: None,
-                span_id: None,
+                flags,
+                trace_id: trace_id_typed,
+                span_id: span_id_typed,
                 attributes,
             },
-            false,
+            cs_failed,
         )
     }
 }
@@ -353,10 +228,7 @@ impl DecodedUsereventsRecord {
 impl FormatConfig {
     fn name(&self) -> &'static str {
         match self {
-            Self::Raw => "raw",
             Self::CommonSchemaOtelLogs => "common_schema_otel_logs",
-            Self::EventheaderFlat { .. } => "eventheader_flat",
-            Self::CustomEventheader { .. } => "custom_eventheader",
         }
     }
 }
@@ -403,26 +275,6 @@ fn common_schema_severity_from_eventheader_level(level: u8) -> Option<(i32, &'st
         5 => Some((5, "DEBUG")),
         _ => None,
     }
-}
-
-fn decode_eventheader_json(tracepoint: &str, payload: &[u8]) -> Option<Value> {
-    let mut context = EventHeaderEnumeratorContext::new();
-    let mut enumerator = context
-        .enumerate_with_name_and_data(
-            tracepoint,
-            payload,
-            EventHeaderEnumeratorContext::MOVE_NEXT_LIMIT_DEFAULT,
-        )
-        .ok()?;
-    let mut json = String::from("{");
-    if !enumerator
-        .write_json_item_and_move_next_sibling(&mut json, false, PerfConvertOptions::Default)
-        .ok()?
-    {
-        return None;
-    }
-    json.push('}');
-    serde_json::from_str(&json).ok()
 }
 
 /// Decoded Common Schema OTel Logs record extracted from EventHeader binary payload.
@@ -777,69 +629,6 @@ fn item_as_any_scalar_string(item: &EventHeaderItemInfo<'_>) -> Option<String> {
     }
 }
 
-fn flatten_json(prefix: &str, value: &Value, out: &mut Vec<(Cow<'static, str>, String)>) {
-    match value {
-        Value::Object(map) => {
-            for (key, value) in map {
-                let next = if prefix.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{prefix}.{}", normalize_key(key))
-                };
-                flatten_json(&next, value, out);
-            }
-        }
-        Value::Array(array) => {
-            if !array.is_empty() {
-                out.push((
-                    Cow::Owned(prefix.to_owned()),
-                    Value::Array(array.clone()).to_string(),
-                ));
-            }
-        }
-        Value::String(text) => {
-            out.push((Cow::Owned(prefix.to_owned()), text.clone()));
-        }
-        Value::Number(number) => {
-            out.push((Cow::Owned(prefix.to_owned()), number.to_string()));
-        }
-        Value::Bool(boolean) => {
-            out.push((Cow::Owned(prefix.to_owned()), boolean.to_string()));
-        }
-        Value::Null => {}
-    }
-}
-
-fn normalize_key(key: &str) -> String {
-    let mut result = String::with_capacity(key.len());
-    for (index, ch) in key.chars().enumerate() {
-        if ch.is_ascii_uppercase() {
-            if index != 0 {
-                result.push('_');
-            }
-            result.push(ch.to_ascii_lowercase());
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
-fn get_json_string(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::String(text) => Some(text.clone()),
-        Value::Number(number) => Some(number.to_string()),
-        Value::Bool(boolean) => Some(boolean.to_string()),
-        _ => None,
-    }
-}
-
-fn get_json_i32(value: Option<&Value>) -> Option<i32> {
-    value?
-        .as_i64()
-        .and_then(|number| i32::try_from(number).ok())
-}
-
 /// Parse ASCII hex bytes of exactly `N*2` characters into a `[u8; N]`.
 /// Returns `None` if the length or any character is invalid.
 fn parse_hex_bytes_ascii<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
@@ -864,55 +653,9 @@ fn hex_nibble(b: u8) -> Option<u8> {
     }
 }
 
-fn lookup_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut current = value;
-    for part in path.split('.') {
-        current = current.get(part)?;
-    }
-    Some(current)
-}
-
-fn lookup_path_as_string(value: &Value, path: &str) -> Option<String> {
-    get_json_string(lookup_path(value, path))
-}
-
-fn lookup_path_as_i32(value: &Value, path: &str) -> Option<i32> {
-    get_json_i32(lookup_path(value, path))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn raw_record_is_base64_encoded() {
-        let (decoded, _) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:Example"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 42,
-                cpu: 3,
-                pid: 100,
-                tid: 101,
-                sample_id: 9,
-                payload: vec![0x41, 0x42, 0x43],
-                payload_size: 3,
-            },
-            &FormatConfig::Raw,
-        );
-
-        assert_eq!(decoded.tracepoint.as_ref(), "user_events:Example");
-        assert_eq!(decoded.body, "QUJD");
-        assert_eq!(decoded.payload_size, 3);
-        assert_eq!(decoded.sample_id, 9);
-        assert!(decoded.severity_number.is_none());
-        assert!(
-            !decoded
-                .attributes
-                .iter()
-                .any(|(key, _)| key.as_ref() == ATTR_EVENT_NAME)
-        );
-    }
 
     #[test]
     fn common_schema_mode_maps_severity_from_tracepoint_level() {
@@ -975,29 +718,6 @@ mod tests {
                 .any(|(key, value)| key.as_ref() == ATTR_EVENT_NAME && value == "Log")
         );
         assert!(decoded.body_is_base64);
-    }
-
-    #[test]
-    fn flatten_json_turns_nested_object_into_dot_attributes() {
-        let mut out = Vec::new();
-        flatten_json(
-            "cs",
-            &serde_json::json!({
-                "PartB": {
-                    "name": "evt",
-                    "severityNumber": 17
-                }
-            }),
-            &mut out,
-        );
-        assert!(
-            out.iter()
-                .any(|(key, value)| key == "cs.part_b.name" && value == "evt")
-        );
-        assert!(
-            out.iter()
-                .any(|(key, value)| key == "cs.part_b.severity_number" && value == "17")
-        );
     }
 
     // ── EventHeader binary test helpers ──────────────────────────────────────
