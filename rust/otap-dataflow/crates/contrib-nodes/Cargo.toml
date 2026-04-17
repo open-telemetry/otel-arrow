@@ -41,6 +41,7 @@ linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracepoint_decode = "0.5.0"
+itoa.workspace = true
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
@@ -50,17 +51,22 @@ azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
-itoa = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
-[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
-one_collect = { path = "../../../one-collect/one_collect", features = ["scripting"] }
+[target.'cfg(target_os = "linux")'.dependencies]
+# TODO: Remove this pinned git dependency once one-collect is upstream in the
+# normal dependency graph and no longer needs to be pulled directly here.
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "2d33e674348168f4a19bd3ab40d92f1c556407ec", features = ["scripting"], optional = true }
 
 [features]
+contrib-receivers = [
+    "userevents-receiver",
+]
+userevents-receiver = ["dep:one_collect"]
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
@@ -78,7 +84,6 @@ azure-monitor-exporter = [
     "dep:sysinfo",
     "dep:flate2",
     "dep:http",
-    "dep:itoa",
     "dep:rand",
     "dep:ryu",
     "dep:urlencoding",

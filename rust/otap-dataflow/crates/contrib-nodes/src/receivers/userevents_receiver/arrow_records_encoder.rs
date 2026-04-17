@@ -4,12 +4,14 @@
 //! Arrow encoding for Linux userevents logs.
 
 use chrono::Utc;
+use itoa::Buffer as ItoaBuffer;
 use otap_df_pdata::encode::Result;
 use otap_df_pdata::encode::record::{
     attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
 };
 use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::schema::{SpanId, TraceId};
 
 use super::decoder::DecodedUsereventsRecord;
 
@@ -64,18 +66,37 @@ impl ArrowRecordsBuilder {
         self.logs.body.append_str(record.body.as_bytes());
         self.logs.append_severity_number(record.severity_number);
         self.logs
-            .append_severity_text(record.severity_text.map(str::as_bytes));
+            .append_severity_text(record.severity_text.as_deref().map(str::as_bytes));
         self.logs.append_id(Some(self.curr_log_id));
+        self.logs.append_flags(record.flags);
+        self.logs
+            .append_event_name(record.event_name.as_deref().map(str::as_bytes));
+        _ = self
+            .logs
+            .append_trace_id(record.trace_id.as_ref() as Option<&TraceId>);
+        _ = self
+            .logs
+            .append_span_id(record.span_id.as_ref() as Option<&SpanId>);
 
         self.append_attr(ATTR_TRACEPOINT, &record.tracepoint);
-        self.append_attr(ATTR_CPU, &record.cpu.to_string());
-        self.append_attr(ATTR_PID, &record.pid.to_string());
-        self.append_attr(ATTR_TID, &record.tid.to_string());
-        self.append_attr(ATTR_SAMPLE_ID, &record.sample_id.to_string());
-        self.append_attr(ATTR_PAYLOAD_SIZE, &record.payload_size.to_string());
-        self.append_attr(ATTR_ENCODING, BODY_ENCODING_BASE64);
+        let mut cpu_buf = ItoaBuffer::new();
+        self.append_attr(ATTR_CPU, cpu_buf.format(record.cpu));
+        let mut pid_buf = ItoaBuffer::new();
+        self.append_attr(ATTR_PID, pid_buf.format(record.pid));
+        let mut tid_buf = ItoaBuffer::new();
+        self.append_attr(ATTR_TID, tid_buf.format(record.tid));
+        let mut sample_id_buf = ItoaBuffer::new();
+        self.append_attr(ATTR_SAMPLE_ID, sample_id_buf.format(record.sample_id));
+        let mut payload_size_buf = ItoaBuffer::new();
+        self.append_attr(
+            ATTR_PAYLOAD_SIZE,
+            payload_size_buf.format(record.payload_size),
+        );
+        if record.body_is_base64 {
+            self.append_attr(ATTR_ENCODING, BODY_ENCODING_BASE64);
+        }
         for (key, value) in record.attributes {
-            self.append_attr(&key, &value);
+            self.append_attr(key.as_ref(), &value);
         }
 
         self.curr_log_id += 1;
@@ -114,9 +135,6 @@ impl ArrowRecordsBuilder {
         self.logs.append_schema_url_n(None, log_record_count);
         self.logs
             .append_dropped_attributes_count_n(0, log_record_count);
-        self.logs.append_flags_n(None, log_record_count);
-        _ = self.logs.append_trace_id_n(None, log_record_count);
-        _ = self.logs.append_span_id_n(None, log_record_count);
 
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
         otap_batch.set(ArrowPayloadType::Logs, self.logs.finish()?)?;
@@ -134,27 +152,33 @@ impl ArrowRecordsBuilder {
 mod tests {
     use super::*;
     use crate::receivers::userevents_receiver::decoder::DecodedUsereventsRecord;
-    use arrow::array::{AsArray, DictionaryArray, Int32Array, StringArray, StructArray};
+    use arrow::array::{
+        Array, AsArray, DictionaryArray, Int32Array, StringArray, StructArray, UInt32Array,
+    };
     use arrow::datatypes::{TimestampNanosecondType, UInt8Type, UInt16Type};
 
     #[test]
     fn build_creates_logs_and_attributes_batches() {
         let mut builder = ArrowRecordsBuilder::new();
         builder.append(DecodedUsereventsRecord {
-            tracepoint: "user_events:Example".to_owned(),
+            tracepoint: "user_events:Example".into(),
             time_unix_nano: 1234,
             cpu: 2,
             pid: 11,
             tid: 12,
             sample_id: 77,
             body: "QUJD".to_owned(),
+            body_is_base64: true,
             event_name: Some("example-event".to_owned()),
             payload_size: 3,
             severity_number: Some(17),
-            severity_text: Some("ERROR"),
+            severity_text: Some("ERROR".into()),
+            flags: None,
+            trace_id: None,
+            span_id: None,
             attributes: vec![
-                ("event.provider".to_owned(), "example".to_owned()),
-                ("event.name".to_owned(), "example-event".to_owned()),
+                ("event.provider".into(), "example".to_owned()),
+                ("event.name".into(), "example-event".to_owned()),
             ],
         });
 
@@ -208,6 +232,11 @@ mod tests {
         let severity_idx = severity_col.keys().value(0) as usize;
         assert_eq!(severity_values.value(severity_idx), 17);
 
+        assert!(
+            logs_rb.column_by_name("flags").is_none(),
+            "all-null flags column should be omitted"
+        );
+
         let parent_col = attrs_rb
             .column_by_name("parent_id")
             .expect("parent id column")
@@ -215,5 +244,40 @@ mod tests {
         for row in 0..attrs_rb.num_rows() {
             assert_eq!(parent_col.value(row), 0);
         }
+    }
+
+    #[test]
+    fn build_preserves_non_null_flags() {
+        let mut builder = ArrowRecordsBuilder::new();
+        builder.append(DecodedUsereventsRecord {
+            tracepoint: "user_events:Example".into(),
+            time_unix_nano: 1234,
+            cpu: 2,
+            pid: 11,
+            tid: 12,
+            sample_id: 77,
+            body: "text".to_owned(),
+            body_is_base64: false,
+            event_name: Some("example-event".to_owned()),
+            payload_size: 4,
+            severity_number: Some(9),
+            severity_text: Some("INFO".into()),
+            flags: Some(1),
+            trace_id: None,
+            span_id: None,
+            attributes: vec![],
+        });
+
+        let batch = builder.build().expect("build succeeds");
+        let logs_rb = batch
+            .get(ArrowPayloadType::Logs)
+            .expect("logs batch present");
+        let flags_col = logs_rb
+            .column_by_name("flags")
+            .expect("flags column")
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("flags values");
+        assert_eq!(flags_col.value(0), 1);
     }
 }

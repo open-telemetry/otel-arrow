@@ -7,6 +7,7 @@
 
 #[cfg(target_os = "linux")]
 mod imp {
+    use std::collections::HashMap;
     use std::io;
     use std::time::Duration;
 
@@ -21,7 +22,7 @@ mod imp {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(crate) struct RawUsereventsRecord {
-        pub tracepoint: String,
+        pub subscription_index: usize,
         pub timestamp_unix_nano: u64,
         pub cpu: u32,
         pub pid: i32,
@@ -31,9 +32,10 @@ mod imp {
         pub payload_size: usize,
     }
 
-    #[derive(Debug)]
-    pub(crate) struct SessionDrain {
-        pub records: Vec<RawUsereventsRecord>,
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SessionDrainStats {
+        pub received_samples: u64,
+        pub dropped_no_subscription: u64,
         pub lost_samples: u64,
     }
 
@@ -66,6 +68,7 @@ mod imp {
 
     pub(crate) struct UsereventsSession {
         inner: OneCollectUserEventsSession,
+        tracepoint_index: HashMap<String, usize>,
     }
 
     impl UsereventsSession {
@@ -80,6 +83,11 @@ mod imp {
                     tracepoint: subscription.tracepoint.clone(),
                 })
                 .collect::<Vec<_>>();
+            let tracepoint_index = subscriptions
+                .iter()
+                .enumerate()
+                .map(|(index, subscription)| (subscription.tracepoint.clone(), index))
+                .collect();
             let config = UserEventsSessionConfig {
                 per_cpu_buffer_size: config.per_cpu_buffer_size,
                 cpu_ids: vec![cpu_id],
@@ -98,13 +106,17 @@ mod imp {
                     }
                 })?;
 
-            Ok(Self { inner })
+            Ok(Self {
+                inner,
+                tracepoint_index,
+            })
         }
 
         pub(crate) async fn drain_ready(
             &mut self,
             config: &DrainConfig,
-        ) -> io::Result<SessionDrain> {
+            out: &mut Vec<RawUsereventsRecord>,
+        ) -> io::Result<SessionDrainStats> {
             let poll_interval = Duration::from_millis(1);
 
             loop {
@@ -114,12 +126,25 @@ mod imp {
                     config.max_drain_ns,
                 )?;
                 if !drained.events.is_empty() || drained.lost_samples > 0 {
-                    let records = drained
-                        .events
-                        .into_iter()
-                        .filter_map(|event| match event.source {
-                            EventSource::UserEvents(source) => Some(RawUsereventsRecord {
-                                tracepoint: source.tracepoint,
+                    out.clear();
+                    out.reserve(drained.events.len());
+                    let mut stats = SessionDrainStats {
+                        received_samples: drained.events.len() as u64,
+                        dropped_no_subscription: 0,
+                        lost_samples: drained.lost_samples,
+                    };
+                    for event in drained.events {
+                        if let EventSource::UserEvents(source) = event.source {
+                            let Some(subscription_index) = self
+                                .tracepoint_index
+                                .get(source.tracepoint.as_str())
+                                .copied()
+                            else {
+                                stats.dropped_no_subscription += 1;
+                                continue;
+                            };
+                            out.push(RawUsereventsRecord {
+                                subscription_index,
                                 timestamp_unix_nano: event.timestamp_unix_nano,
                                 cpu: event.cpu.unwrap_or_default(),
                                 pid: event.pid.unwrap_or_default(),
@@ -127,15 +152,15 @@ mod imp {
                                 sample_id: source.sample_id,
                                 payload_size: event.payload.len(),
                                 payload: event.payload,
-                            }),
-                        })
-                        .collect();
-                    return Ok(SessionDrain {
-                        records,
-                        lost_samples: drained.lost_samples,
-                    });
+                            });
+                        }
+                    }
+                    return Ok(stats);
                 }
 
+                // TODO: Replace this fixed sleep with an event-driven wakeup once
+                // one-collect exposes a waitable/readiness API for PerfSession.
+                // Tracking issue: https://github.com/microsoft/one-collect/issues/254
                 time::sleep(poll_interval).await;
             }
         }
@@ -154,7 +179,7 @@ mod imp {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(crate) struct RawUsereventsRecord {
-        pub tracepoint: String,
+        pub subscription_index: usize,
         pub timestamp_unix_nano: u64,
         pub cpu: u32,
         pub pid: i32,
@@ -164,9 +189,10 @@ mod imp {
         pub payload_size: usize,
     }
 
-    #[derive(Debug)]
-    pub(crate) struct SessionDrain {
-        pub records: Vec<RawUsereventsRecord>,
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SessionDrainStats {
+        pub received_samples: u64,
+        pub dropped_no_subscription: u64,
         pub lost_samples: u64,
     }
 
@@ -199,11 +225,10 @@ mod imp {
         pub(crate) async fn drain_ready(
             &mut self,
             _config: &DrainConfig,
-        ) -> io::Result<SessionDrain> {
-            Ok(SessionDrain {
-                records: Vec::new(),
-                lost_samples: 0,
-            })
+            out: &mut Vec<RawUsereventsRecord>,
+        ) -> io::Result<SessionDrainStats> {
+            out.clear();
+            Ok(SessionDrainStats::default())
         }
 
         pub(crate) fn subscription_count(&self) -> usize {
@@ -212,4 +237,4 @@ mod imp {
     }
 }
 
-pub(super) use imp::{RawUsereventsRecord, SessionInitError, UsereventsSession};
+pub(super) use imp::{RawUsereventsRecord, SessionDrainStats, SessionInitError, UsereventsSession};

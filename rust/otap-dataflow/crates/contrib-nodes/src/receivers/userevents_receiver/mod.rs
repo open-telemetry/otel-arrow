@@ -165,6 +165,7 @@ struct Config {
 
 struct UsereventsReceiver {
     subscriptions: Vec<SubscriptionConfig>,
+    subscription_tracepoints: Vec<Arc<str>>,
     session: SessionConfig,
     drain: DrainConfig,
     batching: BatchConfig,
@@ -186,6 +187,10 @@ impl UsereventsReceiver {
         })?;
 
         let subscriptions = Self::normalize_subscriptions(&config)?;
+        let subscription_tracepoints = subscriptions
+            .iter()
+            .map(|subscription| Arc::<str>::from(subscription.tracepoint.as_str()))
+            .collect();
         let session = config.session.clone().unwrap_or(SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
@@ -209,6 +214,7 @@ impl UsereventsReceiver {
 
         Ok(Self {
             subscriptions,
+            subscription_tracepoints,
             session,
             drain,
             batching,
@@ -363,6 +369,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
 
             let mut session: Option<UsereventsSession> = None;
             let mut builder = ArrowRecordsBuilder::new();
+            let mut drained_records = Vec::with_capacity(drain_cfg.max_records_per_turn);
             let node_name = effect_handler.receiver_id().name.as_ref().to_owned();
             otel_info!(
                 "userevents_receiver.start",
@@ -457,40 +464,56 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                         let session = session
                             .as_mut()
                             .expect("userevents session branch is gated by is_some()");
-                        session.drain_ready(&drain_cfg).await
+                        session.drain_ready(&drain_cfg, &mut drained_records).await
                     }, if session.is_some() => {
-                        let drained = drained.map_err(|error| Error::ReceiverError {
+                        let drain_stats = drained.map_err(|error| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
                             kind: ReceiverErrorKind::Transport,
                             error: "failed to drain Linux userevents perf ring".to_owned(),
                             source_detail: format_error_sources(&error),
                         })?;
 
-                        if drained.lost_samples > 0 {
-                            self.metrics.borrow_mut().lost_perf_samples.add(drained.lost_samples);
-                        }
-
-                        for raw in drained.records {
-                            self.metrics.borrow_mut().received_samples.inc();
+                        let received_samples = drain_stats.received_samples;
+                        let mut dropped_memory_pressure: u64 = 0;
+                        let dropped_no_subscription = drain_stats.dropped_no_subscription;
+                        let mut cs_decode_fallbacks: u64 = 0;
+                        for raw in drained_records.drain(..) {
                             if self.admission_state.should_shed_ingress() {
-                                self.metrics.borrow_mut().dropped_memory_pressure.inc();
+                                dropped_memory_pressure += 1;
                                 continue;
                             }
 
-                            let Some(subscription) = self
-                                .subscriptions
-                                .iter()
-                                .find(|subscription| subscription.tracepoint == raw.tracepoint)
-                            else {
-                                self.metrics.borrow_mut().dropped_decode_failures.inc();
-                                continue;
-                            };
+                            let subscription_index = raw.subscription_index;
+                            let subscription = &self.subscriptions[subscription_index];
+                            let tracepoint =
+                                Arc::clone(&self.subscription_tracepoints[subscription_index]);
 
-                            let decoded = DecodedUsereventsRecord::from_raw(raw, &subscription.format);
+                            let (decoded, cs_failed) =
+                                DecodedUsereventsRecord::from_raw(tracepoint, raw, &subscription.format);
+                            if cs_failed {
+                                cs_decode_fallbacks += 1;
+                            }
                             builder.append(decoded);
                             if builder.len() >= batch_cfg.max_size {
                                 flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
                             }
+                        }
+
+                        let mut metrics = self.metrics.borrow_mut();
+                        if drain_stats.lost_samples > 0 {
+                            metrics.lost_perf_samples.add(drain_stats.lost_samples);
+                        }
+                        if received_samples > 0 {
+                            metrics.received_samples.add(received_samples);
+                        }
+                        if dropped_memory_pressure > 0 {
+                            metrics.dropped_memory_pressure.add(dropped_memory_pressure);
+                        }
+                        if dropped_no_subscription > 0 {
+                            metrics.dropped_no_subscription.add(dropped_no_subscription);
+                        }
+                        if cs_decode_fallbacks > 0 {
+                            metrics.cs_decode_fallbacks.add(cs_decode_fallbacks);
                         }
                     }
                 }

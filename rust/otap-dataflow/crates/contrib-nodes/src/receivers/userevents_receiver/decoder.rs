@@ -3,10 +3,16 @@
 
 //! Decoding helpers for Linux userevents samples.
 
+use std::borrow::Cow;
+use std::sync::Arc;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde_json::Value;
-use tracepoint_decode::{EventHeaderEnumeratorContext, PerfConvertOptions};
+use tracepoint_decode::{
+    EventHeaderEnumeratorContext, EventHeaderEnumeratorError, EventHeaderEnumeratorState,
+    EventHeaderItemInfo, PerfConvertOptions,
+};
 
 use super::FormatConfig;
 use super::session::RawUsereventsRecord;
@@ -17,7 +23,6 @@ const ATTR_EVENT_NAME: &str = "event.name";
 const ATTR_CS_VERSION: &str = "cs.__csver__";
 const ATTR_CS_TYPE_NAME: &str = "cs.part_b._typeName";
 const ATTR_CS_PART_B_NAME: &str = "cs.part_b.name";
-const ATTR_CS_PART_B_BODY: &str = "cs.part_b.body";
 const ATTR_LEVEL: &str = "eventheader.level";
 const ATTR_KEYWORD: &str = "eventheader.keyword";
 const ATTR_FLATTEN_PREFIX: &str = "linux.userevents.flatten_prefix";
@@ -26,13 +31,47 @@ const ATTR_CUSTOM_EVENT_NAME_FIELD: &str = "linux.userevents.custom.event_name_f
 const ATTR_CUSTOM_SEVERITY_NUMBER_FIELD: &str = "linux.userevents.custom.severity_number_field";
 const ATTR_CUSTOM_SEVERITY_TEXT_FIELD: &str = "linux.userevents.custom.severity_text_field";
 const ATTR_CUSTOM_ATTRIBUTES_FROM: &str = "linux.userevents.custom.attributes_from";
-const BODY_ENCODING_BASE64: &str = "base64";
+
+// PartA-mapped OTel attribute keys
+const ATTR_TRACE_ID: &str = "trace.id";
+const ATTR_SPAN_ID: &str = "span.id";
+const ATTR_SERVICE_NAME: &str = "service.name";
+const ATTR_SERVICE_INSTANCE_ID: &str = "service.instance.id";
+const ATTR_EVENT_ID: &str = "event_id";
+
+// FieldEncoding raw values (from eventheader_types, avoids a new dep)
+const ENC_STRUCT: u8 = 1;
+const ENC_VALUE8: u8 = 2;
+const ENC_VALUE16: u8 = 3;
+const ENC_VALUE32: u8 = 4;
+const ENC_VALUE64: u8 = 5;
+const ENC_STRING_LENGTH16_CHAR8: u8 = 10;
+
+// FieldFormat raw values
+const FMT_DEFAULT: u8 = 0;
+const FMT_UNSIGNED_INT: u8 = 1;
+const FMT_SIGNED_INT: u8 = 2;
+const FMT_BOOLEAN: u8 = 7;
+const FMT_FLOAT: u8 = 8;
+const FMT_STRING_UTF: u8 = 11;
+
+// PartA reserved field names (used to skip conflicts in PartC)
+const PART_A_RESERVED: &[&str] = &[
+    "env_ver",
+    "env_name",
+    "env_time",
+    "env_dt_traceId",
+    "env_dt_spanId",
+    "env_dt_traceFlags",
+];
+// PartB log field names (used to skip conflicts in PartC)
+const PART_B_LOG_FIELDS: &[&str] = &["severityText", "severityNumber", "name", "eventId", "body"];
 
 /// A decoded userevents record ready for Arrow encoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DecodedUsereventsRecord {
     /// The concrete tracefs tracepoint name, e.g. `user_events:MyProvider_L5K1f`.
-    pub tracepoint: String,
+    pub tracepoint: Arc<str>,
     /// Event timestamp in Unix epoch nanoseconds.
     pub time_unix_nano: i64,
     /// CPU that produced the sample.
@@ -43,94 +82,169 @@ pub(super) struct DecodedUsereventsRecord {
     pub tid: i32,
     /// Perf sample identifier used to bind events to subscriptions.
     pub sample_id: u64,
-    /// Encoded log body.
+    /// Log body string.
     pub body: String,
-    /// Optional promoted event name.
+    /// True when `body` contains a base64-encoded raw payload.
+    pub body_is_base64: bool,
+    /// Optional promoted event name for the typed OTLP log field.
     pub event_name: Option<String>,
     /// Size of the decoded payload in bytes.
     pub payload_size: usize,
     /// Optional severity number.
     pub severity_number: Option<i32>,
     /// Optional severity text.
-    pub severity_text: Option<&'static str>,
+    pub severity_text: Option<Cow<'static, str>>,
+    /// Optional OTLP log flags, used here for trace flags when present.
+    pub flags: Option<u32>,
+    /// Optional W3C trace id (16 bytes).
+    pub trace_id: Option<[u8; 16]>,
+    /// Optional W3C span id (8 bytes).
+    pub span_id: Option<[u8; 8]>,
     /// Additional structured attributes.
-    pub attributes: Vec<(String, String)>,
+    pub attributes: Vec<(Cow<'static, str>, String)>,
 }
 
 impl DecodedUsereventsRecord {
-    pub(super) fn from_raw(value: RawUsereventsRecord, format: &FormatConfig) -> Self {
-        let identity = TracepointIdentity::parse(&value.tracepoint);
-        let fallback_body = BASE64_STANDARD.encode(&value.payload);
-        let mut attributes = vec![(ATTR_MODE.to_owned(), format.name().to_owned())];
+    pub(super) fn from_raw(
+        tracepoint: Arc<str>,
+        value: RawUsereventsRecord,
+        format: &FormatConfig,
+    ) -> (Self, bool) {
+        let identity = TracepointIdentity::parse(tracepoint.as_ref());
+        let mut body_is_base64 = true;
+        let mut attributes = Vec::with_capacity(16);
+        attributes.push((Cow::Borrowed(ATTR_MODE), format.name().to_owned()));
         let mut severity_number = None;
-        let mut severity_text = None;
+        let mut severity_text: Option<Cow<'static, str>> = None;
         let mut event_name = None;
-        let mut body = fallback_body;
+        let mut body: String;
+        let mut cs_failed = false;
 
-        if let Some(provider) = identity.provider.as_ref() {
-            attributes.push((ATTR_PROVIDER.to_owned(), provider.clone()));
+        if let Some(provider) = identity.provider {
+            attributes.push((Cow::Borrowed(ATTR_PROVIDER), provider.to_owned()));
         }
         if let Some(level) = identity.level {
-            attributes.push((ATTR_LEVEL.to_owned(), level.to_string()));
+            attributes.push((Cow::Borrowed(ATTR_LEVEL), level.to_string()));
         }
-        if let Some(keyword) = identity.keyword.as_ref() {
-            attributes.push((ATTR_KEYWORD.to_owned(), keyword.clone()));
+        if let Some(keyword) = identity.keyword {
+            attributes.push((Cow::Borrowed(ATTR_KEYWORD), keyword.to_owned()));
         }
 
         match format {
-            FormatConfig::Raw => {}
+            FormatConfig::Raw => {
+                body = BASE64_STANDARD.encode(&value.payload);
+            }
             FormatConfig::CommonSchemaOtelLogs => {
-                event_name = Some("Log".to_owned());
-                attributes.push((ATTR_EVENT_NAME.to_owned(), "Log".to_owned()));
-                attributes.push((ATTR_CS_VERSION.to_owned(), "1024".to_owned()));
-                attributes.push((ATTR_CS_TYPE_NAME.to_owned(), "Log".to_owned()));
-                let mapped = identity
-                    .level
-                    .and_then(common_schema_severity_from_eventheader_level);
-                severity_number = mapped.map(|(number, _)| number);
-                severity_text = mapped.map(|(_, text)| text);
-                if let Some(decoded) = decode_eventheader_json(&value.tracepoint, &value.payload) {
-                    if let Some(part_b) = decoded.get("PartB") {
-                        if let Some(name) = get_json_string(part_b.get("name")) {
-                            event_name = Some(name.clone());
-                            attributes.push((ATTR_EVENT_NAME.to_owned(), name.clone()));
-                            attributes.push((ATTR_CS_PART_B_NAME.to_owned(), name));
-                        }
-                        if let Some(text_body) = get_json_string(part_b.get("body")) {
-                            attributes.push((ATTR_CS_PART_B_BODY.to_owned(), text_body.clone()));
-                            body = text_body;
-                        }
-                        if let Some(number) = get_json_i32(part_b.get("severityNumber")) {
-                            severity_number = Some(number);
-                        }
-                        if let Some(text) = get_json_string(part_b.get("severityText")) {
-                            severity_text = Some(leak_string(text));
+                let mut time_override_nano: Option<i64> = None;
+                let mut flags = None;
+                let mut trace_id_typed: Option<[u8; 16]> = None;
+                let mut span_id_typed: Option<[u8; 8]> = None;
+                if let Some(cs) = decode_cs_otel_logs(tracepoint.as_ref(), &value.payload) {
+                    event_name = Some(cs.event_name.clone());
+                    attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), cs.event_name));
+                    attributes.push((Cow::Borrowed(ATTR_CS_VERSION), "1024".to_owned()));
+                    attributes.push((Cow::Borrowed(ATTR_CS_TYPE_NAME), "Log".to_owned()));
+                    body = cs.body.unwrap_or_default();
+                    body_is_base64 = false;
+                    severity_number = cs.severity_number;
+                    severity_text = cs.severity_text.map(Cow::Owned);
+                    if let Some(name) = cs.part_b_name {
+                        attributes.push((Cow::Borrowed(ATTR_CS_PART_B_NAME), name));
+                    }
+                    if let Some(eid) = cs.event_id {
+                        attributes.push((Cow::Borrowed(ATTR_EVENT_ID), eid.to_string()));
+                    }
+                    if let Some(time_str) = &cs.time {
+                        // TODO(perf): `parse_from_rfc3339` is on the Common Schema decode hot
+                        // path for every record with PartA.time. Keep it for correctness and
+                        // simplicity unless profiling shows it is a material throughput cost; if
+                        // it is, replace it with a fixed-format parser for the exporter's known
+                        // timestamp layout.
+                        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(time_str) {
+                            time_override_nano = dt.timestamp_nanos_opt();
                         }
                     }
-
-                    flatten_json("cs", &decoded, &mut attributes);
-                } else if let Some((name, text_body)) =
-                    try_extract_common_schema_body_fields(&value.payload)
-                {
-                    event_name = Some(name.clone());
-                    attributes.push((ATTR_EVENT_NAME.to_owned(), name.clone()));
-                    attributes.push((ATTR_CS_PART_B_NAME.to_owned(), name));
-                    attributes.push((ATTR_CS_PART_B_BODY.to_owned(), text_body.clone()));
-                    body = text_body;
+                    flags = cs.trace_flags;
+                    trace_id_typed = cs.trace_id;
+                    if let Some(tid_str) = cs.trace_id_text {
+                        attributes.push((Cow::Borrowed(ATTR_TRACE_ID), tid_str));
+                    }
+                    span_id_typed = cs.span_id;
+                    if let Some(sid_str) = cs.span_id_text {
+                        attributes.push((Cow::Borrowed(ATTR_SPAN_ID), sid_str));
+                    }
+                    if let Some(role) = cs.cloud_role {
+                        attributes.push((Cow::Borrowed(ATTR_SERVICE_NAME), role));
+                    }
+                    if let Some(inst) = cs.cloud_role_instance {
+                        attributes.push((Cow::Borrowed(ATTR_SERVICE_INSTANCE_ID), inst));
+                    }
+                    for (k, v) in cs.part_c_attrs {
+                        attributes.push((Cow::Owned(k), v));
+                    }
+                    // Fall back to EventHeader level if PartB had no severity
+                    if severity_number.is_none() {
+                        let mapped = identity
+                            .level
+                            .and_then(common_schema_severity_from_eventheader_level);
+                        severity_number = mapped.map(|(number, _)| number);
+                        if severity_text.is_none() {
+                            severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
+                        }
+                    }
+                } else {
+                    cs_failed = true;
+                    // Fallback: emit base64 body and map severity from EventHeader level
+                    body = BASE64_STANDARD.encode(&value.payload);
+                    event_name = Some("Log".to_owned());
+                    attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), "Log".to_owned()));
+                    attributes.push((Cow::Borrowed(ATTR_CS_VERSION), "1024".to_owned()));
+                    attributes.push((Cow::Borrowed(ATTR_CS_TYPE_NAME), "Log".to_owned()));
+                    let mapped = identity
+                        .level
+                        .and_then(common_schema_severity_from_eventheader_level);
+                    severity_number = mapped.map(|(number, _)| number);
+                    severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
+                    body_is_base64 = true;
                 }
+
+                return (
+                    Self {
+                        tracepoint,
+                        time_unix_nano: time_override_nano
+                            .unwrap_or(value.timestamp_unix_nano as i64),
+                        cpu: value.cpu,
+                        pid: value.pid,
+                        tid: value.tid,
+                        sample_id: value.sample_id,
+                        body,
+                        body_is_base64,
+                        event_name,
+                        payload_size: value.payload_size,
+                        severity_number,
+                        severity_text,
+                        flags,
+                        trace_id: trace_id_typed,
+                        span_id: span_id_typed,
+                        attributes,
+                    },
+                    cs_failed,
+                );
             }
             FormatConfig::EventheaderFlat { flatten_prefix } => {
-                attributes.push((ATTR_FLATTEN_PREFIX.to_owned(), flatten_prefix.clone()));
+                body = BASE64_STANDARD.encode(&value.payload);
+                attributes.push((Cow::Borrowed(ATTR_FLATTEN_PREFIX), flatten_prefix.clone()));
                 let mapped = identity
                     .level
                     .and_then(common_schema_severity_from_eventheader_level);
                 severity_number = mapped.map(|(number, _)| number);
-                severity_text = mapped.map(|(_, text)| text);
-                if let Some(decoded) = decode_eventheader_json(&value.tracepoint, &value.payload) {
+                severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
+                if let Some(decoded) = decode_eventheader_json(tracepoint.as_ref(), &value.payload)
+                {
                     flatten_json(flatten_prefix, &decoded, &mut attributes);
                     if let Some(name) = get_json_string(decoded.get("name")) {
                         event_name = Some(name.clone());
-                        attributes.push((ATTR_EVENT_NAME.to_owned(), name));
+                        attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), name));
                     }
                 }
             }
@@ -141,30 +255,31 @@ impl DecodedUsereventsRecord {
                 event_name_field,
                 attributes_from,
             } => {
+                body = BASE64_STANDARD.encode(&value.payload);
                 if let Some(body_field) = body_field {
-                    attributes.push((ATTR_CUSTOM_BODY_FIELD.to_owned(), body_field.clone()));
+                    attributes.push((Cow::Borrowed(ATTR_CUSTOM_BODY_FIELD), body_field.clone()));
                 }
                 if let Some(event_name_field) = event_name_field {
                     attributes.push((
-                        ATTR_CUSTOM_EVENT_NAME_FIELD.to_owned(),
+                        Cow::Borrowed(ATTR_CUSTOM_EVENT_NAME_FIELD),
                         event_name_field.clone(),
                     ));
                 }
                 if let Some(severity_number_field) = severity_number_field {
                     attributes.push((
-                        ATTR_CUSTOM_SEVERITY_NUMBER_FIELD.to_owned(),
+                        Cow::Borrowed(ATTR_CUSTOM_SEVERITY_NUMBER_FIELD),
                         severity_number_field.clone(),
                     ));
                 }
                 if let Some(severity_text_field) = severity_text_field {
                     attributes.push((
-                        ATTR_CUSTOM_SEVERITY_TEXT_FIELD.to_owned(),
+                        Cow::Borrowed(ATTR_CUSTOM_SEVERITY_TEXT_FIELD),
                         severity_text_field.clone(),
                     ));
                 }
                 if !attributes_from.is_empty() {
                     attributes.push((
-                        ATTR_CUSTOM_ATTRIBUTES_FROM.to_owned(),
+                        Cow::Borrowed(ATTR_CUSTOM_ATTRIBUTES_FROM),
                         attributes_from.join(","),
                     ));
                 }
@@ -172,12 +287,13 @@ impl DecodedUsereventsRecord {
                     .level
                     .and_then(common_schema_severity_from_eventheader_level);
                 severity_number = mapped.map(|(number, _)| number);
-                severity_text = mapped.map(|(_, text)| text);
-                if let Some(decoded) = decode_eventheader_json(&value.tracepoint, &value.payload) {
+                severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
+                if let Some(decoded) = decode_eventheader_json(tracepoint.as_ref(), &value.payload)
+                {
                     if let Some(event_name_field) = event_name_field {
                         if let Some(name) = lookup_path_as_string(&decoded, event_name_field) {
                             event_name = Some(name.clone());
-                            attributes.push((ATTR_EVENT_NAME.to_owned(), name));
+                            attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), name));
                         }
                     }
                     if let Some(body_field) = body_field {
@@ -192,7 +308,7 @@ impl DecodedUsereventsRecord {
                     }
                     if let Some(field) = severity_text_field {
                         if let Some(text) = lookup_path_as_string(&decoded, field) {
-                            severity_text = Some(leak_string(text));
+                            severity_text = Some(Cow::Owned(text));
                         }
                     }
                     for path in attributes_from {
@@ -201,27 +317,34 @@ impl DecodedUsereventsRecord {
                                 flatten_json(prefix, value, &mut attributes);
                             }
                         } else if let Some(value) = lookup_path_as_string(&decoded, path) {
-                            attributes.push((path.clone(), value));
+                            attributes.push((Cow::Owned(path.clone()), value));
                         }
                     }
                 }
             }
         }
 
-        Self {
-            tracepoint: value.tracepoint,
-            time_unix_nano: value.timestamp_unix_nano as i64,
-            cpu: value.cpu,
-            pid: value.pid,
-            tid: value.tid,
-            sample_id: value.sample_id,
-            body,
-            event_name,
-            payload_size: value.payload_size,
-            severity_number,
-            severity_text,
-            attributes,
-        }
+        (
+            Self {
+                tracepoint,
+                time_unix_nano: value.timestamp_unix_nano as i64,
+                cpu: value.cpu,
+                pid: value.pid,
+                tid: value.tid,
+                sample_id: value.sample_id,
+                body,
+                body_is_base64,
+                event_name,
+                payload_size: value.payload_size,
+                severity_number,
+                severity_text,
+                flags: None,
+                trace_id: None,
+                span_id: None,
+                attributes,
+            },
+            false,
+        )
     }
 }
 
@@ -237,35 +360,35 @@ impl FormatConfig {
 }
 
 #[derive(Debug, Default)]
-struct TracepointIdentity {
-    provider: Option<String>,
+struct TracepointIdentity<'a> {
+    provider: Option<&'a str>,
     level: Option<u8>,
-    keyword: Option<String>,
+    keyword: Option<&'a str>,
 }
 
-impl TracepointIdentity {
-    fn parse(tracepoint: &str) -> Self {
+impl<'a> TracepointIdentity<'a> {
+    fn parse(tracepoint: &'a str) -> Self {
         let Some((_, name)) = tracepoint.split_once(':') else {
             return Self::default();
         };
         let Some((provider, suffix)) = name.rsplit_once("_L") else {
             return Self {
-                provider: Some(name.to_owned()),
+                provider: Some(name),
                 level: None,
                 keyword: None,
             };
         };
         let Some((level, keyword)) = suffix.split_once('K') else {
             return Self {
-                provider: Some(name.to_owned()),
+                provider: Some(name),
                 level: None,
                 keyword: None,
             };
         };
         Self {
-            provider: Some(provider.to_owned()),
+            provider: Some(provider),
             level: level.parse::<u8>().ok(),
-            keyword: Some(keyword.to_owned()),
+            keyword: Some(keyword),
         }
     }
 }
@@ -300,27 +423,364 @@ fn decode_eventheader_json(tracepoint: &str, payload: &[u8]) -> Option<Value> {
     serde_json::from_str(&json).ok()
 }
 
-fn try_extract_common_schema_body_fields(payload: &[u8]) -> Option<(String, String)> {
-    let text = std::str::from_utf8(payload).ok()?;
-    let name = extract_key_value(text, "name")?;
-    let body = extract_key_value(text, "message").or_else(|| extract_key_value(text, "body"))?;
-    Some((name, body))
+fn try_extract_common_schema_body_fields(_payload: &[u8]) -> Option<(String, String)> {
+    // Removed: text pattern matching is incorrect for binary EventHeader payloads.
+    None
 }
 
-fn extract_key_value(input: &str, key: &str) -> Option<String> {
-    let pattern = format!("{key}=");
-    let start = input.find(&pattern)? + pattern.len();
-    let rest = &input[start..];
-    let end = rest.find(['\n', '\r', ';']).unwrap_or(rest.len());
-    let value = rest[..end].trim_matches('"').trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_owned())
+/// Decoded Common Schema OTel Logs record extracted from EventHeader binary payload.
+///
+/// TODO(perf): This intermediate owned decode struct is intentionally kept for now because it
+/// preserves a clean, pure `decode_cs_otel_logs()` contract and is the direct assertion surface
+/// for the decoder unit tests. The remaining overhead from this layer is modest:
+/// - one extra `event_name.clone()` when we also emit the typed OTLP `event_name` column and the
+///   `event.name` attribute, and
+/// - one transient `part_c_attrs` Vec buffer per successful CS decode.
+///
+/// If profiling shows this layer is materially hot, revisit whether PartC attributes can be
+/// written directly into the final attribute sink while preserving rollback on decode failure.
+#[derive(Debug, Default)]
+struct CsDecodedLog {
+    event_name: String,
+    time: Option<String>,
+    trace_flags: Option<u32>,
+    trace_id: Option<[u8; 16]>,
+    trace_id_text: Option<String>,
+    span_id: Option<[u8; 8]>,
+    span_id_text: Option<String>,
+    cloud_role: Option<String>,
+    cloud_role_instance: Option<String>,
+    body: Option<String>,
+    severity_number: Option<i32>,
+    severity_text: Option<String>,
+    part_b_name: Option<String>,
+    event_id: Option<i64>,
+    part_c_attrs: Vec<(String, String)>,
+}
+
+/// Decode a Common Schema OTel Logs EventHeader binary payload.
+/// Returns `None` if the payload cannot be parsed, `__csver__` != 0x400,
+/// or PartB is missing / `_typeName` != "Log".
+fn decode_cs_otel_logs(tracepoint: &str, payload: &[u8]) -> Option<CsDecodedLog> {
+    let mut context = EventHeaderEnumeratorContext::new();
+    let mut en = context
+        .enumerate_with_name_and_data(
+            tracepoint,
+            payload,
+            EventHeaderEnumeratorContext::MOVE_NEXT_LIMIT_DEFAULT,
+        )
+        .ok()?;
+
+    let event_name = std::str::from_utf8(en.event_info().name_bytes())
+        .unwrap_or("Log")
+        .to_owned();
+
+    // First field must be __csver__
+    if !en.move_next() {
+        return None;
+    }
+    if en.state() != EventHeaderEnumeratorState::Value {
+        return None;
+    }
+    let csver_item = en.item_info();
+    if csver_item.name_bytes() != b"__csver__" {
+        return None;
+    }
+    let csver = item_as_u32(&csver_item)?;
+    if csver != 0x400 {
+        return None;
+    }
+
+    let mut cs = CsDecodedLog {
+        event_name,
+        ..Default::default()
+    };
+    let mut found_part_b = false;
+    let mut part_a_done = false;
+    let mut part_b_done = false;
+    let mut part_c_done = false;
+
+    // Walk top-level struct fields (PartA, PartC, PartB)
+    while en.move_next() {
+        match en.state() {
+            EventHeaderEnumeratorState::StructBegin => {
+                let item = en.item_info();
+                let name = item.name_bytes();
+                if name == b"PartA" {
+                    if part_a_done {
+                        return None;
+                    }
+                    if !walk_part_a(&mut en, &mut cs) {
+                        return None;
+                    }
+                    part_a_done = true;
+                } else if name == b"PartB" {
+                    if part_b_done {
+                        return None;
+                    }
+                    match walk_part_b(&mut en, &mut cs) {
+                        None => return None,
+                        Some(ok) => {
+                            if ok {
+                                found_part_b = true;
+                            }
+                            part_b_done = true;
+                        }
+                    }
+                } else if name == b"PartC" {
+                    if part_c_done {
+                        return None;
+                    }
+                    if !walk_part_c(&mut en, &mut cs) {
+                        return None;
+                    }
+                    part_c_done = true;
+                } else {
+                    // Unknown top-level struct → invalid schema
+                    return None;
+                }
+            }
+            EventHeaderEnumeratorState::Error => return None,
+            EventHeaderEnumeratorState::AfterLastItem => break,
+            _ => {}
+        }
+    }
+
+    if en.last_error() != EventHeaderEnumeratorError::Success {
+        return None;
+    }
+
+    if !found_part_b {
+        return None;
+    }
+    Some(cs)
+}
+
+/// Walk PartA fields consuming until StructEnd.
+/// Returns `true` on clean StructEnd, `false` on error / unexpected state.
+fn walk_part_a(
+    en: &mut tracepoint_decode::EventHeaderEnumerator<'_, '_, '_>,
+    cs: &mut CsDecodedLog,
+) -> bool {
+    loop {
+        if !en.move_next() {
+            return false;
+        }
+        match en.state() {
+            EventHeaderEnumeratorState::StructEnd => return true,
+            EventHeaderEnumeratorState::Value => {
+                let item = en.item_info();
+                let name = item.name_bytes();
+                if name == b"time" {
+                    cs.time = item_as_string(&item);
+                } else if name == b"name" {
+                    // PartA name override (env_name in canonical schema)
+                    if let Some(s) = item_as_string(&item) {
+                        if !s.is_empty() {
+                            cs.event_name = s;
+                        }
+                    }
+                } else if name == b"ext_dt_traceId" {
+                    let value = item.value().bytes();
+                    if let Some(bytes) = parse_hex_bytes_ascii::<16>(value) {
+                        cs.trace_id = Some(bytes);
+                    } else {
+                        cs.trace_id_text = item_as_string(&item);
+                    }
+                } else if name == b"ext_dt_spanId" {
+                    let value = item.value().bytes();
+                    if let Some(bytes) = parse_hex_bytes_ascii::<8>(value) {
+                        cs.span_id = Some(bytes);
+                    } else {
+                        cs.span_id_text = item_as_string(&item);
+                    }
+                } else if name == b"ext_dt_traceFlags" {
+                    cs.trace_flags = item_as_u32(&item);
+                } else if name == b"ext_cloud_role" {
+                    cs.cloud_role = item_as_string(&item);
+                } else if name == b"ext_cloud_roleInstance" {
+                    cs.cloud_role_instance = item_as_string(&item);
+                }
+            }
+            EventHeaderEnumeratorState::Error => return false,
+            EventHeaderEnumeratorState::AfterLastItem => return false,
+            _ => return false,
+        }
     }
 }
 
-fn flatten_json(prefix: &str, value: &Value, out: &mut Vec<(String, String)>) {
+/// Walk PartB fields consuming until StructEnd.
+/// Returns `Some(type_name_ok)` on clean StructEnd, `None` on error /
+/// unexpected state / unknown field.
+fn walk_part_b(
+    en: &mut tracepoint_decode::EventHeaderEnumerator<'_, '_, '_>,
+    cs: &mut CsDecodedLog,
+) -> Option<bool> {
+    let mut type_name_ok = false;
+    loop {
+        if !en.move_next() {
+            return None;
+        }
+        match en.state() {
+            EventHeaderEnumeratorState::StructEnd => return Some(type_name_ok),
+            EventHeaderEnumeratorState::Value => {
+                let item = en.item_info();
+                let name = item.name_bytes();
+                if name == b"_typeName" {
+                    if item_as_string(&item).as_deref() == Some("Log") {
+                        type_name_ok = true;
+                    }
+                } else if name == b"body" {
+                    cs.body = item_as_any_scalar_string(&item);
+                } else if name == b"severityNumber" {
+                    cs.severity_number = item_as_i32(&item);
+                } else if name == b"severityText" {
+                    cs.severity_text = item_as_string(&item);
+                } else if name == b"name" {
+                    cs.part_b_name = item_as_string(&item);
+                } else if name == b"eventId" {
+                    cs.event_id = item_as_i64(&item);
+                } else {
+                    // Unknown PartB field → invalid schema
+                    return None;
+                }
+            }
+            EventHeaderEnumeratorState::Error => return None,
+            EventHeaderEnumeratorState::AfterLastItem => return None,
+            _ => return None,
+        }
+    }
+}
+
+/// Walk PartC fields consuming until StructEnd.
+/// Returns `true` on clean StructEnd, `false` on error / nested struct /
+/// unexpected state.
+fn walk_part_c(
+    en: &mut tracepoint_decode::EventHeaderEnumerator<'_, '_, '_>,
+    cs: &mut CsDecodedLog,
+) -> bool {
+    loop {
+        if !en.move_next() {
+            return false;
+        }
+        match en.state() {
+            EventHeaderEnumeratorState::StructEnd => return true,
+            EventHeaderEnumeratorState::Value => {
+                let item = en.item_info();
+                let name_bytes = item.name_bytes();
+                let name = match std::str::from_utf8(name_bytes) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                if PART_A_RESERVED.contains(&name) || PART_B_LOG_FIELDS.contains(&name) {
+                    continue;
+                }
+                if let Some(val) = item_as_any_scalar_string(&item) {
+                    cs.part_c_attrs.push((name.to_owned(), val));
+                }
+            }
+            // Nested struct in PartC → reject (invalid schema)
+            EventHeaderEnumeratorState::StructBegin => return false,
+            EventHeaderEnumeratorState::Error => return false,
+            EventHeaderEnumeratorState::AfterLastItem => return false,
+            _ => return false,
+        }
+    }
+}
+
+/// Extract a UTF-8 string value from a StringLength16Char8-encoded field.
+fn item_as_string(item: &EventHeaderItemInfo<'_>) -> Option<String> {
+    let enc = item.metadata().encoding().without_flags().as_int();
+    let fmt = item.metadata().format().as_int();
+    if enc == ENC_STRING_LENGTH16_CHAR8 && (fmt == FMT_DEFAULT || fmt == FMT_STRING_UTF) {
+        std::str::from_utf8(item.value().bytes())
+            .ok()
+            .map(str::to_owned)
+    } else {
+        None
+    }
+}
+
+/// Extract a u32 value from Value32 or Value16 encoding (for __csver__ validation).
+fn item_as_u32(item: &EventHeaderItemInfo<'_>) -> Option<u32> {
+    match item.metadata().encoding().without_flags().as_int() {
+        enc if enc == ENC_VALUE8 => Some(u32::from(item.value().to_u8(0))),
+        enc if enc == ENC_VALUE32 => Some(item.value().to_u32(0)),
+        enc if enc == ENC_VALUE16 => Some(u32::from(item.value().to_u16(0))),
+        _ => None,
+    }
+}
+
+/// Extract a signed integer from Value16 or Value32 encoding.
+fn item_as_i32(item: &EventHeaderItemInfo<'_>) -> Option<i32> {
+    match item.metadata().encoding().without_flags().as_int() {
+        enc if enc == ENC_VALUE8 => Some(i32::from(item.value().to_i8(0))),
+        enc if enc == ENC_VALUE16 => Some(i32::from(item.value().to_i16(0))),
+        enc if enc == ENC_VALUE32 => Some(item.value().to_i32(0)),
+        _ => None,
+    }
+}
+
+/// Extract a signed 64-bit integer from Value64 encoding.
+fn item_as_i64(item: &EventHeaderItemInfo<'_>) -> Option<i64> {
+    match item.metadata().encoding().without_flags().as_int() {
+        enc if enc == ENC_VALUE64 => Some(item.value().to_i64(0)),
+        enc if enc == ENC_VALUE32 => Some(i64::from(item.value().to_i32(0))),
+        enc if enc == ENC_VALUE16 => Some(i64::from(item.value().to_i16(0))),
+        _ => None,
+    }
+}
+
+/// Convert any scalar EventHeader field to a string representation.
+/// Handles: strings, signed/unsigned integers, booleans, and floats.
+fn item_as_any_scalar_string(item: &EventHeaderItemInfo<'_>) -> Option<String> {
+    let enc = item.metadata().encoding().without_flags().as_int();
+    let fmt = item.metadata().format().as_int();
+    match enc {
+        e if e == ENC_STRING_LENGTH16_CHAR8 => std::str::from_utf8(item.value().bytes())
+            .ok()
+            .map(str::to_owned),
+        e if e == ENC_VALUE8 => {
+            if fmt == FMT_BOOLEAN {
+                Some((item.value().to_u8(0) != 0).to_string())
+            } else if fmt == FMT_SIGNED_INT {
+                Some((item.value().to_u8(0) as i8).to_string())
+            } else {
+                Some(item.value().to_u8(0).to_string())
+            }
+        }
+        e if e == ENC_VALUE16 => {
+            if fmt == FMT_SIGNED_INT {
+                Some(item.value().to_i16(0).to_string())
+            } else {
+                Some(item.value().to_u16(0).to_string())
+            }
+        }
+        e if e == ENC_VALUE32 => {
+            if fmt == FMT_FLOAT {
+                Some(f64::from(f32::from_bits(item.value().to_u32(0))).to_string())
+            } else if fmt == FMT_BOOLEAN {
+                Some((item.value().to_u32(0) != 0).to_string())
+            } else if fmt == FMT_SIGNED_INT {
+                Some(item.value().to_i32(0).to_string())
+            } else {
+                Some(item.value().to_u32(0).to_string())
+            }
+        }
+        e if e == ENC_VALUE64 => {
+            if fmt == FMT_FLOAT {
+                Some(f64::from_bits(item.value().to_u64(0)).to_string())
+            } else if fmt == FMT_SIGNED_INT {
+                Some(item.value().to_i64(0).to_string())
+            } else {
+                Some(item.value().to_u64(0).to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+fn flatten_json(prefix: &str, value: &Value, out: &mut Vec<(Cow<'static, str>, String)>) {
     match value {
         Value::Object(map) => {
             for (key, value) in map {
@@ -334,17 +794,20 @@ fn flatten_json(prefix: &str, value: &Value, out: &mut Vec<(String, String)>) {
         }
         Value::Array(array) => {
             if !array.is_empty() {
-                out.push((prefix.to_owned(), Value::Array(array.clone()).to_string()));
+                out.push((
+                    Cow::Owned(prefix.to_owned()),
+                    Value::Array(array.clone()).to_string(),
+                ));
             }
         }
         Value::String(text) => {
-            out.push((prefix.to_owned(), text.clone()));
+            out.push((Cow::Owned(prefix.to_owned()), text.clone()));
         }
         Value::Number(number) => {
-            out.push((prefix.to_owned(), number.to_string()));
+            out.push((Cow::Owned(prefix.to_owned()), number.to_string()));
         }
         Value::Bool(boolean) => {
-            out.push((prefix.to_owned(), boolean.to_string()));
+            out.push((Cow::Owned(prefix.to_owned()), boolean.to_string()));
         }
         Value::Null => {}
     }
@@ -380,8 +843,28 @@ fn get_json_i32(value: Option<&Value>) -> Option<i32> {
         .and_then(|number| i32::try_from(number).ok())
 }
 
-fn leak_string(text: String) -> &'static str {
-    Box::leak(text.into_boxed_str())
+/// Parse ASCII hex bytes of exactly `N*2` characters into a `[u8; N]`.
+/// Returns `None` if the length or any character is invalid.
+fn parse_hex_bytes_ascii<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
+    if bytes.len() != N * 2 {
+        return None;
+    }
+    let mut result = [0u8; N];
+    for (i, pair) in bytes.chunks(2).enumerate() {
+        let hi = hex_nibble(pair[0])?;
+        let lo = hex_nibble(pair[1])?;
+        result[i] = (hi << 4) | lo;
+    }
+    Some(result)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn lookup_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
@@ -406,9 +889,10 @@ mod tests {
 
     #[test]
     fn raw_record_is_base64_encoded() {
-        let decoded = DecodedUsereventsRecord::from_raw(
+        let (decoded, _) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:Example"),
             RawUsereventsRecord {
-                tracepoint: "user_events:Example".to_owned(),
+                subscription_index: 0,
                 timestamp_unix_nano: 42,
                 cpu: 3,
                 pid: 100,
@@ -420,19 +904,26 @@ mod tests {
             &FormatConfig::Raw,
         );
 
-        assert_eq!(decoded.tracepoint, "user_events:Example");
+        assert_eq!(decoded.tracepoint.as_ref(), "user_events:Example");
         assert_eq!(decoded.body, "QUJD");
         assert_eq!(decoded.payload_size, 3);
         assert_eq!(decoded.sample_id, 9);
         assert!(decoded.severity_number.is_none());
-        assert!(decoded.event_name.is_none());
+        assert!(
+            !decoded
+                .attributes
+                .iter()
+                .any(|(key, _)| key.as_ref() == ATTR_EVENT_NAME)
+        );
     }
 
     #[test]
     fn common_schema_mode_maps_severity_from_tracepoint_level() {
-        let decoded = DecodedUsereventsRecord::from_raw(
+        // Payload that is not a valid EventHeader → fallback path
+        let (decoded, _) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:myprovider_L2K1"),
             RawUsereventsRecord {
-                tracepoint: "user_events:myprovider_L2K1".to_owned(),
+                subscription_index: 0,
                 timestamp_unix_nano: 42,
                 cpu: 1,
                 pid: 1,
@@ -445,7 +936,8 @@ mod tests {
         );
 
         assert_eq!(decoded.severity_number, Some(17));
-        assert_eq!(decoded.severity_text, Some("ERROR"));
+        assert_eq!(decoded.severity_text.as_deref(), Some("ERROR"));
+        assert!(decoded.body_is_base64);
         assert!(
             decoded
                 .attributes
@@ -461,10 +953,12 @@ mod tests {
     }
 
     #[test]
-    fn common_schema_mode_extracts_name_and_body_from_utf8_payload() {
-        let decoded = DecodedUsereventsRecord::from_raw(
+    fn common_schema_mode_invalid_payload_falls_back_to_base64() {
+        // Plain-text payload is not a valid EventHeader; decoder falls back
+        let (decoded, _) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:myprovider_L2K1"),
             RawUsereventsRecord {
-                tracepoint: "user_events:myprovider_L2K1".to_owned(),
+                subscription_index: 0,
                 timestamp_unix_nano: 42,
                 cpu: 1,
                 pid: 1,
@@ -476,12 +970,14 @@ mod tests {
             &FormatConfig::CommonSchemaOtelLogs,
         );
 
-        assert_eq!(decoded.event_name.as_deref(), Some("my-event-name"));
-        assert_eq!(decoded.body, "This is a test message");
-        assert!(decoded
-            .attributes
-            .iter()
-            .any(|(key, value)| key == ATTR_CS_PART_B_BODY && value == "This is a test message"));
+        // Fallback: event_name is "Log", body is base64
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(key, value)| key.as_ref() == ATTR_EVENT_NAME && value == "Log")
+        );
+        assert!(decoded.body_is_base64);
     }
 
     #[test]
@@ -505,5 +1001,957 @@ mod tests {
             out.iter()
                 .any(|(key, value)| key == "cs.part_b.severity_number" && value == "17")
         );
+    }
+
+    // ── EventHeader binary test helpers ──────────────────────────────────────
+
+    /// Build the fixed 8-byte EventHeader prefix.
+    /// flags=0x07 (Pointer64|LittleEndian|Extension), version=0, id=0, tag=0,
+    /// opcode=0 (Info), level as supplied.
+    fn build_eventheader_header(level: u8) -> Vec<u8> {
+        vec![0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, level]
+    }
+
+    /// Append a value field to the meta section.
+    /// `encoding`: raw FieldEncoding value.  If `encoding & 0x80 != 0`, a
+    /// format byte must be supplied and the chain flag is already set.
+    fn add_value_field_meta(meta: &mut Vec<u8>, name: &str, encoding: u8, format: u8) {
+        meta.extend_from_slice(name.as_bytes());
+        meta.push(0x00); // NUL terminator
+        meta.push(encoding | 0x80); // ChainFlag always set so we can write format
+        meta.push(format);
+    }
+
+    /// Append a string (StringLength16Char8 = 10, Default format = 0) field.
+    fn add_string_field_meta(meta: &mut Vec<u8>, name: &str) {
+        meta.extend_from_slice(name.as_bytes());
+        meta.push(0x00);
+        // encoding=10, no chain flag → no format byte
+        meta.push(ENC_STRING_LENGTH16_CHAR8);
+    }
+
+    /// Append a struct marker to the meta section.
+    /// encoding=0x81 (0x80|Struct=1), format=field_count.
+    fn add_struct_meta(meta: &mut Vec<u8>, name: &str, field_count: u8) {
+        meta.extend_from_slice(name.as_bytes());
+        meta.push(0x00);
+        meta.push(0x80 | ENC_STRUCT); // ChainFlag | Struct
+        meta.push(field_count);
+    }
+
+    /// Append a string value to the data section.
+    fn add_string_data(data: &mut Vec<u8>, value: &str) {
+        let len = value.len() as u16;
+        data.extend_from_slice(&len.to_le_bytes());
+        data.extend_from_slice(value.as_bytes());
+    }
+
+    /// Append an i16 value to the data section.
+    fn add_i16_data(data: &mut Vec<u8>, value: i16) {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Append a u8 value to the data section.
+    fn add_u8_data(data: &mut Vec<u8>, value: u8) {
+        data.push(value);
+    }
+
+    /// Append a u16 value to the data section.
+    fn add_u16_data(data: &mut Vec<u8>, value: u16) {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Append a u32 value to the data section.
+    fn add_u32_data(data: &mut Vec<u8>, value: u32) {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Append an i64 value to the data section.
+    fn add_i64_data(data: &mut Vec<u8>, value: i64) {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Append an f64 value to the data section.
+    fn add_f64_data(data: &mut Vec<u8>, value: f64) {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Combine header + extension header + meta + data into a full payload.
+    fn build_full_payload(level: u8, event_name: &str, meta_fields: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut payload = build_eventheader_header(level);
+
+        // Build meta section: event_name + NUL + field meta
+        let mut meta = Vec::new();
+        meta.extend_from_slice(event_name.as_bytes());
+        meta.push(0x00);
+        meta.extend_from_slice(meta_fields);
+
+        // Extension header: size (u16 LE), kind = 0x0001 (Metadata, no chain)
+        let ext_size = meta.len() as u16;
+        payload.extend_from_slice(&ext_size.to_le_bytes());
+        payload.extend_from_slice(&0x0001u16.to_le_bytes());
+        payload.extend_from_slice(&meta);
+        payload.extend_from_slice(data);
+        payload
+    }
+
+    /// Build a minimal valid CS OTel Logs payload with PartB only.
+    ///
+    /// Fields: __csver__(u32), PartB{_typeName, body, severityNumber(i16), severityText}
+    fn build_cs_log_payload_part_b_only(
+        event_name: &str,
+        body: &str,
+        severity_number: i16,
+        severity_text: &str,
+        level: u8,
+    ) -> (String, Vec<u8>) {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+
+        // __csver__ as Value32 UnsignedInt (0x80|4, format=1)
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+
+        // PartB struct with 4 fields: _typeName, body, severityNumber, severityText
+        add_struct_meta(&mut meta, "PartB", 4);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, body);
+        add_value_field_meta(&mut meta, "severityNumber", ENC_VALUE16, FMT_SIGNED_INT);
+        add_i16_data(&mut data, severity_number);
+        add_string_field_meta(&mut meta, "severityText");
+        add_string_data(&mut data, severity_text);
+
+        let tracepoint = format!("user_events:myprovider_L{level}K1");
+        let payload = build_full_payload(level, event_name, &meta, &data);
+        (tracepoint, payload)
+    }
+
+    /// Build a CS log payload with PartA and PartB.
+    fn build_cs_log_payload_with_part_a(
+        event_name: &str,
+        time: &str,
+        trace_id: &str,
+        span_id: &str,
+        body: &str,
+        severity_number: i16,
+        level: u8,
+    ) -> (String, Vec<u8>) {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+
+        // __csver__
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+
+        // PartA with 3 fields: time, ext_dt_traceId, ext_dt_spanId
+        add_struct_meta(&mut meta, "PartA", 3);
+        add_string_field_meta(&mut meta, "time");
+        add_string_data(&mut data, time);
+        add_string_field_meta(&mut meta, "ext_dt_traceId");
+        add_string_data(&mut data, trace_id);
+        add_string_field_meta(&mut meta, "ext_dt_spanId");
+        add_string_data(&mut data, span_id);
+
+        // PartB with 3 fields: _typeName, body, severityNumber
+        add_struct_meta(&mut meta, "PartB", 3);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, body);
+        add_value_field_meta(&mut meta, "severityNumber", ENC_VALUE16, FMT_SIGNED_INT);
+        add_i16_data(&mut data, severity_number);
+
+        let tracepoint = format!("user_events:myprovider_L{level}K1");
+        let payload = build_full_payload(level, event_name, &meta, &data);
+        (tracepoint, payload)
+    }
+
+    /// Build a CS log payload with PartA, PartC and PartB.
+    fn build_cs_log_payload_with_part_c(
+        event_name: &str,
+        body: &str,
+        part_c_attrs: &[(&str, &str)],
+        level: u8,
+    ) -> (String, Vec<u8>) {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+
+        // __csver__
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+
+        // PartC
+        add_struct_meta(&mut meta, "PartC", part_c_attrs.len() as u8);
+        for (k, v) in part_c_attrs {
+            add_string_field_meta(&mut meta, k);
+            add_string_data(&mut data, v);
+        }
+
+        // PartB with 2 fields: _typeName, body
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, body);
+
+        let tracepoint = format!("user_events:myprovider_L{level}K1");
+        let payload = build_full_payload(level, event_name, &meta, &data);
+        (tracepoint, payload)
+    }
+
+    // ── CS decode unit tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn cs_decode_extracts_event_name_from_eventheader() {
+        let (tracepoint, payload) =
+            build_cs_log_payload_part_b_only("MyLogEvent", "hello", 9, "INFO", 4);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(cs.event_name, "MyLogEvent");
+    }
+
+    #[test]
+    fn cs_decode_extracts_severity_from_part_b() {
+        let (tracepoint, payload) =
+            build_cs_log_payload_part_b_only("Log", "hello", 17, "ERROR", 2);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(cs.severity_number, Some(17));
+        assert_eq!(cs.severity_text.as_deref(), Some("ERROR"));
+    }
+
+    #[test]
+    fn cs_decode_extracts_body_from_part_b() {
+        let (tracepoint, payload) =
+            build_cs_log_payload_part_b_only("Log", "This is the log body", 9, "INFO", 4);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(cs.body.as_deref(), Some("This is the log body"));
+    }
+
+    #[test]
+    fn cs_decode_part_c_attrs_are_flat() {
+        let attrs = [("my_key", "my_value"), ("another", "42")];
+        let (tracepoint, payload) = build_cs_log_payload_with_part_c("Log", "body", &attrs, 4);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert!(
+            cs.part_c_attrs
+                .iter()
+                .any(|(k, v)| k == "my_key" && v == "my_value")
+        );
+        assert!(
+            cs.part_c_attrs
+                .iter()
+                .any(|(k, v)| k == "another" && v == "42")
+        );
+        // Keys must NOT have a "cs." prefix
+        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k.starts_with("cs.")));
+    }
+
+    #[test]
+    fn cs_decode_part_a_trace_context() {
+        let (tracepoint, payload) = build_cs_log_payload_with_part_a(
+            "Log",
+            "2024-01-01T00:00:00Z",
+            "0102030405060708090a0b0c0d0e0f10",
+            "a1b2c3d4e5f60718",
+            "body",
+            9,
+            4,
+        );
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(
+            cs.trace_id,
+            Some([
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                0x0f, 0x10,
+            ])
+        );
+        assert_eq!(
+            cs.span_id,
+            Some([0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18])
+        );
+    }
+
+    #[test]
+    fn cs_decode_part_a_time_override() {
+        let (tracepoint, payload) =
+            build_cs_log_payload_with_part_a("Log", "2024-06-15T12:00:00Z", "", "", "body", 9, 4);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(cs.time.as_deref(), Some("2024-06-15T12:00:00Z"));
+    }
+
+    #[test]
+    fn cs_decode_invalid_csver_returns_none() {
+        // Build payload with __csver__ = 0x300 (wrong version)
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x300);
+        add_struct_meta(&mut meta, "PartB", 1);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    #[test]
+    fn cs_decode_missing_part_b_returns_none() {
+        // Build payload with __csver__ but no PartB
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    #[test]
+    fn cs_decode_from_raw_sets_body_is_base64_false_on_success() {
+        let (tracepoint, payload) =
+            build_cs_log_payload_part_b_only("MyEvent", "log body", 9, "INFO", 4);
+        let payload_size = payload.len();
+        let (decoded, _) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from(tracepoint.as_str()),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload,
+                payload_size,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!decoded.body_is_base64);
+        assert_eq!(decoded.body, "log body");
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(key, value)| key.as_ref() == ATTR_EVENT_NAME && value == "MyEvent")
+        );
+        assert_eq!(decoded.severity_number, Some(9));
+    }
+
+    #[test]
+    fn cs_decode_from_raw_sets_body_is_base64_true_on_fallback() {
+        let (decoded, _) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:myprovider_L4K1"),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 42,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                payload_size: 4,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(decoded.body_is_base64);
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(key, value)| key.as_ref() == ATTR_EVENT_NAME && value == "Log")
+        );
+    }
+
+    // ── Finding 1: enumerator error check ──────────────────────────────────────
+
+    #[test]
+    fn cs_decode_truncated_payload_returns_none() {
+        let (tracepoint, mut payload) =
+            build_cs_log_payload_part_b_only("Log", "body", 9, "INFO", 4);
+        // Truncate data section
+        let truncated_len = payload.len().saturating_sub(4);
+        payload.truncate(truncated_len);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    // ── Finding 2: schema validation ────────────────────────────────────────────
+
+    #[test]
+    fn cs_decode_unknown_top_level_struct_returns_none() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartD", 1);
+        add_string_field_meta(&mut meta, "something");
+        add_string_data(&mut data, "value");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    #[test]
+    fn cs_decode_duplicate_part_b_returns_none() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "first");
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "second");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    #[test]
+    fn cs_decode_unknown_part_b_field_returns_none() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 3);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "hello");
+        add_string_field_meta(&mut meta, "foo");
+        add_string_data(&mut data, "bar");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    #[test]
+    fn cs_decode_nested_struct_in_part_c_returns_none() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartC", 2);
+        add_string_field_meta(&mut meta, "attr1");
+        add_string_data(&mut data, "value1");
+        add_struct_meta(&mut meta, "nested", 1);
+        add_string_field_meta(&mut meta, "inner");
+        add_string_data(&mut data, "innerval");
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "body");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    // ── Finding 3: typed trace/span ────────────────────────────────────────────
+
+    #[test]
+    fn cs_decode_valid_trace_span_hex_populates_typed_fields() {
+        let trace_hex = "0102030405060708090a0b0c0d0e0f10";
+        let span_hex = "a1b2c3d4e5f60718";
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartA", 3);
+        add_string_field_meta(&mut meta, "time");
+        add_string_data(&mut data, "2024-01-01T00:00:00Z");
+        add_string_field_meta(&mut meta, "ext_dt_traceId");
+        add_string_data(&mut data, trace_hex);
+        add_string_field_meta(&mut meta, "ext_dt_spanId");
+        add_string_data(&mut data, span_hex);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "body text");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "MyEvent", &meta, &data);
+        let payload_size = payload.len();
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from(tracepoint.as_str()),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload,
+                payload_size,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        let expected_trace: [u8; 16] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10,
+        ];
+        let expected_span: [u8; 8] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
+        assert_eq!(decoded.trace_id, Some(expected_trace));
+        assert_eq!(decoded.span_id, Some(expected_span));
+        assert!(!decoded.attributes.iter().any(|(k, _)| k == ATTR_TRACE_ID));
+        assert!(!decoded.attributes.iter().any(|(k, _)| k == ATTR_SPAN_ID));
+    }
+
+    #[test]
+    fn cs_decode_malformed_trace_span_hex_falls_back_to_string_attr() {
+        let trace_hex = "aaaa1111bbbb2222";
+        let span_hex = "cccc3333";
+        let (tracepoint, payload) = build_cs_log_payload_with_part_a(
+            "Log",
+            "2024-01-01T00:00:00Z",
+            trace_hex,
+            span_hex,
+            "body",
+            9,
+            4,
+        );
+        let payload_size = payload.len();
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from(tracepoint.as_str()),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload,
+                payload_size,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        assert!(decoded.trace_id.is_none());
+        assert!(decoded.span_id.is_none());
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(k, v)| k == ATTR_TRACE_ID && v == trace_hex)
+        );
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(k, v)| k == ATTR_SPAN_ID && v == span_hex)
+        );
+    }
+
+    // ── Finding 4: PartA.name override ─────────────────────────────────────────
+
+    #[test]
+    fn cs_decode_part_a_name_overrides_event_name() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartA", 2);
+        add_string_field_meta(&mut meta, "time");
+        add_string_data(&mut data, "2024-01-01T00:00:00Z");
+        add_string_field_meta(&mut meta, "name");
+        add_string_data(&mut data, "OverriddenName");
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "content");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "HeaderName", &meta, &data);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(cs.event_name, "OverriddenName");
+    }
+
+    // ── Finding 5: CS decode failure metric signal ─────────────────────────────
+
+    #[test]
+    fn cs_decode_failure_signals_metric_increment() {
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:myprovider_L4K1"),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                payload_size: 4,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(cs_failed, "CS decode failure should be signaled");
+        assert!(decoded.body_is_base64, "Should fall back to base64");
+    }
+
+    // ── Finding 9: severity fallback from EventHeader level ────────────────────
+
+    #[test]
+    fn cs_decode_missing_severity_number_falls_back_to_eventheader_level() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "no sev");
+        let tracepoint = "user_events:myprovider_L2K1".to_owned();
+        let payload = build_full_payload(2, "Log", &meta, &data);
+        let payload_size = payload.len();
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from(tracepoint.as_str()),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload,
+                payload_size,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        assert_eq!(
+            decoded.severity_number,
+            Some(17),
+            "Should fall back to ERROR (17) from level 2"
+        );
+        assert_eq!(decoded.severity_text.as_deref(), Some("ERROR"));
+    }
+
+    // ── Finding 10: malformed RFC3339 time uses perf timestamp ─────────────────
+
+    #[test]
+    fn cs_decode_malformed_rfc3339_time_uses_perf_timestamp() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartA", 1);
+        add_string_field_meta(&mut meta, "time");
+        add_string_data(&mut data, "not-a-valid-timestamp");
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "body text");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let payload_size = payload.len();
+        let perf_ts: u64 = 9_999_999_999;
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from(tracepoint.as_str()),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: perf_ts,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload,
+                payload_size,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        assert_eq!(
+            decoded.time_unix_nano, perf_ts as i64,
+            "Malformed RFC3339 time should fall back to perf sample timestamp"
+        );
+    }
+
+    #[test]
+    fn cs_decode_part_a_trace_flags_populates_log_flags() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartA", 2);
+        add_string_field_meta(&mut meta, "time");
+        add_string_data(&mut data, "2024-01-01T00:00:00Z");
+        add_value_field_meta(&mut meta, "ext_dt_traceFlags", ENC_VALUE8, FMT_UNSIGNED_INT);
+        add_u8_data(&mut data, 0x01);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "body");
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:myprovider_L4K1"),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload_size: payload.len(),
+                payload,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        assert_eq!(decoded.flags, Some(1));
+    }
+
+    #[test]
+    fn cs_decode_rejects_when_csver_not_first() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_string_field_meta(&mut meta, "before");
+        add_string_data(&mut data, "x");
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 1);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    #[test]
+    fn cs_decode_accepts_value16_csver() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE16, FMT_UNSIGNED_INT);
+        add_u16_data(&mut data, 0x0400);
+        add_struct_meta(&mut meta, "PartB", 1);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_some());
+    }
+
+    #[test]
+    fn cs_decode_accepts_exporter_csver_unsigned_format() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 1);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_some());
+    }
+
+    #[test]
+    fn cs_decode_rejects_non_log_typename() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 1);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Span");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    #[test]
+    fn cs_decode_rejects_part_b_without_typename() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 1);
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "body");
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+    }
+
+    #[test]
+    fn cs_decode_part_c_drops_part_b_name_collisions() {
+        let attrs = [
+            ("body", "collision"),
+            ("severityText", "collision"),
+            ("ok", "value"),
+        ];
+        let (tracepoint, payload) = build_cs_log_payload_with_part_c("Log", "body", &attrs, 4);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert!(
+            cs.part_c_attrs
+                .iter()
+                .any(|(k, v)| k == "ok" && v == "value")
+        );
+        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k == "body"));
+        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k == "severityText"));
+    }
+
+    #[test]
+    fn cs_decode_part_c_drops_part_a_name_collisions() {
+        let attrs = [
+            ("env_time", "collision"),
+            ("env_dt_traceId", "collision"),
+            ("ok", "value"),
+        ];
+        let (tracepoint, payload) = build_cs_log_payload_with_part_c("Log", "body", &attrs, 4);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert!(
+            cs.part_c_attrs
+                .iter()
+                .any(|(k, v)| k == "ok" && v == "value")
+        );
+        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k == "env_time"));
+        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k == "env_dt_traceId"));
+    }
+
+    #[test]
+    fn cs_decode_stringifies_integer_body() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_value_field_meta(&mut meta, "body", ENC_VALUE64, FMT_SIGNED_INT);
+        add_i64_data(&mut data, -42);
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(cs.body.as_deref(), Some("-42"));
+    }
+
+    #[test]
+    fn cs_decode_stringifies_boolean_body() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_value_field_meta(&mut meta, "body", ENC_VALUE8, FMT_BOOLEAN);
+        add_u8_data(&mut data, 1);
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(cs.body.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn cs_decode_stringifies_double_body() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_value_field_meta(&mut meta, "body", ENC_VALUE64, FMT_FLOAT);
+        add_f64_data(&mut data, 3.5);
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert_eq!(cs.body.as_deref(), Some("3.5"));
+    }
+
+    #[test]
+    fn cs_decode_extracts_event_id_attribute() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 3);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "body");
+        add_value_field_meta(&mut meta, "eventId", ENC_VALUE32, FMT_SIGNED_INT);
+        add_u32_data(&mut data, 20);
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:myprovider_L4K1"),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload_size: payload.len(),
+                payload,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(k, v)| k == ATTR_EVENT_ID && v == "20")
+        );
+    }
+
+    #[test]
+    fn cs_decode_rfc3339_time_with_offset_converts_to_utc_nanos() {
+        let (tracepoint, payload) = build_cs_log_payload_with_part_a(
+            "Log",
+            "2024-06-15T12:00:00+05:30",
+            "",
+            "",
+            "body",
+            9,
+            4,
+        );
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from(tracepoint.as_str()),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload_size: payload.len(),
+                payload,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        let expected = chrono::DateTime::parse_from_rfc3339("2024-06-15T12:00:00+05:30")
+            .expect("valid time")
+            .timestamp_nanos_opt()
+            .expect("representable nanos");
+        assert_eq!(decoded.time_unix_nano, expected);
+    }
+
+    #[test]
+    fn cs_decode_invalid_utf8_string_field_is_dropped() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "severityText");
+        data.extend_from_slice(&(2u16).to_le_bytes());
+        data.extend_from_slice(&[0xC3, 0x28]);
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        assert!(cs.severity_text.is_none());
     }
 }

@@ -22,9 +22,12 @@ pub(super) struct UsereventsReceiverMetrics {
     /// Number of samples dropped due to process-wide memory pressure.
     #[metric(unit = "{item}")]
     pub dropped_memory_pressure: Counter<u64>,
-    /// Number of samples dropped because decoding failed.
+    /// Number of samples dropped because no matching subscription was found.
     #[metric(unit = "{item}")]
-    pub dropped_decode_failures: Counter<u64>,
+    pub dropped_no_subscription: Counter<u64>,
+    /// Number of samples that failed CS decoding and fell back to base64.
+    #[metric(unit = "{item}")]
+    pub cs_decode_fallbacks: Counter<u64>,
     /// Number of lost samples reported by the perf ring.
     #[metric(unit = "{item}")]
     pub lost_perf_samples: Counter<u64>,
