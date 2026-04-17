@@ -517,7 +517,7 @@ impl AssignPipelineStage {
 
             // if the evaluation was of the expression turned out to be null, we'll create
             // empty attributes from the Null scalar value.
-            let eval_result = eval_result
+            let mut eval_result = eval_result
                 .take()
                 .unwrap_or_else(|| PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
 
@@ -564,6 +564,17 @@ impl AssignPipelineStage {
             }
             self.id_bitmap_pool.release(update_parent_id_set);
             let parent_ids = UInt16Array::from(parent_ids);
+
+            // Attempt to coerce the AnyValue into a single column. We do this as an optimization.
+            // This makes the join faster because we can take fewer columns, and it also makes it
+            // so we avoid entering decompose_any_value_upsert upsert
+            if let ColumnarValue::Array(ref arr) = eval_result.values {
+                if is_any_value_data_type(arr.data_type()) {
+                    let coerced_value_col =
+                        attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                    eval_result.values = ColumnarValue::Array(coerced_value_col);
+                }
+            }
 
             let aligned_values = if let ColumnarValue::Scalar(s) = eval_result.values {
                 // if it's a scalar, there's actually no alignment needed
@@ -1223,39 +1234,39 @@ fn decompose_any_value_upsert<'a>(
             cause: "AnyValue 'type' field is not UInt8".into(),
         })?;
 
-    // check if all the values we're inserting actually have the same type. If so, we don't need to
-    // split apart the upsert into multiple for each type, which is faster and will be the common
-    // case if the source was an attributes with some given key
-    let partitions = partition(&[Arc::clone(new_type_col)])?;
-    if partitions.len() == 1 {
-        let attr_type = AttributeValueType::try_from(new_types.value(0)).map_err(|e| {
-            Error::ExecutionError {
-                cause: e.to_string(),
-            }
-        })?;
-        let values_col = match attr_type {
-            AttributeValueType::Bool => struct_arr.column_by_name(consts::ATTRIBUTE_BOOL),
-            AttributeValueType::Str => struct_arr.column_by_name(consts::ATTRIBUTE_STR),
-            AttributeValueType::Int => struct_arr.column_by_name(consts::ATTRIBUTE_INT),
-            AttributeValueType::Double => struct_arr.column_by_name(consts::ATTRIBUTE_DOUBLE),
-            AttributeValueType::Bytes => struct_arr.column_by_name(consts::ATTRIBUTE_BYTES),
-            AttributeValueType::Slice => struct_arr.column_by_name(consts::ATTRIBUTE_SER),
-            AttributeValueType::Map => struct_arr.column_by_name(consts::ATTRIBUTE_SER),
-            AttributeValueType::Empty => None,
-        };
+    // // check if all the values we're inserting actually have the same type. If so, we don't need to
+    // // split apart the upsert into multiple for each type, which is faster and will be the common
+    // // case if the source was an attributes with some given key
+    // let partitions = partition(&[Arc::clone(new_type_col)])?;
+    // if partitions.len() == 1 {
+    //     let attr_type = AttributeValueType::try_from(new_types.value(0)).map_err(|e| {
+    //         Error::ExecutionError {
+    //             cause: e.to_string(),
+    //         }
+    //     })?;
+    //     let values_col = match attr_type {
+    //         AttributeValueType::Bool => struct_arr.column_by_name(consts::ATTRIBUTE_BOOL),
+    //         AttributeValueType::Str => struct_arr.column_by_name(consts::ATTRIBUTE_STR),
+    //         AttributeValueType::Int => struct_arr.column_by_name(consts::ATTRIBUTE_INT),
+    //         AttributeValueType::Double => struct_arr.column_by_name(consts::ATTRIBUTE_DOUBLE),
+    //         AttributeValueType::Bytes => struct_arr.column_by_name(consts::ATTRIBUTE_BYTES),
+    //         AttributeValueType::Slice => struct_arr.column_by_name(consts::ATTRIBUTE_SER),
+    //         AttributeValueType::Map => struct_arr.column_by_name(consts::ATTRIBUTE_SER),
+    //         AttributeValueType::Empty => None,
+    //     };
 
-        let values_col = values_col
-            .cloned()
-            .unwrap_or_else(|| Arc::new(NullArray::new(struct_arr.len())));
+    //     let values_col = values_col
+    //         .cloned()
+    //         .unwrap_or_else(|| Arc::new(NullArray::new(struct_arr.len())));
 
-        // TODO we could avoid clones here if args were passed by value
-        return Ok(vec![AttributeUpsert {
-            attrs_key,
-            existing_key_mask: existing_key_mask.clone(),
-            new_values: ColumnarValue::Array(values_col),
-            upsert_parent_ids: parent_ids.clone(),
-        }]);
-    }
+    //     // TODO we could avoid clones here if args were passed by value
+    //     return Ok(vec![AttributeUpsert {
+    //         attrs_key,
+    //         existing_key_mask: existing_key_mask.clone(),
+    //         new_values: ColumnarValue::Array(values_col),
+    //         upsert_parent_ids: parent_ids.clone(),
+    //     }]);
+    // }
 
     let mut upserts = Vec::new();
 
