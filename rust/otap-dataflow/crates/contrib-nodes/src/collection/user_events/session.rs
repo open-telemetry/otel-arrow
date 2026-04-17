@@ -9,40 +9,16 @@ use std::io;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::collection::{
+    CollectedDrain, CollectedEvent, CollectInitError, EventSource, UserEventsSource,
+};
+
 #[cfg(target_os = "linux")]
 use one_collect::helpers::exporting::ExportMachine;
 #[cfg(target_os = "linux")]
 use one_collect::perf_event::{PerfSession, RingBufBuilder, RingBufSessionBuilder};
 #[cfg(target_os = "linux")]
 use one_collect::tracefs::TraceFS;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CollectedEvent {
-    pub timestamp_unix_nano: u64,
-    pub cpu: Option<u32>,
-    pub pid: Option<i32>,
-    pub tid: Option<i32>,
-    pub payload: Vec<u8>,
-    pub source: EventSource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub(crate) enum EventSource {
-    UserEvents(UserEventsSource),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UserEventsSource {
-    pub tracepoint: String,
-    pub sample_id: u64,
-}
-
-#[derive(Debug)]
-pub(crate) struct CollectedDrain {
-    pub events: Vec<CollectedEvent>,
-    pub lost_samples: u64,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct UserEventsSubscription {
@@ -55,27 +31,8 @@ pub(crate) struct UserEventsSessionConfig {
     pub cpu_ids: Vec<usize>,
 }
 
-#[derive(Debug)]
-pub(crate) enum CollectInitError {
-    MissingTracepoint(String),
-    InvalidTracepoint(String),
-    Io(io::Error),
-}
-
-impl std::fmt::Display for CollectInitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingTracepoint(name) => write!(f, "tracepoint `{name}` is not registered"),
-            Self::InvalidTracepoint(name) => write!(f, "tracepoint `{name}` is invalid"),
-            Self::Io(err) => err.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for CollectInitError {}
-
 #[cfg(target_os = "linux")]
-pub(crate) struct OneCollectUserEventsSession {
+pub(crate) struct UserEventsSession {
     session: PerfSession,
     pending: Rc<RefCell<VecDeque<CollectedEvent>>>,
     lost_samples: Rc<Cell<u64>>,
@@ -83,7 +40,7 @@ pub(crate) struct OneCollectUserEventsSession {
 }
 
 #[cfg(target_os = "linux")]
-impl OneCollectUserEventsSession {
+impl UserEventsSession {
     pub(crate) fn open(
         subscriptions: &[UserEventsSubscription],
         config: &UserEventsSessionConfig,
@@ -287,10 +244,10 @@ fn sample_qpc_to_unix_nano(sample_qpc: u64) -> u64 {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) struct OneCollectUserEventsSession;
+pub(crate) struct UserEventsSession;
 
 #[cfg(not(target_os = "linux"))]
-impl OneCollectUserEventsSession {
+impl UserEventsSession {
     pub(crate) fn open(
         _subscriptions: &[UserEventsSubscription],
         _config: &UserEventsSessionConfig,

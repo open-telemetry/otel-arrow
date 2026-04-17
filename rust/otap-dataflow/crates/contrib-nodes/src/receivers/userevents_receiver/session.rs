@@ -13,8 +13,9 @@ mod imp {
 
     use tokio::time;
 
-    use crate::collection::one_collect_adapter::{
-        CollectInitError, EventSource, OneCollectUserEventsSession, UserEventsSessionConfig,
+    use crate::collection::{CollectInitError, EventSource};
+    use crate::collection::user_events::{
+        UserEventsSession as CollectionUserEventsSession, UserEventsSessionConfig,
         UserEventsSubscription,
     };
 
@@ -67,7 +68,7 @@ mod imp {
     }
 
     pub(crate) struct UsereventsSession {
-        inner: OneCollectUserEventsSession,
+        inner: CollectionUserEventsSession,
         tracepoint_index: HashMap<String, usize>,
     }
 
@@ -94,7 +95,7 @@ mod imp {
             };
 
             let inner =
-                OneCollectUserEventsSession::open(&subscriptions, &config).map_err(|error| {
+                CollectionUserEventsSession::open(&subscriptions, &config).map_err(|error| {
                     match error {
                         CollectInitError::MissingTracepoint(tracepoint) => {
                             SessionInitError::MissingTracepoint(tracepoint)
