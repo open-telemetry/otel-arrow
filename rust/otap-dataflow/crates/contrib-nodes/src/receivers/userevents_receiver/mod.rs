@@ -103,6 +103,10 @@ struct LateRegistrationConfig {
 struct SessionConfig {
     #[serde(default = "default_per_cpu_buffer_size")]
     per_cpu_buffer_size: usize,
+    #[expect(
+        dead_code,
+        reason = "reserved for future one-collect wakeup watermark support"
+    )]
     #[serde(default = "default_wakeup_watermark")]
     wakeup_watermark: usize,
     #[serde(default)]

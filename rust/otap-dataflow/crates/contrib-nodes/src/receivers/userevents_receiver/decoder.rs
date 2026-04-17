@@ -40,6 +40,7 @@ const ATTR_SERVICE_INSTANCE_ID: &str = "service.instance.id";
 const ATTR_EVENT_ID: &str = "event_id";
 
 // FieldEncoding raw values (from eventheader_types, avoids a new dep)
+#[cfg(test)]
 const ENC_STRUCT: u8 = 1;
 const ENC_VALUE8: u8 = 2;
 const ENC_VALUE16: u8 = 3;
@@ -49,6 +50,7 @@ const ENC_STRING_LENGTH16_CHAR8: u8 = 10;
 
 // FieldFormat raw values
 const FMT_DEFAULT: u8 = 0;
+#[cfg(test)]
 const FMT_UNSIGNED_INT: u8 = 1;
 const FMT_SIGNED_INT: u8 = 2;
 const FMT_BOOLEAN: u8 = 7;

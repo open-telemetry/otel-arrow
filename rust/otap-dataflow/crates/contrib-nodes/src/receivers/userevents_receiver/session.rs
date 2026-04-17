@@ -13,11 +13,11 @@ mod imp {
 
     use tokio::time;
 
-    use crate::collection::{CollectInitError, EventSource};
     use crate::collection::user_events::{
         UserEventsSession as CollectionUserEventsSession, UserEventsSessionConfig,
         UserEventsSubscription,
     };
+    use crate::collection::{CollectInitError, EventSource};
 
     use super::super::{DrainConfig, SessionConfig, SubscriptionConfig};
 
@@ -92,26 +92,25 @@ mod imp {
                 lost_samples: drained.lost_samples,
             };
             for event in drained.events {
-                if let EventSource::UserEvents(source) = event.source {
-                    let Some(subscription_index) = self
-                        .tracepoint_index
-                        .get(source.tracepoint.as_str())
-                        .copied()
-                    else {
-                        stats.dropped_no_subscription += 1;
-                        continue;
-                    };
-                    out.push(RawUsereventsRecord {
-                        subscription_index,
-                        timestamp_unix_nano: event.timestamp_unix_nano,
-                        cpu: event.cpu.unwrap_or_default(),
-                        pid: event.pid.unwrap_or_default(),
-                        tid: event.tid.unwrap_or_default(),
-                        sample_id: source.sample_id,
-                        payload_size: event.payload.len(),
-                        payload: event.payload,
-                    });
-                }
+                let EventSource::UserEvents(source) = event.source;
+                let Some(subscription_index) = self
+                    .tracepoint_index
+                    .get(source.tracepoint.as_str())
+                    .copied()
+                else {
+                    stats.dropped_no_subscription += 1;
+                    continue;
+                };
+                out.push(RawUsereventsRecord {
+                    subscription_index,
+                    timestamp_unix_nano: event.timestamp_unix_nano,
+                    cpu: event.cpu.unwrap_or_default(),
+                    pid: event.pid.unwrap_or_default(),
+                    tid: event.tid.unwrap_or_default(),
+                    sample_id: source.sample_id,
+                    payload_size: event.payload.len(),
+                    payload: event.payload,
+                });
             }
 
             Ok(stats)
@@ -266,4 +265,4 @@ mod imp {
     }
 }
 
-pub(super) use imp::{RawUsereventsRecord, SessionDrainStats, SessionInitError, UsereventsSession};
+pub(super) use imp::{RawUsereventsRecord, SessionInitError, UsereventsSession};
