@@ -1,4 +1,5 @@
 #![cfg(feature = "userevents-receiver")]
+#![allow(missing_docs)]
 
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
