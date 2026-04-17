@@ -3410,8 +3410,6 @@ mod test {
         );
     }
 
-    // TODO - we need another version of this test where
-    // instead of some rows being null, it's some rows have mixed types
     #[tokio::test]
     async fn test_updates_attributes_when_eval_result_null_for_only_some_rows() {
         let logs_data = to_logs_data(vec![
@@ -3450,12 +3448,6 @@ mod test {
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
-
-        // TODO remov this println
-        println!(
-            "{:#?}",
-            &result_logs_data.resource_logs[0].scope_logs[0].log_records
-        );
 
         let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
         assert_eq!(
