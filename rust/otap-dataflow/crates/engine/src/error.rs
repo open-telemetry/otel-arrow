@@ -14,6 +14,8 @@ use otap_df_telemetry::event::ErrorSummary;
 use std::borrow::Cow;
 use std::fmt;
 
+use otap_df_config::ExtensionId;
+
 /// High-level classification for exporter failures to aid troubleshooting.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ExporterErrorKind {
@@ -337,6 +339,13 @@ pub enum Error {
         node: NodeName,
     },
 
+    /// The specified extension already exists in the pipeline.
+    #[error("The extension `{extension}` already exists")]
+    ExtensionAlreadyExists {
+        /// The name of the extension that already exists.
+        extension: ExtensionId,
+    },
+
     /// Unknown node.
     #[error("Unknown node `{node}`")]
     UnknownNode {
@@ -518,6 +527,7 @@ impl Error {
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
             Error::ExtensionInNodesSection { .. } => "ExtensionInNodesSection",
+            Error::ExtensionAlreadyExists { .. } => "ExtensionAlreadyExists",
             Error::UnknownNode { .. } => "UnknownNode",
             Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",

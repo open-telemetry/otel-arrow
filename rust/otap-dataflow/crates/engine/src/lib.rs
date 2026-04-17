@@ -9,12 +9,13 @@ use crate::{
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
+    extension::ExtensionBundle,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
@@ -54,6 +55,7 @@ use std::{
 pub mod clock;
 pub mod error;
 pub mod exporter;
+pub mod extension;
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -208,6 +210,46 @@ impl<PData> Clone for ExporterFactory<PData> {
 }
 
 impl<PData> NamedFactory for ExporterFactory<PData> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// A factory for creating extensions.
+///
+/// Extension factories are NOT generic over PData — extensions never process
+/// pipeline data. This makes them fully decoupled from the data-plane type.
+pub struct ExtensionFactory {
+    /// The name of the extension.
+    pub name: &'static str,
+    /// A short, human-readable description of the extension.
+    pub description: &'static str,
+    /// URL to the extension's documentation.
+    pub documentation_url: &'static str,
+    /// A function that creates a new extension instance.
+    pub create: fn(
+        pipeline: PipelineContext,
+        name: otap_df_config::ExtensionId,
+        ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+        extension_config: &ExtensionConfig,
+    ) -> Result<ExtensionBundle, otap_df_config::error::Error>,
+    /// Validates the node-specific config statically, without creating the component.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
+}
+
+impl Clone for ExtensionFactory {
+    fn clone(&self) -> Self {
+        ExtensionFactory {
+            name: self.name,
+            description: self.description,
+            documentation_url: self.documentation_url,
+            create: self.create,
+            validate_config: self.validate_config,
+        }
+    }
+}
+
+impl NamedFactory for ExtensionFactory {
     fn name(&self) -> &'static str {
         self.name
     }
@@ -475,9 +517,11 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
+    extension_factory_map: OnceLock<HashMap<&'static str, ExtensionFactory>>,
     receiver_factories: &'static [ReceiverFactory<PData>],
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
+    extension_factories: &'static [ExtensionFactory],
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
@@ -487,14 +531,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         receiver_factories: &'static [ReceiverFactory<PData>],
         processor_factories: &'static [ProcessorFactory<PData>],
         exporter_factories: &'static [ExporterFactory<PData>],
+        extension_factories: &'static [ExtensionFactory],
     ) -> Self {
         Self {
             receiver_factory_map: OnceLock::new(),
             processor_factory_map: OnceLock::new(),
             exporter_factory_map: OnceLock::new(),
+            extension_factory_map: OnceLock::new(),
             receiver_factories,
             processor_factories,
             exporter_factories,
+            extension_factories,
         }
     }
 
@@ -525,6 +572,16 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .iter()
                 .map(|f| (f.name(), f.clone()))
                 .collect::<HashMap<&'static str, ExporterFactory<PData>>>()
+        })
+    }
+
+    /// Gets the extension factory map, initializing it if necessary.
+    pub fn get_extension_factory_map(&self) -> &HashMap<&'static str, ExtensionFactory> {
+        self.extension_factory_map.get_or_init(|| {
+            self.extension_factories
+                .iter()
+                .map(|f| (f.name(), f.clone()))
+                .collect::<HashMap<&'static str, ExtensionFactory>>()
         })
     }
 
@@ -2263,5 +2320,78 @@ mod test {
 
         let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
         assert!(policy.is_none());
+    }
+
+    // -- ExtensionFactory tests -----------------------------------------------
+
+    #[test]
+    fn test_extension_factory_named_factory() {
+        fn dummy_create(
+            _: PipelineContext,
+            _: otap_df_config::ExtensionId,
+            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+            unimplemented!()
+        }
+        fn dummy_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            Ok(())
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:test:example",
+            description: "test extension",
+            documentation_url: "",
+            create: dummy_create,
+            validate_config: dummy_validate,
+        };
+
+        assert_eq!(factory.name(), "urn:test:example");
+
+        let cloned = factory.clone();
+        assert_eq!(cloned.name(), "urn:test:example");
+        assert_eq!(cloned.description, "test extension");
+    }
+
+    // -- Error variant_name tests ---------------------------------------------
+
+    #[test]
+    fn test_extension_already_exists_variant_name() {
+        let err = Error::ExtensionAlreadyExists {
+            extension: "dup_ext".into(),
+        };
+        assert_eq!(err.variant_name(), "ExtensionAlreadyExists");
+    }
+
+    #[test]
+    fn test_extension_factory_validate_config() {
+        fn dummy_create(
+            _: PipelineContext,
+            _: otap_df_config::ExtensionId,
+            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+            unimplemented!()
+        }
+        fn dummy_validate(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            if config.is_null() {
+                Ok(())
+            } else {
+                Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: "expected null".into(),
+                })
+            }
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:test:example",
+            description: "test",
+            documentation_url: "",
+            create: dummy_create,
+            validate_config: dummy_validate,
+        };
+
+        assert!((factory.validate_config)(&serde_json::Value::Null).is_ok());
+        assert!((factory.validate_config)(&serde_json::json!({"key": "val"})).is_err());
     }
 }
