@@ -139,10 +139,7 @@ pub fn upsert_attributes<T: ArrowPrimitiveType>(
         .map(|u| {
             let data_type = u.new_values.data_type();
             let (attr_value_type, target_col_name) = resolve_attr_type_and_col_name(&data_type)?;
-            println!("existing_key_mask = {:?}", u.existing_key_mask);
             let num_updates = u.existing_key_mask.true_count();
-            println!("num_updates = {num_updates}");
-            println!("u.upsert_parent_ids = {:#?}", u.upsert_parent_ids);
             let num_inserts = u.upsert_parent_ids.len() - num_updates;
             let new_values_array = match &u.new_values {
                 ColumnarValue::Array(arr) => Some(Arc::clone(arr)),

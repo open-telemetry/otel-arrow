@@ -21,10 +21,11 @@ use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
     RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::boolean::and;
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::kernels::merge::merge;
-use arrow::compute::{cast, filter, max, take};
+use arrow::compute::{and_not, cast, filter, max, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use async_trait::async_trait;
 use data_engine_expressions::QueryLocation;
@@ -1316,6 +1317,48 @@ fn decompose_any_value_upsert<'a>(
             // existing_key_mask: sub_mask,
             existing_key_mask: sub_mask2,
             new_values: ColumnarValue::Array(filtered_values),
+            upsert_parent_ids: filtered_parent_ids,
+        });
+    }
+
+    let mut empty = eq(
+        &new_type_col,
+        &UInt8Array::new_scalar(AttributeValueType::Empty as u8),
+    )?;
+
+    if let Some(nulls) = any_value_arr.nulls() {
+        empty = and_not(
+            &empty,
+            &BooleanArray::new(
+                BooleanBuffer::new(nulls.buffer().clone(), 0, nulls.len()),
+                None,
+            ),
+        )?;
+    }
+
+    // handle empty and nulls
+    if empty.has_true() {
+        let sub_mask2 = merge(&existing_key_mask, &empty, &BooleanArray::new_scalar(false))?;
+        let sub_mask2 = sub_mask2
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap()
+            .clone();
+        println!("sub_mask2 = {sub_mask2:?}");
+
+        let filtered_parent_ids = filter(parent_ids, &empty)?;
+        let filtered_parent_ids = filtered_parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "filtered parent_ids is not UInt16".into(),
+            })?
+            .clone();
+
+        upserts.push(AttributeUpsert {
+            attrs_key,
+            existing_key_mask: sub_mask2,
+            new_values: ColumnarValue::Scalar(ScalarValue::Null),
             upsert_parent_ids: filtered_parent_ids,
         });
     }
@@ -2724,7 +2767,9 @@ mod test {
                 .body(AnyValue::new_bytes(b"world"))
                 .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
                 .finish(),
-            LogRecord::build().attributes(vec![]).finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue { value: None })])
+                .finish(),
             LogRecord::build()
                 .body(AnyValue::new_double(5.14))
                 .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])

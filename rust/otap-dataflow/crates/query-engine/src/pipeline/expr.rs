@@ -1288,13 +1288,15 @@ impl PhysicalExprEvalResult {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{BinaryArray, Float64Array, Int32Array, Int64Array, StructArray};
-    use arrow::compute::take;
+    use arrow::array::{
+        BinaryArray, DictionaryArray, Float64Array, Int32Array, Int64Array, StructArray, UInt8Array,
+    };
     use data_engine_expressions::{
         BinaryMathematicalScalarExpression, IntegerScalarExpression,
         InvokeFunctionScalarExpression, QueryLocation, SourceScalarExpression,
         StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
+    use otap_df_pdata::otlp::attributes::AttributeValueType;
     use otap_df_pdata::{
         otap::Logs,
         proto::{
@@ -1495,11 +1497,29 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        // get the expected column
-        let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
-        let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
-        let expected_col = take(input_col, &Int32Array::from(vec![1, 2, 4]), None).unwrap();
+        let expected_col = Arc::new(StructArray::new(
+            vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ]
+            .into(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter_values([1, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["x", "y"])),
+                )),
+            ],
+            None,
+        ));
 
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
