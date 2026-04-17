@@ -11,15 +11,55 @@
 use crate::error::Error;
 use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
 use crate::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
-use crate::{Description, NodeUrn, PortName};
+use crate::{CapabilityId, Description, NodeId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+/// Deserializes a `HashMap<String, String>` while rejecting duplicate keys.
+///
+/// Standard serde deserialization into `HashMap` silently overwrites earlier
+/// entries when keys are duplicated in the source. This function detects that
+/// and returns an error so the user gets immediate feedback.
+fn deserialize_no_dup_keys<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<CapabilityId, NodeId>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{MapAccess, Visitor};
+    use std::fmt;
+
+    struct NoDupVisitor;
+
+    impl<'de> Visitor<'de> for NoDupVisitor {
+        type Value = HashMap<CapabilityId, NodeId>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map with no duplicate keys")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut result = HashMap::new();
+            while let Some((key, value)) = map.next_entry::<String, String>()? {
+                if result.contains_key(key.as_str()) {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate capability key '{key}'"
+                    )));
+                }
+                let _ = result.insert(CapabilityId::from(key), NodeId::from(value));
+            }
+            Ok(result)
+        }
+    }
+
+    deserializer.deserialize_map(NoDupVisitor)
+}
+
 /// User configuration for a node in the pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NodeUserConfig {
     /// The node type URN identifying the plugin (factory) to use for this node.
@@ -59,6 +99,23 @@ pub struct NodeUserConfig {
     // The preserve-unknown-fields extension allows this to be correctly interpreted as "Any JSON type"
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub config: Value,
+
+    /// Capability bindings mapping capability names to extension instance names.
+    ///
+    /// Each entry maps a capability (e.g., `bearer_token_provider`) to the name
+    /// of an extension instance declared in the pipeline's `extensions` section.
+    ///
+    /// Example:
+    /// ```yaml
+    /// capabilities:
+    ///   bearer_token_provider: azure_auth
+    /// ```
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        deserialize_with = "deserialize_no_dup_keys"
+    )]
+    pub capabilities: HashMap<CapabilityId, NodeId>,
 
     /// Entity configuration for the node.
     ///
@@ -112,6 +169,8 @@ pub enum NodeKind {
     Processor,
     /// A sink of signals
     Exporter,
+    /// A provider of shared capabilities (e.g., auth, service discovery).
+    Extension,
 
     // ToDo(LQ) : Add more node kinds as needed.
     // A connector between two pipelines
@@ -126,6 +185,7 @@ impl From<NodeKind> for Cow<'static, str> {
             NodeKind::Receiver => "receiver".into(),
             NodeKind::Processor => "processor".into(),
             NodeKind::Exporter => "exporter".into(),
+            NodeKind::Extension => "extension".into(),
             NodeKind::ProcessorChain => "processor_chain".into(),
         }
     }
@@ -145,6 +205,7 @@ impl NodeUserConfig {
             default_output: None,
             entity: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         }
@@ -163,6 +224,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         }
@@ -181,6 +243,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: Value::Null,
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         }
@@ -196,6 +259,7 @@ impl NodeUserConfig {
             outputs: Vec::new(),
             default_output: None,
             config: user_config,
+            capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
         }
@@ -228,6 +292,7 @@ impl NodeUserConfig {
                         NodeKind::Processor => "processor",
                         NodeKind::Exporter => "exporter",
                         NodeKind::ProcessorChain => "processor_chain",
+                        NodeKind::Extension => "extension",
                         NodeKind::Receiver => unreachable!(),
                     }
                 ),
@@ -243,10 +308,21 @@ impl NodeUserConfig {
                         NodeKind::Receiver => "receiver",
                         NodeKind::Processor => "processor",
                         NodeKind::ProcessorChain => "processor_chain",
+                        NodeKind::Extension => "extension",
                         NodeKind::Exporter => unreachable!(),
                     }
                 ),
             });
+        }
+
+        // Validate the selector shape inside node-level header_propagation so
+        // that invalid selectors are rejected uniformly.
+        if let Some(propagation) = &self.header_propagation {
+            if let Err(e) = propagation.validate() {
+                errors.push(Error::InvalidUserConfig {
+                    error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
+                });
+            }
         }
     }
 
@@ -272,7 +348,7 @@ impl NodeUserConfig {
 
 /// Entity configuration for a node, aligned with the semantic conventions model.
 /// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NodeEntity {
     /// Extensions to the entity's attribute sets.
@@ -282,7 +358,7 @@ pub struct NodeEntity {
 
 /// Node entity extensions, including user-provided identifying attributes.
 /// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExtendedNodeEntity {
     /// Attributes that identify this node in telemetry emitted
@@ -468,7 +544,7 @@ header_capture:
     - match_names: ["x-request-id"]
       store_as: request_id
 config:
-  listening_addr: "0.0.0.0:50051"
+  listening_addr: "127.0.0.1:50051"
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(cfg.kind(), NodeKind::Receiver));
@@ -492,7 +568,8 @@ config:
 type: "exporter:otap"
 header_propagation:
   default:
-    selector: all_captured
+    selector:
+        type: all_captured
   overrides:
     - match:
         stored_names: ["authorization"]
@@ -515,6 +592,23 @@ config:
         assert_eq!(
             propagation.overrides[0].match_rule.stored_names,
             vec!["authorization"]
+        );
+    }
+
+    #[test]
+    fn capabilities_rejects_duplicate_keys_yaml() {
+        let yaml = r#"
+type: "urn:otel:exporter:test"
+capabilities:
+  bearer_token_provider: ext_a
+  bearer_token_provider: ext_b
+"#;
+        let result: Result<NodeUserConfig, _> = serde_yaml::from_str(yaml);
+        let err = result.expect_err("should reject duplicate capability keys");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate"),
+            "error should mention duplicate: {msg}"
         );
     }
 
@@ -559,5 +653,69 @@ config:
         let mut errors = Vec::new();
         cfg.validate_transport_header_fields("test", &mut errors);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn exporter_with_invalid_propagation_selector_is_rejected() {
+        use crate::transport_headers_policy::{
+            PropagationDefault, PropagationSelector, PropagationSelectorType,
+        };
+
+        let mut cfg = NodeUserConfig::new_exporter_config("exporter:otap");
+        cfg.header_propagation = Some(HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::Named,
+                    named: None, // Invalid: named type requires named list
+                },
+                ..Default::default()
+            },
+            vec![],
+        ));
+        let mut errors = Vec::new();
+        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("header_propagation"));
+        assert!(errors[0].to_string().contains("'named' list is required"));
+    }
+
+    #[test]
+    fn exporter_with_valid_propagation_selector_passes() {
+        use crate::transport_headers_policy::{
+            PropagationDefault, PropagationSelector, PropagationSelectorType,
+        };
+
+        let mut cfg = NodeUserConfig::new_exporter_config("exporter:otap");
+        cfg.header_propagation = Some(HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::Named,
+                    named: Some(vec!["tenant_id".to_string()]),
+                },
+                ..Default::default()
+            },
+            vec![],
+        ));
+        let mut errors = Vec::new();
+        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn capabilities_rejects_duplicate_keys_json() {
+        let json = r#"{
+            "type": "urn:otel:exporter:test",
+            "capabilities": {
+                "bearer_token_provider": "ext_a",
+                "bearer_token_provider": "ext_b"
+            }
+        }"#;
+        let result: Result<NodeUserConfig, _> = serde_json::from_str(json);
+        let err = result.expect_err("should reject duplicate capability keys");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate"),
+            "error should mention duplicate: {msg}"
+        );
     }
 }

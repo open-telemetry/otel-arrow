@@ -18,7 +18,7 @@ use crate::{
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
-    processor::ProcessorWrapper,
+    processor::{ProcessorWrapper, validate_local_wakeup_requirements},
     receiver::ReceiverWrapper,
     runtime_pipeline::{PipeNode, RuntimePipeline},
     shared::message::{SharedReceiver, SharedSender},
@@ -69,9 +69,11 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub(crate) mod indexed_min_heap;
 pub mod local;
 pub mod memory_limiter;
 pub mod node;
+mod node_local_scheduler;
 pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
@@ -82,6 +84,8 @@ pub mod terminal_state;
 pub mod testing;
 pub mod topic;
 pub mod wiring_contract;
+pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
+pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
 
 /// Trait for factory types that expose a name.
 ///
@@ -628,6 +632,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         kind: "ProcessorChain".into(),
                     });
                 }
+                otap_df_config::node::NodeKind::Extension => {
+                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
+                }
             };
             let node_id = build_state.next_node_id(name.clone(), node_type, pipe_node)?;
             let _ = node_ids.insert(name.clone(), node_id);
@@ -727,6 +734,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     unreachable!("rejected in first pass");
                 }
+                otap_df_config::node::NodeKind::Extension => {
+                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
+                }
             }
         }
 
@@ -818,6 +828,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     return Err(Error::UnsupportedNodeKind {
                         kind: "ProcessorChain".into(),
                     });
+                }
+                otap_df_config::node::NodeKind::Extension => {
+                    // Extensions don't participate in wiring contracts.
+                    continue;
                 }
             };
 
@@ -1463,6 +1477,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
+        validate_local_wakeup_requirements(&node_id, processor.runtime_requirements())?;
+
         otel_debug!(
             "processor.create.complete",
             pipeline_group_id = pipeline_group_id.as_ref(),
@@ -1764,7 +1780,7 @@ where
         // sent each message.
         let multi_source = self.sources.len() > 1;
 
-        for (source, sender) in self.sources.into_iter().zip(self.senders.into_iter()) {
+        for (source, sender) in self.sources.into_iter().zip(self.senders) {
             let src_node = pipeline
                 .get_mut_node_with_pdata_sender(source.node_id.index)
                 .ok_or_else(|| Error::UnknownNode {
@@ -2087,7 +2103,7 @@ mod test {
     use super::*;
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
-        PropagationAction, PropagationDefault, PropagationSelector,
+        PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
 
     #[test]
@@ -2179,7 +2195,10 @@ mod test {
     fn make_propagation_policy(action: PropagationAction) -> HeaderPropagationPolicy {
         HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 action,
                 ..Default::default()
             },

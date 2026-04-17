@@ -20,8 +20,7 @@ string_literal = {
   | ("'" ~ single_quote_string_char* ~ "'")
 }
 
-datetime_literal    = { (ASCII_ALPHANUMERIC | "-" | "+" | ":" | "/" | "." | ",")+ }
-datetime_expression = { "datetime(" ~ (string_literal | datetime_literal) ~ ")" }
+tagged_literal = { ident ~ string_literal }
 
 identifier_expression = {
     ident
@@ -33,6 +32,7 @@ null_token       = @{ "null" }
 
 primitive_expression = {
     string_literal
+  | tagged_literal
   | bool_true_token
   | bool_false_token
   | null_token
@@ -55,20 +55,19 @@ attribute_selection_expression = {
     identifier_expression ~ ("." ~ member_expression)+
 }
 
-argument_list = { expression ~ ("," ~ expression)* }
+argument_list = { expression? ~ ("," ~ expression)* }
 
 function_call = { identifier_expression ~ "(" ~ argument_list ~ ")" }
 
 member_expression = {
     index_expression
   | attribute_selection_expression
-  | datetime_expression
   | function_call
   | primitive_expression
 }
 
 integer_literal = @{
-    ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+    (("0" | ASCII_NONZERO_DIGIT) ~ ASCII_DIGIT*)
 }
 
 exponent_literal =  { ^"e" ~ ("+" | "-")? ~ integer_literal }

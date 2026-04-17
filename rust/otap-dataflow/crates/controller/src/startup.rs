@@ -34,7 +34,7 @@ use sysinfo::System;
 /// [`CoreAllocation`] value, if any override was provided.
 ///
 /// Priority: an explicit core-ID range takes precedence over a plain count.
-/// A count of `0` is interpreted as [`CoreAllocation::AllCores`].
+/// A count of `0` is interpreted as "all cores" (`CoreAllocation::all_cores()`).
 #[must_use]
 pub fn core_allocation_override(
     num_cores: Option<usize>,
@@ -42,8 +42,8 @@ pub fn core_allocation_override(
 ) -> Option<CoreAllocation> {
     match (core_id_range, num_cores) {
         (Some(range), _) => Some(range),
-        (None, Some(0)) => Some(CoreAllocation::AllCores),
-        (None, Some(count)) => Some(CoreAllocation::CoreCount { count }),
+        (None, Some(0)) => Some(CoreAllocation::all_cores()),
+        (None, Some(count)) => Some(CoreAllocation::core_count(count)),
         (None, None) => None,
     }
 }
@@ -115,6 +115,13 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                 .get_exporter_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
+            NodeKind::Extension => {
+                // Extensions are not yet validated here because PipelineFactory
+                // does not have an extension factory registry. Once one is added,
+                // this should look up and validate extension configs similarly to
+                // receivers/processors/exporters.
+                continue;
+            }
         };
 
         match validate_config_fn {
@@ -123,6 +130,7 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                     NodeKind::Receiver => "receiver",
                     NodeKind::Processor | NodeKind::ProcessorChain => "processor",
                     NodeKind::Exporter => "exporter",
+                    NodeKind::Extension => unreachable!("handled above"),
                 };
                 return Err(std::io::Error::other(format!(
                     "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",
@@ -264,7 +272,7 @@ Example configuration files can be found in the configs/ directory.{}",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::policy::Policies;
+    use otap_df_config::policy::{CoreRange, Policies};
 
     fn minimal_engine_yaml() -> &'static str {
         r#"
@@ -291,9 +299,7 @@ groups:
 
     #[test]
     fn core_allocation_override_prefers_range() {
-        let range = CoreAllocation::CoreSet {
-            set: vec![otap_df_config::policy::CoreRange { start: 2, end: 4 }],
-        };
+        let range = CoreAllocation::core_set(vec![CoreRange { start: 2, end: 4 }]);
         let resolved = core_allocation_override(Some(3), Some(range.clone()));
         assert_eq!(resolved, Some(range));
     }
@@ -302,21 +308,21 @@ groups:
     fn core_allocation_override_maps_num_cores() {
         assert_eq!(
             core_allocation_override(Some(5), None),
-            Some(CoreAllocation::CoreCount { count: 5 })
+            Some(CoreAllocation::core_count(5))
         );
         assert_eq!(
             core_allocation_override(Some(0), None),
-            Some(CoreAllocation::AllCores)
+            Some(CoreAllocation::all_cores())
         );
         assert_eq!(core_allocation_override(None, None), None);
     }
 
     #[test]
     fn http_admin_bind_override_sets_custom_bind() {
-        let settings = http_admin_bind_override(Some("0.0.0.0:18080".to_string()));
+        let settings = http_admin_bind_override(Some("127.0.0.1:18080".to_string()));
         assert_eq!(
             settings.map(|s| s.bind_address),
-            Some("0.0.0.0:18080".to_string())
+            Some("127.0.0.1:18080".to_string())
         );
     }
 
@@ -329,18 +335,18 @@ groups:
     fn apply_cli_overrides_updates_top_level_resources_and_http_admin() {
         let mut cfg =
             OtelDataflowSpec::from_yaml(minimal_engine_yaml()).expect("base config should parse");
-        apply_cli_overrides(&mut cfg, Some(3), None, Some("0.0.0.0:28080".to_string()));
+        apply_cli_overrides(&mut cfg, Some(3), None, Some("127.0.0.1:28080".to_string()));
 
         assert_eq!(
             Policies::resolve([&cfg.policies]).resources.core_allocation,
-            CoreAllocation::CoreCount { count: 3 }
+            CoreAllocation::core_count(3)
         );
         assert_eq!(
             cfg.engine
                 .http_admin
                 .as_ref()
                 .map(|s| s.bind_address.as_str()),
-            Some("0.0.0.0:28080")
+            Some("127.0.0.1:28080")
         );
 
         let resolved = cfg.resolve();
@@ -351,7 +357,7 @@ groups:
             .expect("default/main should exist");
         assert_eq!(
             main.policies.resources.core_allocation,
-            CoreAllocation::CoreCount { count: 3 }
+            CoreAllocation::core_count(3)
         );
     }
 
@@ -391,7 +397,7 @@ groups:
         // CLI updates top-level/global policy.
         assert_eq!(
             Policies::resolve([&cfg.policies]).resources.core_allocation,
-            CoreAllocation::CoreCount { count: 2 }
+            CoreAllocation::core_count(2)
         );
 
         // Pipeline resolution keeps precedence (group-level over top-level).
@@ -403,7 +409,7 @@ groups:
             .expect("default/main should exist");
         assert_eq!(
             main.policies.resources.core_allocation,
-            CoreAllocation::CoreCount { count: 5 }
+            CoreAllocation::core_count(5)
         );
     }
 
@@ -441,7 +447,7 @@ groups:
             .expect("default/main should exist");
         assert_eq!(
             main.policies.resources.core_allocation,
-            CoreAllocation::CoreCount { count: 4 },
+            CoreAllocation::core_count(4),
             "--num-cores 4 must not be shadowed by an implicit group-level resources default"
         );
     }

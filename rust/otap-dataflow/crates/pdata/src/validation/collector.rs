@@ -40,6 +40,10 @@ pub static COLLECTOR_PATH: LazyLock<String> = LazyLock::new(|| {
     path
 });
 
+pub(super) fn collector_available() -> bool {
+    Path::new(COLLECTOR_PATH.as_str()).exists()
+}
+
 /// Helper function to spawn an async task that reads lines from a buffer and logs them with a prefix.
 /// Optionally checks for a message substring and sends a signal when it matches.
 async fn spawn_line_reader<R>(

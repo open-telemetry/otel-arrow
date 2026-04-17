@@ -168,7 +168,7 @@ mod tests {
     use crate::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy, NameStrategy,
         PropagationAction, PropagationDefault, PropagationMatch, PropagationOverride,
-        PropagationSelector,
+        PropagationSelector, PropagationSelectorType,
     };
 
     #[test]
@@ -320,7 +320,10 @@ mod tests {
     fn propagate_all_captured_default() {
         let policy = HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             vec![],
@@ -347,7 +350,10 @@ mod tests {
     fn propagate_override_drops_auth() {
         let policy = HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             vec![PropagationOverride {
@@ -381,7 +387,10 @@ mod tests {
     fn propagate_selector_none_drops_all_unless_override() {
         let policy = HeaderPropagationPolicy {
             default: PropagationDefault {
-                selector: PropagationSelector::None,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::None,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             overrides: vec![PropagationOverride {
@@ -415,7 +424,10 @@ mod tests {
     fn propagate_stored_name_strategy() {
         let policy = HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 name: NameStrategy::StoredName,
                 ..PropagationDefault::default()
             },
@@ -438,7 +450,10 @@ mod tests {
     fn propagate_named_selector() {
         let policy = HeaderPropagationPolicy {
             default: PropagationDefault {
-                selector: PropagationSelector::Named(vec!["tenant_id".to_string()]),
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::Named,
+                    named: Some(vec!["tenant_id".to_string()]),
+                },
                 ..PropagationDefault::default()
             },
             overrides: vec![],

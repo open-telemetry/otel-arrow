@@ -5,13 +5,16 @@ use std::sync::LazyLock;
 
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-    ContainsLogicalExpression, DoubleScalarExpression, DoubleValue, EqualToLogicalExpression,
-    Expression, GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-    IntegerScalarExpression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
-    LogicalExpression, MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression,
-    NullScalarExpression, OrLogicalExpression, QueryLocation, ScalarExpression,
-    SliceScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-    ValueAccessor,
+    CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
+    ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression, DoubleValue,
+    EqualToLogicalExpression, Expression, GreaterThanLogicalExpression,
+    GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+    NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
+    RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
+    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, StringValue,
+    TextScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -21,9 +24,10 @@ use pest::{
     iterators::{Pair, Pairs},
     pratt_parser::PrattParser,
 };
+use regex::Regex;
 
 use crate::parser::{
-    Rule, invalid_child_rule_error, pipeline::PipelineBuilder, temporal::parse_datetime_expression,
+    Rule, invalid_child_rule_error, pipeline::PipelineBuilder, temporal::parse_date_time,
 };
 
 fn parse_next_child_rule<F, E>(
@@ -507,10 +511,6 @@ pub fn parse_member_expression(
         Rule::attribute_selection_expression => {
             parse_attribute_selection_expression(rule, pipeline_builder)
         }
-        Rule::datetime_expression => {
-            let date_time_expr = parse_datetime_expression(rule)?;
-            Ok(ScalarExpression::Static(date_time_expr).into())
-        }
         Rule::function_call => parse_function_call(rule, pipeline_builder),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
@@ -640,6 +640,7 @@ fn parse_primitive_expression(
         Rule::string_literal => {
             Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
         }
+        Rule::tagged_literal => Ok(parse_tagged_literal(rule, query_location)?.into()),
         Rule::bool_true_token => Ok(ScalarExpression::Static(StaticScalarExpression::Boolean(
             BooleanScalarExpression::new(query_location, true),
         ))
@@ -659,6 +660,57 @@ fn parse_primitive_expression(
             invalid_rule,
         )),
     }
+}
+
+pub(crate) fn parse_tagged_literal(
+    rule: Pair<'_, Rule>,
+    query_location: QueryLocation,
+) -> Result<ScalarExpression, ParserError> {
+    let mut inner_rules = rule.into_inner();
+    let tag_ident_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+    let tagged_string_literal_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+
+    let tagged_str = match parse_standard_string_literal(tagged_string_literal_rule) {
+        StaticScalarExpression::String(str) => str,
+        invalid_expr => {
+            return Err(ParserError::SyntaxError(
+                query_location.clone(),
+                format!("Expected static string literal, found {:?}", invalid_expr),
+            ));
+        }
+    };
+
+    let static_scalar_expr = match tag_ident_rule.as_str() {
+        "date_time" => {
+            let date_time = parse_date_time(tagged_str.get_value(), &query_location)?;
+            StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                query_location,
+                date_time,
+            ))
+        }
+        "r" => {
+            let pattern = tagged_str.get_value();
+            let regex = Regex::new(pattern).map_err(|e| {
+                ParserError::SyntaxError(
+                    query_location.clone(),
+                    format!("Invalid regex literal '{pattern}': {e}"),
+                )
+            })?;
+            StaticScalarExpression::Regex(RegexScalarExpression::new(query_location, regex))
+        }
+        unknown_tag => {
+            return Err(ParserError::SyntaxError(
+                query_location.clone(),
+                format!("Unknown tag '{unknown_tag}' in tagged literal"),
+            ));
+        }
+    };
+
+    Ok(ScalarExpression::Static(static_scalar_expr))
 }
 
 /// Parses invocation of function
@@ -749,6 +801,37 @@ fn parse_function_call(
             ))
             .into())
         }
+        "concat" => Ok(ScalarExpression::Text(TextScalarExpression::Concat(
+            CombineScalarExpression::new(
+                query_location.clone(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(query_location, args),
+                )),
+            ),
+        ))
+        .into()),
+        "join" | "concat_ws" => {
+            if args.is_empty() {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects at least 1 argument, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let delimiter = args.remove(0);
+            Ok(
+                ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                    query_location.clone(),
+                    delimiter,
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(query_location, args),
+                    )),
+                )))
+                .into(),
+            )
+        }
         "matches" => {
             if args.len() != 2 {
                 return Err(ParserError::SyntaxError(
@@ -765,6 +848,50 @@ fn parse_function_call(
                 query_location,
                 haystack,
                 rhs,
+            ))
+            .into())
+        }
+        "regexp_capture" => {
+            if args.len() != 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
+            let source = args.remove(0);
+            let pattern = args.remove(0);
+            let capture_group = args.remove(0);
+            Ok(ScalarExpression::Text(TextScalarExpression::Capture(
+                CaptureTextScalarExpression::new(query_location, source, pattern, capture_group),
+            ))
+            .into())
+        }
+        "replace" => {
+            if args.len() != 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
+            let source = args.remove(0);
+            let substr = args.remove(0);
+            let replacement = args.remove(0);
+            Ok(ScalarExpression::Text(TextScalarExpression::Replace(
+                ReplaceTextScalarExpression::new(
+                    query_location,
+                    source,
+                    substr,
+                    replacement,
+                    false, // case_insensitive = set to false for OPL
+                ),
             ))
             .into())
         }
@@ -798,8 +925,12 @@ fn parse_function_call(
                 )
             })?;
 
-            let expected_num_args = function_def.get_parameter_names().len();
-            if args.len() != expected_num_args {
+            // TODO - this is kind of a sketchy way to get the number of required parameters.
+            // In the future, we may want to consider adding a bit more information in the
+            // function signature.
+            let expected_num_args =
+                function_def.get_parameter_names().len() - function_def.get_default_values().len();
+            if args.len() < expected_num_args {
                 return Err(ParserError::SyntaxError(
                     query_location,
                     format!(
@@ -832,17 +963,21 @@ mod test {
 
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
+        CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
         ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
         EqualToLogicalExpression, GreaterThanLogicalExpression,
-        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
-        MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
-        OrLogicalExpression, PipelineFunction, PipelineFunctionParameter,
-        PipelineFunctionParameterType, QueryLocation, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, JoinTextScalarExpression,
+        ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+        NotLogicalExpression, NullScalarExpression, OrLogicalExpression, PipelineFunction,
+        PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation,
+        RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TextScalarExpression, ValueAccessor,
     };
-    use data_engine_parser_abstractions::{ParserFunction, ParserState};
+    use data_engine_parser_abstractions::{ParserError, ParserFunction, ParserState};
     use pest::Parser;
     use pretty_assertions::assert_eq;
+    use regex::Regex;
 
     use crate::parser::{
         Rule,
@@ -917,6 +1052,13 @@ mod test {
                 )),
             ),
             (
+                "5.06",
+                StaticScalarExpression::Double(DoubleScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    5.06,
+                )),
+            ),
+            (
                 "-4.56",
                 StaticScalarExpression::Double(DoubleScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -942,24 +1084,24 @@ mod test {
                 StaticScalarExpression::Null(NullScalarExpression::new(QueryLocation::new_fake())),
             ),
             (
-                "datetime(2026-02-04)",
+                "date_time\"2026-02-04T00:00:00Z\"",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
                 )),
             ),
             (
-                "datetime(\"2026-02-04\")",
+                "date_time'2026-02-04T00:00:00Z'",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
                 )),
             ),
             (
-                "datetime('2026-02-04')",
-                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                "r\".*hello.*\"",
+                StaticScalarExpression::Regex(RegexScalarExpression::new(
                     QueryLocation::new_fake(),
-                    create_utc(2026, 2, 4, 0, 0, 0, 0),
+                    Regex::new(".*hello.*").unwrap(),
                 )),
             ),
         ];
@@ -1896,5 +2038,262 @@ mod test {
             err.to_string()
                 .contains("Function 'myfunc' expects 2 arguments, got 1")
         )
+    }
+
+    #[test]
+    fn test_parse_concat_function_call() {
+        let input = "concat(\"event happened: \", event_name)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected =
+            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "event happened: ",
+                                ),
+                            )),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "event_name",
+                                    )),
+                                )]),
+                            )),
+                        ],
+                    ),
+                )),
+            )));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_concat_with_delimiter_function_call() {
+        // "join" is alias for "concat_ws"
+        for fn_name in ["concat_ws", "join"] {
+            let input = format!("{fn_name}(\" \", severity_text, \"event happened:\", event_name)");
+            let mut rules = OplPestParser::parse(Rule::member_expression, &input).unwrap();
+            assert_eq!(rules.len(), 1);
+
+            let result: ScalarExpression =
+                parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                    .unwrap()
+                    .into();
+
+            let expected =
+                ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), " "),
+                    )),
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "severity_text",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "event happened:",
+                                    ),
+                                )),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "event_name",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                            ],
+                        ),
+                    )),
+                )));
+
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_replace_function_call() {
+        let input = "replace(severity_text, \"N\", \"M\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = ScalarExpression::Text(TextScalarExpression::Replace(
+            ReplaceTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "severity_text",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "N"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "M"),
+                )),
+                false,
+            ),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_regexp_capture_function_call() {
+        let input = "regexp_capture(severity_text, \".*(.).*\", 1)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = ScalarExpression::Text(TextScalarExpression::Capture(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "severity_text",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ".*(.).*"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    fn parse_known_func_with_args(
+        fn_name: &str,
+        args: &[&str],
+    ) -> Result<LogicalOrScalarExpr, ParserError> {
+        let input = format!("{}({})", fn_name, args.join(", "));
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
+        let mut rules = OplPestParser::parse(Rule::member_expression, &input).unwrap();
+        parse_member_expression(rules.next().unwrap(), &pipeline_builder)
+    }
+
+    #[test]
+    fn parse_replace_function_call_with_wrong_arity() {
+        for args in [
+            vec![],
+            vec!["one"],
+            vec!["one", "two"],
+            vec!["one", "two", "three", "four"],
+        ] {
+            let err = parse_known_func_with_args("replace", &args).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("Function 'replace' expects 3 arguments, got {}", args.len())
+            )
+        }
+    }
+
+    #[test]
+    fn parse_regexp_capture_function_call_with_wrong_arity() {
+        for args in [
+            vec![],
+            vec!["one"],
+            vec!["one", "two"],
+            vec!["one", "two", "three", "four"],
+        ] {
+            let err = parse_known_func_with_args("regexp_capture", &args).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "Function 'regexp_capture' expects 3 arguments, got {}",
+                    args.len()
+                )
+            )
+        }
+    }
+
+    #[test]
+    fn parse_contains_ws_function_call_with_wrong_arity() {
+        let err = parse_known_func_with_args("concat_ws", &[]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Function 'concat_ws' expects at least 1 argument, got 0".to_string(),
+        );
+    }
+
+    #[test]
+    fn parse_catches_invalid_tag() {
+        let input = "test\"hello\"";
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let err =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
+
+        assert_eq!(err.to_string(), "Unknown tag 'test' in tagged literal");
+    }
+
+    #[test]
+    fn parse_catches_invalid_regex() {
+        let input = "r\".*[\""; // unclosed bracket is invalid
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let err =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Invalid regex literal '.*[': regex parse error:\n    \
+            .*[\n      \
+            ^\n\
+            error: unclosed character class"
+        );
     }
 }

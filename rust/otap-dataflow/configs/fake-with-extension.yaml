@@ -1,0 +1,36 @@
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          sample_kv_store:
+            type: "urn:otap:extension:sample_shared_key_value_store"
+
+        nodes:
+          generator:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+
+          exporter:
+            type: "urn:otel:exporter:noop"
+            capabilities:
+              key_value_store: "sample_kv_store"
+
+        connections:
+          - from: generator
+            to: exporter

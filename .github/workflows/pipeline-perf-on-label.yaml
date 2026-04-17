@@ -48,6 +48,35 @@ jobs:
         with:
           egress-policy: audit
 
+      - name: Disk usage diagnostics
+        run: |
+          echo "=== Overall disk usage ==="
+          df -h
+          echo ""
+          echo "=== Largest directories under / (top 20) ==="
+          sudo du -h --max-depth=3 / 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== Docker disk usage ==="
+          docker system df -v 2>/dev/null || echo "Docker not running or not available"
+          echo ""
+          echo "=== Docker images ==="
+          docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' 2>/dev/null || true
+          echo ""
+          echo "=== Docker volumes ==="
+          docker volume ls 2>/dev/null || true
+          echo ""
+          echo "=== Docker containers (all) ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Size}}\t{{.Status}}' 2>/dev/null || true
+          echo ""
+          echo "=== /home usage ==="
+          sudo du -h --max-depth=2 /home 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== /var usage ==="
+          sudo du -h --max-depth=2 /var 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== /tmp usage ==="
+          sudo du -h --max-depth=1 /tmp 2>/dev/null | sort -rh | head -10
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Python
@@ -84,6 +113,15 @@ jobs:
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
+
+      - name: Post-run disk usage diagnostics
+        if: always()
+        run: |
+          echo "=== Overall disk usage ==="
+          df -h
+          echo ""
+          echo "=== Docker disk usage ==="
+          docker system df -v 2>/dev/null || true
 
   # Run on ubuntu-latest for basic validation when no label is present
   pipeline-perf-test-basic:

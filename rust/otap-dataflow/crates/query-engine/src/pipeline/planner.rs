@@ -175,9 +175,12 @@ impl PipelinePlanner {
                 // `logs | where severity_text == "ERROR"` would be a discard expr discarding
                 // everything where not(severity_text == "ERROR"). we use the inner predicate to
                 // build the filter.
-                Some(LogicalExpression::Not(not_expr)) => {
-                    self.plan_filter(not_expr.get_inner_expression(), session_ctx, otap_batch)
-                }
+                Some(LogicalExpression::Not(not_expr)) => self.plan_filter(
+                    not_expr.get_inner_expression(),
+                    functions,
+                    session_ctx,
+                    otap_batch,
+                ),
 
                 // the discard expression's `not` statement may get folded into a static constant
                 // filter in which case we don't produce logical expression as `not(true)`, instead
@@ -190,7 +193,7 @@ impl PipelinePlanner {
                                 !bool_expr.get_value(),
                             )),
                         ));
-                        self.plan_filter(&keep_plan, session_ctx, otap_batch)
+                        self.plan_filter(&keep_plan, functions, session_ctx, otap_batch)
                     }
                     invalid => Err(Error::InvalidPipelineError {
                         cause: format!(
@@ -209,7 +212,7 @@ impl PipelinePlanner {
                             false,
                         )),
                     ));
-                    self.plan_filter(&predicate, session_ctx, otap_batch)
+                    self.plan_filter(&predicate, functions, session_ctx, otap_batch)
                 }
                 invalid => Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -241,8 +244,12 @@ impl PipelinePlanner {
             DataExpression::Conditional(conditional_expr) => {
                 let mut pipeline_branches = vec![];
                 for branch in conditional_expr.get_branches() {
-                    let predicate =
-                        self.plan_filter_exec(branch.get_condition(), session_ctx, otap_batch)?;
+                    let predicate = self.plan_filter_exec(
+                        branch.get_condition(),
+                        functions,
+                        session_ctx,
+                        otap_batch,
+                    )?;
 
                     let pipeline_stages = self.plan_data_exprs(
                         branch.get_expressions(),
@@ -285,10 +292,12 @@ impl PipelinePlanner {
     fn plan_filter(
         &self,
         logical_expr: &LogicalExpression,
+        functions: &[PipelineFunction],
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let filter_exec = self.plan_filter_exec(logical_expr, session_ctx, otap_batch)?;
+        let filter_exec =
+            self.plan_filter_exec(logical_expr, functions, session_ctx, otap_batch)?;
         let filter_stage = FilterPipelineStage::new(filter_exec);
 
         Ok(vec![Box::new(filter_stage)])
@@ -298,12 +307,14 @@ impl PipelinePlanner {
     fn plan_filter_exec(
         &self,
         logical_expr: &LogicalExpression,
+        functions: &[PipelineFunction],
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Composite<FilterExec>> {
         let filter_plan = Composite::<FilterPlan>::try_from(
             logical_expr,
             self.filter_attribute_keys_case_sensitive,
+            functions,
         )?;
 
         // optimize the to the plan
@@ -680,6 +691,9 @@ impl PipelinePlanner {
                     let right = source_references_col_or_key(right.as_ref(), referenced);
                     left | right
                 }
+                LogicalExprDataSource::MultiJoin(children) => children
+                    .iter()
+                    .any(|child| source_references_col_or_key(child, referenced)),
             }
         }
 
