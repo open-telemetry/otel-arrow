@@ -5,7 +5,7 @@ nodes:
       protocols:
         grpc:
           listening_addr: 127.0.0.1:4317
-  sampler:
+  ratio_sampler:
     type: "urn:otel:processor:log_sampling"
     config:
       policy:
@@ -21,6 +21,6 @@ nodes:
         payload_compression: none
 connections:
   - from: receiver
-    to: sampler
-  - from: sampler
+    to: ratio_sampler
+  - from: ratio_sampler
     to: exporter

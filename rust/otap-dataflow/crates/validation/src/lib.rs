@@ -177,7 +177,7 @@ mod tests {
     fn validation_log_sampling_ratio_pipeline_1() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/log-sampling-ratio-processor.yaml")
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
@@ -212,7 +212,7 @@ mod tests {
     fn validation_log_sampling_ratio_pipeline_2() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/log-sampling-ratio-processor.yaml")
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
@@ -247,7 +247,7 @@ mod tests {
     fn validation_log_sampling_ratio_pipeline_3() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/log-sampling-ratio-processor.yaml")
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
@@ -415,14 +415,15 @@ mod tests {
             .expect("log sampling zip validation failed for signal_count=500");
     }
 
-    /// Validates that the log sampling processor passes non-log signals through
-    /// unchanged. Sends trace signals through a ratio sampler and asserts
-    /// semantic equivalence -- the sampler should not alter traces at all.
+    /// Validates that the log sampling processor (ratio policy) passes non-log
+    /// signals through unchanged. Sends trace signals through a ratio sampler
+    /// and asserts semantic equivalence -- the sampler should not alter traces
+    /// at all.
     #[test]
-    fn validation_log_sampling_passthrough_traces() {
+    fn validation_log_sampling_ratio_passthrough_traces() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/log-sampling-ratio-processor.yaml")
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
@@ -442,17 +443,17 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("log sampling passthrough traces validation failed");
+            .expect("log sampling ratio passthrough traces validation failed");
     }
 
-    /// Validates that the log sampling processor passes metric signals through
-    /// unchanged. The sampler only operates on logs; metrics should be forwarded
-    /// with no modifications.
+    /// Validates that the log sampling processor (ratio policy) passes metric
+    /// signals through unchanged. The ratio sampler only operates on logs;
+    /// metrics should be forwarded with no modifications.
     #[test]
-    fn validation_log_sampling_passthrough_metrics() {
+    fn validation_log_sampling_ratio_passthrough_metrics() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/log-sampling-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/log-sampling-ratio-processor.yaml")
                     .expect("failed to read pipeline yaml"),
             )
             .add_generator(
@@ -472,14 +473,14 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("log sampling passthrough metrics validation failed");
+            .expect("log sampling ratio passthrough metrics validation failed");
     }
 
     /// Validates the log sampling processor with a full passthrough ratio policy
     /// (emit 1 out of 1 = 100% sampling). All log signals should pass through
     /// unchanged.
     #[test]
-    fn validation_log_sampling_full_passthrough() {
+    fn validation_log_sampling_ratio_full_passthrough() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file(
@@ -504,7 +505,7 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("log sampling full passthrough validation failed");
+            .expect("log sampling ratio full passthrough validation failed");
     }
 
     /// Tests the transform processor KQL `where !=` operation. Filters logs
