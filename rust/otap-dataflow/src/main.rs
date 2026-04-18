@@ -107,10 +107,22 @@ cfg_if! {
 #[cfg(all(not(any(test, doc)), not(clippy)))]
 const _: () = {
     // Turn features into 0/1 at compile time.
-    const SYMCRYPT: u8 = if cfg!(feature = "crypto-symcrypt") { 1 } else { 0 };
-    const OPENSSL: u8  = if cfg!(feature = "crypto-openssl")  { 1 } else { 0 };
-    const AWS_LC: u8   = if cfg!(feature = "crypto-aws-lc")   { 1 } else { 0 };
-    const RING: u8     = if cfg!(feature = "crypto-ring")     { 1 } else { 0 };
+    const SYMCRYPT: u8 = if cfg!(feature = "crypto-symcrypt") {
+        1
+    } else {
+        0
+    };
+    const OPENSSL: u8 = if cfg!(feature = "crypto-openssl") {
+        1
+    } else {
+        0
+    };
+    const AWS_LC: u8 = if cfg!(feature = "crypto-aws-lc") {
+        1
+    } else {
+        0
+    };
+    const RING: u8 = if cfg!(feature = "crypto-ring") { 1 } else { 0 };
 
     const COUNT: u8 = SYMCRYPT + OPENSSL + AWS_LC + RING;
 
