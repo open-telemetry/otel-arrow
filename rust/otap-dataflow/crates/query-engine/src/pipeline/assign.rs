@@ -3454,7 +3454,6 @@ mod test {
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
-
         let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
         assert_eq!(
             log_0.attributes,

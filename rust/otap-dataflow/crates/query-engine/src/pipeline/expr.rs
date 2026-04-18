@@ -233,7 +233,7 @@ impl ScopedLogicalExpr {
                 PhysicalExprDataSource::MultiJoin(physical_children)
             }
         };
-        let eval_anyval_as_struct = expr_can_handle_anyval_as_struct(&self.logical_expr);
+        let eval_anyval_as_struct = can_evaluate_anyval_as_struct(&self.logical_expr);
 
         let projection = Projection::try_new(&self.logical_expr)?;
 
@@ -846,7 +846,8 @@ impl ExprPhysicalPlanner {
     }
 }
 
-fn expr_can_handle_anyval_as_struct(expr: &Expr) -> bool {
+/// Determines if we can evaluate the AnyValue column as a struct column
+fn can_evaluate_anyval_as_struct(expr: &Expr) -> bool {
     // if we're simply returning the column, keep the column as an AnyValue struct and let
     // consumers expressions project it into a concrete type if they need to
     matches!(expr, Expr::Column(_))
