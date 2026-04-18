@@ -40,12 +40,11 @@ def extract_os_from_path(xml_file):
 def parse_junit_files(artifacts_dir):
     """Parse all JUnit XML files and collect test results."""
     test_results = defaultdict(lambda: {
-        "pass": set(),       # run_ids where test passed
-        "fail": set(),       # run_ids where test failed
         "flaky_direct": 0,   # nextest flakyFailure count
         "fail_messages": [],  # failure message texts (deduplicated later)
-        "fail_os": defaultdict(int),  # os_name -> failure count
-        "pass_os": defaultdict(int),  # os_name -> pass count
+        # Per-OS tracking: os_name -> set of run_ids
+        "pass_by_os": defaultdict(set),
+        "fail_by_os": defaultdict(set),
     })
 
     artifacts_path = Path(artifacts_dir)
@@ -90,30 +89,27 @@ def parse_junit_files(artifacts_dir):
                 flaky_elements = testcase.findall("flakyFailure")
                 if flaky_elements:
                     result["flaky_direct"] += len(flaky_elements)
-                    result["pass"].add(run_id)
-                    result["pass_os"][os_name] += 1
+                    result["pass_by_os"][os_name].add(run_id)
                     # Capture the failure message from flaky retries
                     for fe in flaky_elements:
                         msg = fe.get("message", "") or (fe.text or "").strip()
                         if msg:
                             result["fail_messages"].append(msg)
-                    result["fail_os"][os_name] += 1
+                    result["fail_by_os"][os_name].add(run_id)
                     continue
 
                 # Check for failure/error
                 failure = testcase.find("failure")
                 error = testcase.find("error")
                 if failure is not None or error is not None:
-                    result["fail"].add(run_id)
-                    result["fail_os"][os_name] += 1
+                    result["fail_by_os"][os_name].add(run_id)
                     # Capture failure message
                     elem = failure if failure is not None else error
                     msg = elem.get("message", "") or (elem.text or "").strip()
                     if msg:
                         result["fail_messages"].append(msg)
                 else:
-                    result["pass"].add(run_id)
-                    result["pass_os"][os_name] += 1
+                    result["pass_by_os"][os_name].add(run_id)
 
     return test_results
 
@@ -126,18 +122,34 @@ def identify_flaky_tests(test_results):
         is_flaky = False
         reason = ""
 
+        pass_by_os = results["pass_by_os"]
+        fail_by_os = results["fail_by_os"]
+
+        # Aggregate across all OSes for counts / links
+        all_pass_runs = set().union(*pass_by_os.values()) if pass_by_os else set()
+        all_fail_runs = set().union(*fail_by_os.values()) if fail_by_os else set()
+
         if results["flaky_direct"] > 0:
             is_flaky = True
             reason = f"Marked flaky by nextest ({results['flaky_direct']}x)"
-        elif results["pass"] and results["fail"]:
-            is_flaky = True
-            total = len(results["pass"]) + len(results["fail"])
-            fail_rate = len(results["fail"]) / total * 100
-            reason = (
-                f"Intermittent failure"
-                f" ({fail_rate:.0f}% fail rate,"
-                f" {len(results['fail'])}/{total} runs)"
-            )
+        else:
+            # A test is flaky if at least one OS sees both passes and
+            # failures across different runs.  This avoids false positives
+            # when a test fails consistently on one platform but passes
+            # consistently on another.
+            flaky_os = [
+                os_name for os_name in fail_by_os
+                if pass_by_os.get(os_name)
+            ]
+            if flaky_os:
+                is_flaky = True
+                total = len(all_pass_runs | all_fail_runs)
+                fail_rate = len(all_fail_runs) / total * 100 if total else 0
+                reason = (
+                    f"Intermittent failure"
+                    f" ({fail_rate:.0f}% fail rate,"
+                    f" {len(all_fail_runs)}/{total} runs)"
+                )
 
         if is_flaky:
             # Deduplicate and truncate failure messages
@@ -150,21 +162,20 @@ def identify_flaky_tests(test_results):
                 truncated_msgs.append(msg_oneline)
 
             # Determine which OSes see failures
-            affected_os = sorted(results["fail_os"].keys())
+            affected_os = sorted(fail_by_os.keys())
             all_os = sorted(
-                set(list(results["fail_os"].keys())
-                    + list(results["pass_os"].keys()))
+                set(list(fail_by_os.keys()) + list(pass_by_os.keys()))
             )
 
             flaky_tests.append({
                 "name": test_name,
                 "reason": reason,
-                "pass_count": len(results["pass"]),
-                "fail_count": len(results["fail"]),
+                "pass_count": len(all_pass_runs),
+                "fail_count": len(all_fail_runs),
                 "flaky_direct": results["flaky_direct"],
-                "fail_run_ids": sorted(results["fail"]),
+                "fail_run_ids": sorted(all_fail_runs),
                 "flaky_run_ids": (
-                    sorted(results["pass"] | results["fail"])
+                    sorted(all_pass_runs | all_fail_runs)
                     if results["flaky_direct"] > 0 else []
                 ),
                 "fail_messages": truncated_msgs,
