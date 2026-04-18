@@ -87,7 +87,7 @@ jobs:
           GITHUB_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           FLAKY_ISSUE_LABEL: ${{ env.FLAKY_ISSUE_LABEL }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 .github/scripts/parse_flaky.py
+        run: python3 .github/workflows/scripts/parse_flaky.py
 
       - name: Create or update tracking issue
         env:
