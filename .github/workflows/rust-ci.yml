@@ -442,13 +442,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - name: Install OpenSSL (Windows)
-        if: runner.os == 'Windows'
-        # Required for the crypto-openssl feature (rustls-openssl -> openssl-sys).
-        run: |
-          vcpkg install openssl:x64-windows-static-md
-          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
-        shell: pwsh
       - name: Install SymCrypt (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-symcrypt
@@ -472,7 +465,12 @@ jobs:
         uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
         with:
           tool: cargo-nextest
-      - name: Build and archive tests
+      - name: Build and archive tests (Incomplete)
+        if: runner.os == 'Windows'
+        run: cargo nextest archive --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Build and archive tests (Complete)
+        if: runner.os != 'Windows'
         run: cargo nextest archive --all-features --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload nextest archive

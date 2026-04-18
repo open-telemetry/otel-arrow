@@ -188,7 +188,11 @@ fn clippy_all(
     let mut args = vec![
         "clippy".to_owned(),
         "--workspace".to_owned(),
+        "--all-features".to_owned(),
         "--all-targets".to_owned(),
+        "--".to_owned(),
+        "-D".to_owned(),
+        "warnings".to_owned(),
     ];
     if options.diagnostics {
         args.push("--timings".to_owned());
