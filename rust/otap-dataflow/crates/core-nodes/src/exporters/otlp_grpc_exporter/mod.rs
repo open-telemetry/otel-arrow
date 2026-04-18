@@ -56,6 +56,9 @@ use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
+use std::pin::Pin;
+use std::task;
+
 /// The URN for the OTLP gRPC exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 
@@ -275,13 +278,15 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             _ = timer_cancel_fut => {
                                 timer_cancelled = true
                             }
-                            _timeout = timeout =>
-                            {
-                                    self.pdata_metrics.add_failed(SignalType::Metrics, 1);
-
-                                    return Err(Error::IoError { node: exporter_id.clone(), error: std::io::Error::from(ErrorKind::TimedOut) })
+                            _timeout = timeout => {
+                                for signal_type in inflight_exports.pending_signal_types() {
+                                    self.pdata_metrics.add_failed(signal_type, 1);
+                                }
+                                return Err(Error::IoError {
+                                    node: exporter_id.clone(),
+                                    error: std::io::Error::from(ErrorKind::TimedOut),
+                                })
                             },
-
                         };
                     }
                 }
@@ -398,7 +403,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 }
                             };
                             let future = make_export_future(prepared, client);
-                            inflight_exports.push(future);
+                            inflight_exports.push(signal_type, future);
                         }
                     }
                 }
@@ -542,12 +547,12 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
     make_future: MakeFuture,
-    inflight: &mut InFlightExports<Fut, CompletedExport>,
+    inflight: &mut InFlightExports<CompletedExport>,
     failed_counter: &mut Counter<u64>,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
     Enc: ProtoBytesEncoder,
-    Fut: Future<Output = CompletedExport>,
+    Fut: Future<Output = CompletedExport> + 'static,
     MakeFuture: FnOnce(EncodedExport) -> Fut,
 {
     match prepare_otap_export(
@@ -560,7 +565,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
         signal_type,
     ) {
         Ok(encoded) => {
-            inflight.push(make_future(encoded));
+            inflight.push(signal_type, make_future(encoded));
         }
         Err(error) => {
             failed_counter.inc();
@@ -745,18 +750,28 @@ fn make_export_future(
     }
 }
 
-/// FIFO-ish wrapper around the in-flight export RPCs.
-pub(crate) struct InFlightExports<Fut, Output>
-where
-    Fut: Future<Output = Output>,
-{
-    futures: FuturesUnordered<Fut>,
+/// Wrapper designed to be able to properly get the signal type of an export in case of shutdown.
+/// [`FuturesUnordered`] provides no way to inspect pending futures, so without this wrapper
+/// there is no way to know which signal types are still in flight at any given point.
+struct InFlightExport<Output> {
+    signal_type: SignalType,
+    fut: Pin<Box<dyn Future<Output = Output>>>,
 }
 
-impl<Fut, Output> InFlightExports<Fut, Output>
-where
-    Fut: Future<Output = Output>,
-{
+impl<Output> Future for InFlightExport<Output> {
+    type Output = Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
+        self.fut.as_mut().poll(cx)
+    }
+}
+
+/// FIFO-ish wrapper around the in-flight export RPCs.
+pub(crate) struct InFlightExports<Output> {
+    futures: FuturesUnordered<InFlightExport<Output>>,
+}
+
+impl<Output> InFlightExports<Output> {
     pub(crate) fn new() -> Self {
         Self {
             futures: FuturesUnordered::new(),
@@ -771,8 +786,19 @@ where
         self.futures.is_empty()
     }
 
-    pub(crate) fn push(&mut self, future: Fut) {
-        self.futures.push(future);
+    pub(crate) fn push(
+        &mut self,
+        signal_type: SignalType,
+        future: impl Future<Output = Output> + 'static,
+    ) {
+        self.futures.push(InFlightExport {
+            signal_type,
+            fut: Box::pin(future),
+        });
+    }
+
+    pub(crate) fn pending_signal_types(&self) -> impl Iterator<Item = SignalType> + '_ {
+        self.futures.iter().map(|e| e.signal_type)
     }
 
     /// Returns a future that resolves once the next export finishes.

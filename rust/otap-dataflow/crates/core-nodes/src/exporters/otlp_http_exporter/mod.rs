@@ -13,14 +13,16 @@
 //! - Allow endpoint overrides for each signal type (similar to Go collector implementation)
 //! - Unit test metrics reporting
 
+use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, pin_mut};
+use futures_timer::Delay;
 use http::{HeaderMap, HeaderValue, StatusCode};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -247,6 +249,18 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
 
+        let exporter_id = effect_handler.exporter_id();
+
+        // Stop telemetry loop concurrently with flushing; do not block shutdown on
+        // cancel
+        let mut tel_timer_cancelled = false;
+        let tel_timer_cancel_fut = async {
+            let _ = telemetry_timer_cancel.cancel().await;
+            futures::future::pending::<()>().await
+        }
+        .fuse();
+        pin_mut!(tel_timer_cancel_fut);
+
         loop {
             // Opportunistically drain completions before we park on a recv.
             while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
@@ -297,17 +311,40 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
-                    while !inflight_exports.is_empty() {
-                        if let Some(completed) = inflight_exports.next_completion().await {
-                            finalize_completed_export(
-                                completed,
-                                &effect_handler,
-                                &mut self.pdata_metrics,
-                            )
-                            .await;
+
+                    let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
+
+                    loop {
+                        // If the exports are completed in time, we exit the loop to evaluate the
+                        // rest of the possible races
+                        if inflight_exports.is_empty() && tel_timer_cancelled {
+                            break;
                         }
+
+                        futures::select_biased! {
+                            completed = inflight_exports.next_completion().fuse() => {
+                                if let Some(completed) = completed {
+                                    let _client = finalize_completed_export(
+                                        completed,
+                                        &effect_handler,
+                                        &mut self.pdata_metrics
+                                    )
+                                    .await;
+                                }
+                            },
+                            _ = tel_timer_cancel_fut => {
+                                tel_timer_cancelled = true
+                            }
+                            _timeout = timeout => {
+                                let mut shutdown_exports: ShutdownExport = inflight_exports.into();
+                                self.pdata_metrics.add_failed(SignalType::Metrics, 1);
+                                self.pdata_metrics.add_failed(SignalType::Logs, 1);
+                                self.pdata_metrics.add_failed(SignalType::Traces, 1);
+                                return Err(EngineError::IoError {node: exporter_id.clone(), error: std::io::Error::from(ErrorKind::TimedOut)})
+                            },
+                        };
                     }
-                    _ = telemetry_timer_cancel.cancel().await;
+
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -590,6 +627,102 @@ async fn finalize_completed_export(
     pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
 ) {
     let CompletedExport {
+        result,
+        context,
+        saved_payload,
+        signal_type,
+    } = completed;
+
+    let pdata = OtapPdata::new(context, saved_payload);
+
+    let err = match result {
+        Ok(service_resp) => service_resp.partial_success.and_then(|partial_success| {
+            // As per OTLP HTTP spec, the server may use partial success to convey information
+            // even in the case where it fully accepts the request. In these cases, it MUST have
+            // set the rejected_<signal> field to 0. We'll treat this case as a success
+            if partial_success.rejected == 0 {
+                otel_debug!(
+                    "otlp.exporter.http.zero_partial_rejected",
+                    details = partial_success.error_message
+                );
+
+                None
+            } else {
+                // In the case we received a partial_success, the spec states that the request
+                // should not be retried.
+                // https://opentelemetry.io/docs/specs/otlp/#partial-success-1
+                let retryable = false;
+                Some((
+                    format!(
+                        "{} ({} rejected)",
+                        partial_success.error_message, partial_success.rejected
+                    ),
+                    retryable,
+                ))
+            }
+        }),
+        Err(e) => Some((e.to_string(), e.is_retryable())),
+    };
+
+    let export_and_notify_success = match err {
+        None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
+        Some((err_msg, retryable)) => {
+            otel_warn!(
+                "otlp.exporter.http.export_error",
+                message = err_msg,
+                retryable = retryable
+            );
+            pdata_metrics.add_failed(signal_type, 1);
+            let mut nack = NackMsg::new(&err_msg, pdata);
+            nack.permanent = !retryable;
+            _ = effect_handler.notify_nack(nack).await;
+            false
+        }
+    };
+
+    if export_and_notify_success {
+        pdata_metrics.add_exported(signal_type, 1)
+    } else {
+        pdata_metrics.add_failed(signal_type, 1)
+    }
+}
+
+#[derive(Debug)]
+struct ShutdownExport {
+    result: Result<ServiceResponse, ServiceRequestError>,
+    context: Context,
+    saved_payload: OtapPayload,
+    signal_type: SignalType,
+}
+
+impl From<CompletedExport> for ShutdownExport {
+    fn from(completed_export: CompletedExport) -> Self {
+        ShutdownExport {
+            result: completed_export.result,
+            context: completed_export.context,
+            saved_payload: completed_export.saved_payload,
+            signal_type: completed_export.signal_type,
+        }
+    }
+}
+
+impl From<ShutdownExport> for CompletedExport {
+    fn from(shutdown_export: ShutdownExport) -> Self {
+        CompletedExport {
+            result: shutdown_export.result,
+            context: shutdown_export.context,
+            saved_payload: shutdown_export.saved_payload,
+            signal_type: shutdown_export.signal_type,
+        }
+    }
+}
+
+async fn finalize_shutdown_export(
+    completed: ShutdownExport,
+    effect_handler: &EffectHandler<OtapPdata>,
+    pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
+) {
+    let ShutdownExport {
         result,
         context,
         saved_payload,
