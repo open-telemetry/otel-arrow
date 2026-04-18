@@ -242,15 +242,26 @@ pub enum Error {
         scheme: String,
     },
 
-    /// An http: config URI could not be fetched.
+    /// An http: config URI could not be fetched after exhausting the
+    /// configured retry budget.
     #[error(
-        "Could not fetch config from '{uri}': {details}\n\nHint: Check the URL is reachable and responds within 30s. `https://` and authenticated endpoints are not supported yet."
+        "Could not fetch config from '{uri}' after retries: {details}\n\nHint: The provider retries with exponential backoff on network errors and any non-2xx status. Check the URL is reachable or lower `max_attempts` if you need to fail fast. `https://` and authenticated endpoints are not supported yet."
     )]
     #[diagnostic(code(data_plane::config_http_request_failed), url(docsrs))]
     ConfigHttpRequestFailed {
         /// The URI that failed to fetch.
         uri: String,
         /// A description of the failure (network error, non-2xx status, etc.).
+        details: String,
+    },
+
+    /// The http: provider's underlying HTTP client could not be constructed.
+    #[error(
+        "Could not build HTTP client for http: config provider: {details}\n\nHint: Ensure a rustls crypto provider is installed (e.g. via `otap_df_otap::crypto::install_crypto_provider()` at startup)."
+    )]
+    #[diagnostic(code(data_plane::config_http_client_build_failed), url(docsrs))]
+    ConfigHttpClientBuildFailed {
+        /// A description of why client construction failed.
         details: String,
     },
 

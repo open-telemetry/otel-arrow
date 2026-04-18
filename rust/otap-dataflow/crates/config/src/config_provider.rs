@@ -190,23 +190,29 @@ impl HttpConfigProvider {
 
     /// Build a provider that retries failed fetches indefinitely with
     /// exponential backoff (default: [`u64::MAX`] attempts).
-    #[must_use]
-    pub fn new() -> Self {
+    ///
+    /// Returns [`Error::ConfigHttpClientBuildFailed`] if the underlying
+    /// HTTP client cannot be constructed (for example when no rustls
+    /// crypto provider has been installed).
+    pub fn new() -> Result<Self, Error> {
         Self::with_max_attempts(u64::MAX)
     }
 
     /// Build a provider with an explicit cap on retry attempts. `max_attempts`
     /// counts the first try as an attempt, so `1` disables retries entirely.
-    #[must_use]
-    pub fn with_max_attempts(max_attempts: u64) -> Self {
+    ///
+    /// See [`Self::new`] for the set of errors this can return.
+    pub fn with_max_attempts(max_attempts: u64) -> Result<Self, Error> {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("reqwest blocking client should always build");
-        Self {
+            .map_err(|e| Error::ConfigHttpClientBuildFailed {
+                details: e.to_string(),
+            })?;
+        Ok(Self {
             client,
             max_attempts,
-        }
+        })
     }
 
     fn try_fetch(&self, uri: &str) -> Result<ResolvedConfig, Error> {
@@ -250,20 +256,12 @@ impl HttpConfigProvider {
 
     /// Sleep duration before the next attempt, doubling until capped.
     fn backoff_for(attempt: u64) -> Duration {
-        // Cap the shift at 20 so the multiplier stays well below u32::MAX
-        // before we clamp to MAX_BACKOFF below.
         let shift = attempt.min(20) as u32;
-        let multiplier = 1u64 << shift;
-        let scaled = Self::BASE_BACKOFF
-            .checked_mul(multiplier.try_into().unwrap_or(u32::MAX))
-            .unwrap_or(Self::MAX_BACKOFF);
-        scaled.min(Self::MAX_BACKOFF)
-    }
-}
-
-impl Default for HttpConfigProvider {
-    fn default() -> Self {
-        Self::new()
+        let multiplier = 1u32 << shift;
+        Self::BASE_BACKOFF
+            .checked_mul(multiplier)
+            .unwrap_or(Self::MAX_BACKOFF)
+            .min(Self::MAX_BACKOFF)
     }
 }
 
@@ -342,14 +340,16 @@ impl ConfigResolver {
 
 /// Returns a [`ConfigResolver`] with the default providers: `file:`, `env:`,
 /// `yaml:`, and `http:`.
-#[must_use]
-pub fn default_resolver() -> ConfigResolver {
-    ConfigResolver::new(vec![
+///
+/// Can fail if the HTTP client used by the `http:` provider cannot be
+/// constructed (see [`HttpConfigProvider::new`]).
+pub fn default_resolver() -> Result<ConfigResolver, Error> {
+    Ok(ConfigResolver::new(vec![
         Box::new(FileConfigProvider),
         Box::new(EnvConfigProvider),
         Box::new(YamlConfigProvider),
-        Box::new(HttpConfigProvider::new()),
-    ])
+        Box::new(HttpConfigProvider::new()?),
+    ]))
 }
 
 /// Top-level entry point for resolving a config URI to content.
@@ -358,7 +358,7 @@ pub fn default_resolver() -> ConfigResolver {
 ///   Bare paths (no scheme, starts with `/` or `.`) are treated as `file:`.
 /// - `None`: try `DEFAULT_CONFIG_PATH` in the current working directory.
 pub fn resolve_config(uri: Option<&str>) -> Result<ResolvedConfig, Error> {
-    let resolver = default_resolver();
+    let resolver = default_resolver()?;
 
     match uri {
         Some(u) => resolver.resolve(u),
@@ -504,10 +504,11 @@ mod tests {
 
     #[test]
     fn bare_path_treated_as_file() {
+        ensure_crypto_provider();
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
         write!(tmp, "bare: path").expect("write temp file");
 
-        let resolver = default_resolver();
+        let resolver = default_resolver().expect("default resolver should build");
         let resolved = resolver
             .resolve(&tmp.path().display().to_string())
             .expect("bare path should resolve as file");
@@ -516,7 +517,8 @@ mod tests {
 
     #[test]
     fn unknown_scheme_returns_error() {
-        let resolver = default_resolver();
+        ensure_crypto_provider();
+        let resolver = default_resolver().expect("default resolver should build");
         let result = resolver.resolve("ftp://example.com/config.yaml");
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -636,7 +638,8 @@ groups:
 
     #[test]
     fn yaml_provider_parses_as_yaml() {
-        let resolver = default_resolver();
+        ensure_crypto_provider();
+        let resolver = default_resolver().expect("default resolver should build");
         let resolved = resolver
             .resolve("yaml:exporters::debug::verbosity: detailed")
             .expect("should dispatch to yaml provider");
@@ -672,6 +675,7 @@ groups:
         // the async wiremock server alive while the sync client runs.
         let resolved = tokio::task::spawn_blocking(move || {
             HttpConfigProvider::new()
+                .expect("provider should build")
                 .resolve(&uri)
                 .expect("http provider should fetch body")
         })
@@ -700,6 +704,7 @@ groups:
         let uri = format!("{}/pipeline.json", mock_server.uri());
         let resolved = tokio::task::spawn_blocking(move || {
             HttpConfigProvider::new()
+                .expect("provider should build")
                 .resolve(&uri)
                 .expect("should detect json content type")
         })
@@ -725,7 +730,9 @@ groups:
         // `with_max_attempts(1)` disables retries; otherwise the default
         // `u64::MAX` would keep the test running forever.
         let result = tokio::task::spawn_blocking(move || {
-            HttpConfigProvider::with_max_attempts(1).resolve(&uri)
+            HttpConfigProvider::with_max_attempts(1)
+                .expect("provider should build")
+                .resolve(&uri)
         })
         .await
         .expect("spawn_blocking join");
@@ -766,6 +773,7 @@ groups:
         let uri = format!("{}/flaky", mock_server.uri());
         let resolved = tokio::task::spawn_blocking(move || {
             HttpConfigProvider::with_max_attempts(4)
+                .expect("provider should build")
                 .resolve(&uri)
                 .expect("third attempt should succeed")
         })
@@ -791,9 +799,9 @@ groups:
     }
 
     #[test]
-    fn http_provider_default_matches_new() {
+    fn http_provider_new_defaults_to_unbounded_attempts() {
         ensure_crypto_provider();
-        let p = HttpConfigProvider::default();
+        let p = HttpConfigProvider::new().expect("provider should build");
         assert_eq!(p.max_attempts, u64::MAX);
         assert_eq!(p.scheme(), "http");
     }
@@ -801,7 +809,7 @@ groups:
     #[test]
     fn http_provider_zero_attempts_returns_error() {
         ensure_crypto_provider();
-        let p = HttpConfigProvider::with_max_attempts(0);
+        let p = HttpConfigProvider::with_max_attempts(0).expect("provider should build");
         let result = p.resolve("http://127.0.0.1:1/never-called");
         match result {
             Err(Error::ConfigHttpRequestFailed { details, .. }) => {
@@ -825,7 +833,9 @@ groups:
         let uri = format!("http://{addr}/nope");
 
         let result = tokio::task::spawn_blocking(move || {
-            HttpConfigProvider::with_max_attempts(1).resolve(&uri)
+            HttpConfigProvider::with_max_attempts(1)
+                .expect("provider should build")
+                .resolve(&uri)
         })
         .await
         .expect("spawn_blocking join");
