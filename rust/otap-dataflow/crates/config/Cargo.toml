@@ -21,9 +21,13 @@ miette = { workspace = true }
 schemars = { workspace = true }
 byte-unit = { workspace = true }
 humantime-serde = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
 
 [dev-dependencies]
 k8s-openapi = { workspace = true }
 kube = { workspace = true }
 schemars = { workspace = true }
 tempfile = { workspace = true }
+wiremock = { workspace = true }
+tokio = { workspace = true }
+rustls = { workspace = true, features = ["ring"] }
