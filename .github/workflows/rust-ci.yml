@@ -735,7 +735,6 @@ jobs:
         with:
           pattern: junit-xml-*
           path: junit-results
-          merge-multiple: true
       - name: Publish test results
         uses: dorny/test-reporter@890fb06ecddbfab0799991308fe5640ee35f2474 # v2.0.0
         if: always()
