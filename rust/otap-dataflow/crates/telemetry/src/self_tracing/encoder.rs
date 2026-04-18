@@ -245,7 +245,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             // TODO: encode f64 body
             return;
         }
+        if self.buf.is_truncated() {
+            return;
+        }
+        let cp = self.buf.checkpoint();
         self.encode_double_attribute(field.name(), value);
+        if self.buf.is_truncated() {
+            self.buf.rollback(cp);
+        }
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
@@ -253,7 +260,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             // TODO: encode i64 body
             return;
         }
+        if self.buf.is_truncated() {
+            return;
+        }
+        let cp = self.buf.checkpoint();
         self.encode_int_attribute(field.name(), value);
+        if self.buf.is_truncated() {
+            self.buf.rollback(cp);
+        }
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
@@ -261,7 +275,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             // TODO: encode u64 body
             return;
         }
+        if self.buf.is_truncated() {
+            return;
+        }
+        let cp = self.buf.checkpoint();
         self.encode_int_attribute(field.name(), value as i64);
+        if self.buf.is_truncated() {
+            self.buf.rollback(cp);
+        }
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
@@ -269,7 +290,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             // TODO: encode bool body
             return;
         }
+        if self.buf.is_truncated() {
+            return;
+        }
+        let cp = self.buf.checkpoint();
         self.encode_bool_attribute(field.name(), value);
+        if self.buf.is_truncated() {
+            self.buf.rollback(cp);
+        }
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
@@ -277,7 +305,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             self.encode_body_string(value);
             return;
         }
+        if self.buf.is_truncated() {
+            return;
+        }
+        let cp = self.buf.checkpoint();
         self.encode_string_attribute(field.name(), value);
+        if self.buf.is_truncated() {
+            self.buf.rollback(cp);
+        }
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -285,7 +320,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
         if field.name() == "message" {
             self.encode_body_debug(value);
         } else {
+            if self.buf.is_truncated() {
+                return;
+            }
+            let cp = self.buf.checkpoint();
             self.encode_debug_attribute(field.name(), value);
+            if self.buf.is_truncated() {
+                self.buf.rollback(cp);
+            }
         }
     }
 }

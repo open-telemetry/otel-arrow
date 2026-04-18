@@ -326,17 +326,38 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
+/// Suffix appended to truncated strings (UTF-8 ellipsis).
+pub const TRUNCATION_SUFFIX: &[u8] = "…".as_bytes();
+
 /// Buffer for encoding protobuf bytes.
-#[derive(Debug, Default)]
+///
+/// Supports an optional size limit for bounded encoding. When a limit is set,
+/// writes that would exceed it are silently dropped and the buffer is marked
+/// truncated. Callers can use [`checkpoint`](Self::checkpoint) /
+/// [`rollback`](Self::rollback) to ensure truncation only happens at
+/// field/message boundaries, producing valid protobuf.
+#[derive(Debug)]
 pub struct ProtoBuffer {
     buffer: Vec<u8>,
+    limit: usize,
+    truncated: bool,
+}
+
+impl Default for ProtoBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProtoBuffer {
-    /// Construct a new, empty protocol buffer.
+    /// Construct a new, empty, unbounded protocol buffer.
     #[must_use]
     pub const fn new() -> Self {
-        Self { buffer: Vec::new() }
+        Self {
+            buffer: Vec::new(),
+            limit: usize::MAX,
+            truncated: false,
+        }
     }
 
     /// Construct a new buffer with at least the provided capacity.
@@ -344,13 +365,72 @@ impl ProtoBuffer {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             buffer: Vec::with_capacity(capacity),
+            limit: usize::MAX,
+            truncated: false,
         }
+    }
+
+    /// Construct a bounded buffer that will not grow beyond `limit` bytes.
+    ///
+    /// Pre-allocates `limit` bytes so no further allocation is needed.
+    #[must_use]
+    pub fn bounded(limit: usize) -> Self {
+        Self {
+            buffer: Vec::with_capacity(limit),
+            limit,
+            truncated: false,
+        }
+    }
+
+    /// Set the maximum number of bytes this buffer will hold.
+    ///
+    /// Writes beyond this limit are silently dropped and `is_truncated()`
+    /// becomes true.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit;
     }
 
     /// Returns a Bytes representation.
     #[must_use]
     pub fn into_bytes(self) -> Bytes {
         Bytes::from(self.buffer)
+    }
+
+    /// Save the current buffer position for potential rollback.
+    ///
+    /// Use with [`rollback`](Self::rollback) to implement transactional
+    /// field encoding — encode a complete field, then roll back if it
+    /// caused truncation.
+    #[must_use]
+    #[inline]
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            pos: self.buffer.len(),
+            truncated: self.truncated,
+        }
+    }
+
+    /// Roll the buffer back to a previously saved checkpoint.
+    ///
+    /// Restores both the buffer position and the truncated flag.
+    #[inline]
+    pub fn rollback(&mut self, cp: Checkpoint) {
+        self.buffer.truncate(cp.pos);
+        self.truncated = cp.truncated;
+    }
+
+    /// Returns true if any write was dropped due to the size limit.
+    #[must_use]
+    #[inline]
+    pub const fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// Returns the number of bytes remaining before the limit.
+    #[must_use]
+    #[inline]
+    pub const fn remaining(&self) -> usize {
+        self.limit.saturating_sub(self.buffer.len())
     }
 
     /// Encodes a varint containing type (3 bits) and tag value.
@@ -364,27 +444,45 @@ impl ProtoBuffer {
     pub fn encode_varint(&mut self, value: u64) {
         // Fast path for single byte (very common)
         if value < 0x80 {
-            self.buffer.push(value as u8);
+            if self.buffer.len() < self.limit {
+                self.buffer.push(value as u8);
+            } else {
+                self.truncated = true;
+            }
             return;
         }
 
         // Fast path for two bytes (common)
         if value < 0x4000 {
-            self.buffer
-                .extend_from_slice(&[((value & 0x7F) | 0x80) as u8, (value >> 7) as u8]);
+            let bytes = [((value & 0x7F) | 0x80) as u8, (value >> 7) as u8];
+            if self.buffer.len() + 2 <= self.limit {
+                self.buffer.extend_from_slice(&bytes);
+            } else {
+                self.truncated = true;
+            }
             return;
         }
 
+        // General case: compute the encoded bytes first, then check limit.
+        let mut tmp = [0u8; 10]; // max varint size
+        let mut i = 0;
         let mut v = value;
         while v >= 0x80 {
-            self.buffer.push(((v & 0x7F) | 0x80) as u8);
+            tmp[i] = ((v & 0x7F) | 0x80) as u8;
+            i += 1;
             v >>= 7;
         }
-        self.buffer.push(v as u8);
+        tmp[i] = v as u8;
+        i += 1;
+        if self.buffer.len() + i <= self.limit {
+            self.buffer.extend_from_slice(&tmp[..i]);
+        } else {
+            self.truncated = true;
+        }
     }
 
-    /// encodes the signed varint type (e.g. sint32, sint64, etc.) using zig-zag encoding
-    /// https://protobuf.dev/programming-guides/encoding/#signed-ints
+    /// Encodes the signed varint type (e.g. sint32, sint64) using zig-zag encoding.
+    /// <https://protobuf.dev/programming-guides/encoding/#signed-ints>
     #[inline]
     pub fn encode_sint32(&mut self, value: i32) {
         self.encode_varint(((value << 1) ^ (value >> 31)) as u64);
@@ -392,7 +490,11 @@ impl ProtoBuffer {
 
     /// Append pre-encoded protocol bytes.
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
-        self.buffer.extend_from_slice(slice);
+        if self.buffer.len() + slice.len() <= self.limit {
+            self.buffer.extend_from_slice(slice);
+        } else {
+            self.truncated = true;
+        }
     }
 
     /// Length of the current encoding.
@@ -413,9 +515,10 @@ impl ProtoBuffer {
         self.buffer.is_empty()
     }
 
-    /// Reset the buffer.
+    /// Reset the buffer (retains capacity and limit).
     pub fn clear(&mut self) {
         self.buffer.clear();
+        self.truncated = false;
     }
 
     /// Encode a string field by tag number.
@@ -423,6 +526,72 @@ impl ProtoBuffer {
         self.encode_field_tag(field_tag, wire_types::LEN);
         self.encode_varint(val.len() as u64);
         self.extend_from_slice(val.as_bytes());
+    }
+
+    /// Encode a string field, truncating with a suffix if it won't fit.
+    ///
+    /// If the full string fits within the remaining limit, it is written
+    /// as-is. Otherwise the string is truncated at a UTF-8 character
+    /// boundary and [`TRUNCATION_SUFFIX`] is appended. The protobuf
+    /// length prefix reflects the actual bytes written (truncated content
+    /// + suffix), so the result is always valid protobuf.
+    ///
+    /// If even the tag + length + suffix won't fit, the field is skipped
+    /// entirely and `is_truncated()` becomes true.
+    pub fn encode_string_bounded(&mut self, field_tag: u64, val: &str) {
+        // Overhead: tag (1-2 bytes typically) + length varint + content.
+        // Calculate the tag + length varint size for the full string first.
+        let full_len = val.len();
+        let tag_bytes = varint_len((field_tag << 3) | wire_types::LEN);
+
+        // Check if the full string fits.
+        let full_field_size = tag_bytes + varint_len(full_len as u64) + full_len;
+        if self.buffer.len() + full_field_size <= self.limit {
+            // Fast path: fits completely.
+            self.encode_string(field_tag, val);
+            return;
+        }
+
+        // Calculate how much content space we have after tag + length varint.
+        let suffix_len = TRUNCATION_SUFFIX.len();
+        let avail = self.remaining();
+
+        // We need at least: tag + 1 byte length varint + suffix.
+        let min_overhead = tag_bytes + 1 + suffix_len;
+        if avail < min_overhead {
+            self.truncated = true;
+            return;
+        }
+
+        // Content bytes available (excluding suffix).
+        let max_content = avail - tag_bytes - suffix_len;
+        // The length varint itself takes space; iterate to find stable content size.
+        let content_plus_suffix = |content_len: usize| content_len + suffix_len;
+        let mut content_len = max_content;
+        loop {
+            let total_payload = content_plus_suffix(content_len);
+            let len_varint_size = varint_len(total_payload as u64);
+            let total_field = tag_bytes + len_varint_size + total_payload;
+            if total_field <= avail {
+                break;
+            }
+            if content_len == 0 {
+                // Can't fit even the suffix with overhead.
+                self.truncated = true;
+                return;
+            }
+            content_len -= 1;
+        }
+
+        // Truncate at a UTF-8 character boundary.
+        let truncated = truncate_utf8(val, content_len);
+        let payload_len = truncated.len() + suffix_len;
+
+        self.encode_field_tag(field_tag, wire_types::LEN);
+        self.encode_varint(payload_len as u64);
+        self.buffer.extend_from_slice(truncated.as_bytes());
+        self.buffer.extend_from_slice(TRUNCATION_SUFFIX);
+        self.truncated = true; // signal that truncation occurred
     }
 
     /// Encode a bytes field by tag number.
@@ -437,6 +606,7 @@ impl ProtoBuffer {
     pub fn take_into_bytes(&mut self) -> (Bytes, usize) {
         let buffer = std::mem::take(&mut self.buffer);
         let capacity = buffer.capacity();
+        self.truncated = false;
         (Bytes::from(buffer), capacity)
     }
 
@@ -446,6 +616,39 @@ impl ProtoBuffer {
             self.buffer.reserve(capacity - self.buffer.capacity());
         }
     }
+}
+
+/// Saved buffer position for transactional encoding.
+///
+/// Created by [`ProtoBuffer::checkpoint`], consumed by [`ProtoBuffer::rollback`].
+#[derive(Debug, Clone, Copy)]
+pub struct Checkpoint {
+    pos: usize,
+    truncated: bool,
+}
+
+/// Compute the number of bytes needed to encode a varint value.
+#[inline]
+const fn varint_len(value: u64) -> usize {
+    // Each byte encodes 7 bits; we need ceil(bits_needed / 7), minimum 1.
+    if value == 0 {
+        return 1;
+    }
+    let bits = 64 - value.leading_zeros() as usize;
+    bits.div_ceil(7)
+}
+
+/// Truncate a string to at most `max_bytes` bytes at a UTF-8 character boundary.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Find the last valid char boundary at or before max_bytes.
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 impl AsRef<[u8]> for ProtoBuffer {
@@ -463,8 +666,17 @@ impl AsMut<[u8]> for ProtoBuffer {
 impl std::io::Write for ProtoBuffer {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer.extend_from_slice(buf);
-        Ok(buf.len())
+        let avail = self.limit.saturating_sub(self.buffer.len());
+        if avail == 0 && !buf.is_empty() {
+            self.truncated = true;
+            return Ok(0);
+        }
+        let n = buf.len().min(avail);
+        self.buffer.extend_from_slice(&buf[..n]);
+        if n < buf.len() {
+            self.truncated = true;
+        }
+        Ok(n)
     }
 
     #[inline]
@@ -529,7 +741,7 @@ macro_rules! proto_encode_len_delimited_large {
 #[inline]
 pub fn encode_len_placeholder<const N: usize>(buf: &mut ProtoBuffer) {
     const { assert!(N >= 1 && N <= 4, "placeholder must be 1-4 bytes") }
-    buf.buffer.extend_from_slice(&make_len_placeholder::<N>());
+    buf.extend_from_slice(&make_len_placeholder::<N>());
 }
 
 /// Build an `N`-byte zero-valued varint placeholder at compile time.
@@ -548,8 +760,9 @@ pub fn patch_len_placeholder<const N: usize>(
     len: usize,
     len_start_pos: usize,
 ) {
+    let slice = buf.as_mut();
     for i in 0..N {
-        buf.buffer[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
+        slice[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
     }
 }
 
