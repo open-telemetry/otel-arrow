@@ -143,10 +143,10 @@ Each component lives in its own subfolder within a category:
 #### content_router
 
 - Routes telemetry to named output ports based on resource attribute values
-- Uses the same non-blocking selected-route admission for matched and default
-  routes
-- Immediately emits a route-local retryable NACK when the selected route is
-  full or closed, without stalling healthy alternate routes
+- Supports configurable selected-route admission for matched and default routes
+  with `reject_immediately` (default) or `backpressure`
+- Always emits a route-local retryable NACK when the selected route is closed,
+  and uses the configured policy when the selected route is full
 - Supports default routing and mixed-batch validation; see
   [Exclusive Router Guarantees](../../docs/exclusive-router-guarantees.md)
 
@@ -200,8 +200,11 @@ Each component lives in its own subfolder within a category:
 
 - Routes signals by type (logs, metrics, traces) to named output ports
 - Falls back to default routing only when a type-specific port is not connected
-- Immediately emits a route-local retryable NACK when the selected named or
-  default route is full or closed, without stalling healthy alternate routes
+- Supports configurable selected-route admission with `reject_immediately`
+  (default) or `backpressure`
+- Always emits a route-local retryable NACK when the selected named or default
+  route is closed, and uses the configured policy when the selected route is
+  full
 - Exposes per-signal routing and route-rejection telemetry; see
   [Exclusive Router Guarantees](../../docs/exclusive-router-guarantees.md)
 

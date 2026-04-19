@@ -10,7 +10,7 @@
 //!
 //! # Example Use Case
 //!
-//! Value-based routing where each matched route goes to a dedicated exporter:
+//! Content-based routing where each matched route goes to a dedicated exporter:
 //!
 //! ```yaml
 //! processors:
@@ -39,24 +39,30 @@
 //!
 //! # Selected-Route Admission
 //!
-//! Once a route has been selected, `content_router` uses non-blocking admission
-//! to the chosen output. This keeps routing decisions separate from downstream
-//! liveness:
-//!
-//! - a writable selected route is forwarded normally
-//! - a selected route that is full is rejected immediately with a retryable
-//!   route-local NACK
-//! - a selected route that is closed is rejected immediately with a retryable
-//!   route-local NACK
+//! Once a route has been selected, `content_router` handles selected-route
+//! admission with a local policy instead of awaiting the downstream send in the
+//! main router task.
 //!
 //! This is better than the previous awaited-send behaviour because the router
 //! processes input serially. Waiting on one blocked selected route created
 //! head-of-line blocking in the router task, so unrelated routes could stop
-//! making progress behind the stalled send. Non-blocking admission keeps that
-//! failure isolated to the selected route.
+//! making progress behind the stalled send. The current implementation keeps
+//! blocked-route handling in explicit router-local state and resumes it via the
+//! wakeup API instead.
+//!
+//! Supported `admission_policy.on_full` values:
+//!
+//! - `reject_immediately` (default): emit an immediate retryable route-local
+//!   NACK when the selected route is full
+//! - `backpressure`: park one message per blocked output port and keep
+//!   admitting pdata until every selectable route currently has a parked full
+//!   message
+//!
+//! A selected route that is closed is always rejected immediately with a
+//! retryable route-local NACK.
 //!
 //! The processor still returns `Ok(())` after those route-local rejections so a
-//! blocked route cannot stall unrelated healthy routes.
+//! blocked route cannot fail the router task itself.
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -66,15 +72,15 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::control::{NackCause, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot};
+use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension, ProcessorFactory,
-    RouteAdmission,
+    ProcessorRuntimeRequirements, RouteAdmission, WakeupError,
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
@@ -95,8 +101,13 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
+
+use crate::processors::exclusive_router_admission::{
+    ExclusiveRouteScheduler, FullRouteHandling, PendingRoute, SelectedRouteAdmissionPolicy,
+};
 
 /// URN for the ContentRouter processor
 pub const CONTENT_ROUTER_URN: &str = "urn:otel:processor:content_router";
@@ -144,6 +155,8 @@ pub struct ContentRouterMetrics {
     /// Number of messages that failed due to internal conversion errors.
     #[metric(unit = "{msg}")]
     pub signals_conversion_error: Counter<u64>,
+
+    // ToDo Currently, we do not have the ability to report a bounded attribute representing the name of the output whose route is blocked or closed.
     /// Number of messages rejected because the selected route was full.
     #[metric(unit = "{msg}")]
     pub signals_rejected_route_full: Counter<u64>,
@@ -178,6 +191,9 @@ pub struct ContentRouterConfig {
     /// Whether to perform case-sensitive matching on attribute values.
     #[serde(default = "default_case_sensitive")]
     pub case_sensitive: bool,
+    /// Policy for selected-route `Full` admission.
+    #[serde(default)]
+    pub admission_policy: SelectedRouteAdmissionPolicy,
 }
 
 const fn default_case_sensitive() -> bool {
@@ -204,6 +220,7 @@ impl ContentRouterConfig {
                 error: "routes must not be empty".to_string(),
             });
         }
+        self.admission_policy.validate()?;
         for (value, port) in &self.routes {
             if value.trim().is_empty() {
                 return Err(ConfigError::InvalidUserConfig {
@@ -294,6 +311,12 @@ enum RouteResolution {
     ConversionError,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum SelectedRouteKind {
+    Matched,
+    Default,
+}
+
 /// The ContentRouter processor routes messages to output ports based on
 /// a resource attribute value.
 pub struct ContentRouter {
@@ -305,6 +328,8 @@ pub struct ContentRouter {
     default_output: Option<String>,
     /// Whether matching is case-sensitive.
     case_sensitive: bool,
+    /// Selected-route admission scheduler.
+    admission: ExclusiveRouteScheduler<OtapPdata, SelectedRouteKind>,
     /// Telemetry metrics.
     metrics: Option<MetricSet<ContentRouterMetrics>>,
 }
@@ -319,6 +344,7 @@ impl ContentRouter {
             routes,
             default_output: config.default_output,
             case_sensitive: config.case_sensitive,
+            admission: ExclusiveRouteScheduler::new(config.admission_policy),
             metrics: None,
         }
     }
@@ -526,68 +552,234 @@ impl ContentRouter {
         }
     }
 
-    async fn handle_rejected_route(
+    fn record_forwarded_route(&mut self, route_kind: SelectedRouteKind) {
+        if let Some(m) = self.metrics.as_mut() {
+            match route_kind {
+                SelectedRouteKind::Matched => m.signals_routed.inc(),
+                SelectedRouteKind::Default => m.signals_routed_default.inc(),
+            }
+        }
+    }
+
+    fn observe_backpressure_candidates(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) {
+        let connected: HashSet<_> = effect_handler.connected_ports().into_iter().collect();
+        let mut candidates = HashSet::new();
+
+        for port in self.routes.values() {
+            if connected.contains(port) {
+                let _ = candidates.insert(port.clone());
+            }
+        }
+
+        if let Some(default_port) = self.default_output.as_ref() {
+            let default_port = PortName::from(default_port.clone());
+            if connected.contains(&default_port) {
+                let _ = candidates.insert(default_port);
+            }
+        }
+
+        self.admission.observe_pause_candidate_ports(candidates);
+    }
+
+    fn wakeup_error(
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        error: WakeupError,
+    ) -> EngineError {
+        EngineError::ProcessorError {
+            processor: effect_handler.processor_id(),
+            kind: ProcessorErrorKind::Other,
+            error: format!("content_router admission scheduler failed: {error:?}"),
+            source_detail: String::new(),
+        }
+    }
+
+    async fn emit_route_full_nack(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         port: &str,
-        admission: RouteAdmission<OtapPdata>,
+        data: OtapPdata,
     ) -> Result<(), EngineError> {
-        match admission {
-            RouteAdmission::Accepted => Ok(()),
-            RouteAdmission::RejectedFull(data) => {
-                if let Some(m) = self.metrics.as_mut() {
-                    m.signals_nacked.inc();
-                    m.signals_rejected_route_full.inc();
-                }
-                // Selected-route overload is a route-local retryable failure:
-                // the message is refused explicitly, but the router stays live
-                // so unrelated routes can continue to make progress.
-                effect_handler
-                    .notify_nack(NackMsg::new(
-                        format!("content_router route overload: output port '{port}' is full"),
-                        data,
-                    ))
-                    .await?;
-                Ok(())
+        if let Some(m) = self.metrics.as_mut() {
+            m.signals_nacked.inc();
+            m.signals_rejected_route_full.inc();
+        }
+
+        effect_handler
+            .notify_nack(NackMsg::new_with_cause(
+                format!("content_router route overload: output port '{port}' is full"),
+                data,
+                NackCause::RouteFull,
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn emit_route_closed_nack(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        port: &str,
+        data: OtapPdata,
+    ) -> Result<(), EngineError> {
+        if let Some(m) = self.metrics.as_mut() {
+            m.signals_nacked.inc();
+            m.signals_rejected_route_closed.inc();
+        }
+
+        effect_handler
+            .notify_nack(NackMsg::new_with_cause(
+                format!("content_router route unavailable: output port '{port}' is closed"),
+                data,
+                NackCause::RouteClosed,
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn emit_shutdown_nack(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        port: &str,
+        data: OtapPdata,
+        reason: &str,
+    ) -> Result<(), EngineError> {
+        if let Some(m) = self.metrics.as_mut() {
+            m.signals_nacked.inc();
+        }
+
+        effect_handler
+            .notify_nack(NackMsg::new_with_cause(
+                format!(
+                    "content_router admission canceled for output port '{port}' during shutdown: {reason}"
+                ),
+                data,
+                NackCause::NodeShutdown,
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_selected_route_full(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        port: PortName,
+        route_kind: SelectedRouteKind,
+        data: OtapPdata,
+    ) -> Result<(), EngineError> {
+        // `Full` is policy-driven. The scheduler decides whether this message
+        // is rejected now or parked for wakeup-driven re-probing.
+        self.observe_backpressure_candidates(effect_handler);
+        match self
+            .admission
+            .handle_selected_route_full(port.clone(), data, route_kind, effect_handler)
+            .map_err(|error| Self::wakeup_error(effect_handler, error))?
+        {
+            FullRouteHandling::ImmediateNack(data) => {
+                self.emit_route_full_nack(effect_handler, port.as_ref(), data)
+                    .await
             }
-            RouteAdmission::RejectedClosed(data) => {
-                if let Some(m) = self.metrics.as_mut() {
-                    m.signals_nacked.inc();
-                    m.signals_rejected_route_closed.inc();
+            FullRouteHandling::Parked => Ok(()),
+        }
+    }
+
+    async fn handle_wakeup(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        slot: WakeupSlot,
+        when: Instant,
+        revision: WakeupRevision,
+    ) -> Result<(), EngineError> {
+        let now = std::cmp::max(when, Instant::now());
+        let due = self.admission.take_due_routes(slot, revision, now);
+        if due.is_empty() {
+            return Ok(());
+        }
+
+        // Re-probing happens only for messages the router still owns locally.
+        // Already-admitted downstream work is intentionally out of scope here.
+        for pending in due {
+            let (port, data, route_kind) = pending.into_parts();
+            let admission = effect_handler
+                .try_admit_message_with_source_node_to(port.clone(), data)
+                .map_err(EngineError::from)?;
+
+            match admission {
+                RouteAdmission::Accepted => {
+                    self.record_forwarded_route(route_kind);
                 }
-                // A closed selected route is treated the same way as overload:
-                // reject that message locally and return success from the node.
-                effect_handler
-                    .notify_nack(NackMsg::new(
-                        format!("content_router route unavailable: output port '{port}' is closed"),
-                        data,
-                    ))
-                    .await?;
-                Ok(())
+                RouteAdmission::RejectedClosed(data) => {
+                    self.emit_route_closed_nack(effect_handler, port.as_ref(), data)
+                        .await?;
+                }
+                RouteAdmission::RejectedFull(data) => {
+                    self.admission
+                        .repark_after_full(PendingRoute::from_retry_parts(
+                            port, data, route_kind, now,
+                        ));
+                }
             }
         }
+
+        self.admission
+            .sync_armed_wakeup(effect_handler)
+            .map_err(|error| Self::wakeup_error(effect_handler, error))?;
+        Ok(())
+    }
+
+    async fn handle_shutdown(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        reason: &str,
+    ) -> Result<(), EngineError> {
+        for pending in self.admission.drain_for_shutdown(effect_handler) {
+            let (port, data, _) = pending.into_parts();
+            self.emit_shutdown_nack(effect_handler, port.as_ref(), data, reason)
+                .await?;
+        }
+        Ok(())
     }
 }
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for ContentRouter {
+    fn accept_pdata(&self) -> bool {
+        self.admission.accept_pdata()
+    }
+
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        self.admission.runtime_requirements()
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(ctrl) => {
-                if let NodeControlMsg::CollectTelemetry {
+            Message::Control(ctrl) => match ctrl {
+                NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
-                } = ctrl
-                {
+                } => {
                     if let Some(m) = self.metrics.as_mut() {
                         let _ = metrics_reporter.report(m);
                     }
+                    Ok(())
                 }
-                Ok(())
-            }
+                NodeControlMsg::Wakeup {
+                    slot,
+                    when,
+                    revision,
+                } => {
+                    self.handle_wakeup(effect_handler, slot, when, revision)
+                        .await
+                }
+                NodeControlMsg::Shutdown { reason, .. } => {
+                    self.handle_shutdown(effect_handler, reason.as_str()).await
+                }
+                _ => Ok(()),
+            },
             Message::PData(data) => {
                 if let Some(m) = self.metrics.as_mut() {
                     m.signals_received.inc();
@@ -606,13 +798,20 @@ impl local::Processor<OtapPdata> for ContentRouter {
                             .map_err(EngineError::from)?;
                         match admission {
                             RouteAdmission::Accepted => {
-                                if let Some(m) = self.metrics.as_mut() {
-                                    m.signals_routed.inc();
-                                }
+                                self.record_forwarded_route(SelectedRouteKind::Matched);
                                 Ok(())
                             }
-                            rejected => {
-                                self.handle_rejected_route(effect_handler, port.as_str(), rejected)
+                            RouteAdmission::RejectedFull(data) => {
+                                self.handle_selected_route_full(
+                                    effect_handler,
+                                    PortName::from(port),
+                                    SelectedRouteKind::Matched,
+                                    data,
+                                )
+                                .await
+                            }
+                            RouteAdmission::RejectedClosed(data) => {
+                                self.emit_route_closed_nack(effect_handler, port.as_str(), data)
                                     .await
                             }
                         }
@@ -632,16 +831,23 @@ impl local::Processor<OtapPdata> for ContentRouter {
                                 .map_err(EngineError::from)?;
                             match admission {
                                 RouteAdmission::Accepted => {
-                                    if let Some(m) = self.metrics.as_mut() {
-                                        m.signals_routed_default.inc();
-                                    }
+                                    self.record_forwarded_route(SelectedRouteKind::Default);
                                     Ok(())
                                 }
-                                rejected => {
-                                    self.handle_rejected_route(
+                                RouteAdmission::RejectedFull(data) => {
+                                    self.handle_selected_route_full(
+                                        effect_handler,
+                                        PortName::from(default_port),
+                                        SelectedRouteKind::Default,
+                                        data,
+                                    )
+                                    .await
+                                }
+                                RouteAdmission::RejectedClosed(data) => {
+                                    self.emit_route_closed_nack(
                                         effect_handler,
                                         default_port.as_str(),
-                                        rejected,
+                                        data,
                                     )
                                     .await
                                 }
@@ -911,6 +1117,7 @@ mod tests {
             routes,
             default_output: default,
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         }
     }
 
@@ -957,6 +1164,7 @@ mod tests {
             routes: HashMap::from([("a".into(), "b".into())]),
             default_output: None,
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         assert!(cfg.validate(&[]).is_err());
     }
@@ -968,6 +1176,7 @@ mod tests {
             routes: HashMap::from([("a".into(), "b".into())]),
             default_output: None,
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         assert!(cfg.validate(&[]).is_err());
     }
@@ -979,6 +1188,7 @@ mod tests {
             routes: HashMap::new(),
             default_output: None,
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         assert!(cfg.validate(&[]).is_err());
     }
@@ -990,6 +1200,7 @@ mod tests {
             routes: HashMap::from([("value".into(), "".into())]),
             default_output: None,
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         assert!(cfg.validate(&[]).is_err());
     }
@@ -1001,6 +1212,7 @@ mod tests {
             routes: HashMap::from([("".into(), "port_a".into())]),
             default_output: None,
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         assert!(cfg.validate(&[]).is_err());
     }
@@ -1012,6 +1224,7 @@ mod tests {
             routes: HashMap::from([("a".into(), "b".into())]),
             default_output: Some("".to_string()),
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         assert!(cfg.validate(&[]).is_err());
     }
@@ -1023,6 +1236,7 @@ mod tests {
             routes: HashMap::from([("a".into(), "port_a".into())]),
             default_output: None,
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         // "port_a" is not in the declared outputs
         let declared: Vec<PortName> = vec!["other_port".into()];
@@ -1036,6 +1250,7 @@ mod tests {
             routes: HashMap::from([("a".into(), "port_a".into())]),
             default_output: Some("fallback".to_string()),
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         // "port_a" is declared but "fallback" is not
         let declared: Vec<PortName> = vec!["port_a".into()];
@@ -1049,6 +1264,7 @@ mod tests {
             routes: HashMap::from([("a".into(), "port_a".into())]),
             default_output: Some("fallback".to_string()),
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         let declared: Vec<PortName> = vec!["port_a".into(), "fallback".into()];
         assert!(cfg.validate(&declared).is_ok());
@@ -1064,6 +1280,7 @@ mod tests {
             ]),
             default_output: None,
             case_sensitive: false,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         assert!(cfg.validate(&[]).is_err());
     }
@@ -1173,6 +1390,7 @@ mod tests {
             routes,
             default_output: None,
             case_sensitive: false,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         let router = ContentRouter::new(config);
 
@@ -1415,6 +1633,7 @@ mod tests {
             routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
             default_output: None,
             case_sensitive: true,
+            admission_policy: SelectedRouteAdmissionPolicy::default(),
         };
         let user_cfg = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
         let wrapper = ProcessorWrapper::local(
@@ -1434,6 +1653,412 @@ mod tests {
         });
 
         validation.validate(|_| async {});
+    }
+
+    mod admission_policy {
+        use super::*;
+        use crate::processors::exclusive_router_admission::OnFullPolicy;
+        use otap_df_channel::error::RecvError;
+        use otap_df_channel::mpsc;
+        use otap_df_engine::Interests;
+        use otap_df_engine::control::{
+            NackCause, NodeControlMsg, PipelineCompletionMsg, PipelineCompletionMsgReceiver,
+            pipeline_completion_msg_channel,
+        };
+        use otap_df_engine::local::message::LocalSender;
+        use otap_df_engine::message::Sender;
+        use otap_df_engine::node::NodeWithPDataSender;
+        use otap_df_otap::testing::{TestCallData, next_nack};
+        use std::sync::Arc;
+
+        fn logs_pdata(route_value: &str) -> OtapPdata {
+            let bytes = create_logs_with_resource_attr("service.namespace", route_value);
+            OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into())
+        }
+
+        fn subscribed_logs_pdata(route_value: &str, upstream_node_id: usize) -> OtapPdata {
+            logs_pdata(route_value).test_subscribe_to(
+                Interests::NACKS,
+                TestCallData::default().into(),
+                upstream_node_id,
+            )
+        }
+
+        async fn expect_nack(
+            completion_rx: &mut PipelineCompletionMsgReceiver<OtapPdata>,
+            upstream_node_id: usize,
+        ) -> NackMsg<OtapPdata> {
+            match completion_rx
+                .recv()
+                .await
+                .expect("pipeline-completion channel closed unexpectedly")
+            {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                    assert_eq!(node_id, upstream_node_id);
+                    nack
+                }
+                other => panic!("expected DeliverNack, got {other:?}"),
+            }
+        }
+
+        fn make_policy_config(on_full: OnFullPolicy) -> ContentRouterConfig {
+            ContentRouterConfig {
+                routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+                routes: HashMap::from([
+                    ("/sub/a".to_string(), "tenant_a".to_string()),
+                    ("/sub/c".to_string(), "tenant_c".to_string()),
+                ]),
+                default_output: None,
+                case_sensitive: true,
+                admission_policy: SelectedRouteAdmissionPolicy { on_full },
+            }
+        }
+
+        /// Scenario: one selected route is full, the router is configured with
+        /// `backpressure`, and another selected route remains healthy.
+        /// Guarantees: the blocked route is parked locally, unrelated routes
+        /// continue to flow, and the parked message is forwarded once the route
+        /// becomes writable again.
+        #[test]
+        fn test_backpressure_keeps_other_routes_live_until_all_selectable_routes_block() {
+            let test_runtime = TestRuntime::new();
+            let node_id = test_node(test_runtime.config().name.clone());
+            let config = make_policy_config(OnFullPolicy::Backpressure);
+            let user_cfg = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
+            let mut wrapper = ProcessorWrapper::local(
+                ContentRouter::new(config),
+                node_id.clone(),
+                user_cfg,
+                test_runtime.config(),
+            );
+
+            let (tx_blocked, rx_blocked) = mpsc::Channel::new(1);
+            tx_blocked
+                .send(logs_pdata("/sub/c"))
+                .expect("prefill should occupy the blocked route");
+            wrapper
+                .set_pdata_sender(
+                    node_id.clone(),
+                    "tenant_c".into(),
+                    Sender::Local(LocalSender::mpsc(tx_blocked)),
+                )
+                .expect("blocked route sender should attach");
+
+            let (tx_healthy, rx_healthy) = mpsc::Channel::new(1);
+            wrapper
+                .set_pdata_sender(
+                    node_id,
+                    "tenant_a".into(),
+                    Sender::Local(LocalSender::mpsc(tx_healthy)),
+                )
+                .expect("healthy route sender should attach");
+
+            let validation = test_runtime
+                .set_processor(wrapper)
+                .run_test(move |mut ctx| {
+                    Box::pin(async move {
+                        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                        ctx.set_pipeline_completion_sender(completion_tx);
+
+                        assert!(ctx.accept_pdata());
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 91)))
+                            .await
+                            .expect("backpressure should park the blocked route");
+                        assert!(
+                            ctx.accept_pdata(),
+                            "backpressure should stay open while another selectable route is healthy"
+                        );
+                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                        ctx.process(Message::PData(logs_pdata("/sub/a")))
+                            .await
+                            .expect("healthy route should still be admitted");
+                        let _ = rx_healthy
+                            .recv()
+                            .await
+                            .expect("healthy route should receive immediately");
+
+                        let _ = rx_blocked
+                            .recv()
+                            .await
+                            .expect("prefill should drain before the retry wakeup");
+                        assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
+                        let _ = rx_blocked
+                            .recv()
+                            .await
+                            .expect("recovered blocked route should receive parked message");
+                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+                    })
+                });
+
+            validation.validate(|_| async {});
+        }
+
+        /// Scenario: every selectable route becomes full under router-level
+        /// `backpressure`.
+        /// Guarantees: the router parks one message per blocked output port,
+        /// closes pdata admission only after every selectable route is parked,
+        /// and reopens admission once a parked route forwards.
+        #[test]
+        fn test_backpressure_pauses_only_after_every_selectable_route_is_parked() {
+            let test_runtime = TestRuntime::new();
+            let node_id = test_node(test_runtime.config().name.clone());
+            let config = make_policy_config(OnFullPolicy::Backpressure);
+            let user_cfg = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
+            let mut wrapper = ProcessorWrapper::local(
+                ContentRouter::new(config),
+                node_id.clone(),
+                user_cfg,
+                test_runtime.config(),
+            );
+
+            let (tx_a, rx_a) = mpsc::Channel::new(1);
+            tx_a.send(logs_pdata("/sub/a"))
+                .expect("prefill should occupy tenant_a");
+            wrapper
+                .set_pdata_sender(
+                    node_id.clone(),
+                    "tenant_a".into(),
+                    Sender::Local(LocalSender::mpsc(tx_a)),
+                )
+                .expect("tenant_a sender should attach");
+
+            let (tx_c, rx_c) = mpsc::Channel::new(1);
+            tx_c.send(logs_pdata("/sub/c"))
+                .expect("prefill should occupy the blocked route");
+            wrapper
+                .set_pdata_sender(
+                    node_id,
+                    "tenant_c".into(),
+                    Sender::Local(LocalSender::mpsc(tx_c)),
+                )
+                .expect("blocked route sender should attach");
+
+            let validation = test_runtime
+                .set_processor(wrapper)
+                .run_test(move |mut ctx| {
+                    Box::pin(async move {
+                        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                        ctx.set_pipeline_completion_sender(completion_tx);
+
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 92)))
+                            .await
+                            .expect("backpressure should park tenant_a");
+                        assert!(
+                            ctx.accept_pdata(),
+                            "backpressure should remain open until every selectable route is blocked"
+                        );
+                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 93)))
+                            .await
+                            .expect("backpressure should park tenant_c");
+                        assert!(
+                            !ctx.accept_pdata(),
+                            "backpressure should close pdata admission once every selectable route is parked"
+                        );
+                        ctx.process(Message::timer_tick_ctrl_msg()).await.expect(
+                            "control traffic should continue while pdata admission is paused",
+                        );
+                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+
+                        let _ = rx_a
+                            .recv()
+                            .await
+                            .expect("prefill should drain before retry wakeup");
+                        let _ = rx_c
+                            .recv()
+                            .await
+                            .expect("prefill should drain before retry wakeup");
+                        let (mut got_a, mut got_c) = (false, false);
+                        for _ in 0..2 {
+                            assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
+                            if !got_a {
+                                got_a = rx_a.try_recv().is_ok();
+                            }
+                            if !got_c {
+                                got_c = rx_c.try_recv().is_ok();
+                            }
+                            if got_a && got_c {
+                                break;
+                            }
+                        }
+                        assert!(got_a, "tenant_a should receive parked message");
+                        assert!(got_c, "tenant_c should receive parked message");
+                        assert!(
+                            ctx.accept_pdata(),
+                            "backpressure should reopen once the parked routes forward"
+                        );
+                    })
+                });
+
+            validation.validate(|_| async {});
+        }
+
+        /// Scenario: one selected route is full and the router is configured
+        /// with scheduler-level `backpressure`.
+        /// Guarantees: a closed route still emits an immediate route-local
+        /// NACK and does not cause global pdata admission to pause while a
+        /// different route is parked full.
+        #[test]
+        fn test_backpressure_does_not_pause_when_closed_route_cannot_progress() {
+            let test_runtime = TestRuntime::new();
+            let node_id = test_node(test_runtime.config().name.clone());
+            let config = make_policy_config(OnFullPolicy::Backpressure);
+            let user_cfg = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
+            let mut wrapper = ProcessorWrapper::local(
+                ContentRouter::new(config),
+                node_id.clone(),
+                user_cfg,
+                test_runtime.config(),
+            );
+
+            let (tx_blocked, rx_blocked) = mpsc::Channel::new(1);
+            tx_blocked
+                .send(logs_pdata("/sub/c"))
+                .expect("prefill should occupy the blocked route");
+            wrapper
+                .set_pdata_sender(
+                    node_id.clone(),
+                    "tenant_c".into(),
+                    Sender::Local(LocalSender::mpsc(tx_blocked)),
+                )
+                .expect("blocked route sender should attach");
+
+            let (tx_closed, rx_closed) = mpsc::Channel::new(1);
+            drop(rx_closed);
+            wrapper
+                .set_pdata_sender(
+                    node_id,
+                    "tenant_a".into(),
+                    Sender::Local(LocalSender::mpsc(tx_closed)),
+                )
+                .expect("closed route sender should attach");
+
+            let validation = test_runtime
+                .set_processor(wrapper)
+                .run_test(move |mut ctx| {
+                    Box::pin(async move {
+                        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                        ctx.set_pipeline_completion_sender(completion_tx);
+
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 93)))
+                            .await
+                            .expect("backpressure should park the blocked route");
+                        assert!(
+                            ctx.accept_pdata(),
+                            "backpressure should remain open while another selectable route is not parked full"
+                        );
+
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 94)))
+                            .await
+                            .expect("closed route should still complete locally");
+                        let nack = expect_nack(&mut completion_rx, 94).await;
+                        assert_eq!(nack.cause, NackCause::RouteClosed);
+                        assert!(
+                            ctx.accept_pdata(),
+                            "closed routes should not force global backpressure while another route is parked"
+                        );
+
+                        let _ = rx_blocked
+                            .recv()
+                            .await
+                            .expect("prefill should drain before retry wakeup");
+                        assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
+                        let _ = rx_blocked
+                            .recv()
+                            .await
+                            .expect("recovered blocked route should receive parked message");
+                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
+                    })
+                });
+
+            validation.validate(|_| async {});
+        }
+
+        /// Scenario: a blocked selected route is parked locally when shutdown
+        /// starts.
+        /// Guarantees: the parked message is retryable-NACKed with
+        /// `cause = NodeShutdown` instead of being left behind in router-local
+        /// state.
+        #[test]
+        fn test_shutdown_nacks_parked_message_with_node_shutdown_cause() {
+            let test_runtime = TestRuntime::new();
+            let node_id = test_node(test_runtime.config().name.clone());
+            let config = make_policy_config(OnFullPolicy::Backpressure);
+            let user_cfg = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
+            let mut wrapper = ProcessorWrapper::local(
+                ContentRouter::new(config),
+                node_id.clone(),
+                user_cfg,
+                test_runtime.config(),
+            );
+
+            let (tx_a, _rx_a) = mpsc::Channel::new(1);
+            tx_a.send(logs_pdata("/sub/a"))
+                .expect("prefill should occupy tenant_a");
+            wrapper
+                .set_pdata_sender(
+                    node_id.clone(),
+                    "tenant_a".into(),
+                    Sender::Local(LocalSender::mpsc(tx_a)),
+                )
+                .expect("tenant_a sender should attach");
+
+            let (tx_c, _rx_c) = mpsc::Channel::new(1);
+            tx_c.send(logs_pdata("/sub/c"))
+                .expect("prefill should occupy the blocked route");
+            wrapper
+                .set_pdata_sender(
+                    node_id,
+                    "tenant_c".into(),
+                    Sender::Local(LocalSender::mpsc(tx_c)),
+                )
+                .expect("blocked route sender should attach");
+
+            let validation = test_runtime
+                .set_processor(wrapper)
+                .run_test(move |mut ctx| {
+                    Box::pin(async move {
+                        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                        ctx.set_pipeline_completion_sender(completion_tx);
+
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 94)))
+                            .await
+                            .expect("backpressure should park tenant_a");
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 94)))
+                            .await
+                            .expect("backpressure should park tenant_c");
+                        ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                            deadline: Instant::now(),
+                            reason: "test shutdown".to_string(),
+                        }))
+                        .await
+                        .expect("shutdown should drain parked router state");
+
+                        let nack_a = expect_nack(&mut completion_rx, 94).await;
+                        assert_eq!(nack_a.cause, NackCause::NodeShutdown);
+                        assert!(
+                            nack_a.reason.contains("test shutdown"),
+                            "shutdown reason should be preserved: {}",
+                            nack_a.reason
+                        );
+                        assert!(!nack_a.permanent);
+
+                        let nack_c = expect_nack(&mut completion_rx, 94).await;
+                        assert_eq!(nack_c.cause, NackCause::NodeShutdown);
+                        assert!(
+                            nack_c.reason.contains("test shutdown"),
+                            "shutdown reason should be preserved: {}",
+                            nack_c.reason
+                        );
+                        assert!(!nack_c.permanent);
+                    })
+                });
+
+            validation.validate(|_| async {});
+        }
     }
 
     // -------------------------------------------------------
@@ -1560,6 +2185,7 @@ mod tests {
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
@@ -1615,6 +2241,7 @@ mod tests {
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
@@ -1666,6 +2293,7 @@ mod tests {
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: Some("fallback".to_string()),
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
@@ -1729,6 +2357,7 @@ mod tests {
                     routes: HashMap::from([("/sub/c".to_string(), "tenant_c".to_string())]),
                     default_output: None,
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
@@ -1756,6 +2385,7 @@ mod tests {
                     nack.reason,
                     "content_router route overload: output port 'tenant_c' is full"
                 );
+                assert_eq!(nack.cause, NackCause::RouteFull);
                 assert!(
                     !nack.permanent,
                     "route-full rejection should remain retryable"
@@ -1807,6 +2437,7 @@ mod tests {
                     routes: HashMap::from([("/sub/c".to_string(), "tenant_c".to_string())]),
                     default_output: None,
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
@@ -1833,6 +2464,7 @@ mod tests {
                     nack.reason,
                     "content_router route unavailable: output port 'tenant_c' is closed"
                 );
+                assert_eq!(nack.cause, NackCause::RouteClosed);
                 assert!(
                     !nack.permanent,
                     "route-closed rejection should remain retryable"
@@ -1884,6 +2516,7 @@ mod tests {
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: Some("fallback".to_string()),
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
@@ -1965,6 +2598,7 @@ mod tests {
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: Some("fallback".to_string()),
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
@@ -2049,6 +2683,7 @@ mod tests {
                     ]),
                     default_output: None,
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
@@ -2145,6 +2780,7 @@ mod tests {
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
                 };
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
