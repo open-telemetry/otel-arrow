@@ -300,7 +300,7 @@ impl ContentRouterConfig {
 /// The result of attempting to resolve a routing destination from a message.
 enum RouteResolution {
     /// Route to this named output port.
-    Matched(String),
+    Matched(PortName),
     /// No matching route found; use default if available.
     NoMatch,
     /// The routing key attribute was not found on the resource.
@@ -396,7 +396,7 @@ impl ContentRouter {
                 };
 
                 if let Some(port) = self.routes.get(lookup.as_ref()) {
-                    return RouteResolution::Matched(port.to_string());
+                    return RouteResolution::Matched(port.clone());
                 }
                 return RouteResolution::NoMatch;
             }
@@ -552,6 +552,10 @@ impl ContentRouter {
         }
     }
 
+    /// Record which selected route actually accepted the message.
+    ///
+    /// This is used by both the immediate routing path and the wakeup retry
+    /// path so the success metrics stay consistent.
     fn record_forwarded_route(&mut self, route_kind: SelectedRouteKind) {
         if let Some(m) = self.metrics.as_mut() {
             match route_kind {
@@ -561,6 +565,11 @@ impl ContentRouter {
         }
     }
 
+    /// Refresh the set of outputs that can currently participate in
+    /// router-level backpressure.
+    ///
+    /// This work only happens on the blocked-route path. Healthy steady-state
+    /// routing does not rebuild these sets.
     fn observe_backpressure_candidates(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -584,6 +593,7 @@ impl ContentRouter {
         self.admission.observe_pause_candidate_ports(candidates);
     }
 
+    /// Convert scheduler-specific wakeup failures into processor errors.
     fn wakeup_error(
         effect_handler: &local::EffectHandler<OtapPdata>,
         error: WakeupError,
@@ -596,6 +606,7 @@ impl ContentRouter {
         }
     }
 
+    /// Emit a retryable route-local NACK for a selected route that is full.
     async fn emit_route_full_nack(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -617,6 +628,7 @@ impl ContentRouter {
         Ok(())
     }
 
+    /// Emit a retryable route-local NACK for a selected route that is closed.
     async fn emit_route_closed_nack(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -638,6 +650,8 @@ impl ContentRouter {
         Ok(())
     }
 
+    /// Emit a retryable route-local NACK for router-owned work that is still
+    /// parked when shutdown begins.
     async fn emit_shutdown_nack(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -661,6 +675,11 @@ impl ContentRouter {
         Ok(())
     }
 
+    /// Apply the configured `Full` policy for a selected route.
+    ///
+    /// `reject_immediately` turns the refusal into a route-local NACK.
+    /// `backpressure` may park the message in router-local state for
+    /// wakeup-driven retries.
     async fn handle_selected_route_full(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -684,6 +703,10 @@ impl ContentRouter {
         }
     }
 
+    /// Retry locally parked selected routes when the shared wakeup fires.
+    ///
+    /// Only messages still owned by the router are retried here. Already
+    /// admitted downstream work remains owned by the downstream pipeline.
     async fn handle_wakeup(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -728,6 +751,10 @@ impl ContentRouter {
         Ok(())
     }
 
+    /// Drain router-local parked work during shutdown entry.
+    ///
+    /// The router turns every parked message back into a retryable NACK so
+    /// shutdown does not silently discard work it still owns.
     async fn handle_shutdown(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -804,14 +831,14 @@ impl local::Processor<OtapPdata> for ContentRouter {
                             RouteAdmission::RejectedFull(data) => {
                                 self.handle_selected_route_full(
                                     effect_handler,
-                                    PortName::from(port),
+                                    port,
                                     SelectedRouteKind::Matched,
                                     data,
                                 )
                                 .await
                             }
                             RouteAdmission::RejectedClosed(data) => {
-                                self.emit_route_closed_nack(effect_handler, port.as_str(), data)
+                                self.emit_route_closed_nack(effect_handler, port.as_ref(), data)
                                     .await
                             }
                         }

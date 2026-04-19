@@ -266,6 +266,10 @@ impl SignalTypeRouter {
         router
     }
 
+    /// Record which selected route actually accepted the message.
+    ///
+    /// This is shared by the immediate routing path and wakeup-driven retries
+    /// so the named/default metrics stay consistent.
     fn record_forwarded_route(&mut self, context: SelectedRouteContext) {
         if let Some(m) = self.metrics.as_mut() {
             match context.route_kind {
@@ -275,6 +279,11 @@ impl SignalTypeRouter {
         }
     }
 
+    /// Refresh the set of outputs that can currently participate in
+    /// router-level backpressure.
+    ///
+    /// The default output only participates when it is a real fallback for at
+    /// least one currently unwired named route.
     fn observe_backpressure_candidates(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -303,6 +312,7 @@ impl SignalTypeRouter {
         self.admission.observe_pause_candidate_ports(candidates);
     }
 
+    /// Convert scheduler-specific wakeup failures into processor errors.
     fn wakeup_error(
         effect_handler: &local::EffectHandler<OtapPdata>,
         error: WakeupError,
@@ -315,6 +325,7 @@ impl SignalTypeRouter {
         }
     }
 
+    /// Emit a retryable route-local NACK for a selected route that is full.
     async fn emit_route_full_nack(
         &mut self,
         port: &str,
@@ -337,6 +348,7 @@ impl SignalTypeRouter {
         Ok(())
     }
 
+    /// Emit a retryable route-local NACK for a selected route that is closed.
     async fn emit_route_closed_nack(
         &mut self,
         port: &str,
@@ -359,6 +371,8 @@ impl SignalTypeRouter {
         Ok(())
     }
 
+    /// Emit a retryable route-local NACK for router-owned work that is still
+    /// parked when shutdown begins.
     async fn emit_shutdown_nack(
         &mut self,
         port: &str,
@@ -383,6 +397,11 @@ impl SignalTypeRouter {
         Ok(())
     }
 
+    /// Apply the configured `Full` policy for a selected named/default route.
+    ///
+    /// `reject_immediately` refuses the message right away. `backpressure` may
+    /// keep the first message per blocked output parked for later wakeup
+    /// retries.
     async fn handle_selected_route_full(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -406,6 +425,10 @@ impl SignalTypeRouter {
         }
     }
 
+    /// Retry locally parked selected routes when the shared wakeup fires.
+    ///
+    /// The original signal-type context is preserved so retries update the
+    /// correct metrics and produce signal-specific NACK causes.
     async fn handle_wakeup(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -453,6 +476,10 @@ impl SignalTypeRouter {
         Ok(())
     }
 
+    /// Drain router-local parked work during shutdown entry.
+    ///
+    /// The router turns every parked message back into a retryable NACK so
+    /// shutdown does not silently discard work it still owns.
     async fn handle_shutdown(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
