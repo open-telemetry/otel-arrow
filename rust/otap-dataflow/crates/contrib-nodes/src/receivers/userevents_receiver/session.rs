@@ -12,7 +12,7 @@ mod imp {
 
     use tokio::time;
 
-    use super::one_collect_adapter::{
+    use super::super::one_collect_adapter::{
         CollectInitError, EventSource, OneCollectUserEventsSession, UserEventsSessionConfig,
         UserEventsSubscription,
     };
@@ -23,12 +23,7 @@ mod imp {
     pub(crate) struct RawUsereventsRecord {
         pub subscription_index: usize,
         pub timestamp_unix_nano: u64,
-        pub cpu: u32,
-        pub pid: i32,
-        pub tid: i32,
-        pub sample_id: u64,
         pub payload: Vec<u8>,
-        pub payload_size: usize,
     }
 
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -97,11 +92,6 @@ mod imp {
                 out.push(RawUsereventsRecord {
                     subscription_index: source.subscription_index,
                     timestamp_unix_nano: event.timestamp_unix_nano,
-                    cpu: event.cpu.unwrap_or_default(),
-                    pid: event.pid.unwrap_or_default(),
-                    tid: event.tid.unwrap_or_default(),
-                    sample_id: source.sample_id,
-                    payload_size: event.payload.len(),
                     payload: event.payload,
                 });
             }
@@ -122,6 +112,11 @@ mod imp {
                 .collect::<Vec<_>>();
             let config = UserEventsSessionConfig {
                 per_cpu_buffer_size: config.per_cpu_buffer_size,
+                // Open the perf ring for this pipeline's pinned CPU only.
+                // Keeping ring reads on the same CPU as the pipeline thread
+                // preserves the NUMA-locality design documented in the
+                // receiver README; do not widen this to "all CPUs" without
+                // revisiting that contract.
                 cpu_ids: vec![cpu_id],
             };
 
@@ -185,12 +180,7 @@ mod imp {
     pub(crate) struct RawUsereventsRecord {
         pub subscription_index: usize,
         pub timestamp_unix_nano: u64,
-        pub cpu: u32,
-        pub pid: i32,
-        pub tid: i32,
-        pub sample_id: u64,
         pub payload: Vec<u8>,
-        pub payload_size: usize,
     }
 
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

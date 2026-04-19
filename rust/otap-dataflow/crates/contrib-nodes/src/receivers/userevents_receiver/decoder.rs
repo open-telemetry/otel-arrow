@@ -4,7 +4,6 @@
 //! Decoding helpers for Linux userevents samples.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -91,26 +90,12 @@ const PART_B_LOG_FIELDS: &[&str] = &["severityText", "severityNumber", "name", "
 /// A decoded userevents record ready for Arrow encoding.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct DecodedUsereventsRecord {
-    /// The concrete tracefs tracepoint name, e.g. `user_events:MyProvider_L5K1f`.
-    pub tracepoint: Arc<str>,
     /// Event timestamp in Unix epoch nanoseconds.
     pub time_unix_nano: i64,
-    /// CPU that produced the sample.
-    pub cpu: u32,
-    /// Process identifier carried by the perf sample.
-    pub pid: i32,
-    /// Thread identifier carried by the perf sample.
-    pub tid: i32,
-    /// Perf sample identifier used to bind events to subscriptions.
-    pub sample_id: u64,
     /// Log body string.
     pub body: String,
-    /// True when `body` contains a base64-encoded raw payload.
-    pub body_is_base64: bool,
     /// Optional promoted event name for the typed OTLP log field.
     pub event_name: Option<String>,
-    /// Size of the decoded payload in bytes.
-    pub payload_size: usize,
     /// Optional severity number.
     pub severity_number: Option<i32>,
     /// Optional severity text.
@@ -127,11 +112,11 @@ pub(super) struct DecodedUsereventsRecord {
 
 impl DecodedUsereventsRecord {
     pub(super) fn from_raw(
-        tracepoint: Arc<str>,
+        tracepoint: &str,
         value: RawUsereventsRecord,
         format: &FormatConfig,
+        fallback_severity: Option<(i32, &'static str)>,
     ) -> (Self, bool) {
-        let identity = TracepointIdentity::parse(tracepoint.as_ref());
         // Receiver-internal diagnostics and transport identity (tracepoint,
         // provider, level, keyword, CPU/sample metadata) are deliberately not
         // pushed here. Geneva treats OTLP log attributes as backend columns, so
@@ -144,13 +129,12 @@ impl DecodedUsereventsRecord {
         let mut trace_id_typed: Option<[u8; 16]> = None;
         let mut span_id_typed: Option<[u8; 8]> = None;
         let body: String;
-        let body_is_base64: bool;
         let event_name: Option<String>;
         let mut severity_number: Option<i32>;
         let mut severity_text: Option<Cow<'static, str>>;
         let cs_failed: bool;
 
-        if let Some(mut cs) = decode_cs_otel_logs(tracepoint.as_ref(), &value.payload) {
+        if let Some(mut cs) = decode_cs_otel_logs(tracepoint, &value.payload) {
             // G1: The OTLP typed `event_name` column maps to the Bond `name`
             // field written by the Geneva uploader. The Rust user-events
             // exporter carries the user-visible event name in `PartB.name`
@@ -161,7 +145,6 @@ impl DecodedUsereventsRecord {
             // a single "Log" stream.
             event_name = Some(cs.part_b_name.take().unwrap_or(cs.event_name));
             body = cs.body.unwrap_or_default();
-            body_is_base64 = false;
             severity_number = cs.severity_number;
             severity_text = cs.severity_text.map(Cow::Owned);
             // PartB.name is surfaced via the typed OTLP `event_name` column
@@ -198,11 +181,8 @@ impl DecodedUsereventsRecord {
             }
             // Fall back to EventHeader level if PartB had no severity
             if severity_number.is_none() {
-                let mapped = identity
-                    .level
-                    .and_then(common_schema_severity_from_eventheader_level);
-                let fallback_number = mapped.map(|(number, _)| number);
-                let fallback_text = mapped.map(|(_, text)| Cow::Borrowed(text));
+                let fallback_number = fallback_severity.map(|(number, _)| number);
+                let fallback_text = fallback_severity.map(|(_, text)| Cow::Borrowed(text));
                 severity_number = fallback_number;
                 severity_text = severity_text.or(fallback_text);
             }
@@ -211,27 +191,16 @@ impl DecodedUsereventsRecord {
             // Fallback: emit base64 body and map severity from EventHeader level
             body = BASE64_STANDARD.encode(&value.payload);
             event_name = Some("Log".to_owned());
-            let mapped = identity
-                .level
-                .and_then(common_schema_severity_from_eventheader_level);
-            severity_number = mapped.map(|(number, _)| number);
-            severity_text = mapped.map(|(_, text)| Cow::Borrowed(text));
-            body_is_base64 = true;
+            severity_number = fallback_severity.map(|(number, _)| number);
+            severity_text = fallback_severity.map(|(_, text)| Cow::Borrowed(text));
             cs_failed = true;
         }
 
         (
             Self {
-                tracepoint,
                 time_unix_nano: time_override_nano.unwrap_or(value.timestamp_unix_nano as i64),
-                cpu: value.cpu,
-                pid: value.pid,
-                tid: value.tid,
-                sample_id: value.sample_id,
                 body,
-                body_is_base64,
                 event_name,
-                payload_size: value.payload_size,
                 severity_number,
                 severity_text,
                 flags,
@@ -294,6 +263,12 @@ fn common_schema_severity_from_eventheader_level(level: u8) -> Option<(i32, &'st
         5 => Some((5, "DEBUG")),
         _ => None,
     }
+}
+
+pub(super) fn severity_fallback_from_tracepoint(tracepoint: &str) -> Option<(i32, &'static str)> {
+    TracepointIdentity::parse(tracepoint)
+        .level
+        .and_then(common_schema_severity_from_eventheader_level)
 }
 
 /// Decoded Common Schema OTel Logs record extracted from EventHeader binary payload.
@@ -729,53 +704,48 @@ fn hex_nibble(b: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
+    fn decode_record(
+        tracepoint: &str,
+        payload: Vec<u8>,
+        timestamp_unix_nano: u64,
+    ) -> (DecodedUsereventsRecord, bool) {
+        DecodedUsereventsRecord::from_raw(
+            tracepoint,
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano,
+                payload,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+            severity_fallback_from_tracepoint(tracepoint),
+        )
+    }
+
     #[test]
     fn common_schema_mode_maps_severity_from_tracepoint_level() {
         // Payload that is not a valid EventHeader → fallback path
-        let (decoded, _) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:myprovider_L2K1"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 42,
-                cpu: 1,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload: vec![0],
-                payload_size: 1,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record("user_events:myprovider_L2K1", vec![0], 42);
 
         assert_eq!(decoded.severity_number, Some(17));
         assert_eq!(decoded.severity_text.as_deref(), Some("ERROR"));
-        assert!(decoded.body_is_base64);
+        assert!(cs_failed);
         assert!(decoded.attributes.is_empty());
     }
 
     #[test]
     fn common_schema_mode_invalid_payload_falls_back_to_base64() {
         // Plain-text payload is not a valid EventHeader; decoder falls back
-        let (decoded, _) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:myprovider_L2K1"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 42,
-                cpu: 1,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload: br#"name=my-event-name;message=This is a test message"#.to_vec(),
-                payload_size: 48,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
+        let (decoded, cs_failed) = decode_record(
+            "user_events:myprovider_L2K1",
+            br#"name=my-event-name;message=This is a test message"#.to_vec(),
+            42,
         );
 
         // Fallback: event_name is "Log", body is base64. No transport
         // identity/debug attributes are emitted downstream.
         assert_eq!(decoded.event_name.as_deref(), Some("Log"));
+        assert!(cs_failed);
         assert!(decoded.attributes.is_empty());
-        assert!(decoded.body_is_base64);
     }
 
     // ── EventHeader binary test helpers ──────────────────────────────────────
@@ -1083,47 +1053,24 @@ mod tests {
     }
 
     #[test]
-    fn cs_decode_from_raw_sets_body_is_base64_false_on_success() {
+    fn cs_decode_from_raw_signals_no_failure_on_success() {
         let (tracepoint, payload) =
             build_cs_log_payload_part_b_only("MyEvent", "log body", 9, "INFO", 4);
-        let payload_size = payload.len();
-        let (decoded, _) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from(tracepoint.as_str()),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload,
-                payload_size,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
-        assert!(!decoded.body_is_base64);
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1_000_000_000);
+        assert!(!cs_failed);
         assert_eq!(decoded.body, "log body");
         assert_eq!(decoded.event_name.as_deref(), Some("MyEvent"));
         assert_eq!(decoded.severity_number, Some(9));
     }
 
     #[test]
-    fn cs_decode_from_raw_sets_body_is_base64_true_on_fallback() {
-        let (decoded, _) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:myprovider_L4K1"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 42,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
-                payload_size: 4,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
+    fn cs_decode_from_raw_signals_failure_on_fallback() {
+        let (decoded, cs_failed) = decode_record(
+            "user_events:myprovider_L4K1",
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            42,
         );
-        assert!(decoded.body_is_base64);
+        assert!(cs_failed);
         assert_eq!(decoded.event_name.as_deref(), Some("Log"));
         assert!(decoded.attributes.is_empty());
     }
@@ -1241,21 +1188,7 @@ mod tests {
         add_string_data(&mut data, "body text");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "MyEvent", &meta, &data);
-        let payload_size = payload.len();
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from(tracepoint.as_str()),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload,
-                payload_size,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1_000_000);
         assert!(!cs_failed);
         let expected_trace: [u8; 16] = [
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -1281,21 +1214,7 @@ mod tests {
             9,
             4,
         );
-        let payload_size = payload.len();
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from(tracepoint.as_str()),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload,
-                payload_size,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1_000_000);
         assert!(!cs_failed);
         assert!(decoded.trace_id.is_none());
         assert!(decoded.span_id.is_none());
@@ -1341,22 +1260,13 @@ mod tests {
 
     #[test]
     fn cs_decode_failure_signals_metric_increment() {
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:myprovider_L4K1"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
-                payload_size: 4,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
+        let (decoded, cs_failed) = decode_record(
+            "user_events:myprovider_L4K1",
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            1_000_000,
         );
         assert!(cs_failed, "CS decode failure should be signaled");
-        assert!(decoded.body_is_base64, "Should fall back to base64");
+        assert_eq!(decoded.event_name.as_deref(), Some("Log"));
     }
 
     // ── Finding 9: severity fallback from EventHeader level ────────────────────
@@ -1374,21 +1284,7 @@ mod tests {
         add_string_data(&mut data, "no sev");
         let tracepoint = "user_events:myprovider_L2K1".to_owned();
         let payload = build_full_payload(2, "Log", &meta, &data);
-        let payload_size = payload.len();
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from(tracepoint.as_str()),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload,
-                payload_size,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1_000_000);
         assert!(!cs_failed);
         assert_eq!(
             decoded.severity_number,
@@ -1416,22 +1312,8 @@ mod tests {
         add_string_data(&mut data, "body text");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let payload_size = payload.len();
         let perf_ts: u64 = 9_999_999_999;
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from(tracepoint.as_str()),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: perf_ts,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload,
-                payload_size,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, perf_ts);
         assert!(!cs_failed);
         assert_eq!(
             decoded.time_unix_nano, perf_ts as i64,
@@ -1456,20 +1338,7 @@ mod tests {
         add_string_field_meta(&mut meta, "body");
         add_string_data(&mut data, "body");
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:myprovider_L4K1"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload_size: payload.len(),
-                payload,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record("user_events:myprovider_L4K1", payload, 1_000_000);
         assert!(!cs_failed);
         assert_eq!(decoded.flags, Some(1));
     }
@@ -1647,20 +1516,7 @@ mod tests {
         add_value_field_meta(&mut meta, "eventId", ENC_VALUE32, FMT_SIGNED_INT);
         add_u32_data(&mut data, 20);
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:myprovider_L4K1"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload_size: payload.len(),
-                payload,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record("user_events:myprovider_L4K1", payload, 1_000_000);
         assert!(!cs_failed);
         assert!(
             decoded
@@ -1691,20 +1547,7 @@ mod tests {
             cs_direct.unwrap().part_b_name.as_deref(),
             Some("my-event-name")
         );
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:myprovider_L4K1"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload_size: payload.len(),
-                payload,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record("user_events:myprovider_L4K1", payload, 1_000_000);
         assert!(!cs_failed);
         assert_eq!(decoded.event_name.as_deref(), Some("my-event-name"));
         // PartB.name is surfaced only via the typed `event_name` column; no
@@ -1734,20 +1577,7 @@ mod tests {
         add_string_field_meta(&mut meta, "str_field");
         add_string_data(&mut data, "hello");
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from("user_events:myprovider_L4K1"),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1_000_000,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload_size: payload.len(),
-                payload,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record("user_events:myprovider_L4K1", payload, 1_000_000);
         assert!(!cs_failed);
         let find = |key: &str| {
             decoded
@@ -1776,20 +1606,7 @@ mod tests {
             9,
             4,
         );
-        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
-            Arc::<str>::from(tracepoint.as_str()),
-            RawUsereventsRecord {
-                subscription_index: 0,
-                timestamp_unix_nano: 1,
-                cpu: 0,
-                pid: 1,
-                tid: 1,
-                sample_id: 1,
-                payload_size: payload.len(),
-                payload,
-            },
-            &FormatConfig::CommonSchemaOtelLogs,
-        );
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1);
         assert!(!cs_failed);
         let expected = chrono::DateTime::parse_from_rfc3339("2024-06-15T12:00:00+05:30")
             .expect("valid time")

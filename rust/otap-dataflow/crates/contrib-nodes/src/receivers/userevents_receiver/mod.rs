@@ -37,8 +37,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;
-#[cfg(target_os = "linux")]
-use self::decoder::DecodedUsereventsRecord;
+use self::decoder::{DecodedUsereventsRecord, severity_fallback_from_tracepoint};
 use self::metrics::UsereventsReceiverMetrics;
 #[cfg(target_os = "linux")]
 use self::session::SessionInitError;
@@ -166,7 +165,7 @@ struct Config {
 
 struct UsereventsReceiver {
     subscriptions: Vec<SubscriptionConfig>,
-    subscription_tracepoints: Vec<Arc<str>>,
+    subscription_severity_fallbacks: Vec<Option<(i32, &'static str)>>,
     session: SessionConfig,
     drain: DrainConfig,
     batching: BatchConfig,
@@ -188,9 +187,9 @@ impl UsereventsReceiver {
         })?;
 
         let subscriptions = Self::normalize_subscriptions(&config)?;
-        let subscription_tracepoints = subscriptions
+        let subscription_severity_fallbacks = subscriptions
             .iter()
-            .map(|subscription| Arc::<str>::from(subscription.tracepoint.as_str()))
+            .map(|subscription| severity_fallback_from_tracepoint(&subscription.tracepoint))
             .collect();
         let session = config.session.clone().unwrap_or(SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
@@ -216,7 +215,7 @@ impl UsereventsReceiver {
 
         Ok(Self {
             subscriptions,
-            subscription_tracepoints,
+            subscription_severity_fallbacks,
             session,
             drain,
             batching,
@@ -242,17 +241,43 @@ impl UsereventsReceiver {
                 error: "userevents receiver requires either `tracepoint` or `subscriptions`"
                     .to_owned(),
             }),
-            (Some(tracepoint), None) => Ok(vec![SubscriptionConfig {
-                tracepoint: tracepoint.clone(),
-                format: config.format.clone().unwrap_or_default(),
-            }]),
+            (Some(tracepoint), None) => {
+                Self::validate_tracepoint(tracepoint)?;
+                Ok(vec![SubscriptionConfig {
+                    tracepoint: tracepoint.clone(),
+                    format: config.format.clone().unwrap_or_default(),
+                }])
+            }
             (None, Some(subscriptions)) if subscriptions.is_empty() => {
                 Err(otap_df_config::error::Error::InvalidUserConfig {
                     error: "userevents receiver requires at least one subscription".to_owned(),
                 })
             }
-            (None, Some(subscriptions)) => Ok(subscriptions.clone()),
+            (None, Some(subscriptions)) => {
+                for subscription in subscriptions {
+                    Self::validate_tracepoint(&subscription.tracepoint)?;
+                }
+                Ok(subscriptions.clone())
+            }
         }
+    }
+
+    fn validate_tracepoint(tracepoint: &str) -> Result<(), otap_df_config::error::Error> {
+        let Some((group, event_name)) = tracepoint.split_once(':') else {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "userevents receiver tracepoint `{tracepoint}` must use `user_events:<event>`"
+                ),
+            });
+        };
+        if group != "user_events" || event_name.is_empty() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "userevents receiver tracepoint `{tracepoint}` must use `user_events:<event>`"
+                ),
+            });
+        }
+        Ok(())
     }
 
     fn validate_drain(drain: &DrainConfig) -> Result<(), otap_df_config::error::Error> {
@@ -431,15 +456,15 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
 
                                             let subscription_index = raw.subscription_index;
                                             let subscription = &self.subscriptions[subscription_index];
-                                            let tracepoint = Arc::clone(
-                                                &self.subscription_tracepoints[subscription_index],
-                                            );
+                                            let severity_fallback =
+                                                self.subscription_severity_fallbacks[subscription_index];
 
                                             let (decoded, cs_failed) =
                                                 DecodedUsereventsRecord::from_raw(
-                                                    tracepoint,
+                                                    subscription.tracepoint.as_str(),
                                                     raw,
                                                     &subscription.format,
+                                                    severity_fallback,
                                                 );
                                             if cs_failed {
                                                 cs_decode_fallbacks += 1;
@@ -564,11 +589,15 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
 
                             let subscription_index = raw.subscription_index;
                             let subscription = &self.subscriptions[subscription_index];
-                            let tracepoint =
-                                Arc::clone(&self.subscription_tracepoints[subscription_index]);
+                            let severity_fallback =
+                                self.subscription_severity_fallbacks[subscription_index];
 
-                            let (decoded, cs_failed) =
-                                DecodedUsereventsRecord::from_raw(tracepoint, raw, &subscription.format);
+                            let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+                                subscription.tracepoint.as_str(),
+                                raw,
+                                &subscription.format,
+                                severity_fallback,
+                            );
                             if cs_failed {
                                 cs_decode_fallbacks += 1;
                             }
@@ -752,6 +781,46 @@ mod config_tests {
             error
                 .to_string()
                 .contains("either `tracepoint` or `subscriptions`")
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_non_userevents_tracepoint_group() {
+        let config = Config {
+            tracepoint: Some("foo:example_L2K1".to_owned()),
+            format: Some(FormatConfig::CommonSchemaOtelLogs),
+            subscriptions: None,
+            session: None,
+            drain: None,
+            batching: None,
+            overflow: None,
+        };
+
+        let error =
+            UsereventsReceiver::normalize_subscriptions(&config).expect_err("config rejected");
+        assert!(
+            error.to_string().contains("user_events:<event>"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_tracepoint_without_group() {
+        let config = Config {
+            tracepoint: Some("example_L2K1".to_owned()),
+            format: Some(FormatConfig::CommonSchemaOtelLogs),
+            subscriptions: None,
+            session: None,
+            drain: None,
+            batching: None,
+            overflow: None,
+        };
+
+        let error =
+            UsereventsReceiver::normalize_subscriptions(&config).expect_err("config rejected");
+        assert!(
+            error.to_string().contains("user_events:<event>"),
+            "unexpected error: {error}"
         );
     }
 

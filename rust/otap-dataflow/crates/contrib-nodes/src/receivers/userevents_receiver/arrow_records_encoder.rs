@@ -142,16 +142,9 @@ mod tests {
     fn build_creates_logs_and_attributes_batches() {
         let mut builder = ArrowRecordsBuilder::new();
         builder.append(DecodedUsereventsRecord {
-            tracepoint: "user_events:Example".into(),
             time_unix_nano: 1234,
-            cpu: 2,
-            pid: 11,
-            tid: 12,
-            sample_id: 77,
             body: "QUJD".to_owned(),
-            body_is_base64: true,
             event_name: Some("example-event".to_owned()),
-            payload_size: 3,
             severity_number: Some(17),
             severity_text: Some("ERROR".into()),
             flags: None,
@@ -233,16 +226,9 @@ mod tests {
     fn build_preserves_non_null_flags() {
         let mut builder = ArrowRecordsBuilder::new();
         builder.append(DecodedUsereventsRecord {
-            tracepoint: "user_events:Example".into(),
             time_unix_nano: 1234,
-            cpu: 2,
-            pid: 11,
-            tid: 12,
-            sample_id: 77,
             body: "text".to_owned(),
-            body_is_base64: false,
             event_name: Some("example-event".to_owned()),
-            payload_size: 4,
             severity_number: Some(9),
             severity_text: Some("INFO".into()),
             flags: Some(1),

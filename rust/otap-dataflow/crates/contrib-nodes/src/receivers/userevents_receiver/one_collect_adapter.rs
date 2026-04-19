@@ -19,9 +19,6 @@ use one_collect::tracefs::TraceFS;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CollectedEvent {
     pub timestamp_unix_nano: u64,
-    pub cpu: Option<u32>,
-    pub pid: Option<i32>,
-    pub tid: Option<i32>,
     pub payload: Vec<u8>,
     pub source: EventSource,
 }
@@ -42,7 +39,6 @@ pub(crate) enum EventSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UserEventsSource {
     pub subscription_index: usize,
-    pub sample_id: u64,
 }
 
 #[derive(Debug)]
@@ -128,16 +124,18 @@ impl OneCollectUserEventsSession {
 
         let pending = Rc::new(RefCell::new(VecDeque::new()));
         let lost_samples = Rc::new(Cell::new(0u64));
-        let ancillary = session.ancillary_data();
         let time_field = session.time_data_ref();
-        let pid_field = session.pid_field_ref();
-        let tid_field = session.tid_data_ref();
         let tracefs = TraceFS::open().map_err(CollectInitError::Io)?;
 
         for (subscription_index, subscription) in subscriptions.iter().enumerate() {
-            let (_, event_name) = subscription.tracepoint.split_once(':').ok_or_else(|| {
+            let (group, event_name) = subscription.tracepoint.split_once(':').ok_or_else(|| {
                 CollectInitError::InvalidTracepoint(subscription.tracepoint.clone())
             })?;
+            if group != "user_events" {
+                return Err(CollectInitError::InvalidTracepoint(
+                    subscription.tracepoint.clone(),
+                ));
+            }
 
             let mut event = match tracefs.find_event("user_events", event_name) {
                 Ok(event) => event,
@@ -160,12 +158,8 @@ impl OneCollectUserEventsSession {
                 },
             };
 
-            let sample_id = event.id() as u64;
             let event_pending = Rc::clone(&pending);
-            let event_ancillary = ancillary.clone();
             let event_time_field = time_field.clone();
-            let event_pid_field = pid_field.clone();
-            let event_tid_field = tid_field.clone();
 
             event.add_callback(move |data| {
                 let full_data = data.full_data();
@@ -173,22 +167,9 @@ impl OneCollectUserEventsSession {
                     .try_get_u64(full_data)
                     .map(sample_qpc_to_unix_nano)
                     .unwrap_or_else(current_time_unix_nano);
-                let pid = event_pid_field
-                    .try_get_u32(full_data)
-                    .map(|value| value as i32);
-                let tid = event_tid_field
-                    .try_get_u32(full_data)
-                    .map(|value| value as i32);
-                let mut cpu = None;
-                event_ancillary.read(|values| {
-                    cpu = Some(values.cpu());
-                });
 
                 event_pending.borrow_mut().push_back(CollectedEvent {
                     timestamp_unix_nano: timestamp,
-                    cpu,
-                    pid,
-                    tid,
                     // Strip the 8-byte tracepoint common header
                     // (`common_type` u16 + `common_flags` u8 + `common_preempt_count` u8 +
                     // `common_pid` i32) so `payload` contains the EventHeader blob only —
@@ -203,10 +184,7 @@ impl OneCollectUserEventsSession {
                             raw.to_vec()
                         }
                     },
-                    source: EventSource::UserEvents(UserEventsSource {
-                        subscription_index,
-                        sample_id,
-                    }),
+                    source: EventSource::UserEvents(UserEventsSource { subscription_index }),
                 });
                 Ok(())
             });
