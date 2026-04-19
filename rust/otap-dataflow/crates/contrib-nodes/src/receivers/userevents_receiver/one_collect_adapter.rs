@@ -242,14 +242,17 @@ impl OneCollectUserEventsSession {
         let mut pending = self.pending.borrow_mut();
 
         while let Some(front) = pending.front() {
-            if events.len() >= max_records
-                || drained_bytes >= max_bytes
-                || Instant::now() >= deadline
-            {
+            if events.len() >= max_records || Instant::now() >= deadline {
                 break;
             }
 
-            drained_bytes = drained_bytes.saturating_add(front.payload.len());
+            let front_len = front.payload.len();
+            let next_bytes = drained_bytes.saturating_add(front_len);
+            if next_bytes > max_bytes && !events.is_empty() {
+                break;
+            }
+
+            drained_bytes = next_bytes;
             if let Some(event) = pending.pop_front() {
                 events.push(event);
             }

@@ -253,7 +253,7 @@ one_collect wakeup support, but is currently ignored.
 | `subscriptions` | none | List of tracepoints. Each entry must use `user_events:<event>` and `format.type: common_schema_otel_logs`. |
 | `format.type` | `common_schema_otel_logs` | Only supported decode format. |
 | `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded by the underlying perf/ring setup. |
-| `session.wakeup_watermark` | `0` | Reserved for future one_collect wakeup support; currently ignored. |
+| `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
 | `session.late_registration.enabled` | `false` | When true, keep retrying if the tracepoint is not registered yet. |
 | `session.late_registration.poll_interval_ms` | `1000` | Retry interval for late tracepoint registration. |
 | `drain.max_records_per_turn` | `1024` | Maximum records popped from the receiver's pending queue per drain turn. |

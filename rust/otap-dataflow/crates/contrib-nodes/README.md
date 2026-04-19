@@ -26,7 +26,7 @@ Aggregate flags enable all nodes in their category.
 
 - Reads Linux `user_events` tracepoints through per-CPU perf sessions
 - Supports single-tracepoint and multi-tracepoint configuration
-- Supports configurable decode modes including raw and Common Schema-oriented paths
+- Supports the `common_schema_otel_logs` decode format for supported log payloads
 
 ### Exporters
 

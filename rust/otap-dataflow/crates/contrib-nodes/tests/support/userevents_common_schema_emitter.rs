@@ -40,7 +40,7 @@ impl CommonSchemaEmitter {
         let _ = builder
             .reset(EVENT_NAME, 0)
             .add_value("__csver__", 0x400_u16, ehd::FieldFormat::Default, 0)
-            .add_struct("PartB", 5, 0)
+            .add_struct("PartB", 6, 0)
             .add_str("_typeName", "Log", ehd::FieldFormat::Default, 0)
             .add_str("name", EVENT_NAME, ehd::FieldFormat::Default, 0)
             .add_str("body", BODY, ehd::FieldFormat::Default, 0)
@@ -51,10 +51,10 @@ impl CommonSchemaEmitter {
                 0,
             )
             .add_str("severityText", SEVERITY_TEXT, ehd::FieldFormat::Default, 0)
-            .add_struct("PartC", 3, 0)
+            .add_value("eventId", EVENT_ID, ehd::FieldFormat::Default, 0)
+            .add_struct("PartC", 2, 0)
             .add_str("user_name", USER_NAME, ehd::FieldFormat::Default, 0)
-            .add_str("user_email", USER_EMAIL, ehd::FieldFormat::Default, 0)
-            .add_value("event_id", EVENT_ID, ehd::FieldFormat::Default, 0);
+            .add_str("user_email", USER_EMAIL, ehd::FieldFormat::Default, 0);
 
         let result = builder.write(&self.event_set, None, None);
         if result == 0 { Ok(()) } else { Err(result) }

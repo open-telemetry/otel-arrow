@@ -159,13 +159,10 @@ fn validation()
             );
             // G3: eventId is emitted as a typed Int. `log_attributes_as_strings`
             // stringifies all scalar variants, so the rendered value is "20".
+            let expected_event_id = userevents_common_schema_emitter::EVENT_ID.to_string();
             assert_eq!(
                 attrs.get("eventId").map(String::as_str),
-                Some(
-                    userevents_common_schema_emitter::EVENT_ID
-                        .to_string()
-                        .as_str()
-                )
+                Some(expected_event_id.as_str())
             );
         })
     }
