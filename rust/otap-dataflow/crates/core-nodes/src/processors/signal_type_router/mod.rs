@@ -1026,11 +1026,15 @@ mod tests {
             validation.validate(|_| async {});
         }
 
-        /// Scenario: one route is parked full while another route is closed.
+        /// Scenario: one selected route is parked because its output is full,
+        /// while a different selectable route resolves to an output that is
+        /// already closed.
         /// Guarantees: the closed route still emits an immediate route-local
-        /// NACK and does not cause global pdata admission to pause.
+        /// NACK, and it does not count toward the "all selectable routes are
+        /// parked full" condition that pauses pdata admission under
+        /// `backpressure`.
         #[test]
-        fn test_backpressure_does_not_pause_when_other_route_is_closed() {
+        fn test_backpressure_excludes_closed_routes_from_all_routes_blocked_accounting() {
             let test_runtime = TestRuntime::new();
             let node_id = test_node(test_runtime.config().name.clone());
             let config = make_policy_config(OnFullPolicy::Backpressure);
