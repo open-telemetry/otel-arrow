@@ -68,11 +68,10 @@ impl ArrowRecordsBuilder {
             .logs
             .append_span_id(record.span_id.as_ref() as Option<&SpanId>);
 
-        // Receiver-internal transport/diagnostic fields (tracepoint, cpu, pid,
-        // tid, sample_id, payload_size, body_encoding) are intentionally not
-        // emitted as downstream log attributes: Geneva treats OTLP log
-        // attributes as backend columns, so surfacing per-record diagnostics
-        // there would pollute the application schema.
+        // Receiver-internal transport/diagnostic fields are intentionally not
+        // represented on decoded records or emitted as downstream attributes:
+        // Geneva treats OTLP log attributes as backend columns, so surfacing
+        // per-record diagnostics there would pollute the application schema.
         for (key, value) in record.attributes {
             self.log_attrs.append_key(key.as_ref());
             match value {
