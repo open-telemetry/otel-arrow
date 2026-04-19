@@ -205,6 +205,7 @@ impl UsereventsReceiver {
             max_bytes_per_turn: default_max_bytes_per_turn(),
             max_drain_ns: default_max_drain_ns(),
         });
+        Self::validate_drain(&drain)?;
         let batching = config.batching.clone().unwrap_or(BatchConfig {
             max_size: default_batch_max_size(),
             max_duration: default_batch_max_duration(),
@@ -252,6 +253,18 @@ impl UsereventsReceiver {
             }
             (None, Some(subscriptions)) => Ok(subscriptions.clone()),
         }
+    }
+
+    fn validate_drain(drain: &DrainConfig) -> Result<(), otap_df_config::error::Error> {
+        if drain.max_drain_ns.is_zero() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "userevents receiver `drain.max_drain_ns` must be greater than zero; \
+                        a zero budget would starve either parsing or the pending-queue \
+                        pop phase under continuous load"
+                    .to_owned(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -740,5 +753,29 @@ mod config_tests {
                 .to_string()
                 .contains("either `tracepoint` or `subscriptions`")
         );
+    }
+
+    #[test]
+    fn validate_drain_rejects_zero_max_drain_ns() {
+        let drain = DrainConfig {
+            max_records_per_turn: default_max_records_per_turn(),
+            max_bytes_per_turn: default_max_bytes_per_turn(),
+            max_drain_ns: Duration::ZERO,
+        };
+        let error = UsereventsReceiver::validate_drain(&drain).expect_err("zero rejected");
+        assert!(
+            error.to_string().contains("max_drain_ns"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_drain_accepts_nonzero_max_drain_ns() {
+        let drain = DrainConfig {
+            max_records_per_turn: default_max_records_per_turn(),
+            max_bytes_per_turn: default_max_bytes_per_turn(),
+            max_drain_ns: Duration::from_millis(2),
+        };
+        UsereventsReceiver::validate_drain(&drain).expect("non-zero accepted");
     }
 }

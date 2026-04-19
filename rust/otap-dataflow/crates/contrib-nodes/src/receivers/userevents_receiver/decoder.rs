@@ -16,21 +16,10 @@ use tracepoint_decode::{
 use super::FormatConfig;
 use super::session::RawUsereventsRecord;
 
-const ATTR_MODE: &str = "linux.userevents.decode.mode";
-const ATTR_PROVIDER: &str = "event.provider";
-const ATTR_EVENT_NAME: &str = "event.name";
-const ATTR_CS_VERSION: &str = "cs.__csver__";
-const ATTR_CS_TYPE_NAME: &str = "cs.part_b._typeName";
-const ATTR_CS_PART_B_NAME: &str = "cs.part_b.name";
-const ATTR_LEVEL: &str = "eventheader.level";
-const ATTR_KEYWORD: &str = "eventheader.keyword";
-
 // PartA-mapped OTel attribute keys
 const ATTR_TRACE_ID: &str = "trace.id";
 const ATTR_SPAN_ID: &str = "span.id";
-const ATTR_SERVICE_NAME: &str = "service.name";
-const ATTR_SERVICE_INSTANCE_ID: &str = "service.instance.id";
-const ATTR_EVENT_ID: &str = "event_id";
+const ATTR_EVENT_ID: &str = "eventId";
 
 // FieldEncoding raw values (from eventheader_types, avoids a new dep)
 #[cfg(test)]
@@ -50,6 +39,43 @@ const FMT_BOOLEAN: u8 = 7;
 const FMT_FLOAT: u8 = 8;
 const FMT_STRING_UTF: u8 = 11;
 
+/// Typed attribute value carried on a decoded userevents record.
+///
+/// The OTAP attribute Arrow builder supports `str`/`int`/`bool`/`double` value
+/// types. Preserving the original typed encoding for PartC attributes and for
+/// `eventId` lets the Geneva uploader emit Bond fields with the correct
+/// `BT_*` type (e.g. `BT_INT64` instead of `BT_STRING` for numeric PartC
+/// fields), which keeps numeric query predicates usable downstream.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum DecodedAttrValue {
+    Str(String),
+    Int(i64),
+    Bool(bool),
+    Double(f64),
+}
+
+impl DecodedAttrValue {
+    #[cfg(test)]
+    pub(super) fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq<str> for DecodedAttrValue {
+    fn eq(&self, other: &str) -> bool {
+        matches!(self, Self::Str(s) if s == other)
+    }
+}
+
+impl PartialEq<&str> for DecodedAttrValue {
+    fn eq(&self, other: &&str) -> bool {
+        matches!(self, Self::Str(s) if s == *other)
+    }
+}
+
 // PartA reserved field names (used to skip conflicts in PartC)
 const PART_A_RESERVED: &[&str] = &[
     "env_ver",
@@ -63,7 +89,7 @@ const PART_A_RESERVED: &[&str] = &[
 const PART_B_LOG_FIELDS: &[&str] = &["severityText", "severityNumber", "name", "eventId", "body"];
 
 /// A decoded userevents record ready for Arrow encoding.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct DecodedUsereventsRecord {
     /// The concrete tracefs tracepoint name, e.g. `user_events:MyProvider_L5K1f`.
     pub tracepoint: Arc<str>,
@@ -95,8 +121,8 @@ pub(super) struct DecodedUsereventsRecord {
     pub trace_id: Option<[u8; 16]>,
     /// Optional W3C span id (8 bytes).
     pub span_id: Option<[u8; 8]>,
-    /// Additional structured attributes.
-    pub attributes: Vec<(Cow<'static, str>, String)>,
+    /// Additional structured attributes, preserving the source typed value.
+    pub attributes: Vec<(Cow<'static, str>, DecodedAttrValue)>,
 }
 
 impl DecodedUsereventsRecord {
@@ -106,18 +132,12 @@ impl DecodedUsereventsRecord {
         format: &FormatConfig,
     ) -> (Self, bool) {
         let identity = TracepointIdentity::parse(tracepoint.as_ref());
-        let mut attributes = Vec::with_capacity(16);
-        attributes.push((Cow::Borrowed(ATTR_MODE), format.name().to_owned()));
-
-        if let Some(provider) = identity.provider {
-            attributes.push((Cow::Borrowed(ATTR_PROVIDER), provider.to_owned()));
-        }
-        if let Some(level) = identity.level {
-            attributes.push((Cow::Borrowed(ATTR_LEVEL), level.to_string()));
-        }
-        if let Some(keyword) = identity.keyword {
-            attributes.push((Cow::Borrowed(ATTR_KEYWORD), keyword.to_owned()));
-        }
+        // Receiver-internal diagnostics and transport identity (tracepoint,
+        // provider, level, keyword, CPU/sample metadata) are deliberately not
+        // pushed here. Geneva treats OTLP log attributes as backend columns, so
+        // this path emits only typed OTLP fields and application payload attrs.
+        let _ = format;
+        let mut attributes: Vec<(Cow<'static, str>, DecodedAttrValue)> = Vec::with_capacity(16);
 
         let mut time_override_nano: Option<i64> = None;
         let mut flags = None;
@@ -130,20 +150,28 @@ impl DecodedUsereventsRecord {
         let mut severity_text: Option<Cow<'static, str>>;
         let cs_failed: bool;
 
-        if let Some(cs) = decode_cs_otel_logs(tracepoint.as_ref(), &value.payload) {
-            event_name = Some(cs.event_name.clone());
-            attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), cs.event_name));
-            attributes.push((Cow::Borrowed(ATTR_CS_VERSION), "1024".to_owned()));
-            attributes.push((Cow::Borrowed(ATTR_CS_TYPE_NAME), "Log".to_owned()));
+        if let Some(mut cs) = decode_cs_otel_logs(tracepoint.as_ref(), &value.payload) {
+            // G1: The OTLP typed `event_name` column maps to the Bond `name`
+            // field written by the Geneva uploader. The Rust user-events
+            // exporter carries the user-visible event name in `PartB.name`
+            // (e.g. "my-event-name"), while `EH.Name` is fixed to "Log" and
+            // `PartA.name` is typically absent. Prefer PartB.name, then the
+            // CS-level override (PartA.name or EH.Name), so Geneva batches and
+            // writes per-event-name records instead of collapsing them all to
+            // a single "Log" stream.
+            event_name = Some(cs.part_b_name.take().unwrap_or(cs.event_name));
             body = cs.body.unwrap_or_default();
             body_is_base64 = false;
             severity_number = cs.severity_number;
             severity_text = cs.severity_text.map(Cow::Owned);
-            if let Some(name) = cs.part_b_name {
-                attributes.push((Cow::Borrowed(ATTR_CS_PART_B_NAME), name));
-            }
+            // PartB.name is surfaced via the typed OTLP `event_name` column
+            // above; no separate `cs.part_b.name` attribute is emitted so
+            // Geneva does not see a redundant `cs_part_b_name` backend column.
             if let Some(eid) = cs.event_id {
-                attributes.push((Cow::Borrowed(ATTR_EVENT_ID), eid.to_string()));
+                // G3: eventId is emitted as a typed Int so Geneva writes a
+                // Bond BT_INT64 column (matching mdsd's behavior) instead of
+                // BT_STRING.
+                attributes.push((Cow::Borrowed(ATTR_EVENT_ID), DecodedAttrValue::Int(eid)));
             }
             if let Some(time_str) = &cs.time {
                 // TODO(perf): `parse_from_rfc3339` is on the Common Schema decode hot
@@ -158,18 +186,13 @@ impl DecodedUsereventsRecord {
             flags = cs.trace_flags;
             trace_id_typed = cs.trace_id;
             if let Some(tid_str) = cs.trace_id_text {
-                attributes.push((Cow::Borrowed(ATTR_TRACE_ID), tid_str));
+                attributes.push((Cow::Borrowed(ATTR_TRACE_ID), DecodedAttrValue::Str(tid_str)));
             }
             span_id_typed = cs.span_id;
             if let Some(sid_str) = cs.span_id_text {
-                attributes.push((Cow::Borrowed(ATTR_SPAN_ID), sid_str));
+                attributes.push((Cow::Borrowed(ATTR_SPAN_ID), DecodedAttrValue::Str(sid_str)));
             }
-            if let Some(role) = cs.cloud_role {
-                attributes.push((Cow::Borrowed(ATTR_SERVICE_NAME), role));
-            }
-            if let Some(inst) = cs.cloud_role_instance {
-                attributes.push((Cow::Borrowed(ATTR_SERVICE_INSTANCE_ID), inst));
-            }
+            // G2: PartC attrs keep their source typed value (int/double/bool/str).
             for (k, v) in cs.part_c_attrs {
                 attributes.push((Cow::Owned(k), v));
             }
@@ -188,9 +211,6 @@ impl DecodedUsereventsRecord {
             // Fallback: emit base64 body and map severity from EventHeader level
             body = BASE64_STANDARD.encode(&value.payload);
             event_name = Some("Log".to_owned());
-            attributes.push((Cow::Borrowed(ATTR_EVENT_NAME), "Log".to_owned()));
-            attributes.push((Cow::Borrowed(ATTR_CS_VERSION), "1024".to_owned()));
-            attributes.push((Cow::Borrowed(ATTR_CS_TYPE_NAME), "Log".to_owned()));
             let mapped = identity
                 .level
                 .and_then(common_schema_severity_from_eventheader_level);
@@ -203,8 +223,7 @@ impl DecodedUsereventsRecord {
         (
             Self {
                 tracepoint,
-                time_unix_nano: time_override_nano
-                    .unwrap_or(value.timestamp_unix_nano as i64),
+                time_unix_nano: time_override_nano.unwrap_or(value.timestamp_unix_nano as i64),
                 cpu: value.cpu,
                 pid: value.pid,
                 tid: value.tid,
@@ -282,8 +301,6 @@ fn common_schema_severity_from_eventheader_level(level: u8) -> Option<(i32, &'st
 /// TODO(perf): This intermediate owned decode struct is intentionally kept for now because it
 /// preserves a clean, pure `decode_cs_otel_logs()` contract and is the direct assertion surface
 /// for the decoder unit tests. The remaining overhead from this layer is modest:
-/// - one extra `event_name.clone()` when we also emit the typed OTLP `event_name` column and the
-///   `event.name` attribute, and
 /// - one transient `part_c_attrs` Vec buffer per successful CS decode.
 ///
 /// If profiling shows this layer is materially hot, revisit whether PartC attributes can be
@@ -297,14 +314,12 @@ struct CsDecodedLog {
     trace_id_text: Option<String>,
     span_id: Option<[u8; 8]>,
     span_id_text: Option<String>,
-    cloud_role: Option<String>,
-    cloud_role_instance: Option<String>,
     body: Option<String>,
     severity_number: Option<i32>,
     severity_text: Option<String>,
     part_b_name: Option<String>,
     event_id: Option<i64>,
-    part_c_attrs: Vec<(String, String)>,
+    part_c_attrs: Vec<(String, DecodedAttrValue)>,
 }
 
 /// Decode a Common Schema OTel Logs EventHeader binary payload.
@@ -445,10 +460,8 @@ fn walk_part_a(
                     }
                 } else if name == b"ext_dt_traceFlags" {
                     cs.trace_flags = item_as_u32(&item);
-                } else if name == b"ext_cloud_role" {
-                    cs.cloud_role = item_as_string(&item);
-                } else if name == b"ext_cloud_roleInstance" {
-                    cs.cloud_role_instance = item_as_string(&item);
+                } else if matches!(name, b"ext_cloud_role" | b"ext_cloud_roleInstance") {
+                    let _ = item_as_string(&item);
                 }
             }
             EventHeaderEnumeratorState::Error => return false,
@@ -524,7 +537,7 @@ fn walk_part_c(
                 if PART_A_RESERVED.contains(&name) || PART_B_LOG_FIELDS.contains(&name) {
                     continue;
                 }
-                if let Some(val) = item_as_any_scalar_string(&item) {
+                if let Some(val) = item_as_any_scalar_value(&item) {
                     cs.part_c_attrs.push((name.to_owned(), val));
                 }
             }
@@ -629,6 +642,65 @@ fn item_as_any_scalar_string(item: &EventHeaderItemInfo<'_>) -> Option<String> {
     }
 }
 
+/// Convert any scalar EventHeader field to a typed `DecodedAttrValue`.
+///
+/// Used for PartC attributes so the receiver preserves the source field's
+/// type through OTLP (str/int/bool/double) rather than stringifying every
+/// value. The Geneva uploader then emits the corresponding Bond `BT_*` type.
+fn item_as_any_scalar_value(item: &EventHeaderItemInfo<'_>) -> Option<DecodedAttrValue> {
+    let enc = item.metadata().encoding().without_flags().as_int();
+    let fmt = item.metadata().format().as_int();
+    match enc {
+        e if e == ENC_STRING_LENGTH16_CHAR8 => std::str::from_utf8(item.value().bytes())
+            .ok()
+            .map(|s| DecodedAttrValue::Str(s.to_owned())),
+        e if e == ENC_VALUE8 => {
+            if fmt == FMT_BOOLEAN {
+                Some(DecodedAttrValue::Bool(item.value().to_u8(0) != 0))
+            } else if fmt == FMT_SIGNED_INT {
+                Some(DecodedAttrValue::Int(
+                    i64::from(item.value().to_u8(0) as i8),
+                ))
+            } else {
+                Some(DecodedAttrValue::Int(i64::from(item.value().to_u8(0))))
+            }
+        }
+        e if e == ENC_VALUE16 => {
+            if fmt == FMT_SIGNED_INT {
+                Some(DecodedAttrValue::Int(i64::from(item.value().to_i16(0))))
+            } else {
+                Some(DecodedAttrValue::Int(i64::from(item.value().to_u16(0))))
+            }
+        }
+        e if e == ENC_VALUE32 => {
+            if fmt == FMT_FLOAT {
+                Some(DecodedAttrValue::Double(f64::from(f32::from_bits(
+                    item.value().to_u32(0),
+                ))))
+            } else if fmt == FMT_BOOLEAN {
+                Some(DecodedAttrValue::Bool(item.value().to_u32(0) != 0))
+            } else if fmt == FMT_SIGNED_INT {
+                Some(DecodedAttrValue::Int(i64::from(item.value().to_i32(0))))
+            } else {
+                Some(DecodedAttrValue::Int(i64::from(item.value().to_u32(0))))
+            }
+        }
+        e if e == ENC_VALUE64 => {
+            if fmt == FMT_FLOAT {
+                Some(DecodedAttrValue::Double(f64::from_bits(
+                    item.value().to_u64(0),
+                )))
+            } else if fmt == FMT_SIGNED_INT {
+                Some(DecodedAttrValue::Int(item.value().to_i64(0)))
+            } else {
+                // Unsigned 64: reinterpret as i64 to fit OTLP/Bond int column.
+                Some(DecodedAttrValue::Int(item.value().to_u64(0) as i64))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Parse ASCII hex bytes of exactly `N*2` characters into a `[u8; N]`.
 /// Returns `None` if the length or any character is invalid.
 fn parse_hex_bytes_ascii<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
@@ -678,18 +750,7 @@ mod tests {
         assert_eq!(decoded.severity_number, Some(17));
         assert_eq!(decoded.severity_text.as_deref(), Some("ERROR"));
         assert!(decoded.body_is_base64);
-        assert!(
-            decoded
-                .attributes
-                .iter()
-                .any(|(key, value)| key == ATTR_PROVIDER && value == "myprovider")
-        );
-        assert!(
-            decoded
-                .attributes
-                .iter()
-                .any(|(key, value)| key == ATTR_EVENT_NAME && value == "Log")
-        );
+        assert!(decoded.attributes.is_empty());
     }
 
     #[test]
@@ -710,13 +771,10 @@ mod tests {
             &FormatConfig::CommonSchemaOtelLogs,
         );
 
-        // Fallback: event_name is "Log", body is base64
-        assert!(
-            decoded
-                .attributes
-                .iter()
-                .any(|(key, value)| key.as_ref() == ATTR_EVENT_NAME && value == "Log")
-        );
+        // Fallback: event_name is "Log", body is base64. No transport
+        // identity/debug attributes are emitted downstream.
+        assert_eq!(decoded.event_name.as_deref(), Some("Log"));
+        assert!(decoded.attributes.is_empty());
         assert!(decoded.body_is_base64);
     }
 
@@ -1045,12 +1103,7 @@ mod tests {
         );
         assert!(!decoded.body_is_base64);
         assert_eq!(decoded.body, "log body");
-        assert!(
-            decoded
-                .attributes
-                .iter()
-                .any(|(key, value)| key.as_ref() == ATTR_EVENT_NAME && value == "MyEvent")
-        );
+        assert_eq!(decoded.event_name.as_deref(), Some("MyEvent"));
         assert_eq!(decoded.severity_number, Some(9));
     }
 
@@ -1071,12 +1124,8 @@ mod tests {
             &FormatConfig::CommonSchemaOtelLogs,
         );
         assert!(decoded.body_is_base64);
-        assert!(
-            decoded
-                .attributes
-                .iter()
-                .any(|(key, value)| key.as_ref() == ATTR_EVENT_NAME && value == "Log")
-        );
+        assert_eq!(decoded.event_name.as_deref(), Some("Log"));
+        assert!(decoded.attributes.is_empty());
     }
 
     // ── Finding 1: enumerator error check ──────────────────────────────────────
@@ -1617,7 +1666,102 @@ mod tests {
             decoded
                 .attributes
                 .iter()
-                .any(|(k, v)| k == ATTR_EVENT_ID && v == "20")
+                .any(|(k, v)| k == ATTR_EVENT_ID && matches!(v, DecodedAttrValue::Int(20)))
+        );
+    }
+
+    #[test]
+    fn cs_decode_part_b_name_becomes_event_name() {
+        // G1: OTLP `event_name` should reflect PartB.name (the user-configured
+        // event name), not EH.Name, so Geneva routes/writes it as the Bond
+        // `name` field for this record type.
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "name");
+        add_string_data(&mut data, "my-event-name");
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let cs_direct = decode_cs_otel_logs("user_events:myprovider_L4K1", &payload);
+        assert!(cs_direct.is_some(), "direct CS decode should succeed");
+        assert_eq!(
+            cs_direct.unwrap().part_b_name.as_deref(),
+            Some("my-event-name")
+        );
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:myprovider_L4K1"),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload_size: payload.len(),
+                payload,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        assert_eq!(decoded.event_name.as_deref(), Some("my-event-name"));
+        // PartB.name is surfaced only via the typed `event_name` column; no
+        // `cs.part_b.name` or EH `event.name` inspection attribute is emitted.
+        assert!(decoded.attributes.is_empty());
+    }
+
+    #[test]
+    fn cs_decode_part_c_preserves_typed_values() {
+        // G2: PartC int/bool/double fields should land on the record as the
+        // corresponding typed DecodedAttrValue variants, so the Geneva
+        // uploader emits BT_INT64/BT_BOOL/BT_DOUBLE (not BT_STRING).
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
+        add_u32_data(&mut data, 0x400);
+        add_struct_meta(&mut meta, "PartB", 1);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_struct_meta(&mut meta, "PartC", 4);
+        add_value_field_meta(&mut meta, "int_field", ENC_VALUE32, FMT_SIGNED_INT);
+        add_u32_data(&mut data, (-7_i32) as u32);
+        add_value_field_meta(&mut meta, "bool_field", ENC_VALUE8, FMT_BOOLEAN);
+        data.push(1);
+        add_value_field_meta(&mut meta, "double_field", ENC_VALUE64, FMT_FLOAT);
+        data.extend_from_slice(&(2.5_f64).to_le_bytes());
+        add_string_field_meta(&mut meta, "str_field");
+        add_string_data(&mut data, "hello");
+        let payload = build_full_payload(4, "Log", &meta, &data);
+        let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+            Arc::<str>::from("user_events:myprovider_L4K1"),
+            RawUsereventsRecord {
+                subscription_index: 0,
+                timestamp_unix_nano: 1_000_000,
+                cpu: 0,
+                pid: 1,
+                tid: 1,
+                sample_id: 1,
+                payload_size: payload.len(),
+                payload,
+            },
+            &FormatConfig::CommonSchemaOtelLogs,
+        );
+        assert!(!cs_failed);
+        let find = |key: &str| {
+            decoded
+                .attributes
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(find("int_field"), Some(DecodedAttrValue::Int(-7)));
+        assert_eq!(find("bool_field"), Some(DecodedAttrValue::Bool(true)));
+        assert_eq!(find("double_field"), Some(DecodedAttrValue::Double(2.5)));
+        assert_eq!(
+            find("str_field"),
+            Some(DecodedAttrValue::Str("hello".to_owned()))
         );
     }
 

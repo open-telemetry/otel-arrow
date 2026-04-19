@@ -96,36 +96,49 @@ Current behavior:
 - decodes EventHeader-encoded Common Schema log payloads
 - promotes `event_name`, `severityNumber`, `severityText`, `body`, and
   `eventId` from Common Schema PartB
-- maps PartA fields including timestamp, trace/span context, and service
-  metadata when present
+- maps PartA fields including timestamp and trace/span context into typed
+  OTLP log fields when present
 - flattens eligible PartC scalar attributes into emitted log attributes
 - falls back to preserving the payload as base64-encoded data when Common
   Schema decoding fails
 
 ## Output Shape
 
-The receiver emits OTAP logs.
+The receiver emits OTAP logs. Payload data is represented as typed OTLP log
+fields and flat application attributes; receiver transport/debug metadata is
+not emitted as log attributes.
 
-Current output always includes these attributes:
+The only PartB field emitted as a log attribute is:
 
-- `linux.userevents.tracepoint`
-- `linux.userevents.cpu`
-- `process.pid`
-- `thread.id`
-- `linux.userevents.sample_id`
-- `linux.userevents.payload_size`
-- `linux.userevents.body_encoding`
-- `linux.userevents.decode.mode`
+- `eventId` (typed Int, when the Common Schema payload carries PartB.eventId)
 
-Depending on configured format, it may also include:
+Typed OTLP log fields (not attributes) also carry:
 
-- `event.provider`
-- `event.name`
-- `eventheader.level`
-- `eventheader.keyword`
-- `cs.__csver__`
-- `cs.part_b._typeName`
-- `cs.part_b.name`
+- `body`
+- `severity_number` / `severity_text`
+- `event_name` (prefers PartB.name, falls back to EH.Name / PartA.name)
+- `time_unix_nano` (from PartA.time when present, else the perf sample timestamp)
+- `trace_id` / `span_id` / `flags` (from PartA.ext_dt_*)
+
+PartC fields are emitted as flat attributes using their original names
+(e.g. `user_name`, `user_email`) with their source types preserved
+(`Int`/`Bool`/`Double`/`Str`).
+
+The receiver intentionally does **not** emit receiver-internal
+transport/diagnostic fields such as tracepoint name, provider name,
+EventHeader level/keyword, CPU, PID/TID, sample id, payload size, body
+encoding, or decode mode. These describe the receiver itself rather than the
+application payload; surfacing them as OTLP log attributes would pollute
+downstream backends (e.g. Geneva turns each attribute into a dynamic backend
+column).
+
+Similarly, no `cs.*` inspection attributes are emitted (e.g.
+`cs.__csver__`, `cs.part_b._typeName`, `cs.part_b.name`). These would
+otherwise surface as `cs_*` backend columns in Geneva; PartB.name is
+already represented by the typed `event_name` column. The base64
+fallback path remains available internally when Common Schema decoding
+fails, but no `linux.userevents.body_encoding` marker is exposed to
+consumers.
 
 ## Runtime Behavior
 

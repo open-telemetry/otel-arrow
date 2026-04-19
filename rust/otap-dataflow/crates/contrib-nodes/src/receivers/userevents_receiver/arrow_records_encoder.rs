@@ -4,7 +4,6 @@
 //! Arrow encoding for Linux userevents logs.
 
 use chrono::Utc;
-use itoa::Buffer as ItoaBuffer;
 use otap_df_pdata::encode::Result;
 use otap_df_pdata::encode::record::{
     attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
@@ -13,16 +12,7 @@ use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{SpanId, TraceId};
 
-use super::decoder::DecodedUsereventsRecord;
-
-const ATTR_TRACEPOINT: &str = "linux.userevents.tracepoint";
-const ATTR_CPU: &str = "linux.userevents.cpu";
-const ATTR_PID: &str = "process.pid";
-const ATTR_TID: &str = "thread.id";
-const ATTR_SAMPLE_ID: &str = "linux.userevents.sample_id";
-const ATTR_PAYLOAD_SIZE: &str = "linux.userevents.payload_size";
-const ATTR_ENCODING: &str = "linux.userevents.body_encoding";
-const BODY_ENCODING_BASE64: &str = "base64";
+use super::decoder::{DecodedAttrValue, DecodedUsereventsRecord};
 
 /// Builder for creating Arrow record batches from decoded userevents messages.
 pub(super) struct ArrowRecordsBuilder {
@@ -78,36 +68,25 @@ impl ArrowRecordsBuilder {
             .logs
             .append_span_id(record.span_id.as_ref() as Option<&SpanId>);
 
-        self.append_attr(ATTR_TRACEPOINT, &record.tracepoint);
-        let mut cpu_buf = ItoaBuffer::new();
-        self.append_attr(ATTR_CPU, cpu_buf.format(record.cpu));
-        let mut pid_buf = ItoaBuffer::new();
-        self.append_attr(ATTR_PID, pid_buf.format(record.pid));
-        let mut tid_buf = ItoaBuffer::new();
-        self.append_attr(ATTR_TID, tid_buf.format(record.tid));
-        let mut sample_id_buf = ItoaBuffer::new();
-        self.append_attr(ATTR_SAMPLE_ID, sample_id_buf.format(record.sample_id));
-        let mut payload_size_buf = ItoaBuffer::new();
-        self.append_attr(
-            ATTR_PAYLOAD_SIZE,
-            payload_size_buf.format(record.payload_size),
-        );
-        if record.body_is_base64 {
-            self.append_attr(ATTR_ENCODING, BODY_ENCODING_BASE64);
-        }
+        // Receiver-internal transport/diagnostic fields (tracepoint, cpu, pid,
+        // tid, sample_id, payload_size, body_encoding) are intentionally not
+        // emitted as downstream log attributes: Geneva treats OTLP log
+        // attributes as backend columns, so surfacing per-record diagnostics
+        // there would pollute the application schema.
         for (key, value) in record.attributes {
-            self.append_attr(key.as_ref(), &value);
+            self.log_attrs.append_key(key.as_ref());
+            match value {
+                DecodedAttrValue::Str(s) => {
+                    self.log_attrs.any_values_builder.append_str(s.as_bytes())
+                }
+                DecodedAttrValue::Int(i) => self.log_attrs.any_values_builder.append_int(i),
+                DecodedAttrValue::Bool(b) => self.log_attrs.any_values_builder.append_bool(b),
+                DecodedAttrValue::Double(d) => self.log_attrs.any_values_builder.append_double(d),
+            }
+            self.log_attrs.append_parent_id(&self.curr_log_id);
         }
 
         self.curr_log_id += 1;
-    }
-
-    fn append_attr(&mut self, key: &str, value: &str) {
-        self.log_attrs.append_key(key);
-        self.log_attrs
-            .any_values_builder
-            .append_str(value.as_bytes());
-        self.log_attrs.append_parent_id(&self.curr_log_id);
     }
 
     /// Builds the Arrow records from the buffered userevents logs.
@@ -151,7 +130,9 @@ impl ArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receivers::userevents_receiver::decoder::DecodedUsereventsRecord;
+    use crate::receivers::userevents_receiver::decoder::{
+        DecodedAttrValue, DecodedUsereventsRecord,
+    };
     use arrow::array::{
         Array, AsArray, DictionaryArray, Int32Array, StringArray, StructArray, UInt32Array,
     };
@@ -176,10 +157,10 @@ mod tests {
             flags: None,
             trace_id: None,
             span_id: None,
-            attributes: vec![
-                ("event.provider".into(), "example".to_owned()),
-                ("event.name".into(), "example-event".to_owned()),
-            ],
+            attributes: vec![(
+                "user_name".into(),
+                DecodedAttrValue::Str("example".to_owned()),
+            )],
         });
 
         let batch = builder.build().expect("build succeeds");
@@ -191,7 +172,9 @@ mod tests {
             .expect("attrs batch present");
 
         assert_eq!(logs_rb.num_rows(), 1);
-        assert_eq!(attrs_rb.num_rows(), 9);
+        // Only caller/application attributes are emitted downstream. Receiver
+        // transport diagnostics are intentionally not encoded as log attrs.
+        assert_eq!(attrs_rb.num_rows(), 1);
 
         let time_col = logs_rb
             .column_by_name("time_unix_nano")

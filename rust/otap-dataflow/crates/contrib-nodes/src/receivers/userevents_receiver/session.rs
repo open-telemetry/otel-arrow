@@ -7,7 +7,6 @@
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use std::collections::HashMap;
     use std::io;
     use std::time::Duration;
 
@@ -68,7 +67,6 @@ mod imp {
 
     pub(crate) struct UsereventsSession {
         inner: OneCollectUserEventsSession,
-        tracepoint_index: HashMap<String, usize>,
     }
 
     impl UsereventsSession {
@@ -92,16 +90,12 @@ mod imp {
             };
             for event in drained.events {
                 let EventSource::UserEvents(source) = event.source;
-                let Some(subscription_index) = self
-                    .tracepoint_index
-                    .get(source.tracepoint.as_str())
-                    .copied()
-                else {
+                if source.subscription_index >= self.inner.subscription_count() {
                     stats.dropped_no_subscription += 1;
                     continue;
-                };
+                }
                 out.push(RawUsereventsRecord {
-                    subscription_index,
+                    subscription_index: source.subscription_index,
                     timestamp_unix_nano: event.timestamp_unix_nano,
                     cpu: event.cpu.unwrap_or_default(),
                     pid: event.pid.unwrap_or_default(),
@@ -126,11 +120,6 @@ mod imp {
                     tracepoint: subscription.tracepoint.clone(),
                 })
                 .collect::<Vec<_>>();
-            let tracepoint_index = subscriptions
-                .iter()
-                .enumerate()
-                .map(|(index, subscription)| (subscription.tracepoint.clone(), index))
-                .collect();
             let config = UserEventsSessionConfig {
                 per_cpu_buffer_size: config.per_cpu_buffer_size,
                 cpu_ids: vec![cpu_id],
@@ -149,10 +138,7 @@ mod imp {
                     }
                 })?;
 
-            Ok(Self {
-                inner,
-                tracepoint_index,
-            })
+            Ok(Self { inner })
         }
 
         pub(crate) async fn drain_ready(

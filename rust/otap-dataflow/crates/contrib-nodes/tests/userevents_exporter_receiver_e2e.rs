@@ -1,6 +1,5 @@
 #![cfg(feature = "userevents-receiver")]
 #![allow(missing_docs)]
-
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -110,6 +109,14 @@ fn validation()
 
             assert_eq!(log_record.severity_number, 17);
             assert_eq!(log_record.severity_text, "ERROR");
+            // G1: the OTLP typed `event_name` column should reflect PartB.name
+            // (the user-visible event name carried by the Rust user-events
+            // exporter), so Geneva routes per-event-name rather than collapsing
+            // to a single "Log" stream.
+            assert_eq!(
+                log_record.event_name,
+                userevents_common_schema_emitter::EVENT_NAME
+            );
             let body = log_record
                 .body
                 .as_ref()
@@ -120,34 +127,28 @@ fn validation()
                 })
                 .expect("string log body");
             assert_eq!(body, userevents_common_schema_emitter::BODY);
-            assert!(
-                attrs
-                    .get("linux.userevents.tracepoint")
-                    .expect("tracepoint attribute")
-                    .contains(userevents_common_schema_emitter::TRACEPOINT_NAME)
-            );
-            assert_eq!(
-                attrs.get("event.provider").map(String::as_str),
-                Some(userevents_common_schema_emitter::PROVIDER_NAME)
-            );
-            assert_eq!(
-                attrs.get("event.name").map(String::as_str),
-                Some(userevents_common_schema_emitter::EVENT_NAME)
-            );
-            assert_eq!(
-                attrs.get("cs.part_b.name").map(String::as_str),
-                Some(userevents_common_schema_emitter::EVENT_NAME)
-            );
-            assert_eq!(
-                attrs.get("cs.part_b.body").map(String::as_str),
-                Some(userevents_common_schema_emitter::BODY)
-            );
-            assert!(
-                !attrs
-                    .get("linux.userevents.decode.mode")
-                    .expect("decode mode")
-                    .is_empty()
-            );
+            // Receiver-internal diagnostics (tracepoint/cpu/sample_id/
+            // payload_size/body_encoding/decode.mode) are intentionally not
+            // emitted as downstream log attributes. Confirm their absence.
+            assert!(!attrs.contains_key("linux.userevents.tracepoint"));
+            assert!(!attrs.contains_key("linux.userevents.cpu"));
+            assert!(!attrs.contains_key("linux.userevents.sample_id"));
+            assert!(!attrs.contains_key("linux.userevents.payload_size"));
+            assert!(!attrs.contains_key("linux.userevents.body_encoding"));
+            assert!(!attrs.contains_key("linux.userevents.decode.mode"));
+            assert!(!attrs.contains_key("event.provider"));
+            assert!(!attrs.contains_key("event.name"));
+            assert!(!attrs.contains_key("eventheader.level"));
+            assert!(!attrs.contains_key("eventheader.keyword"));
+            assert!(!attrs.contains_key("process.pid"));
+            assert!(!attrs.contains_key("thread.id"));
+            // PartB.name is surfaced via the typed `event_name` column only;
+            // no `cs.part_b.name` / `cs.*` inspection attribute is emitted.
+            assert!(!attrs.contains_key("cs.part_b.name"));
+            assert!(!attrs.contains_key("cs.__csver__"));
+            assert!(!attrs.contains_key("cs.part_b._typeName"));
+            // PartB `body` is routed to the typed `LogRecord.body` field
+            // (asserted above), not to a `cs.part_b.body` attribute.
             assert_eq!(
                 attr_value(&attrs, &["user_name", "cs.part_c.user_name"]),
                 Some(userevents_common_schema_emitter::USER_NAME)
@@ -155,6 +156,16 @@ fn validation()
             assert_eq!(
                 attr_value(&attrs, &["user_email", "cs.part_c.user_email"]),
                 Some(userevents_common_schema_emitter::USER_EMAIL)
+            );
+            // G3: eventId is emitted as a typed Int. `log_attributes_as_strings`
+            // stringifies all scalar variants, so the rendered value is "20".
+            assert_eq!(
+                attrs.get("eventId").map(String::as_str),
+                Some(
+                    userevents_common_schema_emitter::EVENT_ID
+                        .to_string()
+                        .as_str()
+                )
             );
         })
     }
