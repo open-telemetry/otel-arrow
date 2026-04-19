@@ -160,30 +160,25 @@ own CPU.
 
 ### What weakens locality
 
-- **`core_affinity::set_for_current` fails.** Some restrictive cgroups or
-  seccomp sandboxes prevent setting affinity; the controller logs
-  `core_affinity.set_failed` and continues without pinning. The first-touch
-  guarantee is then lost.
-- **Process-wide NUMA policy that overrides first-touch.** For example running
-  the engine under `numactl --interleave=all`, or an explicit
-  `set_mempolicy(MPOL_INTERLEAVE)`, forces pages to round-robin across nodes.
-- **Allocator / arena state that predates pinning.** The global allocator may
-  have arena pages that were seeded before the pipeline thread was pinned;
-  those pages can physically reside on a different NUMA node, and subsequent
-  allocations that reuse them inherit that placement.
-- **Fewer pipelines than CPUs on a multi-socket host.** The covered CPUs still
-  get NUMA-local handling, but producers on uncovered CPUs write to rings on
-  *their* NUMA node that this deployment does not collect.
-- **Future changes that open rings for CPUs other than the pipeline's core.**
-  Today `session.rs` always constructs `cpu_ids = vec![pipeline.core_id()]`;
-  opening rings for other CPUs would introduce remote memory reads from the
-  pinned pipeline thread. The single-CPU invariant lives in `session.rs`.
+This is a locality-preserving design, not a hard guarantee. Locality can be
+weakened if:
+
+- CPU affinity cannot be set. This can happen when the requested CPU is outside
+  the process cgroup/cpuset, the CPU is offline, or a container/seccomp policy
+  blocks affinity changes. The controller logs `core_affinity.set_failed` and
+  continues unpinned.
+- The process is started with a NUMA policy that overrides first-touch
+  placement, such as `numactl --interleave=all`.
+- The receiver is changed to read perf rings for CPUs other than its assigned
+  pipeline core. Today `session.rs` intentionally constructs
+  `cpu_ids = vec![pipeline.core_id()]`.
 
 ## Platform Support
 
 This receiver is **Linux-only**.
 
-It does **not** work on macOS because `user_events` is a Linux kernel feature.
+It does **not** work on macOS or Windows because `user_events` is a Linux
+kernel tracing feature. Windows support would require a separate ETW receiver.
 
 ## Current Scope
 
@@ -474,10 +469,17 @@ The receiver reports these counters under `userevents.receiver.metrics`:
 
 This receiver requires all of the following on the host:
 
-- Linux kernel with `CONFIG_USER_EVENTS`
+- Linux kernel built with `CONFIG_USER_EVENTS=y`
 - tracefs available, typically under `/sys/kernel/tracing`
 - permission to read tracefs metadata
 - permission to use `perf_event_open` for the configured tracepoints
+
+Kernel support is distro/config dependent. Recent kernels document
+`user_events` under Linux tracing, but the feature is usable only when the
+running kernel was built with `CONFIG_USER_EVENTS` and exposes
+`user_events_data` / `user_events_status` in tracefs. Some distributions enable
+this by default (for example, Ubuntu releases with newer kernels), while others
+may require a custom kernel config.
 
 The exact permission model depends on the host kernel and security settings.
 
