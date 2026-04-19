@@ -67,91 +67,36 @@ algorithm itself.
 CPU `K` only. If an application thread writes a `user_events` record while the
 kernel has scheduled it on CPU `X`, that record lands in the CPU `X` ring and
 is only visible to the receiver instance that owns CPU `X`. No other receiver
-instance sees it, and there is no cross-CPU aggregation layer in this
-receiver.
-
-The scenarios below illustrate what that means in typical deployments. In
-every scenario, "not collected by this receiver" means the write landed in a
-perf ring that no pipeline is reading - the event is not seen or discarded by
-the receiver, there is simply no receiver attached to that CPU's ring.
-
-### Scenario 1 - Single-core deployment, writer not pinned
+instance sees it, and there is no cross-CPU aggregation layer in this receiver.
 
 ```text
-  df_engine --num-cores 1           8-core host
-  +---------------------------+
-  | pipeline core: 0          |     CPU 0   CPU 1   CPU 2  ...  CPU 7
-  +----------+----------------+      ring    ring    ring        ring
-             | reads            ^      (x)     (x)         (x)
-             +------------------+     no reader attached to these rings
+  user_events write on CPU K
+             |
+             v
+       CPU K perf ring
+             |
+             v
+  receiver pipeline pinned to CPU K
 
-                   app thread - scheduler chooses any CPU
-                   (may run on CPU 0..7)
-
-  app writes on CPU 0  -> collected
-  app writes on CPU 3  -> not collected by this receiver
-                          (no pipeline attached to CPU 3 ring)
+  No other receiver pipeline reads CPU K's ring.
 ```
 
-Takeaway: with a single pipeline core and an unpinned writer, coverage is
-racy - events survive only when the scheduler happens to place the writer on
-CPU 0.
-
-### Scenario 2 - Pin the writer (recommended for single-core deployments)
+For an 8-core host, coverage looks like this:
 
 ```text
-  df_engine --num-cores 1            8-core host
-  +---------------------------+
-  | pipeline core: 0          |      CPU 0   CPU 1  ...  CPU 7
-  +----------+----------------+       ring    ring        ring
-             | reads                   ^
-             +-------------------------+
-                                       |
-                 taskset -c 0 my_app --+    writer pinned to CPU 0
+  CPU:        0      1      2      3      4      5      6      7
+              |      |      |      |      |      |      |      |
+  ring:      R0     R1     R2     R3     R4     R5     R6     R7
+              ^      ^      ^      ^      ^      ^      ^      ^
+              |      |      |      |      |      |      |      |
+  pipeline:  P0     P1     P2     P3     P4     P5     P6     P7
 
-  every app write lands on CPU 0   ->  collected
+  P0 reads only R0. P1 reads only R1. ... P7 reads only R7.
 ```
 
-This is what the E2E smoke test does: both the producer (`basic-logs`) and the
-engine are pinned to CPU 0 with `taskset -c 0`.
-
-### Scenario 3 - Range of cores, partial host coverage
-
-```text
-  df_engine --core-id-range 0-3            8-core host
-  +-----------------------------------+
-  | pipeline cores: 0, 1, 2, 3        |    CPU 0  CPU 1  CPU 2  CPU 3   CPU 4  CPU 5  CPU 6  CPU 7
-  +--+----+----+----+-----------------+    ring   ring   ring   ring    ring   ring   ring   ring
-     |    |    |    |  reads           ^      ^      ^      ^       (x)    (x)    (x)    (x)
-     +----+----+----+------------------+------+------+------+        no reader attached to these rings
-
-  app writes on CPU 0..3 -> collected
-  app writes on CPU 4..7 -> not collected by this receiver
-                            (no pipeline attached to CPUs 4..7 rings)
-```
-
-Takeaway: running fewer pipeline cores than host CPUs means writes that land
-outside the covered range are never collected by this receiver deployment,
-unless the writer is pinned into that range.
-
-### Scenario 4 - Full coverage
-
-```text
-  df_engine --num-cores 0          (0 = all available cores)
-  -----------------------------    8-core host
-  pipeline cores: 0..7              CPU 0  1  2  3  4  5  6  7
-        | | | | | | | |              ^  ^  ^  ^  ^  ^  ^  ^
-        v v v v v v v v              |  |  |  |  |  |  |  |
-      one receiver per CPU, ---------+--+--+--+--+--+--+--+
-      reads its own ring             (reads all rings)
-
-  app writes on any CPU -> collected
-```
-
-Takeaway: matching pipeline cores to host CPUs gives complete coverage without
-relying on writer pinning. This is the simplest production configuration.
-
-### Summary
+If a CPU has no corresponding pipeline, writes on that CPU are not collected by
+this receiver deployment. They are not seen and then discarded; no receiver is
+attached to that CPU's ring.
 
 | Configuration                    | Writer pinned? | Result                                                     |
 |----------------------------------|----------------|------------------------------------------------------------|
@@ -163,7 +108,7 @@ relying on writer pinning. This is the simplest production configuration.
 
 For production, prefer full coverage (`--num-cores 0`) unless you intentionally
 want to sample only a subset of CPUs; for development/testing, a pinned writer
-on a single-core engine (Scenario 2) keeps the moving parts minimal.
+on a single-core engine keeps the moving parts minimal.
 
 ## NUMA Locality
 
