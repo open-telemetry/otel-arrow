@@ -1,212 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776476669014,
+  "lastUpdate": 1776698696803,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "f9fba08844acf16325332fb6aeab753f72dffd4e",
-          "message": "Add delay processor for simulating pipeline latency (#2224)\n\nAdds a new delay processor (urn:otel:processor:delay) that sleeps for a\nconfigurable duration before forwarding each message. This is useful for\nsimulating slow pipeline stages when testing backpressure, inflight\nlimits, and timeout behavior.\n\nThis is a standalone processor and hence it can be placed anywhere in a\npipeline and/or paired with any exporter or other processors.\n\nNote: This is an intentionally minimal component to help flush out\nengine issues now. A future rate limiter (#919) may provide more\nsophisticated flow control. Once that lands, this processor may be\nremoved or kept as a simpler alternative for testing.\n\nOpen question: Should this be a processor (as this PR has), a dedicated\nsleeping exporter (e.g., [urn:otel:exporter:sleep], or a config option\non the existing noop exporter? A processor is more composable — it can\nbe placed anywhere in the pipeline and combined with any exporter — but\na sleeping exporter would be simpler to configure for the common case of\nsimulating a slow backend. Open to suggestions.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-03-10T18:02:06Z",
-          "tree_id": "c9a44768192b5073eed81ee1d1edd6d74a2f5be1",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/f9fba08844acf16325332fb6aeab753f72dffd4e"
-        },
-        "date": 1773177003888,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.3471123157236124,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.4941890676843991,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 99.40625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 99.5859375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001298,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.11395704425019074,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.22219229643468782,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 37.728236607142854,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 37.85546875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000972,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.12954069758919443,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.23260164383561646,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 46.82142857142857,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 47.05078125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001084,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.20444182243208206,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.4009154758749708,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 61.582589285714285,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 61.69921875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000802,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.6608277064574077,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.8541273095497742,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 186.48549107142858,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 186.703125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000941,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.06728518393572808,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.16759356464913644,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 31.471540178571427,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 31.51171875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001154,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -20398,6 +20194,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.002089,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e6b0c45febd8d61b394478536242d1b6b5f6d349",
+          "message": "Update Rust crate arrow to v58 (#2711)\n\n> ℹ️ **Note**\n> \n> This PR body was truncated due to platform limits.\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [arrow](https://redirect.github.com/apache/arrow-rs) | dependencies |\nmajor | `55.2.0` → `58.0.0` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>apache/arrow-rs (arrow)</summary>\n\n###\n[`v58.1.0`](https://redirect.github.com/apache/arrow-rs/blob/HEAD/CHANGELOG.md#5810-2026-03-20)\n\n[Compare\nSource](https://redirect.github.com/apache/arrow-rs/compare/58.0.0...58.1.0)\n\n[Full\nChangelog](https://redirect.github.com/apache/arrow-rs/compare/58.0.0...58.1.0)\n\n**Implemented enhancements:**\n\n- Reuse compression dict lz4\\_block\n[#&#8203;9566](https://redirect.github.com/apache/arrow-rs/issues/9566)\n- \\[Variant] Add `variant_to_arrow` `Struct` type support\n[#&#8203;9529](https://redirect.github.com/apache/arrow-rs/issues/9529)\n- \\[Variant] Add `unshred_variant` support for `Binary` and\n`LargeBinary` types\n[#&#8203;9526](https://redirect.github.com/apache/arrow-rs/issues/9526)\n- \\[Variant] Add `shred_variant` support for `LargeUtf8` and\n`LargeBinary` types\n[#&#8203;9525](https://redirect.github.com/apache/arrow-rs/issues/9525)\n- \\[Variant] `variant_get` tests clean up\n[#&#8203;9517](https://redirect.github.com/apache/arrow-rs/issues/9517)\n- parquet\\_variant: Support LargeUtf8 typed value in `unshred_variant`\n[#&#8203;9513](https://redirect.github.com/apache/arrow-rs/issues/9513)\n- parquet-variant: Support string view typed value in `unshred_variant`\n[#&#8203;9512](https://redirect.github.com/apache/arrow-rs/issues/9512)\n- Deprecate ArrowTimestampType::make\\_value in favor of\nfrom\\_naive\\_datetime\n[#&#8203;9490](https://redirect.github.com/apache/arrow-rs/issues/9490)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Followup for support \\['fieldName'] in VariantPath\n[#&#8203;9478](https://redirect.github.com/apache/arrow-rs/issues/9478)\n- Speedup DELTA\\_BINARY\\_PACKED decoding when bitwidth is 0\n[#&#8203;9476](https://redirect.github.com/apache/arrow-rs/issues/9476)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Support CSV files encoded with charsets other than UTF-8\n[#&#8203;9465](https://redirect.github.com/apache/arrow-rs/issues/9465)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Expose Avro writer schema when building the reader\n[#&#8203;9460](https://redirect.github.com/apache/arrow-rs/issues/9460)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Python: avoid importing pyarrow classes ever time\n[#&#8203;9438](https://redirect.github.com/apache/arrow-rs/issues/9438)\n- Add `append_nulls` to `MapBuilder`\n[#&#8203;9431](https://redirect.github.com/apache/arrow-rs/issues/9431)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Add `append_non_nulls` to `StructBuilder`\n[#&#8203;9429](https://redirect.github.com/apache/arrow-rs/issues/9429)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Add `append_value_n` to GenericByteBuilder\n[#&#8203;9425](https://redirect.github.com/apache/arrow-rs/issues/9425)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Optimize `from_bitwise_binary_op`\n[#&#8203;9378](https://redirect.github.com/apache/arrow-rs/issues/9378)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Configurable Arrow representation of UTC timestamps for Avro reader\n[#&#8203;9279](https://redirect.github.com/apache/arrow-rs/issues/9279)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\n**Fixed bugs:**\n\n- MutableArrayData::extend does not copy child values for ListView\narrays\n[#&#8203;9561](https://redirect.github.com/apache/arrow-rs/issues/9561)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- ListView interleave bug\n[#&#8203;9559](https://redirect.github.com/apache/arrow-rs/issues/9559)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Flight encoding panics with \"no dict id for field\" with nested dict\narrays\n[#&#8203;9555](https://redirect.github.com/apache/arrow-rs/issues/9555)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\\[[arrow-flight](https://redirect.github.com/apache/arrow-rs/labels/arrow-flight)]\n- \"DeltaBitPackDecoder only supports Int32Type and Int64Type\" but\nunsigned types are supported too\n[#&#8203;9551](https://redirect.github.com/apache/arrow-rs/issues/9551)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Potential overflow when calling `util::bit_mask::set_bits` (soundness\nissue)\n[#&#8203;9543](https://redirect.github.com/apache/arrow-rs/issues/9543)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- handle Null type in try\\_merge for Struct, List, LargeList, and Union\n[#&#8203;9523](https://redirect.github.com/apache/arrow-rs/issues/9523)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Invalid offset in sparse column chunk data for multiple predicates\n[#&#8203;9516](https://redirect.github.com/apache/arrow-rs/issues/9516)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- debug\\_assert\\_eq! in BatchCoalescer panics in debug mode when\nbatch\\_size < 4\n[#&#8203;9506](https://redirect.github.com/apache/arrow-rs/issues/9506)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Parquet Statistics::null\\_count\\_opt wrongly returns Some(0) when\nstats are missing\n[#&#8203;9451](https://redirect.github.com/apache/arrow-rs/issues/9451)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Error \"Not all children array length are the same!\" when decoding rows\nspanning across page boundaries in parquet file when using\n`RowSelection`\n[#&#8203;9370](https://redirect.github.com/apache/arrow-rs/issues/9370)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Avro schema resolution not properly supported for complex types\n[#&#8203;9336](https://redirect.github.com/apache/arrow-rs/issues/9336)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\n**Documentation updates:**\n\n- Update planned release schedule in README.md\n[#&#8203;9466](https://redirect.github.com/apache/arrow-rs/pull/9466)\n([alamb](https://redirect.github.com/alamb))\n\n**Performance improvements:**\n\n- Introduce `NullBuffer::try_from_unsliced` to simplify array\nconstruction\n[#&#8203;9385](https://redirect.github.com/apache/arrow-rs/issues/9385)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- perf: Coalesce page fetches when RowSelection selects all rows\n[#&#8203;9578](https://redirect.github.com/apache/arrow-rs/pull/9578)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- Use chunks\\_exact for has\\_true/has\\_false to enable compiler\nunrolling\n[#&#8203;9570](https://redirect.github.com/apache/arrow-rs/pull/9570)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([adriangb](https://redirect.github.com/adriangb))\n- pyarrow: Cache the imported classes to avoid importing them each time\n[#&#8203;9439](https://redirect.github.com/apache/arrow-rs/pull/9439)\n([Tpt](https://redirect.github.com/Tpt))\n\n**Closed issues:**\n\n- Duplicate macro definition: `partially_shredded_variant_array_gen`\n[#&#8203;9492](https://redirect.github.com/apache/arrow-rs/issues/9492)\n- Enable `LargeList` / `ListView` / `LargeListView` for\n`VariantArray::try_new`\n[#&#8203;9455](https://redirect.github.com/apache/arrow-rs/issues/9455)\n- Support variables/expressions in record\\_batch! macro\n[#&#8203;9245](https://redirect.github.com/apache/arrow-rs/issues/9245)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\n**Merged pull requests:**\n\n- \\[Variant] Add unshred\\_variant support for Binary and LargeBinary\ntypes\n[#&#8203;9576](https://redirect.github.com/apache/arrow-rs/pull/9576)\n([kunalsinghdadhwal](https://redirect.github.com/kunalsinghdadhwal))\n- \\[Variant] Add `variant_to_arrow` `Struct` type support\n[#&#8203;9572](https://redirect.github.com/apache/arrow-rs/pull/9572)\n([sdf-jkl](https://redirect.github.com/sdf-jkl))\n- Make Sbbf Constructers Public\n[#&#8203;9569](https://redirect.github.com/apache/arrow-rs/pull/9569)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([cetra3](https://redirect.github.com/cetra3))\n- fix: Used `checked_add` for bounds checks to avoid UB\n[#&#8203;9568](https://redirect.github.com/apache/arrow-rs/pull/9568)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([etseidl](https://redirect.github.com/etseidl))\n- Add mutable operations to BooleanBuffer (Bit\\*Assign)\n[#&#8203;9567](https://redirect.github.com/apache/arrow-rs/pull/9567)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- chore(deps): update lz4\\_flex requirement from 0.12 to 0.13\n[#&#8203;9565](https://redirect.github.com/apache/arrow-rs/pull/9565)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([dependabot\\[bot\\]](https://redirect.github.com/apps/dependabot))\n- arrow-select: fix MutableArrayData interleave for ListView\n[#&#8203;9560](https://redirect.github.com/apache/arrow-rs/pull/9560)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([asubiotto](https://redirect.github.com/asubiotto))\n- Move `ValueIter` into own module, and add public `record_count`\nfunction\n[#&#8203;9557](https://redirect.github.com/apache/arrow-rs/pull/9557)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Rafferty97](https://redirect.github.com/Rafferty97))\n- arrow-flight: generate dict\\_ids for dicts nested inside complex types\n[#&#8203;9556](https://redirect.github.com/apache/arrow-rs/pull/9556)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\\[[arrow-flight](https://redirect.github.com/apache/arrow-rs/labels/arrow-flight)]\n([asubiotto](https://redirect.github.com/asubiotto))\n- add `shred_variant` support for `LargeUtf8` and `LargeBinary`\n[#&#8203;9554](https://redirect.github.com/apache/arrow-rs/pull/9554)\n([sdf-jkl](https://redirect.github.com/sdf-jkl))\n- \\[minor] Download clickbench file when missing\n[#&#8203;9553](https://redirect.github.com/apache/arrow-rs/pull/9553)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- DeltaBitPackEncoderConversion: Fix panic message on invalid type\n[#&#8203;9552](https://redirect.github.com/apache/arrow-rs/pull/9552)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([progval](https://redirect.github.com/progval))\n- Replace interleave overflow panic with error\n[#&#8203;9549](https://redirect.github.com/apache/arrow-rs/pull/9549)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([xudong963](https://redirect.github.com/xudong963))\n- feat(arrow-avro): `HeaderInfo` to expose OCF header\n[#&#8203;9548](https://redirect.github.com/apache/arrow-rs/pull/9548)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n- chore: Protect `main` branch with required reviews\n[#&#8203;9547](https://redirect.github.com/apache/arrow-rs/pull/9547)\n([comphead](https://redirect.github.com/comphead))\n- Add benchmark for `infer_json_schema`\n[#&#8203;9546](https://redirect.github.com/apache/arrow-rs/pull/9546)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Rafferty97](https://redirect.github.com/Rafferty97))\n- chore(deps): bump black from 24.3.0 to 26.3.1 in /parquet/pytest\n[#&#8203;9545](https://redirect.github.com/apache/arrow-rs/pull/9545)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([dependabot\\[bot\\]](https://redirect.github.com/apps/dependabot))\n- Unroll interleave -25-30%\n[#&#8203;9542](https://redirect.github.com/apache/arrow-rs/pull/9542)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- Optimize `take_fixed_size_binary` For Predefined Value Lengths\n[#&#8203;9535](https://redirect.github.com/apache/arrow-rs/pull/9535)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([tobixdev](https://redirect.github.com/tobixdev))\n- feat: expose arrow schema on async avro reader\n[#&#8203;9534](https://redirect.github.com/apache/arrow-rs/pull/9534)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n- Make with\\_file\\_decryption\\_properties pub instead of pub(crate)\n[#&#8203;9532](https://redirect.github.com/apache/arrow-rs/pull/9532)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- fix: handle Null type in try\\_merge for Struct, List, LargeList, and\nUnion\n[#&#8203;9524](https://redirect.github.com/apache/arrow-rs/pull/9524)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([zhuqi-lucas](https://redirect.github.com/zhuqi-lucas))\n- chore: extend record\\_batch macro to support variables and expressions\n[#&#8203;9522](https://redirect.github.com/apache/arrow-rs/pull/9522)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([buraksenn](https://redirect.github.com/buraksenn))\n- \\[Variant] clean up `variant_get` tests\n[#&#8203;9518](https://redirect.github.com/apache/arrow-rs/pull/9518)\n([sdf-jkl](https://redirect.github.com/sdf-jkl))\n- support large string for unshred variant\n[#&#8203;9515](https://redirect.github.com/apache/arrow-rs/pull/9515)\n([friendlymatthew](https://redirect.github.com/friendlymatthew))\n- support string view unshred variant\n[#&#8203;9514](https://redirect.github.com/apache/arrow-rs/pull/9514)\n([friendlymatthew](https://redirect.github.com/friendlymatthew))\n- Add has\\_true() and has\\_false() to BooleanArray\n[#&#8203;9511](https://redirect.github.com/apache/arrow-rs/pull/9511)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([adriangb](https://redirect.github.com/adriangb))\n- Fix Invalid offset in sparse column chunk data error for multiple\npredicates\n[#&#8203;9509](https://redirect.github.com/apache/arrow-rs/pull/9509)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([cetra3](https://redirect.github.com/cetra3))\n- fix: remove incorrect debug assertion in BatchCoalescer\n[#&#8203;9508](https://redirect.github.com/apache/arrow-rs/pull/9508)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Tim-53](https://redirect.github.com/Tim-53))\n- \\[Json] Add benchmarks for list json reader\n[#&#8203;9507](https://redirect.github.com/apache/arrow-rs/pull/9507)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([liamzwbao](https://redirect.github.com/liamzwbao))\n- fix: first next\\_back() on new RowsIter panics\n[#&#8203;9505](https://redirect.github.com/apache/arrow-rs/pull/9505)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([rluvaton](https://redirect.github.com/rluvaton))\n- Add some benchmarks for decoding delta encoded Parquet\n[#&#8203;9500](https://redirect.github.com/apache/arrow-rs/pull/9500)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([etseidl](https://redirect.github.com/etseidl))\n- chore: remove duplicate macro `partially_shredded_variant_array_gen`\n[#&#8203;9498](https://redirect.github.com/apache/arrow-rs/pull/9498)\n([codephage2020](https://redirect.github.com/codephage2020))\n- Deprecate ArrowTimestampType::make\\_value in favor of\nfrom\\_naive\\_datetime\n[#&#8203;9491](https://redirect.github.com/apache/arrow-rs/pull/9491)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([codephage2020](https://redirect.github.com/codephage2020))\n- fix: Do not assume missing nullcount stat means zero nullcount\n[#&#8203;9481](https://redirect.github.com/apache/arrow-rs/pull/9481)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([scovich](https://redirect.github.com/scovich))\n- \\[Variant] Enahcne bracket access for VariantPath\n[#&#8203;9479](https://redirect.github.com/apache/arrow-rs/pull/9479)\n([klion26](https://redirect.github.com/klion26))\n- Optimize delta binary decoder in the case where bitwidth=0\n[#&#8203;9477](https://redirect.github.com/apache/arrow-rs/pull/9477)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([etseidl](https://redirect.github.com/etseidl))\n- Add PrimitiveRunBuilder::with\\_data\\_type() to customize the values'\nDataType\n[#&#8203;9473](https://redirect.github.com/apache/arrow-rs/pull/9473)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([brunal](https://redirect.github.com/brunal))\n- Convert `prettyprint` tests in `arrow-cast` to `insta` inline\nsnapshots\n[#&#8203;9472](https://redirect.github.com/apache/arrow-rs/pull/9472)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([grtlr](https://redirect.github.com/grtlr))\n- Update strum\\_macros requirement from 0.27 to 0.28\n[#&#8203;9471](https://redirect.github.com/apache/arrow-rs/pull/9471)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([dependabot\\[bot\\]](https://redirect.github.com/apps/dependabot))\n- docs(parquet): Fix broken links in README\n[#&#8203;9467](https://redirect.github.com/apache/arrow-rs/pull/9467)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([SYaoJun](https://redirect.github.com/SYaoJun))\n- Add list-like types support to VariantArray::try\\_new\n[#&#8203;9457](https://redirect.github.com/apache/arrow-rs/pull/9457)\n([sdf-jkl](https://redirect.github.com/sdf-jkl))\n- Simplify downcast\\_...!() macro definitions\n[#&#8203;9454](https://redirect.github.com/apache/arrow-rs/pull/9454)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([brunal](https://redirect.github.com/brunal))\n- feat(parquet): add content defined chunking for arrow writer\n[#&#8203;9450](https://redirect.github.com/apache/arrow-rs/pull/9450)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([kszucs](https://redirect.github.com/kszucs))\n- refactor: simplify iterator using cloned().map(Some)\n[#&#8203;9449](https://redirect.github.com/apache/arrow-rs/pull/9449)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([SYaoJun](https://redirect.github.com/SYaoJun))\n- feat: Optimize from\\_bitwise\\_binary\\_op with 64-bit alignment\n[#&#8203;9441](https://redirect.github.com/apache/arrow-rs/pull/9441)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([kunalsinghdadhwal](https://redirect.github.com/kunalsinghdadhwal))\n- docs: fix markdown link syntax in README\n[#&#8203;9440](https://redirect.github.com/apache/arrow-rs/pull/9440)\n([SYaoJun](https://redirect.github.com/SYaoJun))\n- Move `ListLikeArray` to arrow-array to be shared with json writer and\nparquet unshredding\n[#&#8203;9437](https://redirect.github.com/apache/arrow-rs/pull/9437)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([liamzwbao](https://redirect.github.com/liamzwbao))\n- Add `claim` method to recordbatch for memory accounting\n[#&#8203;9433](https://redirect.github.com/apache/arrow-rs/pull/9433)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([cetra3](https://redirect.github.com/cetra3))\n- Add `append_nulls` to `MapBuilder`\n[#&#8203;9432](https://redirect.github.com/apache/arrow-rs/pull/9432)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Fokko](https://redirect.github.com/Fokko))\n- Add `append_non_nulls` to `StructBuilder`\n[#&#8203;9430](https://redirect.github.com/apache/arrow-rs/pull/9430)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Fokko](https://redirect.github.com/Fokko))\n- Add `append_value_n` to GenericByteBuilder\n[#&#8203;9426](https://redirect.github.com/apache/arrow-rs/pull/9426)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Fokko](https://redirect.github.com/Fokko))\n- refactor: simplify dynamic state for Avro record projection\n[#&#8203;9419](https://redirect.github.com/apache/arrow-rs/pull/9419)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n- Add `NullBuffer::from_unsliced_buffer` helper and refactor call sites\n[#&#8203;9411](https://redirect.github.com/apache/arrow-rs/pull/9411)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Eyad3skr](https://redirect.github.com/Eyad3skr))\n- Implement min, max, sum for run-end-encoded arrays.\n[#&#8203;9409](https://redirect.github.com/apache/arrow-rs/pull/9409)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([brunal](https://redirect.github.com/brunal))\n- feat: add `RunArray::new_unchecked` and `RunArray::into_parts`\n[#&#8203;9376](https://redirect.github.com/apache/arrow-rs/pull/9376)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([rluvaton](https://redirect.github.com/rluvaton))\n- Fix skip\\_records over-counting when partial record precedes num\\_rows\npage skip\n[#&#8203;9374](https://redirect.github.com/apache/arrow-rs/pull/9374)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([jonded94](https://redirect.github.com/jonded94))\n- fix: resolution of complex type variants in Avro unions\n[#&#8203;9328](https://redirect.github.com/apache/arrow-rs/pull/9328)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n- feat(arrow-avro): Configurable Arrow timezone ID for Avro timestamps\n[#&#8203;9280](https://redirect.github.com/apache/arrow-rs/pull/9280)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n\n\\* *This Changelog was automatically generated by\n[github\\_changelog\\_generator](https://redirect.github.com/github-changelog-generator/github-changelog-generator)*\n\n###\n[`v58.0.0`](https://redirect.github.com/apache/arrow-rs/blob/HEAD/CHANGELOG.md#5810-2026-03-20)\n\n[Compare\nSource](https://redirect.github.com/apache/arrow-rs/compare/57.3.0...58.0.0)\n\n[Full\nChangelog](https://redirect.github.com/apache/arrow-rs/compare/58.0.0...58.1.0)\n\n**Implemented enhancements:**\n\n- Reuse compression dict lz4\\_block\n[#&#8203;9566](https://redirect.github.com/apache/arrow-rs/issues/9566)\n- \\[Variant] Add `variant_to_arrow` `Struct` type support\n[#&#8203;9529](https://redirect.github.com/apache/arrow-rs/issues/9529)\n- \\[Variant] Add `unshred_variant` support for `Binary` and\n`LargeBinary` types\n[#&#8203;9526](https://redirect.github.com/apache/arrow-rs/issues/9526)\n- \\[Variant] Add `shred_variant` support for `LargeUtf8` and\n`LargeBinary` types\n[#&#8203;9525](https://redirect.github.com/apache/arrow-rs/issues/9525)\n- \\[Variant] `variant_get` tests clean up\n[#&#8203;9517](https://redirect.github.com/apache/arrow-rs/issues/9517)\n- parquet\\_variant: Support LargeUtf8 typed value in `unshred_variant`\n[#&#8203;9513](https://redirect.github.com/apache/arrow-rs/issues/9513)\n- parquet-variant: Support string view typed value in `unshred_variant`\n[#&#8203;9512](https://redirect.github.com/apache/arrow-rs/issues/9512)\n- Deprecate ArrowTimestampType::make\\_value in favor of\nfrom\\_naive\\_datetime\n[#&#8203;9490](https://redirect.github.com/apache/arrow-rs/issues/9490)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Followup for support \\['fieldName'] in VariantPath\n[#&#8203;9478](https://redirect.github.com/apache/arrow-rs/issues/9478)\n- Speedup DELTA\\_BINARY\\_PACKED decoding when bitwidth is 0\n[#&#8203;9476](https://redirect.github.com/apache/arrow-rs/issues/9476)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Support CSV files encoded with charsets other than UTF-8\n[#&#8203;9465](https://redirect.github.com/apache/arrow-rs/issues/9465)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Expose Avro writer schema when building the reader\n[#&#8203;9460](https://redirect.github.com/apache/arrow-rs/issues/9460)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Python: avoid importing pyarrow classes ever time\n[#&#8203;9438](https://redirect.github.com/apache/arrow-rs/issues/9438)\n- Add `append_nulls` to `MapBuilder`\n[#&#8203;9431](https://redirect.github.com/apache/arrow-rs/issues/9431)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Add `append_non_nulls` to `StructBuilder`\n[#&#8203;9429](https://redirect.github.com/apache/arrow-rs/issues/9429)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Add `append_value_n` to GenericByteBuilder\n[#&#8203;9425](https://redirect.github.com/apache/arrow-rs/issues/9425)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Optimize `from_bitwise_binary_op`\n[#&#8203;9378](https://redirect.github.com/apache/arrow-rs/issues/9378)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Configurable Arrow representation of UTC timestamps for Avro reader\n[#&#8203;9279](https://redirect.github.com/apache/arrow-rs/issues/9279)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\n**Fixed bugs:**\n\n- MutableArrayData::extend does not copy child values for ListView\narrays\n[#&#8203;9561](https://redirect.github.com/apache/arrow-rs/issues/9561)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- ListView interleave bug\n[#&#8203;9559](https://redirect.github.com/apache/arrow-rs/issues/9559)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Flight encoding panics with \"no dict id for field\" with nested dict\narrays\n[#&#8203;9555](https://redirect.github.com/apache/arrow-rs/issues/9555)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\\[[arrow-flight](https://redirect.github.com/apache/arrow-rs/labels/arrow-flight)]\n- \"DeltaBitPackDecoder only supports Int32Type and Int64Type\" but\nunsigned types are supported too\n[#&#8203;9551](https://redirect.github.com/apache/arrow-rs/issues/9551)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Potential overflow when calling `util::bit_mask::set_bits` (soundness\nissue)\n[#&#8203;9543](https://redirect.github.com/apache/arrow-rs/issues/9543)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- handle Null type in try\\_merge for Struct, List, LargeList, and Union\n[#&#8203;9523](https://redirect.github.com/apache/arrow-rs/issues/9523)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Invalid offset in sparse column chunk data for multiple predicates\n[#&#8203;9516](https://redirect.github.com/apache/arrow-rs/issues/9516)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- debug\\_assert\\_eq! in BatchCoalescer panics in debug mode when\nbatch\\_size < 4\n[#&#8203;9506](https://redirect.github.com/apache/arrow-rs/issues/9506)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Parquet Statistics::null\\_count\\_opt wrongly returns Some(0) when\nstats are missing\n[#&#8203;9451](https://redirect.github.com/apache/arrow-rs/issues/9451)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Error \"Not all children array length are the same!\" when decoding rows\nspanning across page boundaries in parquet file when using\n`RowSelection`\n[#&#8203;9370](https://redirect.github.com/apache/arrow-rs/issues/9370)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Avro schema resolution not properly supported for complex types\n[#&#8203;9336](https://redirect.github.com/apache/arrow-rs/issues/9336)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\n**Documentation updates:**\n\n- Update planned release schedule in README.md\n[#&#8203;9466](https://redirect.github.com/apache/arrow-rs/pull/9466)\n([alamb](https://redirect.github.com/alamb))\n\n**Performance improvements:**\n\n- Introduce `NullBuffer::try_from_unsliced` to simplify array\nconstruction\n[#&#8203;9385](https://redirect.github.com/apache/arrow-rs/issues/9385)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- perf: Coalesce page fetches when RowSelection selects all rows\n[#&#8203;9578](https://redirect.github.com/apache/arrow-rs/pull/9578)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- Use chunks\\_exact for has\\_true/has\\_false to enable compiler\nunrolling\n[#&#8203;9570](https://redirect.github.com/apache/arrow-rs/pull/9570)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([adriangb](https://redirect.github.com/adriangb))\n- pyarrow: Cache the imported classes to avoid importing them each time\n[#&#8203;9439](https://redirect.github.com/apache/arrow-rs/pull/9439)\n([Tpt](https://redirect.github.com/Tpt))\n\n**Closed issues:**\n\n- Duplicate macro definition: `partially_shredded_variant_array_gen`\n[#&#8203;9492](https://redirect.github.com/apache/arrow-rs/issues/9492)\n- Enable `LargeList` / `ListView` / `LargeListView` for\n`VariantArray::try_new`\n[#&#8203;9455](https://redirect.github.com/apache/arrow-rs/issues/9455)\n- Support variables/expressions in record\\_batch! macro\n[#&#8203;9245](https://redirect.github.com/apache/arrow-rs/issues/9245)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\n**Merged pull requests:**\n\n- \\[Variant] Add unshred\\_variant support for Binary and LargeBinary\ntypes\n[#&#8203;9576](https://redirect.github.com/apache/arrow-rs/pull/9576)\n([kunalsinghdadhwal](https://redirect.github.com/kunalsinghdadhwal))\n- \\[Variant] Add `variant_to_arrow` `Struct` type support\n[#&#8203;9572](https://redirect.github.com/apache/arrow-rs/pull/9572)\n([sdf-jkl](https://redirect.github.com/sdf-jkl))\n- Make Sbbf Constructers Public\n[#&#8203;9569](https://redirect.github.com/apache/arrow-rs/pull/9569)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([cetra3](https://redirect.github.com/cetra3))\n- fix: Used `checked_add` for bounds checks to avoid UB\n[#&#8203;9568](https://redirect.github.com/apache/arrow-rs/pull/9568)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([etseidl](https://redirect.github.com/etseidl))\n- Add mutable operations to BooleanBuffer (Bit\\*Assign)\n[#&#8203;9567](https://redirect.github.com/apache/arrow-rs/pull/9567)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- chore(deps): update lz4\\_flex requirement from 0.12 to 0.13\n[#&#8203;9565](https://redirect.github.com/apache/arrow-rs/pull/9565)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([dependabot\\[bot\\]](https://redirect.github.com/apps/dependabot))\n- arrow-select: fix MutableArrayData interleave for ListView\n[#&#8203;9560](https://redirect.github.com/apache/arrow-rs/pull/9560)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([asubiotto](https://redirect.github.com/asubiotto))\n- Move `ValueIter` into own module, and add public `record_count`\nfunction\n[#&#8203;9557](https://redirect.github.com/apache/arrow-rs/pull/9557)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Rafferty97](https://redirect.github.com/Rafferty97))\n- arrow-flight: generate dict\\_ids for dicts nested inside complex types\n[#&#8203;9556](https://redirect.github.com/apache/arrow-rs/pull/9556)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n\\[[arrow-flight](https://redirect.github.com/apache/arrow-rs/labels/arrow-flight)]\n([asubiotto](https://redirect.github.com/asubiotto))\n- add `shred_variant` support for `LargeUtf8` and `LargeBinary`\n[#&#8203;9554](https://redirect.github.com/apache/arrow-rs/pull/9554)\n([sdf-jkl](https://redirect.github.com/sdf-jkl))\n- \\[minor] Download clickbench file when missing\n[#&#8203;9553](https://redirect.github.com/apache/arrow-rs/pull/9553)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- DeltaBitPackEncoderConversion: Fix panic message on invalid type\n[#&#8203;9552](https://redirect.github.com/apache/arrow-rs/pull/9552)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([progval](https://redirect.github.com/progval))\n- Replace interleave overflow panic with error\n[#&#8203;9549](https://redirect.github.com/apache/arrow-rs/pull/9549)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([xudong963](https://redirect.github.com/xudong963))\n- feat(arrow-avro): `HeaderInfo` to expose OCF header\n[#&#8203;9548](https://redirect.github.com/apache/arrow-rs/pull/9548)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n- chore: Protect `main` branch with required reviews\n[#&#8203;9547](https://redirect.github.com/apache/arrow-rs/pull/9547)\n([comphead](https://redirect.github.com/comphead))\n- Add benchmark for `infer_json_schema`\n[#&#8203;9546](https://redirect.github.com/apache/arrow-rs/pull/9546)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Rafferty97](https://redirect.github.com/Rafferty97))\n- chore(deps): bump black from 24.3.0 to 26.3.1 in /parquet/pytest\n[#&#8203;9545](https://redirect.github.com/apache/arrow-rs/pull/9545)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([dependabot\\[bot\\]](https://redirect.github.com/apps/dependabot))\n- Unroll interleave -25-30%\n[#&#8203;9542](https://redirect.github.com/apache/arrow-rs/pull/9542)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- Optimize `take_fixed_size_binary` For Predefined Value Lengths\n[#&#8203;9535](https://redirect.github.com/apache/arrow-rs/pull/9535)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([tobixdev](https://redirect.github.com/tobixdev))\n- feat: expose arrow schema on async avro reader\n[#&#8203;9534](https://redirect.github.com/apache/arrow-rs/pull/9534)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n- Make with\\_file\\_decryption\\_properties pub instead of pub(crate)\n[#&#8203;9532](https://redirect.github.com/apache/arrow-rs/pull/9532)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([Dandandan](https://redirect.github.com/Dandandan))\n- fix: handle Null type in try\\_merge for Struct, List, LargeList, and\nUnion\n[#&#8203;9524](https://redirect.github.com/apache/arrow-rs/pull/9524)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([zhuqi-lucas](https://redirect.github.com/zhuqi-lucas))\n- chore: extend record\\_batch macro to support variables and expressions\n[#&#8203;9522](https://redirect.github.com/apache/arrow-rs/pull/9522)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([buraksenn](https://redirect.github.com/buraksenn))\n- \\[Variant] clean up `variant_get` tests\n[#&#8203;9518](https://redirect.github.com/apache/arrow-rs/pull/9518)\n([sdf-jkl](https://redirect.github.com/sdf-jkl))\n- support large string for unshred variant\n[#&#8203;9515](https://redirect.github.com/apache/arrow-rs/pull/9515)\n([friendlymatthew](https://redirect.github.com/friendlymatthew))\n- support string view unshred variant\n[#&#8203;9514](https://redirect.github.com/apache/arrow-rs/pull/9514)\n([friendlymatthew](https://redirect.github.com/friendlymatthew))\n- Add has\\_true() and has\\_false() to BooleanArray\n[#&#8203;9511](https://redirect.github.com/apache/arrow-rs/pull/9511)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([adriangb](https://redirect.github.com/adriangb))\n- Fix Invalid offset in sparse column chunk data error for multiple\npredicates\n[#&#8203;9509](https://redirect.github.com/apache/arrow-rs/pull/9509)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([cetra3](https://redirect.github.com/cetra3))\n- fix: remove incorrect debug assertion in BatchCoalescer\n[#&#8203;9508](https://redirect.github.com/apache/arrow-rs/pull/9508)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Tim-53](https://redirect.github.com/Tim-53))\n- \\[Json] Add benchmarks for list json reader\n[#&#8203;9507](https://redirect.github.com/apache/arrow-rs/pull/9507)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([liamzwbao](https://redirect.github.com/liamzwbao))\n- fix: first next\\_back() on new RowsIter panics\n[#&#8203;9505](https://redirect.github.com/apache/arrow-rs/pull/9505)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([rluvaton](https://redirect.github.com/rluvaton))\n- Add some benchmarks for decoding delta encoded Parquet\n[#&#8203;9500](https://redirect.github.com/apache/arrow-rs/pull/9500)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([etseidl](https://redirect.github.com/etseidl))\n- chore: remove duplicate macro `partially_shredded_variant_array_gen`\n[#&#8203;9498](https://redirect.github.com/apache/arrow-rs/pull/9498)\n([codephage2020](https://redirect.github.com/codephage2020))\n- Deprecate ArrowTimestampType::make\\_value in favor of\nfrom\\_naive\\_datetime\n[#&#8203;9491](https://redirect.github.com/apache/arrow-rs/pull/9491)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([codephage2020](https://redirect.github.com/codephage2020))\n- fix: Do not assume missing nullcount stat means zero nullcount\n[#&#8203;9481](https://redirect.github.com/apache/arrow-rs/pull/9481)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([scovich](https://redirect.github.com/scovich))\n- \\[Variant] Enahcne bracket access for VariantPath\n[#&#8203;9479](https://redirect.github.com/apache/arrow-rs/pull/9479)\n([klion26](https://redirect.github.com/klion26))\n- Optimize delta binary decoder in the case where bitwidth=0\n[#&#8203;9477](https://redirect.github.com/apache/arrow-rs/pull/9477)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([etseidl](https://redirect.github.com/etseidl))\n- Add PrimitiveRunBuilder::with\\_data\\_type() to customize the values'\nDataType\n[#&#8203;9473](https://redirect.github.com/apache/arrow-rs/pull/9473)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([brunal](https://redirect.github.com/brunal))\n- Convert `prettyprint` tests in `arrow-cast` to `insta` inline\nsnapshots\n[#&#8203;9472](https://redirect.github.com/apache/arrow-rs/pull/9472)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([grtlr](https://redirect.github.com/grtlr))\n- Update strum\\_macros requirement from 0.27 to 0.28\n[#&#8203;9471](https://redirect.github.com/apache/arrow-rs/pull/9471)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([dependabot\\[bot\\]](https://redirect.github.com/apps/dependabot))\n- docs(parquet): Fix broken links in README\n[#&#8203;9467](https://redirect.github.com/apache/arrow-rs/pull/9467)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([SYaoJun](https://redirect.github.com/SYaoJun))\n- Add list-like types support to VariantArray::try\\_new\n[#&#8203;9457](https://redirect.github.com/apache/arrow-rs/pull/9457)\n([sdf-jkl](https://redirect.github.com/sdf-jkl))\n- Simplify downcast\\_...!() macro definitions\n[#&#8203;9454](https://redirect.github.com/apache/arrow-rs/pull/9454)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([brunal](https://redirect.github.com/brunal))\n- feat(parquet): add content defined chunking for arrow writer\n[#&#8203;9450](https://redirect.github.com/apache/arrow-rs/pull/9450)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([kszucs](https://redirect.github.com/kszucs))\n- refactor: simplify iterator using cloned().map(Some)\n[#&#8203;9449](https://redirect.github.com/apache/arrow-rs/pull/9449)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([SYaoJun](https://redirect.github.com/SYaoJun))\n- feat: Optimize from\\_bitwise\\_binary\\_op with 64-bit alignment\n[#&#8203;9441](https://redirect.github.com/apache/arrow-rs/pull/9441)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([kunalsinghdadhwal](https://redirect.github.com/kunalsinghdadhwal))\n- docs: fix markdown link syntax in README\n[#&#8203;9440](https://redirect.github.com/apache/arrow-rs/pull/9440)\n([SYaoJun](https://redirect.github.com/SYaoJun))\n- Move `ListLikeArray` to arrow-array to be shared with json writer and\nparquet unshredding\n[#&#8203;9437](https://redirect.github.com/apache/arrow-rs/pull/9437)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([liamzwbao](https://redirect.github.com/liamzwbao))\n- Add `claim` method to recordbatch for memory accounting\n[#&#8203;9433](https://redirect.github.com/apache/arrow-rs/pull/9433)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([cetra3](https://redirect.github.com/cetra3))\n- Add `append_nulls` to `MapBuilder`\n[#&#8203;9432](https://redirect.github.com/apache/arrow-rs/pull/9432)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Fokko](https://redirect.github.com/Fokko))\n- Add `append_non_nulls` to `StructBuilder`\n[#&#8203;9430](https://redirect.github.com/apache/arrow-rs/pull/9430)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Fokko](https://redirect.github.com/Fokko))\n- Add `append_value_n` to GenericByteBuilder\n[#&#8203;9426](https://redirect.github.com/apache/arrow-rs/pull/9426)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Fokko](https://redirect.github.com/Fokko))\n- refactor: simplify dynamic state for Avro record projection\n[#&#8203;9419](https://redirect.github.com/apache/arrow-rs/pull/9419)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n- Add `NullBuffer::from_unsliced_buffer` helper and refactor call sites\n[#&#8203;9411](https://redirect.github.com/apache/arrow-rs/pull/9411)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([Eyad3skr](https://redirect.github.com/Eyad3skr))\n- Implement min, max, sum for run-end-encoded arrays.\n[#&#8203;9409](https://redirect.github.com/apache/arrow-rs/pull/9409)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([brunal](https://redirect.github.com/brunal))\n- feat: add `RunArray::new_unchecked` and `RunArray::into_parts`\n[#&#8203;9376](https://redirect.github.com/apache/arrow-rs/pull/9376)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([rluvaton](https://redirect.github.com/rluvaton))\n- Fix skip\\_records over-counting when partial record precedes num\\_rows\npage skip\n[#&#8203;9374](https://redirect.github.com/apache/arrow-rs/pull/9374)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n([jonded94](https://redirect.github.com/jonded94))\n- fix: resolution of complex type variants in Avro unions\n[#&#8203;9328](https://redirect.github.com/apache/arrow-rs/pull/9328)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n- feat(arrow-avro): Configurable Arrow timezone ID for Avro timestamps\n[#&#8203;9280](https://redirect.github.com/apache/arrow-rs/pull/9280)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([mzabaluev](https://redirect.github.com/mzabaluev))\n\n\\* *This Changelog was automatically generated by\n[github\\_changelog\\_generator](https://redirect.github.com/github-changelog-generator/github-changelog-generator)*\n\n###\n[`v57.3.0`](https://redirect.github.com/apache/arrow-rs/releases/tag/57.3.0):\narrow 57.3.0\n\n[Compare\nSource](https://redirect.github.com/apache/arrow-rs/compare/57.2.0...57.3.0)\n\n<!---\n  Licensed to the Apache Software Foundation (ASF) under one\n  or more contributor license agreements.  See the NOTICE file\n  distributed with this work for additional information\n  regarding copyright ownership.  The ASF licenses this file\n  to you under the Apache License, Version 2.0 (the\n  \"License\"); you may not use this file except in compliance\n  with the License.  You may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\n  Unless required by applicable law or agreed to in writing,\n  software distributed under the License is distributed on an\n  \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n  KIND, either express or implied.  See the License for the\n  specific language governing permissions and limitations\n  under the License.\n-->\n\n### Changelog\n\n#### [57.3.0](https://redirect.github.com/apache/arrow-rs/tree/57.3.0)\n(2026-02-02)\n\n[Full\nChangelog](https://redirect.github.com/apache/arrow-rs/compare/57.2.0...57.3.0)\n\n**Breaking changes:**\n\n- Revert \"Seal Array trait\", mark `Array` as `unsafe`\n[#&#8203;9313](https://redirect.github.com/apache/arrow-rs/pull/9313)\n([alamb](https://redirect.github.com/alamb),\n[gabotechs](https://redirect.github.com/gabotechs))\n- Mark `BufferBuilder::new_from_buffer` as unsafe\n[#&#8203;9312](https://redirect.github.com/apache/arrow-rs/pull/9312)\n([alamb](https://redirect.github.com/alamb),\n[Jefffrey](https://redirect.github.com/Jefffrey))\n\n**Fixed bugs:**\n\n- Fix string array equality when the values buffer is the same and only\nthe offsets to access it differ\n[#&#8203;9330](https://redirect.github.com/apache/arrow-rs/pull/9330)\n([alamb](https://redirect.github.com/alamb),\n[jhorstmann](https://redirect.github.com/jhorstmann))\n- Ensure `BufferBuilder::truncate` doesn't overset length\n[#&#8203;9311](https://redirect.github.com/apache/arrow-rs/pull/9311)\n([alamb](https://redirect.github.com/alamb),\n[Jefffrey](https://redirect.github.com/Jefffrey))\n- \\[parquet] Provide only encrypted column stats in plaintext footer\n[#&#8203;9310](https://redirect.github.com/apache/arrow-rs/pull/9310)\n([alamb](https://redirect.github.com/alamb),\n[rok](https://redirect.github.com/rok),\n[adamreeve](https://redirect.github.com/adamreeve))\n- \\[regression] Error with adaptive predicate pushdown: \"Invalid offset\n…\" [#&#8203;9309](https://redirect.github.com/apache/arrow-rs/pull/9309)\n([alamb](https://redirect.github.com/alamb),\n[erratic-pattern](https://redirect.github.com/erratic-pattern),\n[sdf-jkl](https://redirect.github.com/sdf-jkl))\n\n###\n[`v57.2.0`](https://redirect.github.com/apache/arrow-rs/releases/tag/57.2.0):\narrow 57.2.0\n\n[Compare\nSource](https://redirect.github.com/apache/arrow-rs/compare/57.1.0...57.2.0)\n\n<!---\n  Licensed to the Apache Software Foundation (ASF) under one\n  or more contributor license agreements.  See the NOTICE file\n  distributed with this work for additional information\n  regarding copyright ownership.  The ASF licenses this file\n  to you under the Apache License, Version 2.0 (the\n  \"License\"); you may not use this file except in compliance\n  with the License.  You may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\n  Unless required by applicable law or agreed to in writing,\n  software distributed under the License is distributed on an\n  \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n  KIND, either express or implied.  See the License for the\n  specific language governing permissions and limitations\n  under the License.\n-->\n\n### Changelog\n\n#### [57.2.0](https://redirect.github.com/apache/arrow-rs/tree/57.2.0)\n(2026-01-07)\n\n[Full\nChangelog](https://redirect.github.com/apache/arrow-rs/compare/57.1.0...57.2.0)\n\n**Breaking changes:**\n\n- Seal Array trait\n[#&#8203;9092](https://redirect.github.com/apache/arrow-rs/pull/9092)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n([tustvold](https://redirect.github.com/tustvold))\n- \\[Variant] Unify the CastOptions usage in parquet-variant-compute\n[#&#8203;8984](https://redirect.github.com/apache/arrow-rs/pull/8984)\n([klion26](https://redirect.github.com/klion26))\n\n**Implemented enhancements:**\n\n- \\[parquet] further relax `LevelInfoBuilder::types_compatible` for\n`ArrowWriter`\n[#&#8203;9098](https://redirect.github.com/apache/arrow-rs/issues/9098)\n- Update arrow-row documentation with Union encoding\n[#&#8203;9084](https://redirect.github.com/apache/arrow-rs/issues/9084)\n- Add code examples for min and max compute functions\n[#&#8203;9055](https://redirect.github.com/apache/arrow-rs/issues/9055)\n- Add `append_n` to bytes view builder API\n[#&#8203;9034](https://redirect.github.com/apache/arrow-rs/issues/9034)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Move `RunArray::get_physical_indices` to `RunEndBuffer`\n[#&#8203;9025](https://redirect.github.com/apache/arrow-rs/issues/9025)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Allow quote style in csv writer\n[#&#8203;9003](https://redirect.github.com/apache/arrow-rs/issues/9003)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- IPC support for ListView\n[#&#8203;9002](https://redirect.github.com/apache/arrow-rs/issues/9002)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Implement `BinaryArrayType` for `&FixedSizeBinaryArray`s\n[#&#8203;8992](https://redirect.github.com/apache/arrow-rs/issues/8992)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- arrow-buffer: implement num-traits for i256\n[#&#8203;8976](https://redirect.github.com/apache/arrow-rs/issues/8976)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Support for `Arc<str>` in `ParquetRecordWriter` derive macro\n[#&#8203;8972](https://redirect.github.com/apache/arrow-rs/issues/8972)\n- \\[arrow-avro] suggest switching from xz to liblzma\n[#&#8203;8970](https://redirect.github.com/apache/arrow-rs/issues/8970)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- arrow-buffer: add i256::trailing\\_zeros\n[#&#8203;8968](https://redirect.github.com/apache/arrow-rs/issues/8968)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- arrow-buffer: make i256::leading\\_zeros public\n[#&#8203;8965](https://redirect.github.com/apache/arrow-rs/issues/8965)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Add spark like `ignoreLeadingWhiteSpace` and\n`ignoreTrailingWhiteSpace` options to the csv writer\n[#&#8203;8961](https://redirect.github.com/apache/arrow-rs/issues/8961)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Add round trip benchmark for Parquet writer/reader\n[#&#8203;8955](https://redirect.github.com/apache/arrow-rs/issues/8955)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Support performant `interleave` for List/LargeList\n[#&#8203;8952](https://redirect.github.com/apache/arrow-rs/issues/8952)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- \\[Variant] Support array access when parsing `VariantPath`\n[#&#8203;8946](https://redirect.github.com/apache/arrow-rs/issues/8946)\n- Some panic!s could be represented as unimplemented!s\n[#&#8203;8932](https://redirect.github.com/apache/arrow-rs/issues/8932)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- \\[Variant] easier way to construct a shredded schema\n[#&#8203;8922](https://redirect.github.com/apache/arrow-rs/issues/8922)\n- Support `DataType::ListView` and `DataType::LargeListView` in\n`ArrayData::new_null`\n[#&#8203;8908](https://redirect.github.com/apache/arrow-rs/issues/8908)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Add `GenericListViewArray::from_iter_primitive`\n[#&#8203;8906](https://redirect.github.com/apache/arrow-rs/issues/8906)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- \\[Variant] Unify the cast option usage in ParquentVariant\n[#&#8203;8873](https://redirect.github.com/apache/arrow-rs/issues/8873)\n- Blog post about efficient filter representation in Parquet filter\npushdown\n[#&#8203;8843](https://redirect.github.com/apache/arrow-rs/issues/8843)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n- Add comparison support for Union arrays in the `cmp` kernel\n[#&#8203;8837](https://redirect.github.com/apache/arrow-rs/issues/8837)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- \\[Variant] Support array shredding into\n`List/LargeList/ListView/LargeListView`\n[#&#8203;8830](https://redirect.github.com/apache/arrow-rs/issues/8830)\n- Support `Union` data types for row format\n[#&#8203;8828](https://redirect.github.com/apache/arrow-rs/issues/8828)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- FFI support for ListView\n[#&#8203;8819](https://redirect.github.com/apache/arrow-rs/issues/8819)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- \\[Variant] Support more Arrow Datatypes from Variant primitive types\n[#&#8203;8805](https://redirect.github.com/apache/arrow-rs/issues/8805)\n- `FixedSizeBinaryBuilder` supports `append_array`\n[#&#8203;8750](https://redirect.github.com/apache/arrow-rs/issues/8750)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Implement special case `zip` with scalar for Utf8View\n[#&#8203;8724](https://redirect.github.com/apache/arrow-rs/issues/8724)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- \\[geometry] Wire up arrow reader/writer for `GEOMETRY` and `GEOGRAPHY`\n[#&#8203;8717](https://redirect.github.com/apache/arrow-rs/issues/8717)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\n**Fixed bugs:**\n\n- Soundness Bug in `try_binary` when `Array` is implemented incorrectly\nin external crate\n[#&#8203;9106](https://redirect.github.com/apache/arrow-rs/issues/9106)\n- casting `Dict(_, LargeUtf8)` to `Utf8View` (`StringViewArray`) panics\n[#&#8203;9101](https://redirect.github.com/apache/arrow-rs/issues/9101)\n- wrong results for null count of `nullif` kernel\n[#&#8203;9085](https://redirect.github.com/apache/arrow-rs/issues/9085)\n\\[[parquet](https://redirect.github.com/apache/arrow-rs/labels/parquet)]\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Empty first line in some code examples\n[#&#8203;9063](https://redirect.github.com/apache/arrow-rs/issues/9063)\n- GenericByteViewArray::slice is not zero-copy but ought to be\n[#&#8203;9014](https://redirect.github.com/apache/arrow-rs/issues/9014)\n- Regression in struct casting in 57.2.0 (not yet released)\n[#&#8203;9005](https://redirect.github.com/apache/arrow-rs/issues/9005)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Fix panic when decoding multiple Union columns in RowConverter\n[#&#8203;8999](https://redirect.github.com/apache/arrow-rs/issues/8999)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- `take_fixed_size_binary` Does Not Consider NULL Indices\n[#&#8203;8947](https://redirect.github.com/apache/arrow-rs/issues/8947)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- \\[arrow-avro] RecordEncoder Bugs\n[#&#8203;8934](https://redirect.github.com/apache/arrow-rs/issues/8934)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- `FixedSizeBinaryArray::try_new(...)` Panics with Item Length of Zero\n[#&#8203;8926](https://redirect.github.com/apache/arrow-rs/issues/8926)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- `cargo test -p arrow-cast` fails on main\n[#&#8203;8910](https://redirect.github.com/apache/arrow-rs/issues/8910)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- `GenericListViewArray::new_null` ignores `len` and returns an empty\narray\n[#&#8203;8904](https://redirect.github.com/apache/arrow-rs/issues/8904)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- `FixedSizeBinaryArray::new_null` Does Not Properly Set the Length of\nthe Values Buffer\n[#&#8203;8900](https://redirect.github.com/apache/arrow-rs/issues/8900)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Struct casting requires same order of fields\n[#&#8203;8870](https://redirect.github.com/apache/arrow-rs/issues/8870)\n\\[[arrow](https://redirect.github.com/apache/arrow-rs/labels/arrow)]\n- Cannot cast string dictionary to binary view\n[#&#8203;8841](https://redirect.github.com/apache/arrow-rs/issues/8841)\n\\[[arrow](https://r\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4xMjMuOCIsInVwZGF0ZWRJblZlciI6IjQzLjEyMy44IiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-04-20T12:19:40Z",
+          "tree_id": "eb5f830458b7a0dde746cbc6d47fb91511350f00",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e6b0c45febd8d61b394478536242d1b6b5f6d349"
+        },
+        "date": 1776698696208,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.11160739948669333,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.24547535622518102,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 12.963727678571429,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 13,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002115,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.28578706641357404,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.4485231607629428,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 18.939732142857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 19.046875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002111,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.9778623441910048,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 1.250207068348124,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 35.103794642857146,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 35.3046875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002179,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.4879898485477997,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.678168794767985,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 24.073102678571427,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 24.32421875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002155,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.13565501850598607,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.28681241733447443,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 13.339285714285714,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 13.390625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002101,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.1774675144575643,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.3238362136073486,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 15.590401785714286,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 15.90625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002104,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
           }
