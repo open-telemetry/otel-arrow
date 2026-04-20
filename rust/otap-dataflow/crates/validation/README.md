@@ -467,7 +467,8 @@ use otap_df_validation::ContainerConfig;
 
 let localstack = ContainerConfig::new("localstack/localstack", "3.4")
     .env("SERVICES", "s3")
-    .env("DEFAULT_REGION", "us-east-1");
+    .env("DEFAULT_REGION", "us-east-1")
+    .wait_for_log("Ready.");
 ```
 
 - `ContainerConfig::new(image, tag)` - create a container config for the given
@@ -485,6 +486,26 @@ let localstack = ContainerConfig::new("localstack/localstack", "3.4")
     `PipelineContainerConnection` referencing the same internal port
 - `.entrypoint(cmd)` - override the container's entrypoint
   - optional
+- `.wait_for_nothing()` - do not wait for any readiness condition (default)
+- `.wait_for_log(message)` - wait for the given message to appear on stdout or
+  stderr before considering the container ready
+- `.wait_for_log_stdout(message)` - wait for the message on stdout only
+- `.wait_for_log_stderr(message)` - wait for the message on stderr only
+- `.wait_for_duration(length)` - wait for the specified `Duration` before
+  considering the container ready
+- `.wait_for_seconds(seconds)` - convenience wrapper for waiting a number of
+  seconds
+- `.wait_for_millis(millis)` - convenience wrapper for waiting a number of
+  milliseconds
+- `.wait_for_healthcheck()` - wait for the container's Docker health check to
+  report healthy
+- `.wait_for_http(path)` - wait for an HTTP GET request to the given path to
+  return a 2xx response
+- `.wait_for_http_with_status(path, status_code)` - wait for an HTTP GET
+  request to return the specified status code
+- `.wait_for_exit()` - wait for the container to exit (any exit code)
+- `.wait_for_exit_with_code(expected_code)` - wait for the container to exit
+  with the specified exit code
 
 ##### Templated environment variables
 

@@ -145,6 +145,20 @@ impl<PData> TestContext<PData> {
         }
     }
 
+    /// Returns the result of the processor's [`accept_pdata`] method.
+    ///
+    /// This reflects whether the processor would accept new pdata in production,
+    /// where the engine checks this before delivering messages.
+    ///
+    /// [`accept_pdata`]: crate::local::Processor::accept_pdata
+    #[must_use]
+    pub fn accept_pdata(&self) -> bool {
+        match &self.runtime {
+            ProcessorWrapperRuntime::Local { processor, .. } => processor.accept_pdata(),
+            ProcessorWrapperRuntime::Shared { processor, .. } => processor.accept_pdata(),
+        }
+    }
+
     /// Pop the next scheduled wakeup from the processor's local scheduler
     /// and deliver it as a [`NodeControlMsg::Wakeup`] via [`Self::process`].
     ///

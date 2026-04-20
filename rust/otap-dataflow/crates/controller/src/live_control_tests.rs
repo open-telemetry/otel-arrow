@@ -86,7 +86,7 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
 ];
 
 static TEST_PIPELINE_FACTORY: PipelineFactory<()> =
-    PipelineFactory::new(TEST_RECEIVER_FACTORIES, &[], TEST_EXPORTER_FACTORIES);
+    PipelineFactory::new(TEST_RECEIVER_FACTORIES, &[], TEST_EXPORTER_FACTORIES, &[]);
 
 fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
     let registry = TelemetryRegistryHandle::new();

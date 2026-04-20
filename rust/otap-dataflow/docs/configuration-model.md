@@ -402,6 +402,16 @@ pipelines. `ack_propagation.max_in_flight` and `ack_propagation.timeout`
 govern tracked publish outcomes per publisher handle when Ack/Nack propagation
 is enabled.
 
+Processor-local NACKs follow the same rule. For example, when
+`content_router` or `signal_type_router` emits a route-local NACK because a
+selected route is full, closed, or being drained during shutdown, that
+rejection stays local when `ack_propagation.mode: disabled` and is bridged
+upstream when `ack_propagation.mode: auto`. See the
+[`content_router`](../crates/core-nodes/src/processors/content_router/README.md)
+and
+[`signal_type_router`](../crates/core-nodes/src/processors/signal_type_router/README.md)
+processor docs.
+
 Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
 aggregate acknowledgements across all subscribers. The first broadcast
 subscriber Ack/Nack resolves the upstream message, so upstream completion does
