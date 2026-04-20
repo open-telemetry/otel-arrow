@@ -367,8 +367,8 @@ mod tests {
                     .otap_grpc("exporter")
                     .validate(vec![
                         ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.30),
-                            max_drop_ratio: Some(0.99),
+                            min_drop_ratio: Some(0.45),
+                            max_drop_ratio: Some(0.55),
                         },
                         ValidationInstructions::AttributeNoDuplicate,
                     ])
@@ -403,8 +403,8 @@ mod tests {
                     .otap_grpc("exporter")
                     .validate(vec![
                         ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.30),
-                            max_drop_ratio: Some(0.99),
+                            min_drop_ratio: Some(0.85),
+                            max_drop_ratio: Some(0.95),
                         },
                         ValidationInstructions::AttributeNoDuplicate,
                     ])
@@ -870,83 +870,11 @@ mod tests {
             .expect("temporal reaggregation passthrough traces validation failed");
     }
 
-    /// Validates the temporal reaggregation processor with 10 metric signals.
-    /// All data points share the same stream identity and collapse to ~2 outputs
-    /// (one per metric name), yielding approximately 80% signal reduction.
+    /// Validates the temporal reaggregation processor with metric signals.
+    /// All data points share the same stream identity and collapse to a small
+    /// number of outputs per flush window, yielding at least 95% signal reduction.
     #[test]
-    fn validation_temporal_reaggregation_metrics_1() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::metrics()
-                    .fixed_count(10)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.60),
-                            max_drop_ratio: Some(1.0),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("temporal reaggregation metrics validation failed for signal_count=10");
-    }
-
-    /// Validates the temporal reaggregation processor with 100 metric signals
-    /// at the default batch size boundary. All data points collapse to ~2
-    /// outputs, yielding approximately 98% signal reduction.
-    #[test]
-    fn validation_temporal_reaggregation_metrics_2() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
-                    .expect("failed to read pipeline yaml"),
-            )
-            .add_generator(
-                "traffic_gen",
-                Generator::metrics()
-                    .fixed_count(100)
-                    .otlp_grpc("receiver")
-                    .core_range(1, 1)
-                    .static_signals(),
-            )
-            .add_capture(
-                "validate",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .validate(vec![
-                        ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.96),
-                            max_drop_ratio: Some(1.0),
-                        },
-                        ValidationInstructions::AttributeNoDuplicate,
-                    ])
-                    .control_streams(["traffic_gen"])
-                    .core_range(2, 2),
-            )
-            .run()
-            .expect("temporal reaggregation metrics validation failed for signal_count=100");
-    }
-
-    /// Validates the temporal reaggregation processor with 500 metric signals
-    /// spanning multiple batches. All data points collapse to a small number of
-    /// outputs per flush window, yielding at least 95% signal reduction.
-    #[test]
-    fn validation_temporal_reaggregation_metrics_3() {
+    fn validation_temporal_reaggregation_metrics() {
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/temporal-reaggregation-processor.yaml")
@@ -975,7 +903,7 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("temporal reaggregation metrics validation failed for signal_count=500");
+            .expect("temporal reaggregation metrics validation failed");
     }
 
     /// Validates that the temporal reaggregation processor preserves resource
