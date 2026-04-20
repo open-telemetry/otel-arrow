@@ -165,6 +165,20 @@ impl<PData> AckMsg<PData> {
 }
 
 /// The NACK message.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NackCause {
+    /// Legacy/default cause when a caller does not classify the nack further.
+    #[default]
+    Unspecified,
+    /// The selected route was full when the node tried to admit the message.
+    RouteFull,
+    /// The selected route was closed when the node tried to admit the message.
+    RouteClosed,
+    /// The node had to refuse locally parked work because shutdown started.
+    NodeShutdown,
+}
+
+/// The NACK message.
 #[derive(Debug, Clone)]
 pub struct NackMsg<PData> {
     /// Human-readable reason for the NACK.
@@ -178,25 +192,48 @@ pub struct NackMsg<PData> {
 
     /// Permanent status.
     pub permanent: bool,
+
+    /// Machine-readable reason classification.
+    pub cause: NackCause,
 }
 
 impl<PData> NackMsg<PData> {
     /// Creates a new non-permanent NACK.
     pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
-        Self::new_internal(reason, refused, false)
+        Self::new_internal(reason, refused, false, NackCause::Unspecified)
+    }
+
+    /// Creates a new non-permanent NACK with an explicit cause.
+    pub fn new_with_cause<T: Into<String>>(reason: T, refused: PData, cause: NackCause) -> Self {
+        Self::new_internal(reason, refused, false, cause)
     }
 
     /// Creates a new permanent NACK.
     pub fn new_permanent<T: Into<String>>(reason: T, refused: PData) -> Self {
-        Self::new_internal(reason, refused, true)
+        Self::new_internal(reason, refused, true, NackCause::Unspecified)
     }
 
-    fn new_internal<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
+    /// Creates a new permanent NACK with an explicit cause.
+    pub fn new_permanent_with_cause<T: Into<String>>(
+        reason: T,
+        refused: PData,
+        cause: NackCause,
+    ) -> Self {
+        Self::new_internal(reason, refused, true, cause)
+    }
+
+    fn new_internal<T: Into<String>>(
+        reason: T,
+        refused: PData,
+        permanent: bool,
+        cause: NackCause,
+    ) -> Self {
         Self {
             reason: reason.into(),
             refused: Box::new(refused),
             unwind: UnwindData::default(),
             permanent,
+            cause,
         }
     }
 }
@@ -776,5 +813,13 @@ mod tests {
     fn test_permanent_status() {
         assert!(!NackMsg::new("just bad news", ()).permanent);
         assert!(NackMsg::new_permanent("very bad news", ()).permanent);
+        assert_eq!(
+            NackMsg::new("just bad news", ()).cause,
+            NackCause::Unspecified
+        );
+        assert_eq!(
+            NackMsg::new_permanent("very bad news", ()).cause,
+            NackCause::Unspecified
+        );
     }
 }
