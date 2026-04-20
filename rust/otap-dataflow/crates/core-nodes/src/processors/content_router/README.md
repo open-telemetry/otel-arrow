@@ -116,7 +116,6 @@ subscription across the topic hop, while `disabled` does not.
 
 The content router exposes counters for:
 
-- received messages
 - messages routed to matched routes
 - messages routed to the default output
 - NACKed messages

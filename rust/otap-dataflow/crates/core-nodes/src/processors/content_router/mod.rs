@@ -136,9 +136,6 @@ impl std::fmt::Display for RoutingKeyExpr {
 #[metric_set(name = "content_router.processor.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct ContentRouterMetrics {
-    /// Number of messages received by the router.
-    #[metric(unit = "{msg}")]
-    pub signals_received: Counter<u64>,
     /// Number of messages routed to a named port.
     #[metric(unit = "{msg}")]
     pub signals_routed: Counter<u64>,
@@ -808,10 +805,6 @@ impl local::Processor<OtapPdata> for ContentRouter {
                 _ => Ok(()),
             },
             Message::PData(data) => {
-                if let Some(m) = self.metrics.as_mut() {
-                    m.signals_received.inc();
-                }
-
                 // Resolve routing once up front, then handle route-selection
                 // failures separately from downstream admission failures.
                 let resolution = self.resolve_route(&data);
@@ -2246,7 +2239,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
                 assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 1);
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
 
@@ -2298,7 +2290,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
 
@@ -2355,7 +2346,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics.get("signals.routed.default").copied().unwrap_or(0),
                     1
@@ -2424,7 +2414,6 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
                 assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
@@ -2503,7 +2492,6 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
                 assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
@@ -2582,7 +2570,6 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics.get("signals.routed.default").copied().unwrap_or(0),
                     0
@@ -2663,7 +2650,6 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics.get("signals.routed.default").copied().unwrap_or(0),
                     0
@@ -2769,7 +2755,6 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 2);
                 assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 1);
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
@@ -2838,7 +2823,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("signals.received").copied().unwrap_or(0), 1);
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
