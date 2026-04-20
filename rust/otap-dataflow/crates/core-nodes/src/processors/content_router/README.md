@@ -99,15 +99,18 @@ If the content router owns locally parked messages when
 This applies only to work still owned by the router. Work already admitted to a
 downstream channel is outside the router's scope.
 
-## Ack/Nack Propagation Across Topics
+## Ack/Nack Propagation
 
-Router-generated NACKs are local to the processor unless a topic hop is
-configured to bridge them upstream.
+Router-generated NACKs are local to the processor unless an upstream component
+has registered a caller subscription for NACK outcomes.
 
-- with `ack_propagation.mode: disabled`, a content-router NACK remains local to
-  the downstream side of the topic hop
-- with `ack_propagation.mode: auto`, that same NACK is bridged upstream across
-  the topic hop
+If no upstream frame has `Interests::NACKS`, the NACK is consumed locally for
+router telemetry and completion accounting, but no upstream node receives a
+`NodeControlMsg::Nack`.
+
+Topic hops are one way to create or suppress such upstream visibility:
+`ack_propagation.mode: auto` bridges Ack/Nack by adding the needed caller
+subscription across the topic hop, while `disabled` does not.
 
 ## Observability
 
@@ -127,16 +130,3 @@ Selected-route NACKs include a machine-readable `NackCause`:
 - `RouteFull`
 - `RouteClosed`
 - `NodeShutdown`
-
-## Non-Goals and Future Direction
-
-The content router does not currently guarantee:
-
-- draining or NACKing work that has already been admitted to downstream
-  channels when a route later closes
-- a generic engine-wide admission policy shared by all multi-output processors
-  such as `fanout_processor` or `transform_processor`
-
-Future extensions may add richer blocked-route scheduling, bounded per-route
-queueing, downstream lifecycle semantics for already-admitted work, or more
-selective pause conditions when some selected routes are unavailable.
