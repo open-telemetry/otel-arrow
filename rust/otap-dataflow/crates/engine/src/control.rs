@@ -164,7 +164,7 @@ impl<PData> AckMsg<PData> {
     }
 }
 
-/// The NACK message.
+/// The NACK message cause.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NackCause {
     /// Legacy/default cause when a caller does not classify the nack further.
