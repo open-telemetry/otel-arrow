@@ -26,13 +26,8 @@ otap-df-telemetry-macros = { workspace = true }
 
 arrow.workspace = true
 async-trait.workspace = true
-base64.workspace = true
-chrono.workspace = true
 futures.workspace = true
 bytes.workspace = true
-humantime-serde.workspace = true
-memmap2.workspace = true
-nix.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -40,8 +35,11 @@ thiserror.workspace = true
 linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+base64 = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+humantime-serde = { workspace = true, optional = true }
 tracepoint_decode = { version = "0.5.0", optional = true }
-itoa.workspace = true
+itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
@@ -66,7 +64,13 @@ one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "2d3
 contrib-receivers = [
     "userevents-receiver",
 ]
-userevents-receiver = ["dep:one_collect", "dep:tracepoint_decode"]
+userevents-receiver = [
+    "dep:base64",
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:one_collect",
+    "dep:tracepoint_decode",
+]
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
@@ -82,8 +86,11 @@ azure-monitor-exporter = [
     "dep:azure_core",
     "dep:ahash",
     "dep:sysinfo",
+    "dep:chrono",
     "dep:flate2",
     "dep:http",
+    "dep:humantime-serde",
+    "dep:itoa",
     "dep:rand",
     "dep:ryu",
     "dep:urlencoding",
@@ -98,6 +105,7 @@ condense-attributes-processor = []
 recordset-kql-processor = [
     "dep:data_engine_recordset_otlp_bridge",
     "dep:data_engine_recordset",
+    "dep:chrono",
 ]
 resource-validator-processor = []
 
