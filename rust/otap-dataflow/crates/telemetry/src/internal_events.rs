@@ -12,6 +12,7 @@
 
 #[doc(hidden)]
 pub mod _private {
+    pub use otap_df_pdata::otlp::ProtoBuffer;
     pub use tracing::callsite::{Callsite, DefaultCallsite};
     pub use tracing::field::ValueSet;
     pub use tracing::metadata::Kind;
@@ -181,6 +182,10 @@ macro_rules! otel_event {
 
 /// Log an error message directly to stderr, bypassing the tracing dispatcher.
 ///
+/// This is a zero-allocation path: body and attributes are encoded into
+/// a stack-allocated protobuf buffer and formatted directly to stderr
+/// without creating `Bytes` or `LogRecord`.
+///
 /// Note! the way this is written, it supports the full `tracing` syntax for
 /// debug and display formatting of field values, following tracing::valueset!
 /// where ? signifies debug and % signifies display.
@@ -192,12 +197,35 @@ macro_rules! otel_event {
 #[macro_export]
 macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
-        use $crate::self_tracing::ConsoleWriter;
-        let now = std::time::SystemTime::now();
-        let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
-        ConsoleWriter::no_color().print_log_record(now, &record, |_| {
-            // Note: No entity information included in raw logs.
-        });
+        use $crate::_private::Callsite;
+        use $crate::self_tracing::{ConsoleWriter, SavedCallsite, ENCODE_INLINE};
+        use $crate::self_tracing::encoder::DirectFieldVisitor;
+
+        static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
+            name: $name,
+            kind: $crate::_private::Kind::EVENT,
+            target: env!("CARGO_PKG_NAME"),
+            level: $crate::_private::Level::ERROR,
+            fields: $($($fields)*)?
+        };
+
+        let meta = __CALLSITE.metadata();
+
+        (|valueset: $crate::_private::ValueSet<'_>| {
+            let event = $crate::_private::Event::new(meta, &valueset);
+
+            // Encode body/attributes on the stack (zero allocation).
+            let mut buf = $crate::_private::ProtoBuffer::<ENCODE_INLINE>::new();
+            {
+                let mut visitor = DirectFieldVisitor::new(&mut buf);
+                event.record(&mut visitor);
+            }
+
+            // Format and print directly from the stack buffer.
+            let now = std::time::SystemTime::now();
+            let callsite = SavedCallsite::new(meta);
+            ConsoleWriter::no_color().print_raw_log(now, buf.as_ref(), &callsite, |_| {});
+        })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
     }};
 }
 

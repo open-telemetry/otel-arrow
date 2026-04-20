@@ -160,6 +160,7 @@ impl ConsoleWriter {
 /// Format a LogRecord as a human-readable string (for testing/compatibility).
 ///
 /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
+#[must_use]
 pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord) -> String {
     let mut buf = [0u8; LOG_BUFFER_SIZE];
     let len = {
@@ -197,6 +198,30 @@ impl ConsoleWriter {
         };
         self.write_line(record.callsite().level(), &buf[..len]);
     }
+
+    /// Print pre-encoded protobuf bytes directly to stdout or stderr.
+    ///
+    /// This is the zero-allocation formatting path used by [`raw_error!`].
+    /// It takes raw body/attribute bytes and callsite info instead of a
+    /// `LogRecord`, avoiding the `Bytes` allocation that `LogRecord::new()`
+    /// would require.
+    pub fn print_raw_log<F>(
+        &self,
+        time: SystemTime,
+        body_attrs_bytes: &[u8],
+        callsite: &SavedCallsite,
+        scope_formatter: F,
+    ) where
+        F: FnOnce(&mut StyledBufWriter<'_>),
+    {
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let len = {
+            let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
+            w.format_raw_log(Some(time), body_attrs_bytes, callsite, scope_formatter);
+            w.position()
+        };
+        self.write_line(callsite.level(), &buf[..len]);
+    }
 }
 
 /// Write callsite details as event_name to any `io::Write` target.
@@ -224,17 +249,36 @@ impl StyledBufWriter<'_> {
     ) where
         F: FnOnce(&mut Self),
     {
-        let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
-        let level = *record.callsite().level();
+        self.format_raw_log(
+            time,
+            record.body_attrs_bytes.as_ref(),
+            &record.callsite(),
+            write_suffix,
+        );
+    }
+
+    /// Format from raw pre-encoded bytes and callsite info.
+    ///
+    /// This is the zero-allocation formatting path: it accepts `&[u8]`
+    /// directly instead of going through `LogRecord` / `Bytes`.
+    pub fn format_raw_log<F>(
+        &mut self,
+        time: Option<SystemTime>,
+        body_attrs_bytes: &[u8],
+        callsite: &SavedCallsite,
+        write_suffix: F,
+    ) where
+        F: FnOnce(&mut Self),
+    {
+        let view = RawLogRecord::new(body_attrs_bytes);
+        let level = *callsite.level();
 
         self.format_log_line(
             time,
             &view,
             |w| w.write_level(&level),
             |w| {
-                w.write_styled(AnsiCode::Bold, |w| {
-                    write_event_name_to(w, &record.callsite())
-                });
+                w.write_styled(AnsiCode::Bold, |w| write_event_name_to(w, callsite));
             },
             write_suffix,
         );
@@ -616,7 +660,7 @@ mod tests {
             *self.formatted.lock().unwrap() = format_log_record_to_string(Some(time), &record);
 
             // Capture full OTLP encoding
-            let mut buf = ProtoBuffer::with_capacity(512);
+            let mut buf: ProtoBuffer = ProtoBuffer::with_capacity(512);
             let mut encoder = DirectLogRecordEncoder::new(&mut buf);
             let _ = encoder.encode_log_record(time, &record);
             *self.encoded.lock().unwrap() = buf.into_bytes();
@@ -777,6 +821,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
+            dropped_attributes_count: 0,
             context: LogContext::new(),
         };
 
@@ -790,7 +835,7 @@ mod tests {
         );
 
         // Verify full OTLP encoding with known callsite
-        let mut buf = ProtoBuffer::with_capacity(256);
+        let mut buf: ProtoBuffer = ProtoBuffer::with_capacity(256);
         let mut encoder = DirectLogRecordEncoder::new(&mut buf);
         let _ = encoder.encode_log_record(time, &record);
         let decoded = ProtoLogRecord::decode(buf.into_bytes().as_ref()).expect("decode failed");
@@ -827,6 +872,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::from(encoded),
+            dropped_attributes_count: 0,
             context: LogContext::new(),
         };
 

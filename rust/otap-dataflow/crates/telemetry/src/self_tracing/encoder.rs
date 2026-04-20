@@ -18,14 +18,14 @@ use std::time::SystemTime;
 use tracing::Level;
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
-pub struct DirectLogRecordEncoder<'buf> {
-    buf: &'buf mut ProtoBuffer,
+pub struct DirectLogRecordEncoder<'buf, const INLINE: usize = 0> {
+    buf: &'buf mut ProtoBuffer<INLINE>,
 }
 
-impl<'buf> DirectLogRecordEncoder<'buf> {
+impl<'buf, const INLINE: usize> DirectLogRecordEncoder<'buf, INLINE> {
     /// Create a new encoder that writes to the provided buffer.
     #[inline]
-    pub const fn new(buf: &'buf mut ProtoBuffer) -> Self {
+    pub const fn new(buf: &'buf mut ProtoBuffer<INLINE>) -> Self {
         Self { buf }
     }
 
@@ -57,11 +57,13 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
             .encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
         self.buf.encode_varint(severity as u64);
 
-        // Node we skip encoding severity_text (field 3, string)
+        // Note we skip encoding severity_text (field 3, string)
 
         // Encode event_name (field 12, string) - format: "target::name (file:line)"
         encode_event_name(self.buf, record.callsite());
 
+        // Pre-encoded body, attributes, and (in bounded mode)
+        // dropped_attributes_count.
         self.buf.extend_from_slice(&record.body_attrs_bytes);
 
         self.buf.len() - start_len
@@ -70,7 +72,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
 
 /// Encode the event name from callsite metadata.
 /// Format: "target::name (file:line)" or "target::name" if no file/line.
-fn encode_event_name(buf: &mut ProtoBuffer, callsite: SavedCallsite) {
+fn encode_event_name<const INLINE: usize>(buf: &mut ProtoBuffer<INLINE>, callsite: SavedCallsite) {
     proto_encode_len_delimited_small!(
         LOG_RECORD_EVENT_NAME,
         {
@@ -81,14 +83,25 @@ fn encode_event_name(buf: &mut ProtoBuffer, callsite: SavedCallsite) {
 }
 
 /// Visitor that directly encodes tracing fields to protobuf.
-pub struct DirectFieldVisitor<'buf> {
-    buf: &'buf mut ProtoBuffer,
+pub struct DirectFieldVisitor<'buf, const INLINE: usize = 0> {
+    buf: &'buf mut ProtoBuffer<INLINE>,
+    /// Number of attribute fields dropped due to truncation.
+    dropped_count: u16,
 }
 
-impl<'buf> DirectFieldVisitor<'buf> {
+impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     /// Create a new DirectFieldVisitor that writes to the provided buffer.
-    pub const fn new(buf: &'buf mut ProtoBuffer) -> Self {
-        Self { buf }
+    pub const fn new(buf: &'buf mut ProtoBuffer<INLINE>) -> Self {
+        Self {
+            buf,
+            dropped_count: 0,
+        }
+    }
+
+    /// Returns the number of attribute fields that were dropped due to truncation.
+    #[must_use]
+    pub const fn dropped_count(&self) -> u16 {
+        self.dropped_count
     }
 
     /// Encode an attribute (KeyValue message) with a string value.
@@ -228,7 +241,10 @@ impl<'buf> DirectFieldVisitor<'buf> {
 /// Helper to encode a Debug value as a protobuf string field.
 /// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
 #[inline]
-fn encode_debug_string(buf: &mut ProtoBuffer, value: &dyn std::fmt::Debug) {
+fn encode_debug_string<const INLINE: usize>(
+    buf: &mut ProtoBuffer<INLINE>,
+    value: &dyn std::fmt::Debug,
+) {
     use std::io::Write;
     proto_encode_len_delimited_small!(
         ANY_VALUE_STRING_VALUE,
@@ -239,19 +255,21 @@ fn encode_debug_string(buf: &mut ProtoBuffer, value: &dyn std::fmt::Debug) {
     );
 }
 
-impl tracing::field::Visit for DirectFieldVisitor<'_> {
+impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLINE> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         if field.name() == "message" {
             // TODO: encode f64 body
             return;
         }
         if self.buf.is_truncated() {
+            self.dropped_count = self.dropped_count.saturating_add(1);
             return;
         }
         let cp = self.buf.checkpoint();
         self.encode_double_attribute(field.name(), value);
         if self.buf.is_truncated() {
             self.buf.rollback(cp);
+            self.dropped_count = self.dropped_count.saturating_add(1);
         }
     }
 
@@ -261,12 +279,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             return;
         }
         if self.buf.is_truncated() {
+            self.dropped_count = self.dropped_count.saturating_add(1);
             return;
         }
         let cp = self.buf.checkpoint();
         self.encode_int_attribute(field.name(), value);
         if self.buf.is_truncated() {
             self.buf.rollback(cp);
+            self.dropped_count = self.dropped_count.saturating_add(1);
         }
     }
 
@@ -276,12 +296,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             return;
         }
         if self.buf.is_truncated() {
+            self.dropped_count = self.dropped_count.saturating_add(1);
             return;
         }
         let cp = self.buf.checkpoint();
         self.encode_int_attribute(field.name(), value as i64);
         if self.buf.is_truncated() {
             self.buf.rollback(cp);
+            self.dropped_count = self.dropped_count.saturating_add(1);
         }
     }
 
@@ -291,12 +313,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             return;
         }
         if self.buf.is_truncated() {
+            self.dropped_count = self.dropped_count.saturating_add(1);
             return;
         }
         let cp = self.buf.checkpoint();
         self.encode_bool_attribute(field.name(), value);
         if self.buf.is_truncated() {
             self.buf.rollback(cp);
+            self.dropped_count = self.dropped_count.saturating_add(1);
         }
     }
 
@@ -306,12 +330,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             return;
         }
         if self.buf.is_truncated() {
+            self.dropped_count = self.dropped_count.saturating_add(1);
             return;
         }
         let cp = self.buf.checkpoint();
         self.encode_string_attribute(field.name(), value);
         if self.buf.is_truncated() {
             self.buf.rollback(cp);
+            self.dropped_count = self.dropped_count.saturating_add(1);
         }
     }
 
@@ -321,12 +347,14 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
             self.encode_body_debug(value);
         } else {
             if self.buf.is_truncated() {
+                self.dropped_count = self.dropped_count.saturating_add(1);
                 return;
             }
             let cp = self.buf.checkpoint();
             self.encode_debug_attribute(field.name(), value);
             if self.buf.is_truncated() {
                 self.buf.rollback(cp);
+                self.dropped_count = self.dropped_count.saturating_add(1);
             }
         }
     }

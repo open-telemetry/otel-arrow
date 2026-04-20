@@ -25,6 +25,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Fields};
 
 use bytes::Bytes;
+use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;
@@ -336,25 +337,30 @@ pub const TRUNCATION_SUFFIX: &[u8] = "…".as_bytes();
 /// truncated. Callers can use [`checkpoint`](Self::checkpoint) /
 /// [`rollback`](Self::rollback) to ensure truncation only happens at
 /// field/message boundaries, producing valid protobuf.
+///
+/// The `INLINE` const generic controls inline storage via `SmallVec`:
+/// - `INLINE = 0` (default): behaves like `Vec<u8>`, always heap-allocated.
+/// - `INLINE > 0`: up to `INLINE` bytes are stored on the stack, avoiding
+///   heap allocation for small messages (e.g., internal logging).
 #[derive(Debug)]
-pub struct ProtoBuffer {
-    buffer: Vec<u8>,
+pub struct ProtoBuffer<const INLINE: usize = 0> {
+    buffer: SmallVec<[u8; INLINE]>,
     limit: usize,
     truncated: bool,
 }
 
-impl Default for ProtoBuffer {
+impl<const INLINE: usize> Default for ProtoBuffer<INLINE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProtoBuffer {
+impl<const INLINE: usize> ProtoBuffer<INLINE> {
     /// Construct a new, empty, unbounded protocol buffer.
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            buffer: Vec::new(),
+            buffer: SmallVec::new_const(),
             limit: usize::MAX,
             truncated: false,
         }
@@ -364,7 +370,7 @@ impl ProtoBuffer {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            buffer: Vec::with_capacity(capacity),
+            buffer: SmallVec::with_capacity(capacity),
             limit: usize::MAX,
             truncated: false,
         }
@@ -376,7 +382,7 @@ impl ProtoBuffer {
     #[must_use]
     pub fn bounded(limit: usize) -> Self {
         Self {
-            buffer: Vec::with_capacity(limit),
+            buffer: SmallVec::with_capacity(limit),
             limit,
             truncated: false,
         }
@@ -390,10 +396,26 @@ impl ProtoBuffer {
         self.limit = limit;
     }
 
+    /// Returns the current limit.
+    #[must_use]
+    #[inline]
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+
     /// Returns a Bytes representation.
     #[must_use]
     pub fn into_bytes(self) -> Bytes {
-        Bytes::from(self.buffer)
+        Bytes::from(self.buffer.into_vec())
+    }
+
+    /// Extract the inner buffer as a `SmallVec`.
+    ///
+    /// This avoids the heap allocation that [`into_bytes`](Self::into_bytes)
+    /// would require when `INLINE > 0` and the data fits inline.
+    #[must_use]
+    pub fn into_inner(self) -> SmallVec<[u8; INLINE]> {
+        self.buffer
     }
 
     /// Save the current buffer position for potential rollback.
@@ -429,7 +451,7 @@ impl ProtoBuffer {
     /// Returns the number of bytes remaining before the limit.
     #[must_use]
     #[inline]
-    pub const fn remaining(&self) -> usize {
+    pub fn remaining(&self) -> usize {
         self.limit.saturating_sub(self.buffer.len())
     }
 
@@ -499,19 +521,19 @@ impl ProtoBuffer {
 
     /// Length of the current encoding.
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.buffer.len()
     }
 
     /// Returns the current capacity of the underlying buffer.
     #[must_use]
-    pub const fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.buffer.capacity()
     }
 
     /// Is the buffer empty?
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 
@@ -607,7 +629,7 @@ impl ProtoBuffer {
         let buffer = std::mem::take(&mut self.buffer);
         let capacity = buffer.capacity();
         self.truncated = false;
-        (Bytes::from(buffer), capacity)
+        (Bytes::from(buffer.into_vec()), capacity)
     }
 
     /// Ensure the underlying buffer has at least the requested capacity.
@@ -651,19 +673,19 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-impl AsRef<[u8]> for ProtoBuffer {
+impl<const INLINE: usize> AsRef<[u8]> for ProtoBuffer<INLINE> {
     fn as_ref(&self) -> &[u8] {
         &self.buffer
     }
 }
 
-impl AsMut<[u8]> for ProtoBuffer {
+impl<const INLINE: usize> AsMut<[u8]> for ProtoBuffer<INLINE> {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.buffer
     }
 }
 
-impl std::io::Write for ProtoBuffer {
+impl<const INLINE: usize> std::io::Write for ProtoBuffer<INLINE> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let avail = self.limit.saturating_sub(self.buffer.len());
@@ -699,10 +721,14 @@ macro_rules! proto_encode_len_delimited_of_size {
     ($field_tag: expr, $encode_fn:expr, $buf:expr, $placeholder_bytes:literal) => {{
         $buf.encode_field_tag($field_tag, $crate::proto::consts::wire_types::LEN);
         let len_start_pos = $buf.len();
-        $crate::otlp::common::encode_len_placeholder::<$placeholder_bytes>($buf);
+        $crate::otlp::common::encode_len_placeholder::<$placeholder_bytes, _>($buf);
         $encode_fn;
         let len = $buf.len() - len_start_pos - $placeholder_bytes;
-        $crate::otlp::common::patch_len_placeholder::<$placeholder_bytes>($buf, len, len_start_pos);
+        $crate::otlp::common::patch_len_placeholder::<$placeholder_bytes, _>(
+            $buf,
+            len,
+            len_start_pos,
+        );
     }};
 }
 
@@ -739,7 +765,7 @@ macro_rules! proto_encode_len_delimited_large {
 ///
 /// Do not call directly — use [`proto_encode_len_delimited_of_size!`].
 #[inline]
-pub fn encode_len_placeholder<const N: usize>(buf: &mut ProtoBuffer) {
+pub fn encode_len_placeholder<const N: usize, const INLINE: usize>(buf: &mut ProtoBuffer<INLINE>) {
     const { assert!(N >= 1 && N <= 4, "placeholder must be 1-4 bytes") }
     buf.extend_from_slice(&make_len_placeholder::<N>());
 }
@@ -755,8 +781,8 @@ const fn make_len_placeholder<const N: usize>() -> [u8; N] {
 ///
 /// Do not call directly — use [`proto_encode_len_delimited_of_size!`].
 #[inline]
-pub fn patch_len_placeholder<const N: usize>(
-    buf: &mut ProtoBuffer,
+pub fn patch_len_placeholder<const N: usize, const INLINE: usize>(
+    buf: &mut ProtoBuffer<INLINE>,
     len: usize,
     len_start_pos: usize,
 ) {
@@ -1404,8 +1430,8 @@ mod test {
         use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
 
         fn check<const N: usize>() {
-            let mut buf = ProtoBuffer::new();
-            encode_len_placeholder::<N>(&mut buf);
+            let mut buf: ProtoBuffer = ProtoBuffer::new();
+            encode_len_placeholder::<N, _>(&mut buf);
             assert_eq!(buf.len(), N);
             for i in 0..N - 1 {
                 assert_eq!(buf.as_ref()[i], 0x80, "byte {i} for {N}-byte placeholder");
@@ -1431,10 +1457,10 @@ mod test {
                 if len > max_len {
                     continue;
                 }
-                let mut buf = ProtoBuffer::new();
+                let mut buf: ProtoBuffer = ProtoBuffer::new();
                 let start = buf.len();
-                encode_len_placeholder::<N>(&mut buf);
-                patch_len_placeholder::<N>(&mut buf, len, start);
+                encode_len_placeholder::<N, _>(&mut buf);
+                patch_len_placeholder::<N, _>(&mut buf, len, start);
 
                 let mut decoded: u64 = 0;
                 for i in 0..N {
@@ -1457,7 +1483,7 @@ mod test {
 
         // Encode a simple string field using the _large and _small variants,
         // then verify the _small output is 2 bytes shorter.
-        let mut buf_large = ProtoBuffer::new();
+        let mut buf_large: ProtoBuffer = ProtoBuffer::new();
         proto_encode_len_delimited_large!(
             1,
             {
@@ -1466,7 +1492,7 @@ mod test {
             &mut buf_large
         );
 
-        let mut buf_small = ProtoBuffer::new();
+        let mut buf_small: ProtoBuffer = ProtoBuffer::new();
         proto_encode_len_delimited_small!(
             1,
             {
