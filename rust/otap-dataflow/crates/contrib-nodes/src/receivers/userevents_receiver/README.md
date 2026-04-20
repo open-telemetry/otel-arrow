@@ -1,6 +1,6 @@
 # Linux Userevents Receiver
 
-**URN:** `urn:otel:receiver:userevents`
+**URN:** `urn:microsoft:receiver:userevents`
 
 This receiver ingests Linux
 [`user_events`](https://docs.kernel.org/trace/user_events.html) tracepoints

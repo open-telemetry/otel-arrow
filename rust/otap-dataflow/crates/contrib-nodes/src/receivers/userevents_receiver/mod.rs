@@ -59,7 +59,7 @@ const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(50);
 const DEFAULT_LATE_REGISTRATION_POLL: Duration = Duration::from_secs(1);
 
 /// URN for the Linux userevents receiver.
-pub const USEREVENTS_RECEIVER_URN: &str = "urn:otel:receiver:userevents";
+pub const USEREVENTS_RECEIVER_URN: &str = "urn:microsoft:receiver:userevents";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

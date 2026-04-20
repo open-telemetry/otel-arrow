@@ -20,7 +20,7 @@ Aggregate flags enable all nodes in their category.
 
 | Node | URN | Module |
 | ---- | --- | ------ |
-| userevents_receiver | `urn:otel:receiver:userevents` | `src/receivers/userevents_receiver/` |
+| userevents_receiver | `urn:microsoft:receiver:userevents` | `src/receivers/userevents_receiver/` |
 
 #### userevents_receiver
 
