@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the configuration of the fake signal receiver
-//!
 
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -49,14 +48,21 @@ pub enum GenerationStrategy {
     /// - Timestamps and IDs will repeat (stale)
     /// - Lowest CPU cost, maximum throughput
     PreGenerated,
+    // Future: Templates variant — pre-generate signal templates, clone and update
+    // timestamps/IDs per batch for moderate CPU cost with fresh data per batch.
+    // Not yet implemented.
+    // Templates,
+}
 
-    /// Pre-generate signal templates, clone and update timestamps/IDs per batch
-    /// - Templates cloned per batch
-    /// - Fresh timestamps and unique IDs
-    /// - Moderate CPU cost, good balance
-    ///
-    /// TODO: Not yet implemented - currently behaves like Fresh
-    Templates,
+/// Controls how signal batches are paced within each one-second production run.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductionMode {
+    /// Spread batches evenly across the second using a fixed-interval ticker.
+    #[default]
+    Smooth,
+    /// Produce all batches as fast as possible without pacing.
+    Open,
 }
 
 /// A single resource-attribute set with an optional batch weight.
@@ -154,18 +160,28 @@ pub struct Config {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrafficConfig {
+    /// How signal batches are paced within each production run.
+    #[serde(default)]
+    pub production_mode: ProductionMode,
+    /// Target number of signals to produce per second across all signal types.
+    /// When `None`, defaults to `max_batch_size` (one full batch per second).
     #[serde(default = "default_signals_per_second")]
-    signals_per_second: Option<usize>,
+    pub signals_per_second: Option<usize>,
+    /// Maximum total signals to produce before stopping. `None` means unlimited.
     #[serde(default = "default_max_signal")]
-    max_signal_count: Option<u64>,
+    pub max_signal_count: Option<u64>,
+    /// Maximum number of signals in a single batch.
     #[serde(default = "default_max_batch_size")]
-    max_batch_size: usize,
+    pub max_batch_size: usize,
+    /// Relative weight for metric signal production (0 disables metrics).
     #[serde(default = "default_weight")]
-    metric_weight: u32,
+    pub metric_weight: u32,
+    /// Relative weight for trace signal production (0 disables traces).
     #[serde(default = "default_weight")]
-    trace_weight: u32,
+    pub trace_weight: u32,
+    /// Relative weight for log signal production (0 disables logs).
     #[serde(default = "default_weight")]
-    log_weight: u32,
+    pub log_weight: u32,
 
     /// Target size of each log record body in bytes (Static data source only).
     /// When set, pre-generates a pool of 50 distinct body strings of this size;
@@ -173,30 +189,30 @@ pub struct TrafficConfig {
     /// When 0, the body is omitted entirely.
     /// When unset, cycles through ~50 default log message templates.
     #[serde(default)]
-    log_body_size_bytes: Option<usize>,
+    pub log_body_size_bytes: Option<usize>,
 
     /// Number of attributes to attach to each log record (Static data source only).
     /// When set, generates this many key-value string attributes.
     /// When unset, uses the default 2 attributes (thread.id, thread.name).
     #[serde(default)]
-    num_log_attributes: Option<usize>,
+    pub num_log_attributes: Option<usize>,
 
     /// When true, each log record gets a unique random trace_id and span_id,
     /// matching real log-to-trace correlation and adding per-record entropy.
     #[serde(default)]
-    use_trace_context: bool,
+    pub use_trace_context: bool,
 
     /// Number of attributes to attach to each metric data point (Static data source only).
     /// When set, generates this many key-value attributes per data point.
     /// When unset, uses the default 3 attributes (http.method, http.route, http.status_code).
     #[serde(default)]
-    num_metric_attributes: Option<usize>,
+    pub num_metric_attributes: Option<usize>,
 
     /// Number of data points per metric (Static data source only).
     /// When set, generates this many data points per metric.
     /// When unset, uses the default of 1 data point per metric.
     #[serde(default)]
-    num_data_points_per_metric: Option<usize>,
+    pub num_data_points_per_metric: Option<usize>,
 }
 
 impl Config {
@@ -326,6 +342,7 @@ impl TrafficConfig {
         log_weight: u32,
     ) -> Self {
         Self {
+            production_mode: ProductionMode::Smooth,
             signals_per_second,
             max_signal_count,
             max_batch_size,
@@ -478,7 +495,7 @@ fn default_resource_weight() -> NonZeroU32 {
 ///
 /// Two entries with weights 3 and 1 produce `[0, 0, 0, 1]`.
 ///
-/// TODO: replace with smooth weighted round-robin to avoid bursty traffic shape.
+/// Future improvement: replace with smooth weighted round-robin to avoid bursty traffic shape.
 #[must_use]
 pub(crate) fn build_rotation_table(entries: &[ResourceAttributeSet]) -> Vec<usize> {
     entries
