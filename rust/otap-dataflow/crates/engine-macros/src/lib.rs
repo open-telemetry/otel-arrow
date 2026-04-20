@@ -7,29 +7,10 @@
 //! for factory registries and distributed slices in the pipeline engine.
 
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{
-    Ident, ItemStatic, Token, Type,
-    parse::{Parse, ParseStream},
-    parse_macro_input,
-};
+use syn::{ItemStatic, ItemTrait, parse_macro_input};
 
-/// Arguments for the pipeline_factory macro
-struct PipelineFactoryArgs {
-    /// Prefix for generated static variables
-    prefix: Ident,
-    /// Data type for the pipeline factory
-    pdata_type: Type,
-}
-
-impl Parse for PipelineFactoryArgs {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let prefix = input.parse::<Ident>()?;
-        let _comma: Token![,] = input.parse()?;
-        let pdata_type = input.parse::<Type>()?;
-        Ok(PipelineFactoryArgs { prefix, pdata_type })
-    }
-}
+mod capability;
+mod pipeline_factory;
 
 /// Attribute macro to generate distributed slices and initialize a factory registry.
 ///
@@ -63,85 +44,100 @@ impl Parse for PipelineFactoryArgs {
 /// - Helper functions to access factory maps (prefixed)
 #[proc_macro_attribute]
 pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args as PipelineFactoryArgs);
+    let args = parse_macro_input!(args as pipeline_factory::PipelineFactoryArgs);
     let registry_static = parse_macro_input!(input as ItemStatic);
+    pipeline_factory::expand_pipeline_factory(args, registry_static).into()
+}
 
-    let prefix = &args.prefix;
-    let pdata_type = &args.pdata_type;
-    let registry_name = &registry_static.ident;
-    let registry_vis = &registry_static.vis;
-
-    // Generate prefixed identifiers
-    let receiver_factories_name = quote::format_ident!("{}_RECEIVER_FACTORIES", prefix);
-    let processor_factories_name = quote::format_ident!("{}_PROCESSOR_FACTORIES", prefix);
-    let exporter_factories_name = quote::format_ident!("{}_EXPORTER_FACTORIES", prefix);
-    let extension_factories_name = quote::format_ident!("{}_EXTENSION_FACTORIES", prefix);
-    let get_receiver_factory_map_name = quote::format_ident!(
-        "get_{}_receiver_factory_map",
-        prefix.to_string().to_lowercase()
-    );
-    let get_processor_factory_map_name = quote::format_ident!(
-        "get_{}_processor_factory_map",
-        prefix.to_string().to_lowercase()
-    );
-    let get_exporter_factory_map_name = quote::format_ident!(
-        "get_{}_exporter_factory_map",
-        prefix.to_string().to_lowercase()
-    );
-    let get_extension_factory_map_name = quote::format_ident!(
-        "get_{}_extension_factory_map",
-        prefix.to_string().to_lowercase()
-    );
-
-    let output = quote! {
-        /// A slice of receiver factories.
-        #[::otap_df_engine::distributed_slice]
-        pub static #receiver_factories_name: [::otap_df_engine::ReceiverFactory<#pdata_type>] = [..];
-
-        /// A slice of processor factories.
-        #[::otap_df_engine::distributed_slice]
-        pub static #processor_factories_name: [::otap_df_engine::ProcessorFactory<#pdata_type>] = [..];
-
-        /// A slice of exporter factories.
-        #[::otap_df_engine::distributed_slice]
-        pub static #exporter_factories_name: [::otap_df_engine::ExporterFactory<#pdata_type>] = [..];
-
-        /// A slice of extension factories.
-        #[::otap_df_engine::distributed_slice]
-        pub static #extension_factories_name: [::otap_df_engine::ExtensionFactory] = [..];
-
-        /// The factory registry instance.
-        #registry_vis static #registry_name: std::sync::LazyLock<PipelineFactory<#pdata_type>> = std::sync::LazyLock::new(|| {
-            // Reference build_registry to avoid unused import warning, even though we don't call it
-            let _ = build_factory::<#pdata_type>;
-            PipelineFactory::new(
-                &#receiver_factories_name,
-                &#processor_factories_name,
-                &#exporter_factories_name,
-                &#extension_factories_name,
-            )
-        });
-
-        /// Gets the receiver factory map, initializing it if necessary.
-        pub fn #get_receiver_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ReceiverFactory<#pdata_type>> {
-            #registry_name.get_receiver_factory_map()
-        }
-
-        /// Gets the processor factory map, initializing it if necessary.
-        pub fn #get_processor_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ProcessorFactory<#pdata_type>> {
-            #registry_name.get_processor_factory_map()
-        }
-
-        /// Gets the exporter factory map, initializing it if necessary.
-        pub fn #get_exporter_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExporterFactory<#pdata_type>> {
-            #registry_name.get_exporter_factory_map()
-        }
-
-        /// Gets the extension factory map, initializing it if necessary.
-        pub fn #get_extension_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExtensionFactory> {
-            #registry_name.get_extension_factory_map()
-        }
-    };
-
-    output.into()
+/// Attribute macro for defining a capability trait.
+///
+/// Annotate a trait definition to generate the full capability infrastructure.
+/// The original trait is consumed and replaced with the generated items.
+///
+/// # Input
+///
+/// ```rust,ignore
+/// #[capability(name = "bearer_token_provider", description = "Provides bearer tokens")]
+/// pub trait BearerTokenProvider {
+///     async fn get_token(&self) -> Result<BearerToken, Error>;
+///     fn subscribe_token_refresh(&self) -> watch::Receiver<Option<BearerToken>>;
+/// }
+/// ```
+///
+/// # Generated output
+///
+/// Given the input above, the macro generates (conceptually):
+///
+/// ```rust,ignore
+/// // 1. Local trait — !Send, used by local pipeline nodes.
+/// pub mod local {
+///     #[async_trait(?Send)]
+///     pub trait BearerTokenProvider {
+///         async fn get_token(&self) -> Result<BearerToken, Error>;
+///         fn subscribe_token_refresh(&self) -> watch::Receiver<Option<BearerToken>>;
+///     }
+/// }
+///
+/// // 2. Shared trait — Send + Sync, used by shared pipeline nodes.
+/// pub mod shared {
+///     #[async_trait]
+///     pub trait BearerTokenProvider: Send + Sync {
+///         async fn get_token(&self) -> Result<BearerToken, Error>;
+///         fn subscribe_token_refresh(&self) -> watch::Receiver<Option<BearerToken>>;
+///     }
+/// }
+///
+/// // 3. SharedAsLocal adapter — delegates local::Trait to a shared impl.
+/// //    Used internally by the engine for shared-only extensions that need
+/// //    to serve local consumers.
+/// struct SharedAsLocalBearerTokenProvider(Box<dyn shared::BearerTokenProvider>);
+/// impl local::BearerTokenProvider for SharedAsLocalBearerTokenProvider { /* delegates */ }
+///
+/// // 4. Zero-sized registration struct — used as the type parameter in
+/// //    require_local::<BearerTokenProvider>() / require_shared::<BearerTokenProvider>().
+/// pub struct BearerTokenProvider;
+///
+/// // 5. Sealed trait impls — prevents external crates from adding capabilities.
+/// impl CapabilitySealed for BearerTokenProvider {}
+/// impl ExtensionCapability for BearerTokenProvider {
+///     const NAME: &'static str = "bearer_token_provider";
+///     type Local = dyn local::BearerTokenProvider;
+///     type Shared = dyn shared::BearerTokenProvider;
+///     fn adapt_shared_to_local(...) -> Option<Rc<dyn Any>> { /* wraps in adapter */ }
+/// }
+///
+/// // 6. KNOWN_CAPABILITIES entry — link-time registration for config validation.
+/// #[distributed_slice(KNOWN_CAPABILITIES)]
+/// static _KNOWN_CAP_BEARER_TOKEN_PROVIDER: KnownCapability = KnownCapability {
+///     name: "bearer_token_provider",
+///     description: "Provides bearer tokens",
+///     type_id: || TypeId::of::<BearerTokenProvider>(),
+///     adapt_shared_to_local: ...,
+/// };
+/// ```
+///
+/// # Consuming capabilities
+///
+/// Node factories receive `&Capabilities` and resolve capabilities by the
+/// registration struct:
+///
+/// ```rust,ignore
+/// // Local consumer — returns Rc<dyn local::BearerTokenProvider>
+/// let auth = capabilities.require_local::<BearerTokenProvider>()?;
+///
+/// // Shared consumer — returns Box<dyn shared::BearerTokenProvider>
+/// let auth = capabilities.require_shared::<BearerTokenProvider>()?;
+/// ```
+///
+/// # Important
+///
+/// Each capability must be defined in its own file under `capability/` to
+/// avoid `mod local` / `mod shared` name collisions. The macro generates
+/// `crate::capability::*` paths, so it can only be invoked from within the
+/// `otap-df-engine` crate.
+#[proc_macro_attribute]
+pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args as capability::CapabilityArgs);
+    let trait_item = parse_macro_input!(input as ItemTrait);
+    capability::expand_capability(args, trait_item).into()
 }

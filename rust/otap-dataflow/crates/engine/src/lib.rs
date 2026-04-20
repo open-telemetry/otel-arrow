@@ -51,6 +51,10 @@ use std::{
     sync::OnceLock,
 };
 
+// TODO: remove `dead_code` once the capability system is wired into the
+// pipeline build..
+#[allow(dead_code)]
+pub mod capability;
 #[doc(hidden)]
 pub mod clock;
 pub mod error;
@@ -226,6 +230,8 @@ pub struct ExtensionFactory {
     pub description: &'static str,
     /// URL to the extension's documentation.
     pub documentation_url: &'static str,
+    /// The capabilities this extension provides.
+    pub capabilities: capability::ExtensionCapabilities,
     /// A function that creates a new extension instance.
     pub create: fn(
         pipeline: PipelineContext,
@@ -243,6 +249,10 @@ impl Clone for ExtensionFactory {
             name: self.name,
             description: self.description,
             documentation_url: self.documentation_url,
+            capabilities: capability::ExtensionCapabilities {
+                shared: self.capabilities.shared,
+                local: self.capabilities.local,
+            },
             create: self.create,
             validate_config: self.validate_config,
         }
@@ -2342,6 +2352,7 @@ mod test {
             name: "urn:test:example",
             description: "test extension",
             documentation_url: "",
+            capabilities: capability::ExtensionCapabilities::none(),
             create: dummy_create,
             validate_config: dummy_validate,
         };
@@ -2387,6 +2398,7 @@ mod test {
             name: "urn:test:example",
             description: "test",
             documentation_url: "",
+            capabilities: capability::ExtensionCapabilities::none(),
             create: dummy_create,
             validate_config: dummy_validate,
         };
