@@ -198,7 +198,9 @@ impl DecodedUsereventsRecord {
 
         (
             Self {
-                time_unix_nano: time_override_nano.unwrap_or(value.timestamp_unix_nano as i64),
+                time_unix_nano: time_override_nano.unwrap_or_else(|| {
+                    i64::try_from(value.timestamp_unix_nano).unwrap_or(i64::MAX)
+                }),
                 body,
                 event_name,
                 severity_number,
@@ -668,8 +670,11 @@ fn item_as_any_scalar_value(item: &EventHeaderItemInfo<'_>) -> Option<DecodedAtt
             } else if fmt == FMT_SIGNED_INT {
                 Some(DecodedAttrValue::Int(item.value().to_i64(0)))
             } else {
-                // Unsigned 64: reinterpret as i64 to fit OTLP/Bond int column.
-                Some(DecodedAttrValue::Int(item.value().to_u64(0) as i64))
+                // Unsigned 64: preserve the integer column and clamp values
+                // that do not fit OTLP/Bond's signed integer representation.
+                Some(DecodedAttrValue::Int(
+                    i64::try_from(item.value().to_u64(0)).unwrap_or(i64::MAX),
+                ))
             }
         }
         _ => None,
