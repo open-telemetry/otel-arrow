@@ -231,6 +231,7 @@ fn run_pipeline_with_condition<F>(
         pipeline_group_id: pipeline_group_id.clone(),
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
+        deployment_generation: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
     let event_reporter = observed_state_store.reporter(SendPolicy::default());
@@ -365,6 +366,7 @@ where
         pipeline_group_id: pipeline_group_id.clone(),
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
+        deployment_generation: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
     let event_reporter = observed_state_store.reporter(SendPolicy::default());

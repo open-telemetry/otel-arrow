@@ -256,7 +256,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
         // These represent two different handoff stages:
-        // - `pending_forward` is one leased topic delivery that is still trying
+        // - `pending_forward` is one permitted topic delivery that is still trying
         //   to enter the downstream pipeline and therefore must not be
         //   committed yet.
         // - `pending_tracked_message_ids` are deliveries that were already
@@ -666,7 +666,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 let send_started_at = Instant::now();
                                 match effect_handler.try_send_message_with_source_node(pdata) {
                                     Ok(()) => {
-                                        // Commit the topic lease only after the
+                                        // Commit the topic delivery permit only after the
                                         // downstream pipeline accepts the
                                         // message. That keeps drain precise:
                                         // an unadmitted message can still be
