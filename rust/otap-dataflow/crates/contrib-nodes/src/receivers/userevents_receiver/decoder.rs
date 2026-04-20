@@ -53,16 +53,6 @@ pub(super) enum DecodedAttrValue {
     Double(f64),
 }
 
-impl DecodedAttrValue {
-    #[cfg(test)]
-    pub(super) fn as_str(&self) -> Option<&str> {
-        match self {
-            Self::Str(s) => Some(s.as_str()),
-            _ => None,
-        }
-    }
-}
-
 impl PartialEq<str> for DecodedAttrValue {
     fn eq(&self, other: &str) -> bool {
         matches!(self, Self::Str(s) if s == other)
