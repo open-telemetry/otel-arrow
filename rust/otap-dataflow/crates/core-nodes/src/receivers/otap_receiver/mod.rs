@@ -465,8 +465,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(NodeControlMsg::DrainIngress { deadline, reason }) => {
-                            if draining_deadline.is_none() {
+                        Ok(NodeControlMsg::DrainIngress { deadline, reason })
+                            if draining_deadline.is_none() => {
                                 otap_df_telemetry::otel_info!("otap_receiver.drain_ingress");
                                 // Latch the first drain request and close ingress.
                                 // This stops new admissions, but does not yet report
@@ -476,7 +476,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                                 draining_reason = Some(reason);
                                 grpc_shutdown.cancel();
                             }
-                        }
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
                             otap_df_telemetry::otel_info!("otap_receiver.shutdown");
                             grpc_shutdown.cancel();

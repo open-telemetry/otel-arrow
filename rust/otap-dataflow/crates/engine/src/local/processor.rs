@@ -33,6 +33,8 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::control::WakeupRevision;
 use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupSlot};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -161,6 +163,12 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
         self.router.connected_ports()
+    }
+
+    /// Returns the selected default output port name, if one exists.
+    #[must_use]
+    pub fn default_port(&self) -> Option<PortName> {
+        self.router.default_port()
     }
 
     /// Returns the precomputed node interests.
@@ -292,6 +300,18 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
         self.core.cancel_wakeup(slot)
+    }
+
+    /// Pop the next wakeup from the local scheduler, regardless of whether
+    /// it is due. Returns `None` when no wakeup is scheduled or when local
+    /// wakeups are not enabled.
+    ///
+    /// This is intended for testing, where the inbox loop is not running and
+    /// wakeups need to be manually delivered.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn pop_wakeup(&self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
+        self.core.pop_wakeup()
     }
 
     /// Reports metrics collected by the processor.

@@ -1928,7 +1928,7 @@ mod test {
         exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
     };
 
-    async fn test_simple_filter<P: Parser>() {
+    async fn test_simple_filter<P: Parser, F: Fn(&str) -> String>(date_time_formatter: F) {
         let ns_per_second: u64 = 1000 * 1000 * 1000;
         let log_records = vec![
             LogRecord::build()
@@ -1993,7 +1993,10 @@ mod test {
         );
 
         let result = exec_logs_pipeline::<P>(
-            "logs | where time_unix_nano > datetime(1970-01-01 00:00:01.1)",
+            &format!(
+                "logs | where time_unix_nano > {} ",
+                date_time_formatter("1970-01-01T00:00:01.1")
+            ),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -2003,7 +2006,10 @@ mod test {
         );
 
         let result = exec_logs_pipeline::<P>(
-            "logs | where datetime(1970-01-01 00:00:01.1) > time_unix_nano",
+            &format!(
+                "logs | where {} > time_unix_nano",
+                date_time_formatter("1970-01-01T00:00:01.1")
+            ),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -2027,12 +2033,12 @@ mod test {
 
     #[tokio::test]
     async fn test_simple_filter_kql_parser() {
-        test_simple_filter::<KqlParser>().await;
+        test_simple_filter::<KqlParser, _>(|dt| format!("datetime({dt})")).await;
     }
 
     #[tokio::test]
-    async fn test_simple_filter_op_parser() {
-        test_simple_filter::<OplParser>().await
+    async fn test_simple_filter_opl_parser() {
+        test_simple_filter::<OplParser, _>(|dt| format!("date_time\"{dt}\"")).await
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
@@ -2297,6 +2303,15 @@ mod test {
         test_filter_matches_regex::<OplParser>(
             r#"logs | where matches(event_name, "^err.*")"#,
             r#"logs | where matches(attributes["username"], "^t.*")"#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_matches_regex_opl_regex_literal() {
+        test_filter_matches_regex::<OplParser>(
+            r#"logs | where matches(event_name, r"^err.*")"#,
+            r#"logs | where matches(attributes["username"], r"^t.*")"#,
         )
         .await;
     }

@@ -141,6 +141,19 @@ impl NodeLocalScheduler {
         Some((slot, priority.when, priority.revision))
     }
 
+    /// Pop the next scheduled wakeup regardless of whether it is due.
+    ///
+    /// This is the unconditional counterpart of [`pop_due`](Self::pop_due) and
+    /// exists for test/benchmark harnesses where the inbox loop is not running.
+    #[cfg(any(test, feature = "test-utils"))]
+    fn pop_next(&mut self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
+        #[cfg(debug_assertions)]
+        self.heap.assert_consistent();
+
+        let (slot, priority) = self.heap.pop()?;
+        Some((slot, priority.when, priority.revision))
+    }
+
     fn begin_shutdown(&mut self) {
         if self.shutting_down {
             return;
@@ -212,6 +225,15 @@ impl NodeLocalSchedulerHandle {
 
     pub(crate) fn pop_due(&self, now: Instant) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
         self.with_scheduler(|scheduler| scheduler.pop_due(now))
+    }
+
+    /// Pop the next scheduled wakeup regardless of whether it is due.
+    ///
+    /// This is the unconditional counterpart of [`pop_due`](Self::pop_due) and
+    /// exists for test/benchmark harnesses where the inbox loop is not running.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn pop_next(&self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
+        self.with_scheduler(|scheduler| scheduler.pop_next())
     }
 
     pub(crate) fn begin_shutdown(&self) {

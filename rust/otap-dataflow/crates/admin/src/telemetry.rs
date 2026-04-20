@@ -9,7 +9,8 @@
 //! - /api/v1/telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
 
 use crate::AppState;
-use crate::convert::json_shape;
+use crate::convert::{convert_attribute_value, json_shape};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -26,14 +27,17 @@ use otap_df_telemetry::self_tracing::format_log_record_to_string;
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 
 /// All the routes for telemetry.
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/telemetry/live-schema", get(get_live_schema))
         .route("/telemetry/logs", get(get_logs))
+        .route("/telemetry/logs/stream", get(ws_logs_stream))
         .route("/telemetry/metrics", get(get_metrics))
         .route("/telemetry/metrics/aggregate", get(get_metrics_aggregate))
         .route("/metrics", get(get_metrics))
@@ -143,40 +147,8 @@ struct AggregateGroup {
     metrics: HashMap<String, MetricValue>,
 }
 
-#[derive(Serialize)]
-pub(crate) struct LogsResponse {
-    oldest_seq: Option<u64>,
-    newest_seq: Option<u64>,
-    next_seq: u64,
-    truncated_before_seq: Option<u64>,
-    dropped_on_ingest: u64,
-    dropped_on_retention: u64,
-    retained_bytes: usize,
-    logs: Vec<LogEntry>,
-}
-
-#[derive(Serialize)]
-struct LogEntry {
-    seq: u64,
-    timestamp: String,
-    level: String,
-    target: String,
-    event_name: String,
-    file: Option<String>,
-    line: Option<u32>,
-    rendered: String,
-    contexts: Vec<ResolvedLogContext>,
-}
-
-#[derive(Serialize)]
-struct ResolvedLogContext {
-    entity_key: String,
-    schema_name: Option<String>,
-    attributes: HashMap<String, AttributeValue>,
-}
-
-fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> LogsResponse {
-    LogsResponse {
+fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> api::LogsResponse {
+    api::LogsResponse {
         oldest_seq: result.oldest_seq,
         newest_seq: result.newest_seq,
         next_seq: result.next_seq,
@@ -192,9 +164,9 @@ fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> 
     }
 }
 
-fn render_log_entry(registry: &TelemetryRegistryHandle, entry: &RetainedLogEvent) -> LogEntry {
+fn render_log_entry(registry: &TelemetryRegistryHandle, entry: &RetainedLogEvent) -> api::LogEntry {
     let callsite = entry.event.record.callsite();
-    LogEntry {
+    api::LogEntry {
         seq: entry.seq,
         timestamp: chrono::DateTime::<chrono::Utc>::from(entry.event.time).to_rfc3339(),
         level: callsite.level().to_string(),
@@ -214,25 +186,25 @@ fn render_log_message(event: &LogEvent) -> String {
 fn resolve_log_contexts(
     registry: &TelemetryRegistryHandle,
     event: &LogEvent,
-) -> Vec<ResolvedLogContext> {
+) -> Vec<api::ResolvedLogContext> {
     event
         .record
         .context
         .iter()
         .map(|entity_key| {
             registry
-                .visit_entity(*entity_key, |attrs| ResolvedLogContext {
+                .visit_entity(*entity_key, |attrs| api::ResolvedLogContext {
                     entity_key: format!("{entity_key:?}"),
                     schema_name: Some(attrs.schema_name().to_string()),
                     attributes: attrs
                         .iter_attributes()
-                        .map(|(key, value)| (key.to_string(), value.clone()))
+                        .map(|(key, value)| (key.to_string(), convert_attribute_value(value)))
                         .collect(),
                 })
-                .unwrap_or_else(|| ResolvedLogContext {
+                .unwrap_or_else(|| api::ResolvedLogContext {
                     entity_key: format!("{entity_key:?}"),
                     schema_name: None,
-                    attributes: HashMap::new(),
+                    attributes: BTreeMap::new(),
                 })
         })
         .collect()
@@ -261,10 +233,7 @@ pub async fn get_logs(
         after: q.after,
         limit,
     });
-    Ok(Json(json_shape(&logs_response(
-        &state.metrics_registry,
-        result,
-    ))))
+    Ok(Json(logs_response(&state.metrics_registry, result)))
 }
 
 /// Handler for the `/api/v1/telemetry/metrics` endpoint.
@@ -1269,6 +1238,468 @@ fn escape_prom_help(s: &str) -> String {
     escape_prom_label_value(s)
 }
 
+// ---------------------------------------------------------------------------
+// WebSocket live log stream  (/api/v1/telemetry/logs/stream)
+// ---------------------------------------------------------------------------
+
+/// Map a level string to a numeric severity (TRACE=0 … ERROR=4).
+/// Unknown levels are treated as TRACE (lowest severity).
+///
+/// Uses ASCII-only comparison to avoid allocating a temporary uppercase string.
+fn level_severity(level: &str) -> u8 {
+    if level.eq_ignore_ascii_case("ERROR") {
+        4
+    } else if level.eq_ignore_ascii_case("WARN") {
+        3
+    } else if level.eq_ignore_ascii_case("INFO") {
+        2
+    } else if level.eq_ignore_ascii_case("DEBUG") {
+        1
+    } else {
+        0 // TRACE and anything unknown
+    }
+}
+
+/// Map a `tracing::Level` to the same severity scale used by [`level_severity`].
+fn tracing_level_severity(level: &otap_df_telemetry::Level) -> u8 {
+    match *level {
+        otap_df_telemetry::Level::ERROR => 4,
+        otap_df_telemetry::Level::WARN => 3,
+        otap_df_telemetry::Level::INFO => 2,
+        otap_df_telemetry::Level::DEBUG => 1,
+        _ => 0, // TRACE
+    }
+}
+
+/// Optional text filter applied to rendered log entries on the server side.
+///
+/// Applied after rendering so that `search_query` can match against the fully
+/// formatted message text as well as metadata fields (level, target, etc.).
+#[derive(Default)]
+struct LogFilter {
+    /// Case-insensitive substring matched against: rendered message, level,
+    /// target, event_name, and file path.
+    search_query: Option<String>,
+    /// Discard entries whose timestamp is strictly before this instant.
+    minimum_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// Numeric minimum severity (TRACE=0, DEBUG=1, INFO=2, WARN=3, ERROR=4).
+    /// Entries with a lower severity are discarded.
+    minimum_level: Option<u8>,
+}
+
+impl LogFilter {
+    /// Returns `true` when the rendered log entry passes all active criteria.
+    fn matches(&self, entry: &api::LogEntry) -> bool {
+        if let Some(min_ts) = &self.minimum_timestamp {
+            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
+                if ts.with_timezone(&chrono::Utc) < *min_ts {
+                    return false;
+                }
+            }
+        }
+        if let Some(min_level) = self.minimum_level {
+            if level_severity(&entry.level) < min_level {
+                return false;
+            }
+        }
+        if let Some(q) = &self.search_query {
+            // `q` is already lowercased at construction time; only the entry
+            // fields need to be lowercased per event.
+            //
+            // TODO(perf): each `to_lowercase()` allocates a temporary String.
+            // If filter throughput ever becomes a concern, consider a
+            // case-insensitive substring search (e.g. `memchr` + manual ASCII
+            // comparison) to avoid per-field heap allocation.
+            let matched = entry.rendered.to_lowercase().contains(q.as_str())
+                || entry.level.to_lowercase().contains(q.as_str())
+                || entry.target.to_lowercase().contains(q.as_str())
+                || entry.event_name.to_lowercase().contains(q.as_str())
+                || entry
+                    .file
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(q.as_str());
+            if !matched {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Cheap pre-filter on the raw (unrendered) log event.
+    ///
+    /// Checks `minimum_level` and `minimum_timestamp` without rendering the
+    /// entry, so we can skip the more expensive `render_log_entry()` call for
+    /// events that would be rejected anyway.  `search_query` is intentionally
+    /// not checked here because it operates on the rendered text.
+    fn prefilter_raw(&self, event: &RetainedLogEvent) -> bool {
+        if let Some(min_ts) = &self.minimum_timestamp {
+            let event_ts = chrono::DateTime::<chrono::Utc>::from(event.event.time);
+            if event_ts < *min_ts {
+                return false;
+            }
+        }
+        if let Some(min_level) = self.minimum_level {
+            let callsite = event.event.record.callsite();
+            if tracing_level_severity(callsite.level()) < min_level {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Build a `LogFilter` from optional client-supplied strings.
+    fn from_params(
+        search_query: Option<String>,
+        minimum_timestamp: Option<String>,
+        minimum_level: Option<String>,
+    ) -> Self {
+        let minimum_timestamp = minimum_timestamp.and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+        });
+        Self {
+            // Pre-lowercase so `matches()` doesn't allocate a lowercase string
+            // on every log event that passes through the filter.
+            search_query: search_query.map(|s| s.to_lowercase()),
+            minimum_timestamp,
+            minimum_level: minimum_level
+                .as_deref()
+                .filter(|s| !s.eq_ignore_ascii_case("all") && !s.is_empty())
+                .map(level_severity),
+        }
+    }
+}
+
+/// Client → server WebSocket messages.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum WsClientMsg {
+    /// Begin streaming.  Sends an initial retained-log snapshot, then follows
+    /// with live events.
+    Subscribe {
+        /// Cursor: only include retained entries strictly newer than this seq.
+        after: Option<u64>,
+        /// Maximum retained entries in the initial snapshot (clamped 1–1000).
+        limit: Option<usize>,
+        /// Case-insensitive text filter (applied server-side).
+        #[serde(rename = "searchQuery")]
+        search_query: Option<String>,
+        /// RFC 3339 minimum timestamp filter.
+        #[serde(rename = "minimumTimestamp")]
+        minimum_timestamp: Option<String>,
+        /// Minimum log level (TRACE/DEBUG/INFO/WARN/ERROR or ALL to disable).
+        #[serde(rename = "minimumLevel")]
+        minimum_level: Option<String>,
+        /// Start paused (no live events sent until `resume`).
+        paused: Option<bool>,
+    },
+    /// Stop forwarding live events (WebSocket stays open; server drains
+    /// broadcast to avoid lagging, but does not accumulate a client backlog).
+    Pause,
+    /// Resume forwarding live events from the current live position.
+    Resume,
+    /// Update the server-side text/timestamp/level filter.
+    SetFilter {
+        #[serde(rename = "searchQuery")]
+        search_query: Option<String>,
+        #[serde(rename = "minimumTimestamp")]
+        minimum_timestamp: Option<String>,
+        #[serde(rename = "minimumLevel")]
+        minimum_level: Option<String>,
+    },
+    /// Request a retained-log snapshot (same as the HTTP query endpoint).
+    Backfill {
+        after: Option<u64>,
+        limit: Option<usize>,
+    },
+    /// Keep-alive; server replies with `pong`.
+    Ping,
+}
+
+/// Server → client WebSocket messages.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WsServerMsg {
+    /// Initial or backfill snapshot of retained logs.
+    Snapshot {
+        oldest_seq: Option<u64>,
+        newest_seq: Option<u64>,
+        next_seq: u64,
+        truncated_before_seq: Option<u64>,
+        dropped_on_ingest: u64,
+        dropped_on_retention: u64,
+        retained_bytes: usize,
+        logs: Vec<api::LogEntry>,
+    },
+    /// Single live log entry pushed by the server.
+    Log {
+        #[serde(flatten)]
+        entry: api::LogEntry,
+    },
+    /// Current pause state and cursor position.
+    State { paused: bool, next_seq: u64 },
+    /// Server-side error notification (e.g. subscriber lagged and dropped events).
+    /// `lag_before_seq` is set on lag errors: it is the cursor value from just
+    /// before the gap so the client can issue a targeted backfill.
+    Error {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        lag_before_seq: Option<u64>,
+    },
+    /// Reply to a client `ping`.
+    Pong,
+}
+
+/// Upgrade handler for `GET /api/v1/telemetry/logs/stream`.
+async fn ws_logs_stream(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| handle_ws_logs(socket, state))
+}
+
+/// Send a serialized `WsServerMsg` as a WebSocket text frame.
+///
+/// Returns `false` if the socket is closed and the caller should stop sending.
+async fn ws_send(ws: &mut WebSocket, msg: &WsServerMsg) -> bool {
+    match serde_json::to_string(msg) {
+        Ok(text) => ws.send(Message::Text(text.into())).await.is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Build and send a `snapshot` message from a `LogQueryResult`.
+///
+/// Applies `filter` to the rendered entries so that snapshot and backfill
+/// responses are consistent with what the live stream sends for the same filter.
+async fn ws_send_snapshot(
+    ws: &mut WebSocket,
+    registry: &TelemetryRegistryHandle,
+    result: LogQueryResult,
+    filter: &LogFilter,
+) -> bool {
+    let mut resp = logs_response(registry, result);
+    resp.logs.retain(|entry| filter.matches(entry));
+    let msg = WsServerMsg::Snapshot {
+        oldest_seq: resp.oldest_seq,
+        newest_seq: resp.newest_seq,
+        next_seq: resp.next_seq,
+        truncated_before_seq: resp.truncated_before_seq,
+        dropped_on_ingest: resp.dropped_on_ingest,
+        dropped_on_retention: resp.dropped_on_retention,
+        retained_bytes: resp.retained_bytes,
+        logs: resp.logs,
+    };
+    ws_send(ws, &msg).await
+}
+
+/// Core WebSocket session loop for the live log stream.
+///
+/// # Protocol summary
+///
+/// 1. The client sends `subscribe` first.
+/// 2. The server sends the initial retained-log snapshot, then streams live
+///    events via `log` messages.
+/// 3. `pause` / `resume` toggle server-side forwarding without closing the
+///    socket.  While paused the server still drains the broadcast channel so
+///    that the producer is never slowed by this client.
+/// 4. On `backfill` the server re-queries the retained ring buffer and sends a
+///    `snapshot`.  The cursor is updated so subsequent live events do not
+///    duplicate.
+/// 5. If the client falls more than `SUBSCRIBER_CHANNEL_CAPACITY` events
+///    behind, the broadcast channel drops the overflow; the server notifies the
+///    client with an `error` message so it can issue a `backfill`.
+async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
+    let Some(log_tap) = state.log_tap.as_ref() else {
+        let _ = ws_send(
+            &mut ws,
+            &WsServerMsg::Error {
+                message: "log tap is not enabled".to_string(),
+                lag_before_seq: None,
+            },
+        )
+        .await;
+        return;
+    };
+
+    let registry = &state.metrics_registry;
+
+    // Live broadcast receiver; set once on `subscribe`.
+    let mut live_rx: Option<broadcast::Receiver<Arc<RetainedLogEvent>>> = None;
+    let mut paused = false;
+    let mut filter = LogFilter::default();
+    // Tracks the sequence number of the last event we acknowledged (sent or
+    // deliberately skipped while paused).  Used in `state` replies so the
+    // client knows where the live cursor stands.
+    let mut cursor: u64 = 0;
+
+    loop {
+        if let Some(rx) = live_rx.as_mut() {
+            // Subscribed: multiplex client messages and live log events.
+            tokio::select! {
+                biased; // prioritise client control messages
+
+                client_raw = ws.recv() => {
+                    match client_raw {
+                        Some(Ok(Message::Text(text))) => {
+                            match serde_json::from_str::<WsClientMsg>(&text) {
+                                Ok(WsClientMsg::Pause) => {
+                                    paused = true;
+                                    if !ws_send(&mut ws, &WsServerMsg::State { paused, next_seq: cursor }).await {
+                                        break;
+                                    }
+                                }
+                                Ok(WsClientMsg::Resume) => {
+                                    paused = false;
+                                    // Send current cursor so client can decide to backfill.
+                                    if !ws_send(&mut ws, &WsServerMsg::State { paused, next_seq: cursor }).await {
+                                        break;
+                                    }
+                                }
+                                Ok(WsClientMsg::SetFilter { search_query, minimum_timestamp, minimum_level }) => {
+                                    filter = LogFilter::from_params(search_query, minimum_timestamp, minimum_level);
+                                }
+                                Ok(WsClientMsg::Backfill { after, limit }) => {
+                                    let limit = limit.unwrap_or(100).clamp(1, 1000);
+                                    let result = log_tap.query(LogQuery { after, limit });
+                                    // Only advance cursor — never move it backward.  A
+                                    // client may request an older `after` (e.g. a lag
+                                    // gap backfill) while the live stream has already
+                                    // moved the cursor forward; preserving the maximum
+                                    // keeps the dedup guard in the live event arm sound.
+                                    cursor = cursor.max(result.next_seq);
+                                    if !ws_send_snapshot(&mut ws, registry, result, &filter).await {
+                                        break;
+                                    }
+                                }
+                                Ok(WsClientMsg::Ping) => {
+                                    if !ws_send(&mut ws, &WsServerMsg::Pong).await {
+                                        break;
+                                    }
+                                }
+                                Ok(WsClientMsg::Subscribe { .. }) => {
+                                    // Already subscribed; ignore duplicate.
+                                }
+                                Err(_) => {
+                                    // Unknown or malformed message; keep the session open.
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Ok(_)) => {} // binary / ping frames — ignore
+                        Some(Err(_)) => break,
+                    }
+                }
+
+                live_event = rx.recv() => {
+                    match live_event {
+                        Ok(entry) => {
+                            let entry_seq = entry.seq;
+
+                            // Skip entries whose seq is at or below cursor: they
+                            // were already delivered in the most recent snapshot
+                            // or backfill (the subscribe-before-query race window).
+                            if entry_seq <= cursor {
+                                // Discard silently — already in the snapshot.
+                            } else {
+                                // Advance cursor so `state` replies are accurate
+                                // even when paused or filtered.
+                                cursor = entry_seq;
+
+                                if !paused {
+                                    // Cheap pre-filter on level/timestamp before
+                                    // the more expensive render + search match.
+                                    if filter.prefilter_raw(&entry) {
+                                        let rendered = render_log_entry(registry, &entry);
+                                        if filter.matches(&rendered) {
+                                            let msg = WsServerMsg::Log {
+                                                entry: rendered,
+                                            };
+                                            if !ws_send(&mut ws, &msg).await {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                // If paused: drain the channel to avoid lagging the
+                                // producer, but send nothing to the client.
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            // The client was too slow; events were dropped from its
+                            // receiver slot.  `cursor` here is the last seq we
+                            // successfully delivered — the client can use it as
+                            // the `after` param for a backfill to recover the gap.
+                            let msg = WsServerMsg::Error {
+                                message: format!(
+                                    "dropped {n} log event(s) due to slow consumption; \
+                                     send backfill to resync"
+                                ),
+                                lag_before_seq: Some(cursor),
+                            };
+                            if !ws_send(&mut ws, &msg).await {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        } else {
+            // Not yet subscribed: wait for a `subscribe` message only.
+            let client_raw = ws.recv().await;
+            match client_raw {
+                Some(Ok(Message::Text(text))) => {
+                    if let Ok(WsClientMsg::Subscribe {
+                        after,
+                        limit,
+                        search_query,
+                        minimum_timestamp,
+                        minimum_level,
+                        paused: start_paused,
+                    }) = serde_json::from_str::<WsClientMsg>(&text)
+                    {
+                        // Subscribe to the broadcast channel BEFORE querying
+                        // retained logs so we do not miss events recorded between
+                        // the query and the first receive.  Live events with
+                        // seq <= cursor (set from snapshot.next_seq below) are
+                        // silently discarded in the live_event arm to prevent
+                        // duplicates for that race window.
+                        live_rx = Some(log_tap.subscribe());
+
+                        filter =
+                            LogFilter::from_params(search_query, minimum_timestamp, minimum_level);
+                        paused = start_paused.unwrap_or(false);
+
+                        let limit = limit.unwrap_or(100).clamp(1, 1000);
+                        let result = log_tap.query(LogQuery { after, limit });
+                        cursor = result.next_seq;
+
+                        if !ws_send_snapshot(&mut ws, registry, result, &filter).await {
+                            break;
+                        }
+                        if !ws_send(
+                            &mut ws,
+                            &WsServerMsg::State {
+                                paused,
+                                next_seq: cursor,
+                            },
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                    // Other messages before subscribe are silently ignored.
+                }
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(_)) => break,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1781,5 +2212,215 @@ mod tests {
         assert!(output.contains("request_duration_max=100"));
         assert!(output.contains("request_duration_sum=250.5"));
         assert!(output.contains("request_duration_count=10i"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // LogFilter unit tests
+    // ---------------------------------------------------------------------------
+
+    fn make_log_entry(rendered: &str, level: &str, target: &str, timestamp: &str) -> api::LogEntry {
+        api::LogEntry {
+            seq: 1,
+            timestamp: timestamp.to_string(),
+            level: level.to_string(),
+            target: target.to_string(),
+            event_name: "test.event".to_string(),
+            file: Some("src/lib.rs".to_string()),
+            line: Some(1),
+            rendered: rendered.to_string(),
+            contexts: vec![],
+        }
+    }
+
+    #[test]
+    fn log_filter_no_criteria_always_matches() {
+        let filter = LogFilter::default();
+        let entry = make_log_entry("hello world", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&entry));
+    }
+
+    #[test]
+    fn log_filter_search_query_matches_rendered() {
+        let filter = LogFilter::from_params(Some("hello".to_string()), None, None);
+        let yes = make_log_entry("say hello world", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let no = make_log_entry("goodbye world", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&yes));
+        assert!(!filter.matches(&no));
+    }
+
+    #[test]
+    fn log_filter_search_query_matches_level() {
+        let filter = LogFilter::from_params(Some("WARN".to_string()), None, None);
+        let yes = make_log_entry("msg", "WARN", "admin", "2026-01-01T00:00:00Z");
+        let no = make_log_entry("msg", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&yes));
+        assert!(!filter.matches(&no));
+    }
+
+    #[test]
+    fn log_filter_search_query_is_case_insensitive() {
+        let filter = LogFilter::from_params(Some("HELLO".to_string()), None, None);
+        let entry = make_log_entry("say hello world", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&entry));
+    }
+
+    #[test]
+    fn log_filter_minimum_timestamp_excludes_older_entries() {
+        let filter = LogFilter::from_params(None, Some("2026-06-01T00:00:00Z".to_string()), None);
+        let old_entry = make_log_entry("old", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let new_entry = make_log_entry("new", "INFO", "admin", "2026-07-01T00:00:00Z");
+        assert!(!filter.matches(&old_entry));
+        assert!(filter.matches(&new_entry));
+    }
+
+    #[test]
+    fn log_filter_invalid_minimum_timestamp_is_ignored() {
+        // A malformed timestamp should not crash; the filter passes without the constraint.
+        let filter = LogFilter::from_params(None, Some("not-a-date".to_string()), None);
+        let entry = make_log_entry("msg", "INFO", "admin", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&entry));
+    }
+
+    /// Verifies that snapshot filtering is applied consistently: a filter that
+    /// excludes an entry in the live stream must also exclude it in a snapshot.
+    #[test]
+    fn log_filter_applied_consistently_to_snapshot_logs() {
+        let filter = LogFilter::from_params(Some("important".to_string()), None, None);
+        let match_entry = make_log_entry(
+            "important event occurred",
+            "INFO",
+            "admin",
+            "2026-01-01T00:00:00Z",
+        );
+        let no_match_entry = make_log_entry(
+            "routine heartbeat",
+            "DEBUG",
+            "admin",
+            "2026-01-01T00:00:01Z",
+        );
+
+        // The filter must pass the matching entry and reject the other.
+        assert!(filter.matches(&match_entry));
+        assert!(!filter.matches(&no_match_entry));
+
+        // Simulate the retain() call used in ws_send_snapshot.
+        let mut logs = vec![match_entry, no_match_entry];
+        logs.retain(|e| filter.matches(e));
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].rendered.contains("important"));
+    }
+
+    #[test]
+    fn level_severity_ordering_is_correct() {
+        // TRACE < DEBUG < INFO < WARN < ERROR
+        assert!(level_severity("TRACE") < level_severity("DEBUG"));
+        assert!(level_severity("DEBUG") < level_severity("INFO"));
+        assert!(level_severity("INFO") < level_severity("WARN"));
+        assert!(level_severity("WARN") < level_severity("ERROR"));
+    }
+
+    #[test]
+    fn level_severity_is_case_insensitive() {
+        assert_eq!(level_severity("error"), level_severity("ERROR"));
+        assert_eq!(level_severity("warn"), level_severity("WARN"));
+        assert_eq!(level_severity("info"), level_severity("INFO"));
+        assert_eq!(level_severity("debug"), level_severity("DEBUG"));
+        assert_eq!(level_severity("trace"), level_severity("TRACE"));
+    }
+
+    #[test]
+    fn log_filter_minimum_level_excludes_lower_severity() {
+        let filter = LogFilter::from_params(None, None, Some("WARN".to_string()));
+        let trace = make_log_entry("msg", "TRACE", "t", "2026-01-01T00:00:00Z");
+        let debug = make_log_entry("msg", "DEBUG", "t", "2026-01-01T00:00:00Z");
+        let info = make_log_entry("msg", "INFO", "t", "2026-01-01T00:00:00Z");
+        let warn = make_log_entry("msg", "WARN", "t", "2026-01-01T00:00:00Z");
+        let error = make_log_entry("msg", "ERROR", "t", "2026-01-01T00:00:00Z");
+        assert!(!filter.matches(&trace));
+        assert!(!filter.matches(&debug));
+        assert!(!filter.matches(&info));
+        assert!(filter.matches(&warn));
+        assert!(filter.matches(&error));
+    }
+
+    #[test]
+    fn log_filter_minimum_level_all_disables_level_filter() {
+        let filter = LogFilter::from_params(None, None, Some("ALL".to_string()));
+        let trace = make_log_entry("msg", "TRACE", "t", "2026-01-01T00:00:00Z");
+        let error = make_log_entry("msg", "ERROR", "t", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&trace));
+        assert!(filter.matches(&error));
+    }
+
+    #[test]
+    fn log_filter_minimum_level_empty_string_disables_level_filter() {
+        let filter = LogFilter::from_params(None, None, Some(String::new()));
+        let trace = make_log_entry("msg", "TRACE", "t", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&trace));
+    }
+
+    #[test]
+    fn log_filter_minimum_level_and_search_query_combine() {
+        // Both constraints must pass.
+        let filter = LogFilter::from_params(
+            Some("critical".to_string()),
+            None,
+            Some("ERROR".to_string()),
+        );
+        let match_entry = make_log_entry("critical failure", "ERROR", "t", "2026-01-01T00:00:00Z");
+        let wrong_level = make_log_entry("critical info", "INFO", "t", "2026-01-01T00:00:00Z");
+        let wrong_text = make_log_entry("normal error", "ERROR", "t", "2026-01-01T00:00:00Z");
+        assert!(filter.matches(&match_entry));
+        assert!(!filter.matches(&wrong_level));
+        assert!(!filter.matches(&wrong_text));
+    }
+
+    // ---------------------------------------------------------------------------
+    // WebSocket ↔ HTTP schema alignment tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn ws_log_msg_serializes_same_fields_as_api_log_entry() {
+        let entry = make_log_entry("hello", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let msg = WsServerMsg::Log {
+            entry: entry.clone(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+        let obj = json.as_object().unwrap();
+
+        // The flattened entry must carry the same fields as api::LogEntry
+        // plus the discriminator tag.
+        assert_eq!(obj.get("type").unwrap(), "log");
+        assert_eq!(obj.get("seq").unwrap(), entry.seq);
+        assert_eq!(obj.get("timestamp").unwrap(), &entry.timestamp);
+        assert_eq!(obj.get("level").unwrap(), &entry.level);
+        assert_eq!(obj.get("target").unwrap(), &entry.target);
+        assert_eq!(obj.get("event_name").unwrap(), &entry.event_name);
+        assert_eq!(obj.get("rendered").unwrap(), &entry.rendered);
+        assert!(obj.contains_key("contexts"));
+    }
+
+    #[test]
+    fn ws_snapshot_logs_use_api_log_entry_shape() {
+        let entry = make_log_entry("hello", "INFO", "admin", "2026-01-01T00:00:00Z");
+        let msg = WsServerMsg::Snapshot {
+            oldest_seq: Some(1),
+            newest_seq: Some(1),
+            next_seq: 1,
+            truncated_before_seq: None,
+            dropped_on_ingest: 0,
+            dropped_on_retention: 0,
+            retained_bytes: 0,
+            logs: vec![entry],
+        };
+        let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+        let logs = json.get("logs").unwrap().as_array().unwrap();
+        assert_eq!(logs.len(), 1);
+
+        // Each log in the snapshot must deserialize as a valid api::LogEntry.
+        let roundtrip: api::LogEntry = serde_json::from_value(logs[0].clone())
+            .expect("snapshot log should match api::LogEntry");
+        assert_eq!(roundtrip.seq, 1);
+        assert_eq!(roundtrip.rendered, "hello");
     }
 }

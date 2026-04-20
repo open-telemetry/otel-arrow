@@ -322,6 +322,9 @@ hooks:
         metrics = flatten_columns(
             metrics, ["metric_attributes", "resource_attributes", "scope_attributes"]
         )
+        # Coerce 'value' to numeric so DuckDB doesn't infer it as VARCHAR
+        # when the column contains mixed types (e.g., dicts from Histogram metrics).
+        metrics["value"] = pd.to_numeric(metrics["value"], errors="coerce")
         self.conn.register("metrics", metrics)
 
         # Flatten and register spans

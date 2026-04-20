@@ -65,15 +65,13 @@ impl FieldRanges for ResourceFieldOffsets {
         };
 
         match field_num {
-            RESOURCE_DROPPED_ATTRIBUTES_COUNT => {
-                if wire_type == wire_types::VARINT {
-                    self.dropped_attributes_count.set(range);
-                }
+            RESOURCE_DROPPED_ATTRIBUTES_COUNT if wire_type == wire_types::VARINT => {
+                self.dropped_attributes_count.set(range);
             }
-            RESOURCE_ATTRIBUTES => {
-                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
-                    self.first_attribute.set(range);
-                }
+            RESOURCE_ATTRIBUTES
+                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN =>
+            {
+                self.first_attribute.set(range);
             }
             _ => {
                 // ignore unknown fields

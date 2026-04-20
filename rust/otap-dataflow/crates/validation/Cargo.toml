@@ -23,7 +23,7 @@ tokio = { workspace = true }
 portpicker = { workspace = true }
 humantime-serde = { workspace = true }
 
-testcontainers = { workspace = true }
+testcontainers = { workspace = true, features = ["http_wait_plain"] }
 minijinja = { workspace = true }
 
 otap-df-admin-api = { workspace = true }
@@ -41,6 +41,7 @@ prost = { workspace = true }
 [features]
 crypto-ring = ["otap-df-otap/crypto-ring"]
 crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
+crypto-symcrypt = ["otap-df-otap/crypto-symcrypt"]
 crypto-openssl = ["otap-df-otap/crypto-openssl"]
 
 [dev-dependencies]
