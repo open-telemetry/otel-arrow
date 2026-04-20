@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776709898987,
+  "lastUpdate": 1776715767114,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "d24a5b5f623837600c69701508c525b864ee41aa",
-          "message": "Ignore flaky tests to keep CI healthy (#2260)\n\n----------------------\nEDIT from @drewrelmas \n\nProviding documented context:\nhttps://github.com/open-telemetry/otel-arrow/actions/runs/22925964634/job/66536289117",
-          "timestamp": "2026-03-10T22:50:53Z",
-          "tree_id": "1e3c994d3700c82b33b87fb980f82d4aaf17e460",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/d24a5b5f623837600c69701508c525b864ee41aa"
-        },
-        "date": 1773192255016,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -2.30439829826355,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.80881096324214,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.2523044825986,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 52.53528645833333,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 53.73046875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 470268.5472823869,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 481105.4077673744,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002618,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10953383.37871338,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10896400.711301142,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 16993813.324129123,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1e251126b4f960b4022cfa65b59ee21a50764def",
+          "message": "test: Add JUnit XML upload and flaky test tracking workflow (#2699)\n\n# Change Summary\n\n- Implemented JUnit XML result uploads for both required and\nnon-required tests in the Rust-CI workflow.\n- Created a new workflow for detecting flaky tests from JUnit XML\nartifacts, which runs daily and on-demand.\n- The flaky test tracker parses JUnit results, identifies flaky tests,\nand creates or updates a tracking issue with a summary.\n\n## What issue does this PR close?\n\nn/a\n\n## How are these changes tested?\n\nn/a. This is adding a new flaky test detection workflow. No changes to\nproduct code.\n\n## Are there any user-facing changes?\n\nNo. Test/infra only.\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-04-20T18:48:02Z",
+          "tree_id": "403cb31eede9ba6233f67c162ad67bac545e7b6f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1e251126b4f960b4022cfa65b59ee21a50764def"
+        },
+        "date": 1776715766373,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.4278502464294434,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.09116645590419,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.36040055461409,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 29.072395833333335,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 30.44140625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 640706.0612878907,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 656261.4457050045,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003403,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 17038567.65305444,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 17045926.3258866,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
