@@ -1124,8 +1124,8 @@ fn test_durable_buffer_recovery_after_outage() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(10),    // generous max timeout for CI
-        Duration::from_secs(1),     // Generous shutdown deadline for segment finalization
+        Duration::from_secs(10), // generous max timeout for CI
+        Duration::from_secs(1),  // Generous shutdown deadline for segment finalization
         Some(move || {
             count_signals_in_segments(&segments_dir_for_condition, ArrowPayloadType::Logs)
                 >= run1_signals
@@ -1734,7 +1734,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(10),    // generous max timeout for CI
+        Duration::from_secs(10), // generous max timeout for CI
         Duration::from_secs(1),
         Some(move || {
             count_manifest_items_in_segments(&segments_dir_for_condition) >= phase1_signals
