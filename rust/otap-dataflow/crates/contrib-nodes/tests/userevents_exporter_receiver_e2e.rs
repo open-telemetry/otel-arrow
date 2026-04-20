@@ -1,11 +1,11 @@
+//! Linux-only end-to-end smoke test for:
+//! standalone EventHeader user_events producer -> kernel `user_events` ->
+//! `receiver:userevents`.
+
 #![cfg(feature = "userevents-receiver")]
 #![allow(missing_docs)]
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
-
-//! Linux-only end-to-end smoke test for:
-//! standalone EventHeader user_events producer -> kernel `user_events` ->
-//! `receiver:userevents`.
 
 #![cfg(target_os = "linux")]
 

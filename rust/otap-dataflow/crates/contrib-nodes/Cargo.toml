@@ -63,9 +63,6 @@ urlencoding = { workspace = true, optional = true }
 one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "2d33e674348168f4a19bd3ab40d92f1c556407ec", features = ["scripting"], optional = true }
 
 [features]
-contrib-receivers = [
-    "userevents-receiver",
-]
 userevents-receiver = ["dep:one_collect", "dep:tracepoint_decode"]
 contrib-exporters = [
     "geneva-exporter",

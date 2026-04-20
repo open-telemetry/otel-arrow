@@ -279,8 +279,6 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
-# Contrib receivers (opt-in) - now in contrib-nodes
-contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 userevents-receiver = ["otap-df-contrib-nodes/userevents-receiver"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
