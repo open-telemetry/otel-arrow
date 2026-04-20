@@ -128,7 +128,7 @@ fn otap_to_bytes_logs(c: &mut Criterion) {
 
     let logs = create_logs_data();
     let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-    let mut proto_buffer = ProtoBuffer::new();
+    let mut proto_buffer = ProtoBuffer::default();
     let mut encoder = LogsProtoBytesEncoder::new();
 
     _ = group.bench_function("proto encode", |b| {

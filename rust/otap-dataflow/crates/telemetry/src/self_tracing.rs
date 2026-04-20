@@ -12,7 +12,7 @@ pub mod formatter;
 
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
-use otap_df_pdata::otlp::ProtoBuffer;
+use otap_df_pdata::otlp::ProtoBufferInline;
 use otap_df_pdata::proto::consts::{field_num::logs::*, wire_types};
 use serde::Serialize;
 use serde::ser::Serializer;
@@ -37,10 +37,6 @@ pub use formatter::{
 /// cheap reference-counted storage.
 pub const ENCODE_INLINE: usize = 256;
 
-/// Maximum number of dropped attributes that can be reported.
-/// Requires ≤ 3 bytes: 1 tag byte + 2-byte varint (2^14 − 1 = 16383).
-const DROPPED_ATTRS_RESERVATION: usize = 3;
-
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
 #[derive(Debug, Clone)]
@@ -52,9 +48,6 @@ pub struct LogRecord {
     /// can be interpreted using the otap_df_pdata::views::otlp::bytes::RawLogRecord
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
-    ///
-    /// Encoding is done on the stack via `ProtoBuffer<ENCODE_INLINE>`;
-    /// the result is then wrapped in `Bytes` for cheap cloning.
     pub body_attrs_bytes: bytes::Bytes,
 
     /// Number of attribute fields dropped due to truncation (if any).
@@ -130,19 +123,36 @@ impl LogRecord {
         let metadata = event.metadata();
 
         // Encode body and attributes on the stack (zero allocation).
-        let mut buf = ProtoBuffer::<ENCODE_INLINE>::new();
-        let dropped = {
+        let mut buf = ProtoBufferInline::<ENCODE_INLINE>::with_inline();
+        {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
             event.record(&mut visitor);
-            visitor.dropped_count()
-        };
+        }
 
         // Convert to Bytes for cheap reference-counted storage.
         Self {
             callsite_id: metadata.callsite(),
+            dropped_attributes_count: buf.dropped() as u16,
             body_attrs_bytes: buf.into_bytes(),
-            dropped_attributes_count: dropped,
             context,
+        }
+    }
+
+    /// Construct from pre-encoded protobuf bytes and metadata.
+    ///
+    /// Used by [`__encode_event_impl!`] to avoid duplicating the
+    /// callsite / encoding logic between `raw_error!` and
+    /// `__log_record_impl!`.
+    #[must_use]
+    pub fn from_encoded(
+        metadata: &'static Metadata<'static>,
+        buf: ProtoBufferInline<ENCODE_INLINE>,
+    ) -> Self {
+        Self {
+            callsite_id: metadata.callsite(),
+            dropped_attributes_count: buf.dropped() as u16,
+            body_attrs_bytes: buf.into_bytes(),
+            context: LogContext::new(),
         }
     }
 
@@ -156,15 +166,12 @@ impl LogRecord {
     pub fn new_bounded(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
-        let mut buf = ProtoBuffer::<ENCODE_INLINE>::new();
-        // Reserve DROPPED_ATTRS_RESERVATION bytes for the dropped count field.
-        buf.set_limit(ENCODE_INLINE.saturating_sub(DROPPED_ATTRS_RESERVATION));
-        let dropped = {
+        let mut buf = ProtoBufferInline::<ENCODE_INLINE>::with_inline();
+        {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
             event.record(&mut visitor);
-            visitor.dropped_count()
-        };
-        buf.set_limit(ENCODE_INLINE);
+        }
+        let dropped = buf.dropped();
 
         // Append dropped_attributes_count field if any were dropped.
         if dropped > 0 {
@@ -174,8 +181,8 @@ impl LogRecord {
 
         Self {
             callsite_id: metadata.callsite(),
+            dropped_attributes_count: dropped as u16,
             body_attrs_bytes: buf.into_bytes(),
-            dropped_attributes_count: dropped,
             context,
         }
     }

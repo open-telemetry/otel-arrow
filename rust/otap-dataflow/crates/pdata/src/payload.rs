@@ -379,21 +379,21 @@ impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
                 // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
                 // and the buffer, a these structures can be used between requests
                 let mut logs_encoder = LogsProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::new();
+                let mut buffer = ProtoBuffer::with_capacity(0);
 
                 logs_encoder.encode(&mut value, &mut buffer)?;
                 Ok(Self::ExportLogsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Metrics(_) => {
                 let mut metrics_encoder = MetricsProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::new();
+                let mut buffer = ProtoBuffer::with_capacity(0);
                 metrics_encoder.encode(&mut value, &mut buffer)?;
 
                 Ok(Self::ExportMetricsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Traces(_) => {
                 let mut traces_encoder = TracesProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::new();
+                let mut buffer = ProtoBuffer::with_capacity(0);
                 traces_encoder.encode(&mut value, &mut buffer)?;
                 Ok(Self::ExportTracesRequest(buffer.into_bytes()))
             }

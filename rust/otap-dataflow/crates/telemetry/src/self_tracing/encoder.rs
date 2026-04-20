@@ -8,7 +8,7 @@ use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
 use bytes::Bytes;
-use otap_df_pdata::otlp::ProtoBuffer;
+use otap_df_pdata::otlp::{ProtoBuffer, ProtoBufferInline};
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
@@ -19,13 +19,13 @@ use tracing::Level;
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
 pub struct DirectLogRecordEncoder<'buf, const INLINE: usize = 0> {
-    buf: &'buf mut ProtoBuffer<INLINE>,
+    buf: &'buf mut ProtoBufferInline<INLINE>,
 }
 
 impl<'buf, const INLINE: usize> DirectLogRecordEncoder<'buf, INLINE> {
     /// Create a new encoder that writes to the provided buffer.
     #[inline]
-    pub const fn new(buf: &'buf mut ProtoBuffer<INLINE>) -> Self {
+    pub const fn new(buf: &'buf mut ProtoBufferInline<INLINE>) -> Self {
         Self { buf }
     }
 
@@ -72,7 +72,10 @@ impl<'buf, const INLINE: usize> DirectLogRecordEncoder<'buf, INLINE> {
 
 /// Encode the event name from callsite metadata.
 /// Format: "target::name (file:line)" or "target::name" if no file/line.
-fn encode_event_name<const INLINE: usize>(buf: &mut ProtoBuffer<INLINE>, callsite: SavedCallsite) {
+fn encode_event_name<const INLINE: usize>(
+    buf: &mut ProtoBufferInline<INLINE>,
+    callsite: SavedCallsite,
+) {
     proto_encode_len_delimited_small!(
         LOG_RECORD_EVENT_NAME,
         {
@@ -84,114 +87,114 @@ fn encode_event_name<const INLINE: usize>(buf: &mut ProtoBuffer<INLINE>, callsit
 
 /// Visitor that directly encodes tracing fields to protobuf.
 pub struct DirectFieldVisitor<'buf, const INLINE: usize = 0> {
-    buf: &'buf mut ProtoBuffer<INLINE>,
-    /// Number of attribute fields dropped due to truncation.
-    dropped_count: u16,
+    buf: &'buf mut ProtoBufferInline<INLINE>,
 }
 
 impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     /// Create a new DirectFieldVisitor that writes to the provided buffer.
-    pub const fn new(buf: &'buf mut ProtoBuffer<INLINE>) -> Self {
-        Self {
-            buf,
-            dropped_count: 0,
-        }
+    pub const fn new(buf: &'buf mut ProtoBufferInline<INLINE>) -> Self {
+        Self { buf }
     }
 
-    /// Returns the number of attribute fields that were dropped due to truncation.
-    #[must_use]
-    pub const fn dropped_count(&self) -> u16 {
-        self.dropped_count
-    }
-
-    /// Encode an attribute (KeyValue message) with a string value.
+    /// Encode a string attribute into a buffer.
     #[inline]
-    pub fn encode_string_attribute(&mut self, key: &str, value: &str) {
+    fn encode_string_attribute_to(buf: &mut ProtoBufferInline<INLINE>, key: &str, value: &str) {
         proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
-                self.buf.encode_string(KEY_VALUE_KEY, key);
+                buf.encode_string(KEY_VALUE_KEY, key);
                 proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
-                    {
-                        self.buf.encode_string(ANY_VALUE_STRING_VALUE, value);
-                    },
-                    self.buf
+                    { buf.encode_string(ANY_VALUE_STRING_VALUE, value) },
+                    buf
                 );
             },
-            self.buf
+            buf
         );
     }
 
-    /// Encode an attribute with an i64 value.
+    /// Encode an i64 attribute into a buffer.
     #[inline]
-    pub fn encode_int_attribute(&mut self, key: &str, value: i64) {
+    fn encode_int_attribute_to(buf: &mut ProtoBufferInline<INLINE>, key: &str, value: i64) {
         proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
-                self.buf.encode_string(KEY_VALUE_KEY, key);
+                buf.encode_string(KEY_VALUE_KEY, key);
                 proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
                     {
-                        self.buf
-                            .encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-                        self.buf.encode_varint(value as u64);
+                        buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+                        buf.encode_varint(value as u64);
                     },
-                    self.buf
+                    buf
                 );
             },
-            self.buf
+            buf
         );
     }
 
-    /// Encode an attribute with a bool value.
+    /// Encode a bool attribute into a buffer.
     #[inline]
-    pub fn encode_bool_attribute(&mut self, key: &str, value: bool) {
+    fn encode_bool_attribute_to(buf: &mut ProtoBufferInline<INLINE>, key: &str, value: bool) {
         proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
-                self.buf.encode_string(KEY_VALUE_KEY, key);
+                buf.encode_string(KEY_VALUE_KEY, key);
                 proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
                     {
-                        self.buf
-                            .encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
-                        self.buf.encode_varint(u64::from(value));
+                        buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
+                        buf.encode_varint(u64::from(value));
                     },
-                    self.buf
+                    buf
                 );
             },
-            self.buf
+            buf
         );
     }
 
-    /// Encode an attribute with a double value.
+    /// Encode a double attribute into a buffer.
     #[inline]
-    pub fn encode_double_attribute(&mut self, key: &str, value: f64) {
+    fn encode_double_attribute_to(buf: &mut ProtoBufferInline<INLINE>, key: &str, value: f64) {
         proto_encode_len_delimited_small!(
             LOG_RECORD_ATTRIBUTES,
             {
-                self.buf.encode_string(KEY_VALUE_KEY, key);
+                buf.encode_string(KEY_VALUE_KEY, key);
                 proto_encode_len_delimited_small!(
                     KEY_VALUE_VALUE,
                     {
-                        self.buf
-                            .encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
-                        self.buf.extend_from_slice(&value.to_le_bytes());
+                        buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+                        buf.extend_from_slice(&value.to_le_bytes());
                     },
-                    self.buf
+                    buf
                 );
             },
-            self.buf
+            buf
         );
     }
 
-    /// Encode the body (AnyValue message) as a string.
-    /// Empty strings are skipped to avoid encoding a semantically absent body.
-    /// The `otel_*!` macros pass `""` as a message when invoked without fields
-    /// (tracing macros require at least a format string). This guard ensures
-    /// that empty message does not produce an OTLP body or a trailing `:` in
-    /// console output.
+    /// Encode a Debug attribute into a buffer.
+    #[inline]
+    fn encode_debug_attribute_to(
+        buf: &mut ProtoBufferInline<INLINE>,
+        key: &str,
+        value: &dyn std::fmt::Debug,
+    ) {
+        proto_encode_len_delimited_small!(
+            LOG_RECORD_ATTRIBUTES,
+            {
+                buf.encode_string(KEY_VALUE_KEY, key);
+                proto_encode_len_delimited_small!(
+                    KEY_VALUE_VALUE,
+                    { encode_debug_string(buf, value) },
+                    buf
+                );
+            },
+            buf
+        );
+    }
+
+    /// Encode the body as a string. Empty strings are skipped.
     #[inline]
     pub fn encode_body_string(&mut self, value: &str) {
         if value.is_empty() {
@@ -199,40 +202,17 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
         }
         proto_encode_len_delimited_small!(
             LOG_RECORD_BODY,
-            {
-                self.buf.encode_string(ANY_VALUE_STRING_VALUE, value);
-            },
+            { self.buf.encode_string(ANY_VALUE_STRING_VALUE, value) },
             self.buf
         );
     }
 
-    /// Encode the body (AnyValue message) from a Debug value without allocation.
+    /// Encode the body from a Debug value without allocation.
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
         proto_encode_len_delimited_small!(
             LOG_RECORD_BODY,
-            {
-                encode_debug_string(self.buf, value);
-            },
-            self.buf
-        );
-    }
-
-    /// Encode an attribute with a Debug value without allocation.
-    #[inline]
-    pub fn encode_debug_attribute(&mut self, key: &str, value: &dyn std::fmt::Debug) {
-        proto_encode_len_delimited_small!(
-            LOG_RECORD_ATTRIBUTES,
-            {
-                self.buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_small!(
-                    KEY_VALUE_VALUE,
-                    {
-                        encode_debug_string(self.buf, value);
-                    },
-                    self.buf
-                );
-            },
+            { encode_debug_string(self.buf, value) },
             self.buf
         );
     }
@@ -242,7 +222,7 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
 /// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
 #[inline]
 fn encode_debug_string<const INLINE: usize>(
-    buf: &mut ProtoBuffer<INLINE>,
+    buf: &mut ProtoBufferInline<INLINE>,
     value: &dyn std::fmt::Debug,
 ) {
     use std::io::Write;
@@ -258,70 +238,38 @@ fn encode_debug_string<const INLINE: usize>(
 impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLINE> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         if field.name() == "message" {
-            // TODO: encode f64 body
             return;
         }
-        if self.buf.is_truncated() {
-            self.dropped_count = self.dropped_count.saturating_add(1);
-            return;
-        }
-        let cp = self.buf.checkpoint();
-        self.encode_double_attribute(field.name(), value);
-        if self.buf.is_truncated() {
-            self.buf.rollback(cp);
-            self.dropped_count = self.dropped_count.saturating_add(1);
-        }
+        let _ = self
+            .buf
+            .try_encode(|b| DirectFieldVisitor::encode_double_attribute_to(b, field.name(), value));
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
         if field.name() == "message" {
-            // TODO: encode i64 body
             return;
         }
-        if self.buf.is_truncated() {
-            self.dropped_count = self.dropped_count.saturating_add(1);
-            return;
-        }
-        let cp = self.buf.checkpoint();
-        self.encode_int_attribute(field.name(), value);
-        if self.buf.is_truncated() {
-            self.buf.rollback(cp);
-            self.dropped_count = self.dropped_count.saturating_add(1);
-        }
+        let _ = self
+            .buf
+            .try_encode(|b| DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value));
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
         if field.name() == "message" {
-            // TODO: encode u64 body
             return;
         }
-        if self.buf.is_truncated() {
-            self.dropped_count = self.dropped_count.saturating_add(1);
-            return;
-        }
-        let cp = self.buf.checkpoint();
-        self.encode_int_attribute(field.name(), value as i64);
-        if self.buf.is_truncated() {
-            self.buf.rollback(cp);
-            self.dropped_count = self.dropped_count.saturating_add(1);
-        }
+        let _ = self.buf.try_encode(|b| {
+            DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value as i64)
+        });
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         if field.name() == "message" {
-            // TODO: encode bool body
             return;
         }
-        if self.buf.is_truncated() {
-            self.dropped_count = self.dropped_count.saturating_add(1);
-            return;
-        }
-        let cp = self.buf.checkpoint();
-        self.encode_bool_attribute(field.name(), value);
-        if self.buf.is_truncated() {
-            self.buf.rollback(cp);
-            self.dropped_count = self.dropped_count.saturating_add(1);
-        }
+        let _ = self
+            .buf
+            .try_encode(|b| DirectFieldVisitor::encode_bool_attribute_to(b, field.name(), value));
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
@@ -329,34 +277,19 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
             self.encode_body_string(value);
             return;
         }
-        if self.buf.is_truncated() {
-            self.dropped_count = self.dropped_count.saturating_add(1);
-            return;
-        }
-        let cp = self.buf.checkpoint();
-        self.encode_string_attribute(field.name(), value);
-        if self.buf.is_truncated() {
-            self.buf.rollback(cp);
-            self.dropped_count = self.dropped_count.saturating_add(1);
-        }
+        let _ = self
+            .buf
+            .try_encode(|b| DirectFieldVisitor::encode_string_attribute_to(b, field.name(), value));
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        // The Rust Debug type cannot be destructured, only formatted.
         if field.name() == "message" {
             self.encode_body_debug(value);
-        } else {
-            if self.buf.is_truncated() {
-                self.dropped_count = self.dropped_count.saturating_add(1);
-                return;
-            }
-            let cp = self.buf.checkpoint();
-            self.encode_debug_attribute(field.name(), value);
-            if self.buf.is_truncated() {
-                self.buf.rollback(cp);
-                self.dropped_count = self.dropped_count.saturating_add(1);
-            }
+            return;
         }
+        let _ = self
+            .buf
+            .try_encode(|b| DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value));
     }
 }
 

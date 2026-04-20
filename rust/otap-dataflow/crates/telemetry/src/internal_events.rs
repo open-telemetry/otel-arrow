@@ -12,7 +12,7 @@
 
 #[doc(hidden)]
 pub mod _private {
-    pub use otap_df_pdata::otlp::ProtoBuffer;
+    pub use otap_df_pdata::otlp::ProtoBufferInline;
     pub use tracing::callsite::{Callsite, DefaultCallsite};
     pub use tracing::field::ValueSet;
     pub use tracing::metadata::Kind;
@@ -197,35 +197,17 @@ macro_rules! otel_event {
 #[macro_export]
 macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
-        use $crate::_private::Callsite;
-        use $crate::self_tracing::{ConsoleWriter, SavedCallsite, ENCODE_INLINE};
-        use $crate::self_tracing::encoder::DirectFieldVisitor;
+        use $crate::self_tracing::{ConsoleWriter, SavedCallsite};
 
-        static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
-            name: $name,
-            kind: $crate::_private::Kind::EVENT,
-            target: env!("CARGO_PKG_NAME"),
-            level: $crate::_private::Level::ERROR,
-            fields: $($($fields)*)?
-        };
-
-        let meta = __CALLSITE.metadata();
-
-        (|valueset: $crate::_private::ValueSet<'_>| {
-            let event = $crate::_private::Event::new(meta, &valueset);
-
-            // Encode body/attributes on the stack (zero allocation).
-            let mut buf = $crate::_private::ProtoBuffer::<ENCODE_INLINE>::new();
-            {
-                let mut visitor = DirectFieldVisitor::new(&mut buf);
-                event.record(&mut visitor);
+        $crate::__encode_event_impl!(
+            $crate::_private::Level::ERROR, $name,
+            |meta, buf| {
+                let now = std::time::SystemTime::now();
+                let callsite = SavedCallsite::new(meta);
+                ConsoleWriter::no_color().print_raw_log(now, buf.as_ref(), &callsite, |_| {});
             }
-
-            // Format and print directly from the stack buffer.
-            let now = std::time::SystemTime::now();
-            let callsite = SavedCallsite::new(meta);
-            ConsoleWriter::no_color().print_raw_log(now, buf.as_ref(), &callsite, |_| {});
-        })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
+            $(, $($fields)*)?
+        );
     }};
 }
 
@@ -234,8 +216,30 @@ macro_rules! raw_error {
 #[macro_export]
 macro_rules! __log_record_impl {
     ($level:expr, $name:expr $(, $($fields:tt)*)?) => {{
-        use $crate::_private::Callsite;
         use $crate::self_tracing::LogRecord;
+
+        $crate::__encode_event_impl!(
+            $level, $name,
+            |meta, buf| {
+                LogRecord::from_encoded(meta, buf)
+            }
+            $(, $($fields)*)?
+        )
+    }};
+}
+
+/// Internal macro that encodes a tracing event into a stack-allocated
+/// protobuf buffer and invokes a callback with the metadata and buffer.
+///
+/// The callback `$finish` receives `(meta: &'static Metadata, buf: ProtoBufferInline<ENCODE_INLINE>)`
+/// and its return value becomes the expression result.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __encode_event_impl {
+    ($level:expr, $name:expr, |$meta:ident, $buf:ident| $finish:expr $(, $($fields:tt)*)?) => {{
+        use $crate::_private::Callsite;
+        use $crate::self_tracing::ENCODE_INLINE;
+        use $crate::self_tracing::encoder::DirectFieldVisitor;
 
         static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
             name: $name,
@@ -245,13 +249,21 @@ macro_rules! __log_record_impl {
             fields: $($($fields)*)?
         };
 
-        let meta = __CALLSITE.metadata();
+        let $meta = __CALLSITE.metadata();
 
         // Use closure to extend valueset lifetime (same pattern as tracing::event!)
         (|valueset: $crate::_private::ValueSet<'_>| {
-            let event = $crate::_private::Event::new(meta, &valueset);
-            LogRecord::new(&event, $crate::LogContext::new())
-        })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
+            let event = $crate::_private::Event::new($meta, &valueset);
+
+            // Encode body/attributes on the stack (zero allocation).
+            let mut $buf = $crate::_private::ProtoBufferInline::<ENCODE_INLINE>::with_inline();
+            {
+                let mut visitor = DirectFieldVisitor::new(&mut $buf);
+                event.record(&mut visitor);
+            }
+
+            $finish
+        })($crate::_private::valueset!($meta.fields(), $($($fields)*)?))
     }};
 }
 

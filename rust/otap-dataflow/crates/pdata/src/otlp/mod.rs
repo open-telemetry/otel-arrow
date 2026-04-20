@@ -10,7 +10,8 @@ use bytes::Bytes;
 use otap_df_config::SignalType;
 
 pub use common::{
-    Checkpoint, ProtoBuffer, TRUNCATION_SUFFIX, encode_len_placeholder, patch_len_placeholder,
+    Checkpoint, ProtoBuffer, ProtoBufferInline, TRUNCATION_SUFFIX, encode_len_placeholder,
+    patch_len_placeholder,
 };
 pub use otap_df_pdata_otlp_macros::Message; // Required for derived code
 pub use otap_df_pdata_otlp_macros::qualified; // Required for derived code

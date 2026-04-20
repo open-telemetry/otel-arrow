@@ -7,7 +7,6 @@
 //! using channel endpoint attributes and can be correlated using `channel.id`
 //! and `channel.kind`.
 
-use crate::node::NodeId;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
@@ -132,8 +131,8 @@ pub(crate) const CHANNEL_IMPL_INTERNAL: &str = "internal";
 pub(crate) const CHANNEL_IMPL_TOKIO: &str = "tokio";
 pub(crate) const CHANNEL_IMPL_FLUME: &str = "flume";
 
-pub(crate) fn control_channel_id(node_id: &NodeId) -> Cow<'static, str> {
-    format!("{}:{}", node_id.name, CHANNEL_KIND_CONTROL).into()
+pub(crate) fn control_channel_id(name: &str) -> Cow<'static, str> {
+    format!("{}:{}", name, CHANNEL_KIND_CONTROL).into()
 }
 
 pub(crate) struct ChannelSenderMetricsState {

@@ -660,7 +660,7 @@ mod tests {
             *self.formatted.lock().unwrap() = format_log_record_to_string(Some(time), &record);
 
             // Capture full OTLP encoding
-            let mut buf: ProtoBuffer = ProtoBuffer::with_capacity(512);
+            let mut buf = ProtoBuffer::with_capacity(512);
             let mut encoder = DirectLogRecordEncoder::new(&mut buf);
             let _ = encoder.encode_log_record(time, &record);
             *self.encoded.lock().unwrap() = buf.into_bytes();
@@ -835,7 +835,7 @@ mod tests {
         );
 
         // Verify full OTLP encoding with known callsite
-        let mut buf: ProtoBuffer = ProtoBuffer::with_capacity(256);
+        let mut buf = ProtoBuffer::with_capacity(256);
         let mut encoder = DirectLogRecordEncoder::new(&mut buf);
         let _ = encoder.encode_log_record(time, &record);
         let decoded = ProtoLogRecord::decode(buf.into_bytes().as_ref()).expect("decode failed");
