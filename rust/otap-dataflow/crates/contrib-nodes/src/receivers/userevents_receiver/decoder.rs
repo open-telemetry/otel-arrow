@@ -215,44 +215,24 @@ impl DecodedUsereventsRecord {
     }
 }
 
-impl FormatConfig {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::CommonSchemaOtelLogs => "common_schema_otel_logs",
-        }
-    }
-}
-
 #[derive(Debug, Default)]
-struct TracepointIdentity<'a> {
-    provider: Option<&'a str>,
+struct TracepointIdentity {
     level: Option<u8>,
-    keyword: Option<&'a str>,
 }
 
-impl<'a> TracepointIdentity<'a> {
-    fn parse(tracepoint: &'a str) -> Self {
+impl TracepointIdentity {
+    fn parse(tracepoint: &str) -> Self {
         let Some((_, name)) = tracepoint.split_once(':') else {
             return Self::default();
         };
-        let Some((provider, suffix)) = name.rsplit_once("_L") else {
-            return Self {
-                provider: Some(name),
-                level: None,
-                keyword: None,
-            };
+        let Some((_, suffix)) = name.rsplit_once("_L") else {
+            return Self::default();
         };
-        let Some((level, keyword)) = suffix.split_once('K') else {
-            return Self {
-                provider: Some(name),
-                level: None,
-                keyword: None,
-            };
+        let Some((level, _)) = suffix.split_once('K') else {
+            return Self::default();
         };
         Self {
-            provider: Some(provider),
             level: level.parse::<u8>().ok(),
-            keyword: Some(keyword),
         }
     }
 }
