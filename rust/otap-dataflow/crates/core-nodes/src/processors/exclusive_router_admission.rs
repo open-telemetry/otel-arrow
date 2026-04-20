@@ -188,6 +188,9 @@ impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
                     let pending = self
                         .pending_by_port
                         .remove(&port)
+                        // Safe: the pending route was inserted for this same
+                        // port immediately above, and no await or re-entrant
+                        // scheduler call can remove it before this rollback.
                         .expect("inserted pending route should be present");
                     return match error {
                         WakeupError::ShuttingDown => {
