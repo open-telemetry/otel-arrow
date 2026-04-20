@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776702448087,
+  "lastUpdate": 1776706003187,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "33842784+JakeDern@users.noreply.github.com",
-            "name": "Jake Dern",
-            "username": "JakeDern"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "fbfc2844526ed8f89bc210f277225fe3d981d6c0",
-          "message": "docs: Initial OTAP Spec Draft (#2040)\n\n# Change Summary\n\nThis is a working draft of an OTAP Spec. The goal is now to get a solid\nfoundation merged so that we can continue to iterate on spec changes as\nsub issues listed in #1957.\n\nMerging this PR will open up contributions to anyone rather than keeping\neverything on just on private branch and make spec changes explicit and\nsubject to the same review process as any other change going forward.\n\n## What issue does this PR close?\n\n* Part of #1957\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
-          "timestamp": "2026-03-10T21:00:58Z",
-          "tree_id": "a50e046e2f03cee0c5ff47b75ca410013a10a3dc",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/fbfc2844526ed8f89bc210f277225fe3d981d6c0"
-        },
-        "date": 1773180346529,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -2.2496676445007324,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.91980594914999,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.3518041074054,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 54.7296875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 56.1953125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 468433.6952306708,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 478971.8961088587,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002652,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10950422.883873528,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10888380.91601212,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 16969029.921479974,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7a9bac88f1b3ad20eb2c7877032eac9860021af",
+          "message": "Update Rust crate datafusion to v53 (#2712)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [datafusion](https://datafusion.apache.org)\n([source](https://redirect.github.com/apache/datafusion)) | dependencies\n| major | `49.0.2` → `53.0.0` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>apache/datafusion (datafusion)</summary>\n\n###\n[`v53.1.0`](https://redirect.github.com/apache/datafusion/compare/53.0.0...53.1.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/53.0.0...53.1.0)\n\n###\n[`v53.0.0`](https://redirect.github.com/apache/datafusion/compare/52.5.0...53.0.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/52.5.0...53.0.0)\n\n###\n[`v52.5.0`](https://redirect.github.com/apache/datafusion/compare/52.4.0...52.5.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/52.4.0...52.5.0)\n\n###\n[`v52.4.0`](https://redirect.github.com/apache/datafusion/compare/52.3.0...52.4.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/52.3.0...52.4.0)\n\n###\n[`v52.3.0`](https://redirect.github.com/apache/datafusion/compare/52.2.0...52.3.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/52.2.0...52.3.0)\n\n###\n[`v52.2.0`](https://redirect.github.com/apache/datafusion/compare/52.1.0...52.2.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/52.1.0...52.2.0)\n\n###\n[`v52.1.0`](https://redirect.github.com/apache/datafusion/compare/52.0.0...52.1.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/52.0.0...52.1.0)\n\n###\n[`v52.0.0`](https://redirect.github.com/apache/datafusion/compare/51.0.0...52.0.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/51.0.0...52.0.0)\n\n###\n[`v51.0.0`](https://redirect.github.com/apache/datafusion/compare/50.3.0...51.0.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/50.3.0...51.0.0)\n\n###\n[`v50.3.0`](https://redirect.github.com/apache/datafusion/compare/50.2.0...50.3.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/50.2.0...50.3.0)\n\n###\n[`v50.2.0`](https://redirect.github.com/apache/datafusion/compare/50.1.0...50.2.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/50.1.0...50.2.0)\n\n###\n[`v50.1.0`](https://redirect.github.com/apache/datafusion/compare/50.0.0...50.1.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/50.0.0...50.1.0)\n\n###\n[`v50.0.0`](https://redirect.github.com/apache/datafusion/compare/49.0.2...50.0.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/49.0.2...50.0.0)\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4xMjMuOCIsInVwZGF0ZWRJblZlciI6IjQzLjEyMy44IiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-04-20T14:15:39Z",
+          "tree_id": "cbee85adc83c0a88d85db05d695115974ea726b0",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c7a9bac88f1b3ad20eb2c7877032eac9860021af"
+        },
+        "date": 1776706002242,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.8346166610717773,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 99.82207686504158,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.29022535429412,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 29.70546875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 31.19140625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 620589.6048029312,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 625769.1489965757,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002191,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16610302.05083665,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 16610868.145672232,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
