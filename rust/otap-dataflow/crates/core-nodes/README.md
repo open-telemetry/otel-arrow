@@ -148,7 +148,7 @@ Each component lives in its own subfolder within a category:
 - Always emits a route-local retryable NACK when the selected route is closed,
   and uses the configured policy when the selected route is full
 - Supports default routing and mixed-batch validation; see
-  [Exclusive Router Guarantees](../../docs/exclusive-router-guarantees.md)
+  [Exclusive Router Guarantees](../../docs/processors.md#exclusive-router-guarantees)
 
 #### batch_processor
 
@@ -206,7 +206,7 @@ Each component lives in its own subfolder within a category:
   route is closed, and uses the configured policy when the selected route is
   full
 - Exposes per-signal routing and route-rejection telemetry; see
-  [Exclusive Router Guarantees](../../docs/exclusive-router-guarantees.md)
+  [Exclusive Router Guarantees](../../docs/processors.md#exclusive-router-guarantees)
 
 #### transform_processor
 

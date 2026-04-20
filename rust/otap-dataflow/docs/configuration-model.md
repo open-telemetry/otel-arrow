@@ -407,7 +407,7 @@ Processor-local NACKs follow the same rule. For example, when
 selected route is full, closed, or being drained during shutdown, that
 rejection stays local when `ack_propagation.mode: disabled` and is bridged
 upstream when `ack_propagation.mode: auto`. See
-[Exclusive Router Guarantees](./exclusive-router-guarantees.md).
+[Exclusive Router Guarantees](./processors.md#exclusive-router-guarantees).
 
 Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
 aggregate acknowledgements across all subscribers. The first broadcast
