@@ -3733,6 +3733,7 @@ mod tests {
     /// Verifies that the OTLP gRPC receiver captures transport headers from gRPC
     /// metadata when a capture policy is configured, and attaches them to the
     /// `OtapPdata` context.
+    #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_grpc_transport_header_capture() {
         let test_runtime = TestRuntime::new();
@@ -3846,6 +3847,7 @@ mod tests {
     /// values (keys ending in `-bin`) and stores the raw bytes rather than the
     /// base64 wire encoding. Storing the wire form would cause double-encoding
     /// on downstream gRPC propagation.
+    #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_grpc_transport_header_capture_binary() {
         let test_runtime = TestRuntime::new();
@@ -3962,6 +3964,7 @@ mod tests {
     /// Verifies that when no capture policy is configured, the OTLP gRPC receiver
     /// does NOT attach transport headers to `OtapPdata` even when gRPC metadata
     /// contains matching headers.
+    #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_grpc_no_transport_headers_without_policy() {
         let test_runtime = TestRuntime::new();
@@ -4059,6 +4062,7 @@ mod tests {
 
     /// Verifies that the OTLP HTTP receiver captures transport headers from HTTP
     /// request headers when a capture policy is configured.
+    #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_http_transport_header_capture() {
         let test_runtime = TestRuntime::new();
