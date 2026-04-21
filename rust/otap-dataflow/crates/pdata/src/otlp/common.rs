@@ -364,6 +364,12 @@ pub const LOG_LIMIT4: usize = 1 << (4 * 7);
 pub const LOG_LIMIT3: usize = 1 << (3 * 7);
 
 impl<const INLINE: usize> ProtoBufferInline<INLINE> {
+    /// Construct a new buffer with the default limit.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Construct a new buffer with max(LOG_LIMIT4, capacity).
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
@@ -1446,7 +1452,7 @@ mod test {
         use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
 
         fn check<const N: usize>() {
-            let mut buf = ProtoBuffer::default();
+            let mut buf = ProtoBuffer::new();
             encode_len_placeholder::<N, _>(&mut buf);
             assert_eq!(buf.len(), N);
             for i in 0..N - 1 {
@@ -1473,7 +1479,7 @@ mod test {
                 if len > max_len {
                     continue;
                 }
-                let mut buf = ProtoBuffer::default();
+                let mut buf = ProtoBuffer::new();
                 let start = buf.len();
                 encode_len_placeholder::<N, _>(&mut buf);
                 patch_len_placeholder::<N, _>(&mut buf, len, start);
@@ -1499,7 +1505,7 @@ mod test {
 
         // Encode a simple string field using the _large and _small variants,
         // then verify the _small output is 2 bytes shorter.
-        let mut buf_large = ProtoBuffer::default();
+        let mut buf_large = ProtoBuffer::new();
         proto_encode_len_delimited_large!(
             1,
             {
@@ -1508,7 +1514,7 @@ mod test {
             &mut buf_large
         );
 
-        let mut buf_small = ProtoBuffer::default();
+        let mut buf_small = ProtoBuffer::new();
         proto_encode_len_delimited_small!(
             1,
             {
