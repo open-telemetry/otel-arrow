@@ -73,21 +73,17 @@ impl TrafficProducer {
         let shape = create_shape(traffic_config);
         let strategy = match config.generation_strategy() {
             GenerationStrategy::Fresh => {
-                let num_batches = shape.len();
                 let signal_count = shape.iter().map(|(_, c)| c).sum();
                 ProductionStrategy::Fresh {
                     shape: shape.clone(),
-                    num_batches,
                     signal_count,
                 }
             }
             GenerationStrategy::PreGenerated => {
                 let payloads = create_fresh_payloads(&mut *generator, &shape)?;
-                let num_batches = payloads.len();
                 let signal_count = payloads.iter().map(|p| p.num_items()).sum();
                 ProductionStrategy::Replay {
                     payloads,
-                    num_batches,
                     signal_count,
                 }
             }
@@ -159,16 +155,13 @@ impl TrafficProducer {
         match &mut self.strategy {
             ProductionStrategy::Fresh {
                 shape,
-                num_batches,
                 signal_count,
             } => {
                 *shape = truncate_shape(shape, max_signals);
-                *num_batches = shape.len();
                 *signal_count = shape.iter().map(|(_, c)| c).sum();
             }
             ProductionStrategy::Replay {
                 payloads,
-                num_batches,
                 signal_count,
             } => {
                 let mut remaining = max_signals;
@@ -197,7 +190,6 @@ impl TrafficProducer {
                     }
                 }
 
-                *num_batches = payloads.len();
                 *signal_count = payloads.iter().map(|p| p.num_items()).sum();
             }
         }
@@ -389,12 +381,10 @@ fn truncate_shape(shape: &[(SignalType, usize)], budget: u64) -> TrafficShape {
 enum ProductionStrategy {
     Fresh {
         shape: TrafficShape,
-        num_batches: usize,
         signal_count: usize,
     },
     Replay {
         payloads: Vec<OtapPayload>,
-        num_batches: usize,
         signal_count: usize,
     },
 }
@@ -402,8 +392,8 @@ enum ProductionStrategy {
 impl ProductionStrategy {
     fn len(&self) -> usize {
         match self {
-            ProductionStrategy::Fresh { num_batches, .. } => *num_batches,
-            ProductionStrategy::Replay { num_batches, .. } => *num_batches,
+            ProductionStrategy::Fresh { shape, .. } => shape.len(),
+            ProductionStrategy::Replay { payloads, .. } => payloads.len(),
         }
     }
 
@@ -637,7 +627,6 @@ mod tests {
         let mut producer = TrafficProducer {
             strategy: ProductionStrategy::Fresh {
                 shape: shape.clone(),
-                num_batches: expected_batches,
                 signal_count,
             },
             shape,
@@ -691,7 +680,6 @@ mod tests {
         let mut producer = TrafficProducer {
             strategy: ProductionStrategy::Replay {
                 payloads: payloads.clone(),
-                num_batches,
                 signal_count,
             },
             shape: shape_copy,
@@ -855,7 +843,6 @@ mod tests {
         TrafficProducer {
             strategy: ProductionStrategy::Fresh {
                 shape: shape.clone(),
-                num_batches,
                 signal_count,
             },
             shape,
