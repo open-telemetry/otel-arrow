@@ -1,0 +1,27 @@
+---
+source: example-data-plane/crates/exporters/src/clickhouse_exporter/tables.rs
+expression: view_sql
+---
+
+CREATE VIEW IF NOT EXISTS otap.otel_resource_attributes AS
+SELECT
+    part_id,
+    parent_id,
+    mapFromArrays(
+        groupArray(key),
+        groupArray(
+            CASE type
+                WHEN 0 THEN ''                                -- Empty
+                WHEN 1 THEN COALESCE(str, '')                 -- Str
+                WHEN 2 THEN COALESCE(toString(int), '')       -- Int
+                WHEN 3 THEN COALESCE(toString(double), '')    -- Double
+                WHEN 4 THEN COALESCE(toString(bool), '')      -- Bool
+                WHEN 5 THEN COALESCE(ser, '')                 -- Map - serialized JSON
+                WHEN 6 THEN COALESCE(ser, '')                 -- Slice - serialized JSON/array
+                WHEN 7 THEN COALESCE(base64Encode(bytes), '') -- Bytes - safe encoding
+                ELSE ''                                       -- Empty or unknown - empty string
+            END
+        )
+    ) AS attributes
+FROM otap.otel_resource_attributes_raw
+GROUP BY part_id, parent_id;
