@@ -65,63 +65,32 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// split into two distinct capabilities rather than expressed as an
     /// adapter refusal.
     ///
-    /// Authors normally don't implement this by hand; the macro handles
-    /// it. If you are hand-rolling an `ExtensionCapability` impl (only
-    /// needed inside the engine crate for testing), return
-    /// `Rc::new(YourAdapter(shared))`.
-    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> std::rc::Rc<Self::Local>;
-
-    /// Creates a local adapter entry from a shared capability factory.
-    ///
-    /// When a shared-only extension provides this capability, the engine
-    /// calls this method to populate the local registry slot via a
-    /// `SharedAsLocal` adapter. The returned `Rc<dyn Any>` contains an
-    /// `Rc<dyn local::Trait>` backed by the adapter. Every shared
-    /// registration is reachable as a local binding — there is no
-    /// opt-out.
-    ///
-    /// The default impl funnels through the internal
-    /// `registry::downcast_produced` helper so the
-    /// `Box<Box<dyn Shared>> as Box<dyn Any>` erasure convention lives
-    /// in one place. Override only for niche cases where you need to
-    /// sidestep that helper.
+    /// Called from each capability factory's
+    /// [`SharedCapabilityFactory::adapt_as_local_any`] when a
+    /// shared-only extension is consumed via `require_local` / the
+    /// `SharedAsLocal` fallback path in `resolve_bindings`.
     ///
     /// # Per-node freshness
     ///
-    /// The engine invokes this method **once per node** that binds the
-    /// capability, calling `factory.produce_any()` inside to obtain a fresh
-    /// shared instance for that node. This matches the per-caller-fresh
-    /// semantics of [`Capabilities::require_shared`] — an extension
-    /// author can rely on each binding receiving its own instance.
+    /// Invoked **once per node** that binds the capability via the
+    /// fallback path, with a fresh `Box<Self::Shared>` minted by the
+    /// factory for that node. This matches the per-caller-fresh
+    /// semantics of [`Capabilities::require_shared`] — every binding
+    /// gets its own instance.
     ///
     /// If your shared impl relies on state that must be reset **per call**
     /// rather than per node, declare an explicit `local:` variant via
     /// the `extension_capabilities!` macro instead of relying on this
     /// fallback.
     ///
-    /// # Invariants
-    ///
-    /// The `factory` argument must have been constructed via the
-    /// [`TypedSharedFactory`] blanket impl so its `produce_any` output
-    /// is `Box<Box<C::Shared>>`. Violating this is a bug in the
-    /// registration code and causes a panic (see the `BUG:` expect
-    /// message below). Call sites in this crate uphold the invariant
-    /// by construction.
+    /// Authors normally don't implement this by hand; the macro handles
+    /// it. If you are hand-rolling an `ExtensionCapability` impl (only
+    /// needed inside the engine crate for testing), return
+    /// `Rc::new(YourAdapter(shared))`.
     ///
     /// [`Capabilities::require_shared`]: registry::Capabilities::require_shared
-    /// [`SharedCapabilityFactory`]: registry::SharedCapabilityFactory
-    /// [`TypedSharedFactory`]: registry::TypedSharedFactory
-    fn adapt_shared_to_local(
-        factory: &dyn registry::SharedCapabilityFactory,
-    ) -> std::rc::Rc<dyn std::any::Any>
-    where
-        Self: Sized,
-    {
-        let shared = registry::downcast_produced::<Self>(factory)
-            .expect("BUG: SharedCapabilityFactory produced wrong inner type; see downcast_produced docs");
-        let rc_local: std::rc::Rc<Self::Local> = Self::wrap_shared_as_local(shared);
-        std::rc::Rc::new(rc_local)
-    }
+    /// [`SharedCapabilityFactory::adapt_as_local_any`]: registry::SharedCapabilityFactory::adapt_as_local_any
+    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> std::rc::Rc<Self::Local>;
 }
 
 /// Re-export for use by the `#[capability]` proc macro's generated code.
@@ -138,8 +107,7 @@ pub(crate) use private::Sealed as CapabilitySealed;
 ///
 /// Each `#[capability]` invocation produces a static entry in the
 /// [`KNOWN_CAPABILITIES`] distributed slice. The engine uses this at
-/// config validation time to map string names to `TypeId`s and adapter
-/// functions.
+/// config validation time to map string names to `TypeId`s.
 #[doc(hidden)]
 pub struct KnownCapability {
     /// Human-readable name (e.g., `"bearer_token_provider"`).
@@ -151,15 +119,13 @@ pub struct KnownCapability {
     pub description: &'static str,
     /// `TypeId` of the zero-sized registration struct.
     pub type_id: fn() -> std::any::TypeId,
-    /// Adapter function for shared→local fallback.
-    pub adapt_shared_to_local: registry::SharedAsLocalAdaptFn,
 }
 
 /// Link-time registry of all capabilities defined in the binary.
 ///
 /// Populated by `#[capability]` proc macro entries. Used by
 /// `resolve_bindings()` to validate capability names and retrieve
-/// `TypeId`s and adapter functions.
+/// `TypeId`s.
 //
 // `linkme::distributed_slice` requires a `pub static`; `#[doc(hidden)]`
 // excludes it from generated rustdoc so external crates don't see it in

@@ -112,7 +112,6 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     name: "bearer_token_provider",
 ///     description: "Provides bearer tokens",
 ///     type_id: || TypeId::of::<BearerTokenProvider>(),
-///     adapt_shared_to_local: ...,
 /// };
 /// ```
 ///

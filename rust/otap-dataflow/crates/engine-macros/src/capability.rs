@@ -356,7 +356,6 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
                 name: #cap_name_str,
                 description: #description_str,
                 type_id: || ::std::any::TypeId::of::<#trait_name>(),
-                adapt_shared_to_local: <#trait_name as crate::capability::ExtensionCapability>::adapt_shared_to_local,
             };
     }
 }

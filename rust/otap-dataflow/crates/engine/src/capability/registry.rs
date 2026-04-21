@@ -59,6 +59,7 @@ pub trait SharedCapabilityFactory: Send {
     /// Duplicate this factory. Each resolved per-node entry owns its
     /// own `Box<dyn SharedCapabilityFactory>` produced via this method.
     fn clone_box(&self) -> Box<dyn SharedCapabilityFactory>;
+
     /// Produce a fresh shared trait object for a consumer. The returned
     /// `Box<dyn Any + Send>` contains `Box<dyn shared::Trait>` — the
     /// `require_shared` code downcasts to recover the concrete trait.
@@ -74,90 +75,49 @@ pub trait SharedCapabilityFactory: Send {
     /// fat pointer) so it can ride inside the `Any` envelope. The
     /// outer `Box` is the uniform storage; the inner `Box` owns the
     /// heap-allocated trait object.
-    ///
-    /// This trait is only implemented by engine-internal build-phase
-    /// code (via the blanket impl over [`TypedSharedFactory`]). The
-    /// internal helpers [`Capabilities::require_shared`] and
-    /// [`downcast_produced`] hide the downcast on the consumer side.
     fn produce_any(&self) -> Box<dyn Any + Send>;
-}
 
-/// Engine-internal typed authoring surface for capability factories.
-///
-/// Not intended for use outside the engine crate. Capability definers
-/// use the `#[capability]` proc macro; extension authors declare what
-/// they provide via `extension_capabilities!`. The engine's build
-/// phase synthesizes the `TypedSharedFactory` impl that bridges
-/// `MyExt` → `dyn C::Shared`.
-///
-/// A blanket impl supplies the erased [`SharedCapabilityFactory`]
-/// automatically, encoding the `produce_any` double-box convention
-/// (`Box<Box<dyn Shared>> as Box<dyn Any + Send>`) at the type level
-/// so it cannot be spelled incorrectly.
-///
-/// # Why a separate trait?
-///
-/// This is defensive, not an author-facing API. External misuse
-/// is already foreclosed: [`SharedCapabilityFactory`] and
-/// `TypedSharedFactory` are both `#[doc(hidden)]`, and
-/// [`ExtensionCapability`] is sealed so no external crate can even
-/// define a capability to register a factory for. What this trait
-/// additionally guards against is **intra-crate regressions** — an
-/// engine contributor editing the registry cannot accidentally
-/// hand-roll a [`SharedCapabilityFactory`] with the wrong inner box
-/// type and have it pass clippy/tests. The blanket impl makes the
-/// double-box convention a compile-time invariant instead of a
-/// reviewer-vigilance one.
-///
-/// # TODO(extension-system): possible future simplification
-///
-/// Once the build phase that wires this trait stabilizes, the two
-/// traits could be folded into a single sealed trait with a
-/// `type Shared` associated type and a provided `produce_any` method
-/// — same invariant, one fewer name. Not a priority while the
-/// scaffolding is still in flux.
-///
-/// [`ExtensionCapability`]: super::ExtensionCapability
-#[doc(hidden)]
-pub trait TypedSharedFactory: Clone + Send + 'static {
-    /// The `dyn shared::Trait` this factory produces
-    /// (e.g. `dyn BearerTokenProvider`).
-    type Shared: ?Sized + Send + 'static;
-    /// Produce a fresh shared trait object for a consumer.
-    fn produce(&self) -> Box<Self::Shared>;
-}
-
-impl<F: TypedSharedFactory> SharedCapabilityFactory for F {
-    fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
-        Box::new(self.clone())
-    }
-    fn produce_any(&self) -> Box<dyn Any + Send> {
-        // Double-box convention: Box<Box<dyn Shared>> type-erased as
-        // Box<dyn Any + Send>. Enforced by the type signature of
-        // `TypedSharedFactory::produce`.
-        Box::new(self.produce())
-    }
+    /// Produce a fresh shared instance and wrap it as a local trait
+    /// object, returning `Rc<Rc<dyn local::Trait>>` type-erased to
+    /// `Rc<dyn Any>`. Used by [`resolve_bindings`] to populate the
+    /// per-node local slot when an extension provides only the shared
+    /// variant (`SharedAsLocal` fallback).
+    ///
+    /// This method exists on the factory — not on
+    /// [`ExtensionCapability`] — because the factory knows both the
+    /// capability type and the concrete `Shared` type at
+    /// monomorphization time. That lets the impl call
+    /// [`ExtensionCapability::wrap_shared_as_local`] directly, with no
+    /// runtime downcast and therefore no panic path.
+    ///
+    /// # Implementation contract
+    ///
+    /// Implementors must call `C::wrap_shared_as_local(produced)` and
+    /// wrap the result in an outer `Rc` so the value can be stored as
+    /// `Rc<dyn Any>`. The `#[capability]` proc macro will emit the
+    /// correct shape; today the only hand-written impls live in engine
+    /// crate tests.
+    ///
+    /// [`ExtensionCapability`]: super::ExtensionCapability
+    /// [`ExtensionCapability::wrap_shared_as_local`]: super::ExtensionCapability::wrap_shared_as_local
+    fn adapt_as_local_any(&self) -> Rc<dyn Any>;
 }
 
 /// Downcast a factory's [`produce_any`] output to `Box<C::Shared>`.
 ///
 /// Hides the double-box erasure convention
 /// (`Box<Box<dyn Shared>>` stored as `Box<dyn Any + Send>`) that
-/// [`SharedCapabilityFactory::produce_any`] uses. All internal call
-/// sites — [`Capabilities::require_shared`] and the default
-/// [`ExtensionCapability::adapt_shared_to_local`] — funnel through this
-/// helper so the double-box lives in one place (here + the blanket
-/// impl above).
+/// [`SharedCapabilityFactory::produce_any`] uses.
 ///
 /// # Errors
 ///
 /// Returns [`Error::InternalError`] if the factory produced a
 /// `Box<dyn Any + Send>` whose inner type is not `Box<C::Shared>`. This
-/// indicates a bug in the registration code (a hand-rolled
-/// [`SharedCapabilityFactory`] that bypassed [`TypedSharedFactory`]).
+/// indicates a bug in a hand-rolled [`SharedCapabilityFactory`] impl
+/// that used the wrong inner box type. Macro-generated impls uphold
+/// the convention by construction.
 ///
 /// [`produce_any`]: SharedCapabilityFactory::produce_any
-/// [`ExtensionCapability::adapt_shared_to_local`]: super::ExtensionCapability::adapt_shared_to_local
 pub(crate) fn downcast_produced<C: super::ExtensionCapability>(
     factory: &dyn SharedCapabilityFactory,
 ) -> Result<Box<C::Shared>, Error> {
@@ -208,17 +168,6 @@ pub struct SharedCapabilityEntry {
     /// Cloneable factory for shared capability trait objects.
     pub(crate) factory: Box<dyn SharedCapabilityFactory>,
 }
-
-/// Type-erased adapter function that creates a local entry from a shared
-/// capability factory. Registered per-capability by the `#[capability]` proc macro
-/// via `KNOWN_CAPABILITIES`.
-///
-/// The function receives the shared `factory` and returns an `Rc<dyn Any>`
-/// containing `Rc<dyn local::Trait>` (via the generated `SharedAsLocal` adapter).
-/// Every shared registration is always reachable as a local binding — there
-/// is no opt-out.
-#[doc(hidden)]
-pub type SharedAsLocalAdaptFn = fn(&dyn SharedCapabilityFactory) -> Rc<dyn Any>;
 
 // ── CapabilityRegistry ───────────────────────────────────────────────────────
 
@@ -775,13 +724,13 @@ pub(crate) fn resolve_bindings(
                 },
             );
         } else if let Some(shared_entry) = shared_entry {
-            // SharedAsLocal fallback: invoke the capability's adapter with
-            // this node's own clone of the shared instance. Each node gets
-            // a fresh adapter. The adapter is a default method on
-            // `ExtensionCapability` and always succeeds — shared
-            // registrations are always adaptable to local.
-            let adapt_fn = known_cap.adapt_shared_to_local;
-            let trait_object = adapt_fn(&*shared_entry.factory);
+            // SharedAsLocal fallback: invoke the factory's
+            // `adapt_as_local_any` to produce a fresh shared instance
+            // and wrap it as a local trait object. Each node gets a
+            // fresh adapter. Shared registrations are always adaptable
+            // to local — the factory's impl is the single source of
+            // truth and contains no downcast or panic path.
+            let trait_object = shared_entry.factory.adapt_as_local_any();
 
             // The extension only provided a shared variant — route the
             // adapter consumer's cell under the shared bucket. The
@@ -887,8 +836,6 @@ mod tests {
         name: "test_cap",
         description: "Test capability for unit tests",
         type_id: || TypeId::of::<TestCap>(),
-        adapt_shared_to_local:
-            <TestCap as super::super::ExtensionCapability>::adapt_shared_to_local,
     };
 
     // ── Test implementations ─────────────────────────────────────────────
@@ -912,16 +859,31 @@ mod tests {
 
     // Reusable test factory: per-`(cap, ext)` producer that clones a
     // `&'static str` value and produces fresh `Box<dyn TestCapShared>`
-    // instances. Uses the typed authoring surface so the double-box
-    // invariant is supplied by the blanket impl.
+    // instances. Hand-rolls `SharedCapabilityFactory` directly because
+    // there is no proc macro to generate it for test-only capabilities.
+    // Normal capabilities will have this synthesized from their
+    // extension type by the capability macro.
     #[derive(Clone)]
     struct TestFactory {
         val: &'static str,
     }
-    impl TypedSharedFactory for TestFactory {
-        type Shared = dyn TestCapShared;
-        fn produce(&self) -> Box<Self::Shared> {
-            Box::new(SharedImpl(self.val))
+    impl SharedCapabilityFactory for TestFactory {
+        fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
+            Box::new(self.clone())
+        }
+        fn produce_any(&self) -> Box<dyn Any + Send> {
+            // Double-box convention: Box<Box<dyn Shared>> type-erased
+            // as Box<dyn Any + Send>. The inner `as Box<dyn TestCapShared>`
+            // coercion is the load-bearing part and must match
+            // `TestCap::Shared`.
+            let shared: Box<dyn TestCapShared> = Box::new(SharedImpl(self.val));
+            Box::new(shared)
+        }
+        fn adapt_as_local_any(&self) -> Rc<dyn Any> {
+            let shared: Box<dyn TestCapShared> = Box::new(SharedImpl(self.val));
+            let rc_local =
+                <TestCap as super::super::ExtensionCapability>::wrap_shared_as_local(shared);
+            Rc::new(rc_local)
         }
     }
 
@@ -1311,11 +1273,21 @@ mod tests {
 
         #[derive(Clone)]
         struct CountingFactory;
-        impl TypedSharedFactory for CountingFactory {
-            type Shared = dyn TestCapShared;
-            fn produce(&self) -> Box<Self::Shared> {
+        impl SharedCapabilityFactory for CountingFactory {
+            fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
+                Box::new(self.clone())
+            }
+            fn produce_any(&self) -> Box<dyn Any + Send> {
                 let _ = CLONE_COUNT.fetch_add(1, Ordering::SeqCst);
-                Box::new(SharedImpl("val"))
+                let shared: Box<dyn TestCapShared> = Box::new(SharedImpl("val"));
+                Box::new(shared)
+            }
+            fn adapt_as_local_any(&self) -> Rc<dyn Any> {
+                let _ = CLONE_COUNT.fetch_add(1, Ordering::SeqCst);
+                let shared: Box<dyn TestCapShared> = Box::new(SharedImpl("val"));
+                let rc_local =
+                    <TestCap as super::super::ExtensionCapability>::wrap_shared_as_local(shared);
+                Rc::new(rc_local)
             }
         }
 
