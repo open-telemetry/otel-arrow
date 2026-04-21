@@ -13,7 +13,6 @@ pub mod formatter;
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBufferInline;
-use otap_df_pdata::proto::consts::{field_num::logs::*, wire_types};
 use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
@@ -178,55 +177,31 @@ impl StackLogRecord {
 impl LogRecord {
     /// Construct a log record with entity context, partially encoding its dynamic content.
     ///
-    /// Uses stack-allocated inline storage for the protobuf buffer.  When the
-    /// buffer is bounded (i.e., has a limit set), attributes that don't fit are
-    /// counted as dropped and the `dropped_attributes_count` field is populated.
+    /// Uses stack-allocated inline storage for the protobuf buffer.
+    /// Attributes that don't fit are counted via `dropped_attributes_count`.
     #[must_use]
     pub fn new(event: &Event<'_>, context: LogContext) -> Self {
+        Self::new_bounded::<ENCODE_INLINE>(event, context)
+    }
+
+    /// Construct a log record encoding into a buffer of `INLINE` bytes.
+    ///
+    /// The encoding phase uses only stack storage up to `INLINE` bytes;
+    /// attributes that don't fit are counted via `dropped_attributes_count`.
+    /// After encoding, the result is converted to `Bytes`.
+    #[must_use]
+    pub fn new_bounded<const INLINE: usize>(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
-        // Encode body and attributes on the stack (zero allocation).
-        let mut buf = ProtoBufferInline::<ENCODE_INLINE>::with_inline();
+        let mut buf = ProtoBufferInline::<INLINE>::with_inline();
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
             event.record(&mut visitor);
         }
 
-        // Convert to Bytes for cheap reference-counted storage.
         Self {
             callsite_id: metadata.callsite(),
             dropped_attributes_count: buf.dropped() as u16,
-            body_attrs_bytes: buf.into_bytes(),
-            context,
-        }
-    }
-
-    /// Construct a log record that encodes into a bounded buffer.
-    ///
-    /// The encoding phase is zero-allocation: a stack-allocated buffer
-    /// with a size limit prevents heap spills via truncation. After
-    /// encoding, the result is wrapped in `Bytes`.
-    /// Attributes that don't fit are counted via `dropped_attributes_count`.
-    #[must_use]
-    pub fn new_bounded(event: &Event<'_>, context: LogContext) -> Self {
-        let metadata = event.metadata();
-
-        let mut buf = ProtoBufferInline::<ENCODE_INLINE>::with_inline();
-        {
-            let mut visitor = DirectFieldVisitor::new(&mut buf);
-            event.record(&mut visitor);
-        }
-        let dropped = buf.dropped();
-
-        // Append dropped_attributes_count field if any were dropped.
-        if dropped > 0 {
-            buf.encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
-            buf.encode_varint(dropped as u64);
-        }
-
-        Self {
-            callsite_id: metadata.callsite(),
-            dropped_attributes_count: dropped as u16,
             body_attrs_bytes: buf.into_bytes(),
             context,
         }

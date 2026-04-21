@@ -62,9 +62,16 @@ impl<'buf, const INLINE: usize> DirectLogRecordEncoder<'buf, INLINE> {
         // Encode event_name (field 12, string) - format: "target::name (file:line)"
         encode_event_name(self.buf, record.callsite());
 
-        // Pre-encoded body, attributes, and (in bounded mode)
-        // dropped_attributes_count.
+        // Pre-encoded body and attributes.
         self.buf.extend_from_slice(&record.body_attrs_bytes);
+
+        // Encode dropped_attributes_count (field 7, varint) if any were dropped.
+        if record.dropped_attributes_count > 0 {
+            self.buf
+                .encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
+            self.buf
+                .encode_varint(record.dropped_attributes_count as u64);
+        }
 
         self.buf.len() - start_len
     }
