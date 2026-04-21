@@ -1,0 +1,126 @@
+name: Flaky Test Tracker
+
+# Runs daily and on-demand to detect flaky tests from recent CI runs.
+# Parses JUnit XML artifacts from Rust-CI workflow runs, identifies tests
+# marked as flaky (failed then passed on retry), and creates/updates a
+# tracking issue with a summary table.
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+env:
+  # The label applied to the flaky test tracking issue.
+  FLAKY_ISSUE_LABEL: "flaky-test"
+  # How many recent Rust-CI workflow runs to scan.
+  LOOKBACK_RUNS: 20
+
+jobs:
+  detect-flaky-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Ensure flaky-test label exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "$FLAKY_ISSUE_LABEL" \
+            --description "Automatically detected flaky tests" \
+            --color "FBCA04" \
+            --force
+
+      - name: Download JUnit XML from recent Rust-CI runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p junit-artifacts
+
+          # Get the workflow ID for Rust-CI
+          WORKFLOW_ID=$(gh api "repos/${{ github.repository }}/actions/workflows" \
+            --jq '.workflows[] | select(.name == "Rust-CI") | .id')
+
+          if [[ -z "$WORKFLOW_ID" ]]; then
+            echo "::warning::Could not find Rust-CI workflow"
+            exit 0
+          fi
+
+          echo "Rust-CI workflow ID: $WORKFLOW_ID"
+
+          # Get recent completed runs on the default branch
+          RUN_IDS=$(gh api "repos/${{ github.repository }}/actions/workflows/$WORKFLOW_ID/runs?branch=main&status=completed&per_page=$LOOKBACK_RUNS" \
+            --jq '.workflow_runs[].id')
+
+          echo "Found $(echo "$RUN_IDS" | wc -l) recent runs"
+
+          for RUN_ID in $RUN_IDS; do
+            echo "Checking run $RUN_ID for JUnit artifacts..."
+            # List artifacts for this run that match our naming pattern
+            ARTIFACT_INFO=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+              --jq '.artifacts[] | select(.name | startswith("junit-xml-")) | "\(.id) \(.name)"' || true)
+
+            while IFS=' ' read -r ARTIFACT_ID ARTIFACT_NAME; do
+              [[ -z "$ARTIFACT_ID" ]] && continue
+              echo "  Downloading artifact $ARTIFACT_NAME ($ARTIFACT_ID) from run $RUN_ID"
+              DEST_DIR="junit-artifacts/run-$RUN_ID/$ARTIFACT_NAME"
+              mkdir -p "$DEST_DIR"
+              gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+                > "$DEST_DIR/artifact.zip" || true
+              (cd "$DEST_DIR" && unzip -o -q "artifact.zip" 2>/dev/null && rm -f "artifact.zip") || true
+            done <<< "$ARTIFACT_INFO"
+          done
+
+          echo "Downloaded artifacts:"
+          find junit-artifacts -name '*.xml' | head -50 || echo "No XML files found"
+
+      - name: Parse JUnit XML and detect flaky tests
+        id: parse
+        env:
+          GITHUB_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          FLAKY_ISSUE_LABEL: ${{ env.FLAKY_ISSUE_LABEL }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/workflows/scripts/parse_flaky.py
+
+      - name: Create or update tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BODY=$(cat flaky-report.md)
+          TITLE="Flaky Test Report (automated)"
+
+          # Find existing open issue with the flaky-test label and our title
+          EXISTING_ISSUE=$(gh issue list \
+            --label "$FLAKY_ISSUE_LABEL" \
+            --state open \
+            --search "$TITLE" \
+            --json number,title \
+            --jq '.[] | select(.title == "'"$TITLE"'") | .number' \
+            | head -1)
+
+          if [[ -n "$EXISTING_ISSUE" ]]; then
+            echo "Updating existing issue #$EXISTING_ISSUE"
+            gh issue edit "$EXISTING_ISSUE" --body "$BODY"
+          else
+            echo "Creating new tracking issue"
+            gh issue create \
+              --title "$TITLE" \
+              --body "$BODY" \
+              --label "$FLAKY_ISSUE_LABEL"
+          fi
+
+      - name: Post summary
+        if: always()
+        run: |
+          if [[ -f flaky-report.md ]]; then
+            cat flaky-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
