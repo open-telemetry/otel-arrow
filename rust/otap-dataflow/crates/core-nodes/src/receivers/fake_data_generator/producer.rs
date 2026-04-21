@@ -159,6 +159,7 @@ impl TrafficProducer {
         // If it's an exact fit we can just truncate
         if total == max_signals {
             self.strategy.truncate(to_keep);
+            self.signal_count = self.strategy.signal_count();
             return Ok(());
         }
 
@@ -181,6 +182,8 @@ impl TrafficProducer {
                 payloads.push(new_batch);
             }
         }
+
+        self.signal_count = self.strategy.signal_count();
 
         Ok(())
     }
@@ -527,393 +530,411 @@ impl SignalGenerator for StaticGenerator {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::super::config::TrafficConfig;
-//     use super::*;
-//
-//     /// Helper to build a minimal `StaticGenerator` with no resource attributes.
-//     fn static_generator() -> StaticGenerator {
-//         StaticGenerator {
-//             idx: 0,
-//             entries: Vec::new(),
-//             rotation: Vec::new(),
-//             log_body_size_bytes: None,
-//             num_log_attributes: None,
-//             use_trace_context: false,
-//             num_metric_attributes: None,
-//             num_data_points_per_metric: None,
-//         }
-//     }
-//
-//     #[test]
-//     fn test_create_shape_distributes_signals() {
-//         let cfg = TrafficConfig::new(
-//             Some(100), // signals_per_second
-//             None,      // max_signal_count
-//             50,        // max_batch_size
-//             1,         // metric_weight
-//             2,         // trace_weight
-//             1,         // log_weight
-//         );
-//
-//         let shape = create_shape(&cfg);
-//
-//         // Every entry must respect max_batch_size.
-//         for (_, count) in &shape {
-//             assert!(*count <= 50, "batch size {count} exceeds max_batch_size 50");
-//         }
-//
-//         // Total signals across all entries should equal signals_per_second.
-//         let total: usize = shape.iter().map(|(_, c)| c).sum();
-//         assert_eq!(total, 100, "total signals should equal signals_per_second");
-//
-//         // All three signal types must be represented.
-//         let has_logs = shape.iter().any(|(s, _)| *s == SignalType::Logs);
-//         let has_metrics = shape.iter().any(|(s, _)| *s == SignalType::Metrics);
-//         let has_traces = shape.iter().any(|(s, _)| *s == SignalType::Traces);
-//         assert!(has_logs, "shape should contain Logs");
-//         assert!(has_metrics, "shape should contain Metrics");
-//         assert!(has_traces, "shape should contain Traces");
-//
-//         // Traces have weight 2 (50%), metrics and logs each have weight 1 (25%).
-//         // Verify traces get ~50 signals and the others get ~25 each.
-//         let trace_total: usize = shape
-//             .iter()
-//             .filter(|(s, _)| *s == SignalType::Traces)
-//             .map(|(_, c)| c)
-//             .sum();
-//         assert!(
-//             (48..=52).contains(&trace_total),
-//             "traces should get ~50 signals, got {trace_total}"
-//         );
-//     }
-//
-//     #[test]
-//     fn test_traffic_producer_fresh_yields_correct_count() {
-//         let cfg = TrafficConfig::new(
-//             Some(30), // signals_per_second
-//             None,     // max_signal_count
-//             10,       // max_batch_size
-//             1,        // metric_weight
-//             1,        // trace_weight
-//             1,        // log_weight
-//         );
-//
-//         let shape = create_shape(&cfg);
-//         let shape_len = shape.len();
-//         let strategy = ProductionStrategy::Fresh { shape };
-//         let signal_count = strategy.signal_count();
-//         let mut producer = TrafficProducer {
-//             strategy,
-//             signal_count,
-//             generator: Box::new(static_generator()),
-//             max_signal_count: None,
-//             produced_count: 0,
-//         };
-//
-//         let run = producer
-//             .next_run()
-//             .expect("should get a run")
-//             .expect("valid");
-//
-//         // ExactSizeIterator should report the right length up front.
-//         assert_eq!(
-//             run.len(),
-//             shape_len,
-//             "ExactSizeIterator::len should match shape length"
-//         );
-//
-//         let results: Vec<_> = run.collect();
-//         assert_eq!(
-//             results.len(),
-//             shape_len,
-//             "iterator should yield exactly shape.len() items"
-//         );
-//
-//         // Every result should be Ok.
-//         for (i, r) in results.iter().enumerate() {
-//             assert!(r.is_ok(), "payload {i} should be Ok, got {:?}", r);
-//         }
-//     }
-//
-//     // #[test]
-//     // fn test_traffic_producer_replay_clones_payloads() {
-//     //     let cfg = TrafficConfig::new(
-//     //         Some(15), // signals_per_second
-//     //         None,     // max_signal_count
-//     //         10,       // max_batch_size
-//     //         1,        // metric_weight
-//     //         1,        // trace_weight
-//     //         1,        // log_weight
-//     //     );
-//     //
-//     //     let shape = create_shape(&cfg);
-//     //     let shape_len = shape.len();
-//     //     let strategy = ProductionStrategy::Fresh { shape };
-//     //     let signal_count = strategy.signal_count();
-//     //     let expected_count = signal_count;
-//     //     let mut producer = TrafficProducer {
-//     //         strategy,
-//     //         signal_count,
-//     //         generator: Box::new(static_generator()),
-//     //         max_signal_count: None,
-//     //         produced_count: 0,
-//     //     };
-//     //
-//     //     let results: Vec<GenerateResult> = producer.next_run().expect("should get a run").collect();
-//     //     assert_eq!(results.len(), expected_count);
-//     //
-//     //     // Each replayed payload should match the original pre-generated payload.
-//     //     for (i, (result, original)) in results.iter().zip(payloads.iter()).enumerate() {
-//     //         let payload = result.as_ref().expect("replay should always succeed");
-//     //         assert_eq!(
-//     //             payload.num_bytes(),
-//     //             original.num_bytes(),
-//     //             "payload {i} size should match the pre-generated original"
-//     //         );
-//     //     }
-//     // }
-//
-//     #[test]
-//     fn test_resource_attribute_rotation_across_batches() {
-//         use super::super::config::{ResourceAttributeSet, build_rotation_table};
-//         use otap_df_pdata::OtlpProtoBytes;
-//         use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
-//         use prost::Message;
-//         use std::num::NonZeroU32;
-//
-//         let make_entry = |tenant: &str| ResourceAttributeSet {
-//             attrs: HashMap::from([("tenant.id".to_string(), tenant.to_string())]),
-//             weight: NonZeroU32::new(1).unwrap(),
-//         };
-//         let entries = vec![make_entry("prod"), make_entry("staging")];
-//         let rotation = build_rotation_table(&entries);
-//
-//         let mut generator = StaticGenerator {
-//             idx: 0,
-//             entries,
-//             rotation,
-//             log_body_size_bytes: None,
-//             num_log_attributes: None,
-//             use_trace_context: false,
-//             num_metric_attributes: None,
-//             num_data_points_per_metric: None,
-//         };
-//
-//         // Helper: extract the tenant.id attribute value from a log payload.
-//         let extract_tenant_id = |payload: OtapPayload| -> Option<String> {
-//             let otlp_bytes: OtlpProtoBytes = payload.try_into().expect("convert to otlp bytes");
-//             let bytes = match otlp_bytes {
-//                 OtlpProtoBytes::ExportLogsRequest(b) => b,
-//                 _ => panic!("expected logs"),
-//             };
-//             let logs = LogsData::decode(bytes.as_ref()).expect("decode logs");
-//             logs.resource_logs
-//                 .first()?
-//                 .resource
-//                 .as_ref()?
-//                 .attributes
-//                 .iter()
-//                 .find(|kv| kv.key == "tenant.id")
-//                 .and_then(|kv| kv.value.as_ref())
-//                 .and_then(|v| {
-//                     use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
-//                     match v.value.as_ref()? {
-//                         Value::StringValue(s) => Some(s.clone()),
-//                         _ => None,
-//                     }
-//                 })
-//         };
-//
-//         let tenant_1 = extract_tenant_id(generator.generate_logs(1).expect("batch 1"))
-//             .expect("batch 1 should have tenant.id");
-//         let tenant_2 = extract_tenant_id(generator.generate_logs(1).expect("batch 2"))
-//             .expect("batch 2 should have tenant.id");
-//         let tenant_3 = extract_tenant_id(generator.generate_logs(1).expect("batch 3"))
-//             .expect("batch 3 should have tenant.id");
-//         let tenant_4 = extract_tenant_id(generator.generate_logs(1).expect("batch 4"))
-//             .expect("batch 4 should have tenant.id");
-//
-//         // With a two-entry rotation [0, 1], consecutive batches alternate attribute sets.
-//         assert_ne!(
-//             tenant_1, tenant_2,
-//             "consecutive batches should use different attribute sets"
-//         );
-//         assert_eq!(
-//             tenant_1, tenant_3,
-//             "batches 1 and 3 should share the same attribute set"
-//         );
-//         assert_eq!(
-//             tenant_2, tenant_4,
-//             "batches 2 and 4 should share the same attribute set"
-//         );
-//
-//         // Both configured values must appear.
-//         let tenants = [&tenant_1, &tenant_2];
-//         assert!(
-//             tenants.contains(&&"prod".to_string()),
-//             "prod should appear in the rotation"
-//         );
-//         assert!(
-//             tenants.contains(&&"staging".to_string()),
-//             "staging should appear in the rotation"
-//         );
-//     }
-//
-//     #[test]
-//     fn test_resource_attribute_rotation_empty_attrs() {
-//         use otap_df_pdata::OtlpProtoBytes;
-//         use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
-//         use prost::Message;
-//
-//         // static_generator() has empty entries and rotation — no custom resource attrs.
-//         let mut generator = static_generator();
-//
-//         let batch_1 = generator
-//             .generate_logs(1)
-//             .expect("batch 1 with empty attrs");
-//         let batch_2 = generator
-//             .generate_logs(1)
-//             .expect("batch 2 with empty attrs");
-//
-//         // Both payloads should be valid and non-empty.
-//         assert!(
-//             batch_1.num_bytes().unwrap_or(0) > 0,
-//             "batch 1 should be non-empty"
-//         );
-//         assert!(
-//             batch_2.num_bytes().unwrap_or(0) > 0,
-//             "batch 2 should be non-empty"
-//         );
-//
-//         // Neither payload should carry a tenant.id attribute.
-//         for (i, batch) in [batch_1, batch_2].into_iter().enumerate() {
-//             let otlp_bytes: OtlpProtoBytes = batch.try_into().expect("convert to otlp bytes");
-//             let bytes = match otlp_bytes {
-//                 OtlpProtoBytes::ExportLogsRequest(b) => b,
-//                 _ => panic!("expected logs"),
-//             };
-//             let logs = LogsData::decode(bytes.as_ref()).expect("decode logs");
-//             let has_tenant = logs
-//                 .resource_logs
-//                 .first()
-//                 .and_then(|rl| rl.resource.as_ref())
-//                 .map(|r| r.attributes.iter().any(|kv| kv.key == "tenant.id"))
-//                 .unwrap_or(false);
-//             assert!(
-//                 !has_tenant,
-//                 "batch {i} should not have tenant.id when no attrs configured"
-//             );
-//         }
-//     }
-//
-//     /// Helper to build a `TrafficProducer` with a Fresh strategy from a config.
-//     fn fresh_producer(cfg: &TrafficConfig, max_signal_count: Option<u64>) -> TrafficProducer {
-//         let shape = create_shape(cfg);
-//         let num_batches = shape.len();
-//         let signal_count = shape.signal_count();
-//         TrafficProducer {
-//             strategy: ProductionStrategy::Fresh {
-//                 shape: shape.clone(),
-//             },
-//             signal_count,
-//             generator: Box::new(static_generator()),
-//             max_signal_count,
-//             produced_count: 0,
-//         }
-//     }
-//
-//     #[test]
-//     fn test_producer_no_limit_always_returns_run() {
-//         let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
-//         let mut producer = fresh_producer(&cfg, None);
-//
-//         // Without a limit, next_run should always return Some.
-//         assert!(producer.next_run().is_some());
-//         producer.record_production(100);
-//         assert!(producer.next_run().is_some());
-//         producer.record_production(1_000_000);
-//         assert!(producer.next_run().is_some());
-//     }
-//
-//     #[test]
-//     fn test_producer_limit_reached_returns_none() {
-//         let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
-//         let mut producer = fresh_producer(&cfg, Some(10));
-//
-//         // First run should be available (produced 0 of 10).
-//         assert!(producer.next_run().is_some());
-//
-//         // After producing exactly the limit, next_run returns None.
-//         producer.record_production(10);
-//         assert!(producer.next_run().is_none());
-//
-//         // Over the limit also returns None.
-//         producer.record_production(5);
-//         assert!(producer.next_run().is_none());
-//     }
-//
-//     #[test]
-//     fn test_producer_truncates_run_to_fit_limit() {
-//         // Shape: 10 metrics per second, max_batch=5 → shape is 2 batches of 5
-//         let cfg = TrafficConfig::new(Some(10), None, 5, 1, 0, 0);
-//         let mut producer = fresh_producer(&cfg, Some(7));
-//
-//         assert_eq!(producer.run_count(), 10, "full run should have 10 signals");
-//
-//         // First run should be truncated to 7 signals.
-//         let run = producer.next_run().expect("should get a run");
-//         let payloads: Vec<_> = run.collect();
-//         let total: usize = payloads
-//             .iter()
-//             .map(|r| r.as_ref().unwrap().num_items())
-//             .sum();
-//         assert_eq!(total, 7, "truncated run should have exactly 7 signals");
-//
-//         // After producing 7, no more runs.
-//         producer.record_production(7);
-//         assert!(producer.next_run().is_none());
-//     }
-//
-//     #[test]
-//     fn test_producer_zero_limit_returns_none_immediately() {
-//         let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
-//         let mut producer = fresh_producer(&cfg, Some(0));
-//
-//         assert!(
-//             producer.next_run().is_none(),
-//             "zero limit should immediately return None"
-//         );
-//     }
-//
-//     #[test]
-//     fn test_truncate_shape_exact_fit() {
-//         let shape = vec![(SignalType::Metrics, 5), (SignalType::Logs, 5)];
-//
-//         // Budget exactly matches full shape — no truncation.
-//         let result = truncate_shape(&shape, 10);
-//         assert_eq!(result.len(), 2);
-//         let total: usize = result.iter().map(|(_, c)| c).sum();
-//         assert_eq!(total, 10);
-//     }
-//
-//     #[test]
-//     fn test_truncate_shape_partial_batch() {
-//         let shape = vec![(SignalType::Metrics, 5), (SignalType::Logs, 5)];
-//
-//         // Budget of 7: first batch (5) fits, second batch truncated to 2.
-//         let result = truncate_shape(&shape, 7);
-//         assert_eq!(result.len(), 2);
-//         assert_eq!(result[0], (SignalType::Metrics, 5));
-//         assert_eq!(result[1], (SignalType::Logs, 2));
-//     }
-//
-//     #[test]
-//     fn test_truncate_shape_zero_budget() {
-//         let shape = vec![(SignalType::Metrics, 5)];
-//
-//         let result = truncate_shape(&shape, 0);
-//         assert!(result.is_empty(), "zero budget should produce empty shape");
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::super::config::TrafficConfig;
+    use super::*;
+
+    /// Helper to build a minimal `StaticGenerator` with no resource attributes.
+    fn static_generator() -> StaticGenerator {
+        StaticGenerator {
+            idx: 0,
+            entries: Vec::new(),
+            rotation: Vec::new(),
+            log_body_size_bytes: None,
+            num_log_attributes: None,
+            use_trace_context: false,
+            num_metric_attributes: None,
+            num_data_points_per_metric: None,
+        }
+    }
+
+    /// Helper to build a `TrafficProducer` with a Fresh strategy from a config.
+    fn fresh_producer(cfg: &TrafficConfig, max_signal_count: Option<u64>) -> TrafficProducer {
+        let shape = create_shape(cfg);
+        let strategy = ProductionStrategy::Fresh { shape };
+        let signal_count = strategy.signal_count();
+        TrafficProducer {
+            strategy,
+            signal_count,
+            generator: Box::new(static_generator()),
+            max_signal_count,
+            produced_count: 0,
+        }
+    }
+
+    #[test]
+    fn test_create_shape_distributes_signals() {
+        let cfg = TrafficConfig::new(
+            Some(100), // signals_per_second
+            None,      // max_signal_count
+            50,        // max_batch_size
+            1,         // metric_weight
+            2,         // trace_weight
+            1,         // log_weight
+        );
+
+        let shape = create_shape(&cfg);
+
+        // Every entry must respect max_batch_size.
+        for (_, count) in &shape {
+            assert!(*count <= 50, "batch size {count} exceeds max_batch_size 50");
+        }
+
+        // Total signals across all entries should equal signals_per_second.
+        let total: usize = shape.iter().map(|(_, c)| c).sum();
+        assert_eq!(total, 100, "total signals should equal signals_per_second");
+
+        // All three signal types must be represented.
+        let has_logs = shape.iter().any(|(s, _)| *s == SignalType::Logs);
+        let has_metrics = shape.iter().any(|(s, _)| *s == SignalType::Metrics);
+        let has_traces = shape.iter().any(|(s, _)| *s == SignalType::Traces);
+        assert!(has_logs, "shape should contain Logs");
+        assert!(has_metrics, "shape should contain Metrics");
+        assert!(has_traces, "shape should contain Traces");
+
+        // Traces have weight 2 (50%), metrics and logs each have weight 1 (25%).
+        // Verify traces get ~50 signals and the others get ~25 each.
+        let trace_total: usize = shape
+            .iter()
+            .filter(|(s, _)| *s == SignalType::Traces)
+            .map(|(_, c)| c)
+            .sum();
+        assert!(
+            (48..=52).contains(&trace_total),
+            "traces should get ~50 signals, got {trace_total}"
+        );
+    }
+
+    #[test]
+    fn test_traffic_producer_fresh_yields_correct_count() {
+        let cfg = TrafficConfig::new(
+            Some(30), // signals_per_second
+            None,     // max_signal_count
+            10,       // max_batch_size
+            1,        // metric_weight
+            1,        // trace_weight
+            1,        // log_weight
+        );
+
+        let shape = create_shape(&cfg);
+        let expected_batches = shape.len();
+        let strategy = ProductionStrategy::Fresh { shape };
+        let signal_count = strategy.signal_count();
+        let mut producer = TrafficProducer {
+            strategy,
+            signal_count,
+            generator: Box::new(static_generator()),
+            max_signal_count: None,
+            produced_count: 0,
+        };
+
+        let run = producer
+            .next_run()
+            .expect("generation should succeed")
+            .expect("should get a run");
+
+        // ExactSizeIterator should report the right length up front.
+        assert_eq!(
+            run.len(),
+            expected_batches,
+            "ExactSizeIterator::len should match shape length"
+        );
+
+        let results: Vec<_> = run.collect();
+        assert_eq!(
+            results.len(),
+            expected_batches,
+            "iterator should yield exactly shape.len() items"
+        );
+
+        // Every result should be Ok.
+        for (i, r) in results.iter().enumerate() {
+            assert!(r.is_ok(), "payload {i} should be Ok, got {:?}", r);
+        }
+    }
+
+    #[test]
+    fn test_traffic_producer_replay_clones_payloads() {
+        let cfg = TrafficConfig::new(
+            Some(15), // signals_per_second
+            None,     // max_signal_count
+            10,       // max_batch_size
+            1,        // metric_weight
+            1,        // trace_weight
+            1,        // log_weight
+        );
+
+        let shape = create_shape(&cfg);
+        let mut generator = static_generator();
+        let payloads =
+            create_fresh_payloads(&mut generator, &shape).expect("pre-generation should succeed");
+        let expected_count = payloads.len();
+
+        let strategy = ProductionStrategy::Replay {
+            payloads: payloads.clone(),
+        };
+        let signal_count = strategy.signal_count();
+        let mut producer = TrafficProducer {
+            strategy,
+            signal_count,
+            generator: Box::new(static_generator()),
+            max_signal_count: None,
+            produced_count: 0,
+        };
+
+        let results: Vec<GenerateResult> = producer
+            .next_run()
+            .expect("generation should succeed")
+            .expect("should get a run")
+            .collect();
+        assert_eq!(results.len(), expected_count);
+
+        // Each replayed payload should match the original pre-generated payload.
+        for (i, (result, original)) in results.iter().zip(payloads.iter()).enumerate() {
+            let payload = result.as_ref().expect("replay should always succeed");
+            assert_eq!(
+                payload.num_bytes(),
+                original.num_bytes(),
+                "payload {i} size should match the pre-generated original"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resource_attribute_rotation_across_batches() {
+        use super::super::config::{ResourceAttributeSet, build_rotation_table};
+        use otap_df_pdata::OtlpProtoBytes;
+        use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+        use prost::Message;
+        use std::num::NonZeroU32;
+
+        let make_entry = |tenant: &str| ResourceAttributeSet {
+            attrs: HashMap::from([("tenant.id".to_string(), tenant.to_string())]),
+            weight: NonZeroU32::new(1).unwrap(),
+        };
+        let entries = vec![make_entry("prod"), make_entry("staging")];
+        let rotation = build_rotation_table(&entries);
+
+        let mut generator = StaticGenerator {
+            idx: 0,
+            entries,
+            rotation,
+            log_body_size_bytes: None,
+            num_log_attributes: None,
+            use_trace_context: false,
+            num_metric_attributes: None,
+            num_data_points_per_metric: None,
+        };
+
+        // Helper: extract the tenant.id attribute value from a log payload.
+        let extract_tenant_id = |payload: OtapPayload| -> Option<String> {
+            let otlp_bytes: OtlpProtoBytes = payload.try_into().expect("convert to otlp bytes");
+            let bytes = match otlp_bytes {
+                OtlpProtoBytes::ExportLogsRequest(b) => b,
+                _ => panic!("expected logs"),
+            };
+            let logs = LogsData::decode(bytes.as_ref()).expect("decode logs");
+            logs.resource_logs
+                .first()?
+                .resource
+                .as_ref()?
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "tenant.id")
+                .and_then(|kv| kv.value.as_ref())
+                .and_then(|v| {
+                    use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                    match v.value.as_ref()? {
+                        Value::StringValue(s) => Some(s.clone()),
+                        _ => None,
+                    }
+                })
+        };
+
+        let tenant_1 = extract_tenant_id(generator.generate_logs(1).expect("batch 1"))
+            .expect("batch 1 should have tenant.id");
+        let tenant_2 = extract_tenant_id(generator.generate_logs(1).expect("batch 2"))
+            .expect("batch 2 should have tenant.id");
+        let tenant_3 = extract_tenant_id(generator.generate_logs(1).expect("batch 3"))
+            .expect("batch 3 should have tenant.id");
+        let tenant_4 = extract_tenant_id(generator.generate_logs(1).expect("batch 4"))
+            .expect("batch 4 should have tenant.id");
+
+        // With a two-entry rotation [0, 1], consecutive batches alternate attribute sets.
+        assert_ne!(
+            tenant_1, tenant_2,
+            "consecutive batches should use different attribute sets"
+        );
+        assert_eq!(
+            tenant_1, tenant_3,
+            "batches 1 and 3 should share the same attribute set"
+        );
+        assert_eq!(
+            tenant_2, tenant_4,
+            "batches 2 and 4 should share the same attribute set"
+        );
+
+        // Both configured values must appear.
+        let tenants = [&tenant_1, &tenant_2];
+        assert!(
+            tenants.contains(&&"prod".to_string()),
+            "prod should appear in the rotation"
+        );
+        assert!(
+            tenants.contains(&&"staging".to_string()),
+            "staging should appear in the rotation"
+        );
+    }
+
+    #[test]
+    fn test_resource_attribute_rotation_empty_attrs() {
+        use otap_df_pdata::OtlpProtoBytes;
+        use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+        use prost::Message;
+
+        // static_generator() has empty entries and rotation — no custom resource attrs.
+        let mut generator = static_generator();
+
+        let batch_1 = generator
+            .generate_logs(1)
+            .expect("batch 1 with empty attrs");
+        let batch_2 = generator
+            .generate_logs(1)
+            .expect("batch 2 with empty attrs");
+
+        // Both payloads should be valid and non-empty.
+        assert!(
+            batch_1.num_bytes().unwrap_or(0) > 0,
+            "batch 1 should be non-empty"
+        );
+        assert!(
+            batch_2.num_bytes().unwrap_or(0) > 0,
+            "batch 2 should be non-empty"
+        );
+
+        // Neither payload should carry a tenant.id attribute.
+        for (i, batch) in [batch_1, batch_2].into_iter().enumerate() {
+            let otlp_bytes: OtlpProtoBytes = batch.try_into().expect("convert to otlp bytes");
+            let bytes = match otlp_bytes {
+                OtlpProtoBytes::ExportLogsRequest(b) => b,
+                _ => panic!("expected logs"),
+            };
+            let logs = LogsData::decode(bytes.as_ref()).expect("decode logs");
+            let has_tenant = logs
+                .resource_logs
+                .first()
+                .and_then(|rl| rl.resource.as_ref())
+                .map(|r| r.attributes.iter().any(|kv| kv.key == "tenant.id"))
+                .unwrap_or(false);
+            assert!(
+                !has_tenant,
+                "batch {i} should not have tenant.id when no attrs configured"
+            );
+        }
+    }
+
+    #[test]
+    fn test_producer_no_limit_always_returns_run() {
+        let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, None);
+
+        // Without a limit, next_run should always return Some.
+        assert!(producer.next_run().unwrap().is_some());
+        producer.record_production(100);
+        assert!(producer.next_run().unwrap().is_some());
+        producer.record_production(1_000_000);
+        assert!(producer.next_run().unwrap().is_some());
+    }
+
+    #[test]
+    fn test_producer_limit_reached_returns_none() {
+        let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(10));
+
+        // First run should be available (produced 0 of 10).
+        assert!(producer.next_run().unwrap().is_some());
+
+        // After producing exactly the limit, next_run returns None.
+        producer.record_production(10);
+        assert!(producer.next_run().unwrap().is_none());
+
+        // Over the limit also returns None.
+        producer.record_production(5);
+        assert!(producer.next_run().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_producer_truncates_run_to_fit_limit() {
+        // Shape: 10 metrics per second, max_batch=5 -> shape is 2 batches of 5
+        let cfg = TrafficConfig::new(Some(10), None, 5, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(7));
+
+        assert_eq!(producer.run_count(), 10, "full run should have 10 signals");
+
+        // First run should be truncated to 7 signals.
+        let run = producer
+            .next_run()
+            .expect("generation should succeed")
+            .expect("should get a run");
+        let payloads: Vec<_> = run.collect();
+        let total: usize = payloads
+            .iter()
+            .map(|r| r.as_ref().unwrap().num_items())
+            .sum();
+        assert_eq!(total, 7, "truncated run should have exactly 7 signals");
+
+        // After producing 7, no more runs.
+        producer.record_production(7);
+        assert!(producer.next_run().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_producer_zero_limit_returns_none_immediately() {
+        let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(0));
+
+        assert!(
+            producer.next_run().unwrap().is_none(),
+            "zero limit should immediately return None"
+        );
+    }
+
+    #[test]
+    fn test_cap_strategy_exact_fit() {
+        // 2 batches of 5 metrics = 10 total. Cap to 10 should be a no-op.
+        let cfg = TrafficConfig::new(Some(10), None, 5, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(10));
+
+        let run = producer
+            .next_run()
+            .expect("generation should succeed")
+            .expect("should get a run");
+        let total: u64 = run.map(|r| r.unwrap().num_items() as u64).sum();
+        assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn test_cap_strategy_partial_batch() {
+        // 2 batches of 5 metrics = 10 total. Cap to 7: keep first batch (5)
+        // + partial second batch (2).
+        let cfg = TrafficConfig::new(Some(10), None, 5, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(7));
+
+        let run = producer
+            .next_run()
+            .expect("generation should succeed")
+            .expect("should get a run");
+        let items: Vec<usize> = run.map(|r| r.unwrap().num_items()).collect();
+        assert_eq!(items, vec![5, 2]);
+    }
+
+    #[test]
+    fn test_cap_strategy_zero_budget() {
+        // Cap to 0 signals should return None (checked in next_run before cap).
+        let cfg = TrafficConfig::new(Some(10), None, 5, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(0));
+
+        assert!(producer.next_run().unwrap().is_none());
+    }
+}
