@@ -17,7 +17,15 @@ use super::{semconv_signal, static_signal};
 /// reasonably smooth curve.
 pub struct TrafficProducer {
     strategy: ProductionStrategy,
+    /// The canonical shape from config, used for Replay truncation to determine
+    /// the signal type of the batch that needs a fresh partial payload.
+    shape: TrafficShape,
     generator: Box<dyn SignalGenerator>,
+    /// Optional upper bound on the total number of signals this producer may
+    /// emit across its lifetime.
+    max_signal_count: Option<u64>,
+    /// Running total of signals confirmed exported by the receiver.
+    produced_count: u64,
 }
 
 /// Describes the shape of traffic for one production run (one second of signals).
@@ -64,16 +72,33 @@ impl TrafficProducer {
         // Build the production strategy.
         let shape = create_shape(traffic_config);
         let strategy = match config.generation_strategy() {
-            GenerationStrategy::Fresh => ProductionStrategy::Fresh(shape),
+            GenerationStrategy::Fresh => {
+                let num_batches = shape.len();
+                let signal_count = shape.iter().map(|(_, c)| c).sum();
+                ProductionStrategy::Fresh {
+                    shape: shape.clone(),
+                    num_batches,
+                    signal_count,
+                }
+            }
             GenerationStrategy::PreGenerated => {
                 let payloads = create_fresh_payloads(&mut *generator, &shape)?;
-                ProductionStrategy::Replay(payloads)
+                let num_batches = payloads.len();
+                let signal_count = payloads.iter().map(|p| p.num_items()).sum();
+                ProductionStrategy::Replay {
+                    payloads,
+                    num_batches,
+                    signal_count,
+                }
             }
         };
 
         Ok(Self {
             strategy,
+            shape,
             generator,
+            max_signal_count: traffic_config.get_max_signal_count(),
+            produced_count: 0,
         })
     }
 
@@ -89,13 +114,92 @@ impl TrafficProducer {
         self.strategy.signal_count()
     }
 
+    /// Record that the receiver successfully exported `count` signals.
+    ///
+    /// Called between runs (after the [`TrafficRun`] is dropped) so there is
+    /// no borrow conflict with the generator.
+    pub fn record_production(&mut self, count: u64) {
+        self.produced_count += count;
+    }
+
     /// Return a [`TrafficRun`] iterator that yields the payloads needed for
-    /// one second of traffic.
-    pub fn next_run(&mut self) -> TrafficRun<'_> {
-        TrafficRun {
+    /// one second of traffic, or `None` if the producer has reached
+    /// `max_signal_count` and should stop.
+    ///
+    /// When a limit is set and the current strategy would exceed the remaining
+    /// budget, the strategy is truncated in-place before the run is created.
+    pub fn next_run(&mut self) -> Option<TrafficRun<'_>> {
+        match self.max_signal_count {
+            Some(max) if self.produced_count >= max => return None,
+            Some(max) => {
+                let remaining = max - self.produced_count;
+                if (self.strategy.signal_count() as u64) > remaining {
+                    self.truncate_strategy(remaining);
+                }
+            }
+            None => {}
+        }
+
+        Some(TrafficRun {
             generator: &mut *self.generator,
             strategy: &self.strategy,
             idx: 0,
+        })
+    }
+
+    /// Truncate the current strategy so it produces at most `max_signals`.
+    ///
+    /// For `Fresh`: truncates the shape vector, keeping whole entries that fit
+    /// and appending a partial entry for the remainder.
+    ///
+    /// For `Replay`: keeps whole pre-generated payloads that fit, then
+    /// generates one fresh partial payload for the remainder using the
+    /// signal type from the original shape.
+    fn truncate_strategy(&mut self, max_signals: u64) {
+        match &mut self.strategy {
+            ProductionStrategy::Fresh {
+                shape,
+                num_batches,
+                signal_count,
+            } => {
+                *shape = truncate_shape(shape, max_signals);
+                *num_batches = shape.len();
+                *signal_count = shape.iter().map(|(_, c)| c).sum();
+            }
+            ProductionStrategy::Replay {
+                payloads,
+                num_batches,
+                signal_count,
+            } => {
+                let mut remaining = max_signals;
+                let mut keep = 0;
+                for p in payloads.iter() {
+                    let items = p.num_items() as u64;
+                    if items <= remaining {
+                        remaining -= items;
+                        keep += 1;
+                    } else {
+                        break;
+                    }
+                }
+                payloads.truncate(keep);
+
+                // Generate a fresh partial payload for the remainder.
+                if remaining > 0 && keep < self.shape.len() {
+                    let (signal_type, _) = self.shape[keep];
+                    let partial = match signal_type {
+                        SignalType::Traces => self.generator.generate_traces(remaining as usize),
+                        SignalType::Metrics => self.generator.generate_metrics(remaining as usize),
+                        SignalType::Logs => self.generator.generate_logs(remaining as usize),
+                    };
+                    if let Ok(payload) = partial {
+                        payloads.push(payload);
+                    }
+                }
+
+                *num_batches = payloads.len();
+                *signal_count = payloads.iter().map(|p| p.num_items()).sum();
+            }
         }
     }
 }
@@ -117,16 +221,16 @@ impl<'a> Iterator for TrafficRun<'a> {
             return None;
         }
 
-        let next = match self.strategy {
-            ProductionStrategy::Fresh(v) => {
-                let shape = v[self.idx];
-                match shape.0 {
-                    SignalType::Traces => self.generator.generate_traces(shape.1),
-                    SignalType::Metrics => self.generator.generate_metrics(shape.1),
-                    SignalType::Logs => self.generator.generate_logs(shape.1),
+        let next = match &self.strategy {
+            ProductionStrategy::Fresh { shape, .. } => {
+                let (signal_type, count) = shape[self.idx];
+                match signal_type {
+                    SignalType::Traces => self.generator.generate_traces(count),
+                    SignalType::Metrics => self.generator.generate_metrics(count),
+                    SignalType::Logs => self.generator.generate_logs(count),
                 }
             }
-            ProductionStrategy::Replay(v) => Ok(v[self.idx].clone()),
+            ProductionStrategy::Replay { payloads, .. } => Ok(payloads[self.idx].clone()),
         };
 
         self.idx += 1;
@@ -256,23 +360,57 @@ fn create_fresh_payloads(
         .collect()
 }
 
+/// Truncate a traffic shape so that the total signal count is at most `budget`.
+///
+/// Whole batches from the front are kept until adding the next batch would
+/// exceed the budget, then a single partial batch with the remaining count is
+/// appended.
+fn truncate_shape(shape: &[(SignalType, usize)], budget: u64) -> TrafficShape {
+    let mut result = Vec::new();
+    let mut remaining = budget;
+
+    for &(signal_type, count) in shape {
+        let count_u64 = count as u64;
+        if count_u64 <= remaining {
+            result.push((signal_type, count));
+            remaining -= count_u64;
+        } else {
+            // Partial batch for the remainder.
+            if remaining > 0 {
+                result.push((signal_type, remaining as usize));
+            }
+            break;
+        }
+    }
+
+    result
+}
+
 enum ProductionStrategy {
-    Fresh(Vec<(SignalType, usize)>),
-    Replay(Vec<OtapPayload>),
+    Fresh {
+        shape: TrafficShape,
+        num_batches: usize,
+        signal_count: usize,
+    },
+    Replay {
+        payloads: Vec<OtapPayload>,
+        num_batches: usize,
+        signal_count: usize,
+    },
 }
 
 impl ProductionStrategy {
     fn len(&self) -> usize {
         match self {
-            ProductionStrategy::Fresh(v) => v.len(),
-            ProductionStrategy::Replay(v) => v.len(),
+            ProductionStrategy::Fresh { num_batches, .. } => *num_batches,
+            ProductionStrategy::Replay { num_batches, .. } => *num_batches,
         }
     }
 
     fn signal_count(&self) -> usize {
         match self {
-            ProductionStrategy::Fresh(v) => v.iter().map(|x| x.1).sum(),
-            ProductionStrategy::Replay(v) => v.iter().map(|x| x.num_items()).sum(),
+            ProductionStrategy::Fresh { signal_count, .. } => *signal_count,
+            ProductionStrategy::Replay { signal_count, .. } => *signal_count,
         }
     }
 }
@@ -476,7 +614,7 @@ mod tests {
             .map(|(_, c)| c)
             .sum();
         assert!(
-            trace_total >= 48 && trace_total <= 52,
+            (48..=52).contains(&trace_total),
             "traces should get ~50 signals, got {trace_total}"
         );
     }
@@ -494,13 +632,21 @@ mod tests {
 
         let shape = create_shape(&cfg);
         let expected_batches = shape.len();
+        let signal_count = shape.iter().map(|(_, c)| c).sum();
 
         let mut producer = TrafficProducer {
-            strategy: ProductionStrategy::Fresh(shape),
+            strategy: ProductionStrategy::Fresh {
+                shape: shape.clone(),
+                num_batches: expected_batches,
+                signal_count,
+            },
+            shape,
             generator: Box::new(static_generator()),
+            max_signal_count: None,
+            produced_count: 0,
         };
 
-        let run = producer.next_run();
+        let run = producer.next_run().expect("should get a run");
 
         // ExactSizeIterator should report the right length up front.
         assert_eq!(
@@ -539,12 +685,22 @@ mod tests {
             create_fresh_payloads(&mut generator, &shape).expect("pre-generation should succeed");
         let expected_count = payloads.len();
 
+        let shape_copy = shape.clone();
+        let num_batches = payloads.len();
+        let signal_count = payloads.iter().map(|p| p.num_items()).sum();
         let mut producer = TrafficProducer {
-            strategy: ProductionStrategy::Replay(payloads.clone()),
+            strategy: ProductionStrategy::Replay {
+                payloads: payloads.clone(),
+                num_batches,
+                signal_count,
+            },
+            shape: shape_copy,
             generator: Box::new(static_generator()),
+            max_signal_count: None,
+            produced_count: 0,
         };
 
-        let results: Vec<GenerateResult> = producer.next_run().collect();
+        let results: Vec<GenerateResult> = producer.next_run().expect("should get a run").collect();
         assert_eq!(results.len(), expected_count);
 
         // Each replayed payload should match the original pre-generated payload.
@@ -689,5 +845,116 @@ mod tests {
                 "batch {i} should not have tenant.id when no attrs configured"
             );
         }
+    }
+
+    /// Helper to build a `TrafficProducer` with a Fresh strategy from a config.
+    fn fresh_producer(cfg: &TrafficConfig, max_signal_count: Option<u64>) -> TrafficProducer {
+        let shape = create_shape(cfg);
+        let num_batches = shape.len();
+        let signal_count = shape.iter().map(|(_, c)| c).sum();
+        TrafficProducer {
+            strategy: ProductionStrategy::Fresh {
+                shape: shape.clone(),
+                num_batches,
+                signal_count,
+            },
+            shape,
+            generator: Box::new(static_generator()),
+            max_signal_count,
+            produced_count: 0,
+        }
+    }
+
+    #[test]
+    fn test_producer_no_limit_always_returns_run() {
+        let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, None);
+
+        // Without a limit, next_run should always return Some.
+        assert!(producer.next_run().is_some());
+        producer.record_production(100);
+        assert!(producer.next_run().is_some());
+        producer.record_production(1_000_000);
+        assert!(producer.next_run().is_some());
+    }
+
+    #[test]
+    fn test_producer_limit_reached_returns_none() {
+        let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(10));
+
+        // First run should be available (produced 0 of 10).
+        assert!(producer.next_run().is_some());
+
+        // After producing exactly the limit, next_run returns None.
+        producer.record_production(10);
+        assert!(producer.next_run().is_none());
+
+        // Over the limit also returns None.
+        producer.record_production(5);
+        assert!(producer.next_run().is_none());
+    }
+
+    #[test]
+    fn test_producer_truncates_run_to_fit_limit() {
+        // Shape: 10 metrics per second, max_batch=5 → shape is 2 batches of 5
+        let cfg = TrafficConfig::new(Some(10), None, 5, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(7));
+
+        assert_eq!(producer.run_count(), 10, "full run should have 10 signals");
+
+        // First run should be truncated to 7 signals.
+        let run = producer.next_run().expect("should get a run");
+        let payloads: Vec<_> = run.collect();
+        let total: usize = payloads
+            .iter()
+            .map(|r| r.as_ref().unwrap().num_items())
+            .sum();
+        assert_eq!(total, 7, "truncated run should have exactly 7 signals");
+
+        // After producing 7, no more runs.
+        producer.record_production(7);
+        assert!(producer.next_run().is_none());
+    }
+
+    #[test]
+    fn test_producer_zero_limit_returns_none_immediately() {
+        let cfg = TrafficConfig::new(Some(10), None, 10, 1, 0, 0);
+        let mut producer = fresh_producer(&cfg, Some(0));
+
+        assert!(
+            producer.next_run().is_none(),
+            "zero limit should immediately return None"
+        );
+    }
+
+    #[test]
+    fn test_truncate_shape_exact_fit() {
+        let shape = vec![(SignalType::Metrics, 5), (SignalType::Logs, 5)];
+
+        // Budget exactly matches full shape — no truncation.
+        let result = truncate_shape(&shape, 10);
+        assert_eq!(result.len(), 2);
+        let total: usize = result.iter().map(|(_, c)| c).sum();
+        assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn test_truncate_shape_partial_batch() {
+        let shape = vec![(SignalType::Metrics, 5), (SignalType::Logs, 5)];
+
+        // Budget of 7: first batch (5) fits, second batch truncated to 2.
+        let result = truncate_shape(&shape, 7);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], (SignalType::Metrics, 5));
+        assert_eq!(result[1], (SignalType::Logs, 2));
+    }
+
+    #[test]
+    fn test_truncate_shape_zero_budget() {
+        let shape = vec![(SignalType::Metrics, 5)];
+
+        let result = truncate_shape(&shape, 0);
+        assert!(result.is_empty(), "zero budget should produce empty shape");
     }
 }

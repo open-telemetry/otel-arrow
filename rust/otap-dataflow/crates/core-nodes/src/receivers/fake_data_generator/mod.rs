@@ -30,6 +30,7 @@ use otap_df_pdata::OtapPayload;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{Duration, Interval, interval};
 
@@ -114,35 +115,47 @@ impl FakeGeneratorReceiver {
         mut producer: TrafficProducer,
         mut run_ticker: Interval,
         mut batch_ticker: Interval,
+        transport_headers: Option<TransportHeaders>,
     ) -> Result<TerminalState, Error> {
-        let mut current_run = producer.next_run();
+        let mut run_produced: u64 = 0;
+
         loop {
-            tokio::select! {
-                biased;
+            producer.record_production(run_produced);
+            otel_info!("Produced", run_produced);
+            run_produced = 0;
 
-                msg = ctrl_msg_recv.recv() => {
-                    if let Some(terminal) = handle_control_msg(msg, handler, &mut self.metrics).await? {
-                        return Ok(terminal);
+            let Some(mut current_run) = producer.next_run() else {
+                return wait_for_terminal(ctrl_msg_recv, handler, &mut self.metrics).await;
+            };
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    msg = ctrl_msg_recv.recv() => {
+                        if let Some(terminal) = handle_control_msg(msg, handler, &mut self.metrics).await? {
+                            return Ok(terminal);
+                        }
                     }
-                }
 
-                _ = run_ticker.tick() => {
-                    if current_run.len() > 0 {
-                        otel_warn!(
-                            "Data generator is falling behind and didn't finish the current run",
-                            remaining=current_run.len(),
-                        )
+                    _ = run_ticker.tick() => {
+                        if current_run.len() > 0 {
+                            otel_warn!(
+                                "Data generator is falling behind and didn't finish the current run",
+                                remaining=current_run.len(),
+                            )
+                        }
+                        break;
                     }
 
-                    current_run = producer.next_run();
-                }
+                    _ = batch_ticker.tick() => {
+                        let Some(payload) = current_run.next() else {
+                            continue;
+                        };
 
-                _ = batch_ticker.tick() => {
-                    let Some(payload) = current_run.next() else {
-                        continue;
-                    };
-
-                    self.handle_payload(handler, payload)?;
+                        let count = self.handle_payload(handler, payload, &transport_headers)?;
+                        run_produced += count;
+                    }
                 }
             }
         }
@@ -154,10 +167,16 @@ impl FakeGeneratorReceiver {
         handler: &local::EffectHandler<OtapPdata>,
         mut producer: TrafficProducer,
         mut run_ticker: Interval,
+        transport_headers: Option<TransportHeaders>,
     ) -> Result<TerminalState, Error> {
+        let mut run_produced: u64 = 0;
         'start: loop {
-            // This is the start of each traffic run which has two phases
-            let mut current_run = producer.next_run();
+            producer.record_production(run_produced);
+            run_produced = 0;
+
+            let Some(mut current_run) = producer.next_run() else {
+                return wait_for_terminal(ctrl_msg_recv, handler, &mut self.metrics).await;
+            };
 
             // First phase is the open export phase where we pump data as fast as
             // possible one chunk at a time while checking for control messages
@@ -189,7 +208,8 @@ impl FakeGeneratorReceiver {
                             break;
                         };
 
-                        self.handle_payload(handler, payload)?;
+                        let count = self.handle_payload(handler, payload, &transport_headers)?;
+                        run_produced += count;
                     }
                 }
 
@@ -217,7 +237,8 @@ impl FakeGeneratorReceiver {
         &mut self,
         handler: &local::EffectHandler<OtapPdata>,
         payload: Result<OtapPayload, GenerateError>,
-    ) -> Result<(), Error> {
+        transport_headers: &Option<TransportHeaders>,
+    ) -> Result<u64, Error> {
         let payload = match payload {
             Ok(payload) => payload,
             Err(e) => {
@@ -231,6 +252,9 @@ impl FakeGeneratorReceiver {
         };
 
         let mut pdata = OtapPdata::new_todo_context(payload);
+        if let Some(headers) = transport_headers {
+            pdata.set_transport_headers(headers.clone());
+        }
         if self.config.enable_ack_nack() {
             handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
@@ -248,12 +272,13 @@ impl FakeGeneratorReceiver {
                     otap_df_config::SignalType::Metrics => self.metrics.metrics_produced.add(count),
                     otap_df_config::SignalType::Logs => self.metrics.logs_produced.add(count),
                 };
+                Ok(count)
             }
             Err(e) => {
                 otel_warn!("Failed to send pdata", error=?e);
+                Ok(0)
             }
         }
-        Ok(())
     }
 }
 
@@ -311,6 +336,23 @@ fn build_transport_headers(
     Some(headers)
 }
 
+/// Waits for a terminal control message after the producer has finished.
+///
+/// This is used when `max_signal_count` has been reached and the receiver has
+/// no more data to produce, but must remain alive for graceful shutdown.
+async fn wait_for_terminal(
+    mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
+    handler: &local::EffectHandler<OtapPdata>,
+    metrics: &mut MetricSet<FakeSignalReceiverMetrics>,
+) -> Result<TerminalState, Error> {
+    loop {
+        let msg = ctrl_msg_recv.recv().await;
+        if let Some(terminal) = handle_control_msg(msg, handler, metrics).await? {
+            return Ok(terminal);
+        }
+    }
+}
+
 /// Handle a control message received on the control channel.
 ///
 /// Returns `Ok(Some(terminal_state))` when the receiver should exit,
@@ -358,6 +400,8 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                 source_detail: String::new(),
             })?;
 
+        let transport_headers = build_transport_headers(self.config.transport_headers());
+
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
@@ -377,17 +421,30 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         producer,
                         run_ticker,
                         batch_ticker,
+                        transport_headers,
                     )
                     .await
                 } else {
                     otel_warn!("Falling back to Open production mode as batch interval is sub 1ms");
-                    self.run_open(ctrl_msg_recv, &effect_handler, producer, run_ticker)
-                        .await
+                    self.run_open(
+                        ctrl_msg_recv,
+                        &effect_handler,
+                        producer,
+                        run_ticker,
+                        transport_headers,
+                    )
+                    .await
                 }
             }
             config::ProductionMode::Open => {
-                self.run_open(ctrl_msg_recv, &effect_handler, producer, run_ticker)
-                    .await
+                self.run_open(
+                    ctrl_msg_recv,
+                    &effect_handler,
+                    producer,
+                    run_ticker,
+                    transport_headers,
+                )
+                .await
             }
         }
     }
@@ -1049,5 +1106,316 @@ mod tests {
             .set_receiver(receiver)
             .run_test(ctrl_scenario)
             .run_validation(ctrl_validation);
+    }
+
+    /// Verifies that pdata messages contain transport headers with fixed values
+    /// when `transport_headers` is configured with explicit values.
+    #[test]
+    fn test_fake_data_transport_headers_fixed_value() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(
+            Some(MESSAGE_PER_SECOND),
+            Some(MAX_SIGNALS),
+            MAX_BATCH,
+            0,
+            0,
+            1,
+        );
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::Fresh)
+            .with_transport_headers(HashMap::from([(
+                "x-tenant-id".to_string(),
+                Some("acme".to_string()),
+            )]));
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_transport_headers"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = ctx.recv().await.expect("should receive at least one pdata");
+
+                let headers = pdata
+                    .transport_headers()
+                    .expect("pdata should have transport headers");
+                let tenant: Vec<_> = headers.find_by_name("x-tenant-id").collect();
+                assert_eq!(
+                    tenant.len(),
+                    1,
+                    "should have exactly one x-tenant-id header"
+                );
+                assert_eq!(
+                    tenant[0].value_as_str(),
+                    Some("acme"),
+                    "fixed header value should be 'acme'"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Verifies that pdata messages contain transport headers with random values
+    /// when `transport_headers` is configured with null values.
+    #[test]
+    fn test_fake_data_transport_headers_random_value() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(
+            Some(MESSAGE_PER_SECOND),
+            Some(MAX_SIGNALS),
+            MAX_BATCH,
+            0,
+            0,
+            1,
+        );
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::Fresh)
+            .with_transport_headers(HashMap::from([("x-request-id".to_string(), None)]));
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_random_headers"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = ctx.recv().await.expect("should receive at least one pdata");
+
+                let headers = pdata
+                    .transport_headers()
+                    .expect("pdata should have transport headers");
+                let request_id: Vec<_> = headers.find_by_name("x-request-id").collect();
+                assert_eq!(
+                    request_id.len(),
+                    1,
+                    "should have exactly one x-request-id header"
+                );
+                assert_eq!(
+                    request_id[0].value.len(),
+                    16,
+                    "random value should be 16 bytes"
+                );
+                assert_eq!(
+                    request_id[0].value_kind,
+                    ValueKind::Text,
+                    "non-bin key should produce a Text header"
+                );
+                assert!(
+                    request_id[0].value_as_str().is_some(),
+                    "text header random value should be valid UTF-8 (printable)"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Verifies that pdata messages contain binary transport headers with random
+    /// values when `transport_headers` is configured with null values and keys
+    /// ending in `-bin`.
+    #[test]
+    fn test_fake_data_transport_headers_binary_random_value() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(
+            Some(MESSAGE_PER_SECOND),
+            Some(MAX_SIGNALS),
+            MAX_BATCH,
+            0,
+            0,
+            1,
+        );
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::Fresh)
+            .with_transport_headers(HashMap::from([("x-trace-bin".to_string(), None)]));
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_binary_headers"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = ctx.recv().await.expect("should receive at least one pdata");
+
+                let headers = pdata
+                    .transport_headers()
+                    .expect("pdata should have transport headers");
+                let trace_bin: Vec<_> = headers.find_by_name("x-trace-bin").collect();
+                assert_eq!(
+                    trace_bin.len(),
+                    1,
+                    "should have exactly one x-trace-bin header"
+                );
+                assert_eq!(
+                    trace_bin[0].value.len(),
+                    16,
+                    "random binary value should be 16 bytes"
+                );
+                assert_eq!(
+                    trace_bin[0].value_kind,
+                    ValueKind::Binary,
+                    "-bin key should produce a Binary header"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Verifies that pdata messages do NOT have transport headers when
+    /// `transport_headers` is absent from the config.
+    #[test]
+    fn test_fake_data_transport_headers_empty_by_default() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(
+            Some(MESSAGE_PER_SECOND),
+            Some(MAX_SIGNALS),
+            MAX_BATCH,
+            0,
+            0,
+            1,
+        );
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::Fresh);
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_no_headers"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = ctx.recv().await.expect("should receive at least one pdata");
+
+                assert!(
+                    pdata.transport_headers().is_none(),
+                    "pdata should NOT have transport headers when config has no transport_headers"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
     }
 }
