@@ -1021,10 +1021,10 @@ mod test {
                 );
             }
 
-            // shutdown faster than it could possibly flush
+            // Make timeout deterministic: deadline is already due when shutdown is handled.
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Instant::now().add(Duration::from_secs(1)),
+                    deadline: Instant::now(),
                     reason: "shutting down".into(),
                 })
                 .await;
