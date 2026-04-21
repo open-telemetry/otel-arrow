@@ -23,6 +23,9 @@ pub mod engine;
 /// Environment variable substitution for raw config text.
 pub mod env_substitution;
 pub mod error;
+pub mod extension;
+/// Extension URN type.
+pub mod extension_urn;
 pub mod health;
 pub mod node;
 /// Node type URN value object.
@@ -77,6 +80,12 @@ pub type PipelineId = Cow<'static, str>;
 
 /// The id of a node in the pipeline.
 pub type NodeId = Cow<'static, str>;
+
+/// The id of an extension in the pipeline.
+///
+/// Extensions have a separate ID namespace from nodes — an extension and a
+/// node may share the same name without collision.
+pub type ExtensionId = Cow<'static, str>;
 
 /// The id of a capability binding (e.g., "bearer_token_provider").
 pub type CapabilityId = Cow<'static, str>;
