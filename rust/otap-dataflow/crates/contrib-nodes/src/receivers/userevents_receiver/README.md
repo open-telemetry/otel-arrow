@@ -1,11 +1,18 @@
+<!-- markdownlint-disable MD013 -->
+
 # Linux Userevents Receiver
 
-**URN:** `urn:microsoft:receiver:userevents`
+**URN:** `urn:otel:receiver:userevents`
 
 This receiver ingests Linux
 [`user_events`](https://docs.kernel.org/trace/user_events.html) tracepoints
 through `perf_event_open` and converts them into OTAP logs for downstream
 processing.
+
+> **Note:** The current decoder supports the Common Schema OTLP logs format.
+> That mapping is an initial built-in format rather than a vendor-specific
+> receiver contract; the receiver is intended to remain vendor-neutral and to
+> allow users to bring their own schema mappings in the future.
 
 It follows the OTAP Dataflow thread-per-core model:
 
