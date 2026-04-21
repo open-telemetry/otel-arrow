@@ -1168,7 +1168,7 @@ impl SliceScalarExpression {
             Err(ExpressionError::TypeMismatch(
                 query_location.clone(),
                 format!(
-                    "Range {name} for a slice expression should be an integer type, encountered '{}' value",
+                    "Range {name} for a slice expression should be an integer type, encountered '{}' type",
                     value.get_value_type()
                 ),
             ))
