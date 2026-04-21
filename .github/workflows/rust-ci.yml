@@ -172,6 +172,7 @@ jobs:
         working-directory: ./rust/${{ matrix.folder }}
       - name: Write JUnit artifact metadata
         if: always()
+        shell: bash
         run: |
           echo '{"job": "${{ github.job }}", "os": "${{ matrix.os }}", "partition": "${{ matrix.partition }}", "folder": "${{ matrix.folder }}"}' \
             > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
@@ -534,6 +535,7 @@ jobs:
         working-directory: ./rust/${{ matrix.folder }}
       - name: Write JUnit artifact metadata
         if: always()
+        shell: bash
         run: |
           echo '{"job": "${{ github.job }}", "os": "${{ matrix.os }}", "partition": "${{ matrix.partition }}", "folder": "${{ matrix.folder }}"}' \
             > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
