@@ -337,25 +337,11 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             type Local = dyn local::#trait_name;
             type Shared = dyn shared::#trait_name;
 
-            fn adapt_shared_to_local(
-                factory: &dyn crate::capability::registry::SharedCapabilityFactory,
-            ) -> Option<::std::rc::Rc<dyn ::std::any::Any>> {
-                let boxed_any = factory.produce_any();
-                // `produce_any` MUST return Box<Box<dyn shared::Trait>> (double-boxed).
-                // If this panics, the factory was constructed with the wrong boxing
-                // convention — this is always a bug in the registration code.
-                let boxed_shared: Box<dyn shared::#trait_name> =
-                    *boxed_any.downcast::<Box<dyn shared::#trait_name>>().expect(
-                        concat!(
-                            "BUG: factory for capability '", #cap_name_str,
-                            "' must produce Box<Box<dyn shared::", stringify!(#trait_name),
-                            ">>; got a different type — check the SharedCapabilityEntry registration",
-                        )
-                    );
-                let adapter = #shared_as_local_name(boxed_shared);
-                let rc_local: ::std::rc::Rc<dyn local::#trait_name> =
-                    ::std::rc::Rc::new(adapter);
-                Some(::std::rc::Rc::new(rc_local))
+            fn wrap_shared_as_local(
+                shared: Box<Self::Shared>,
+            ) -> Option<::std::rc::Rc<Self::Local>> {
+                let adapter = #shared_as_local_name(shared);
+                Some(::std::rc::Rc::new(adapter))
             }
         }
 

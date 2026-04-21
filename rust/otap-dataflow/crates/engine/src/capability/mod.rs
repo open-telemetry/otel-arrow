@@ -55,6 +55,21 @@ pub trait ExtensionCapability: private::Sealed + 'static {
         Self::NAME
     }
 
+    /// Wraps a freshly-produced shared trait object as a local trait object.
+    ///
+    /// The `#[capability]` proc macro generates an impl that constructs
+    /// the capability's `SharedAsLocal` adapter and returns it as
+    /// `Some(Rc<Self::Local>)`. Return `None` to signal that this
+    /// capability does not support shared→local fallback — an extension
+    /// that provides only a shared variant will then fail to satisfy a
+    /// local binding.
+    ///
+    /// Authors normally don't implement this by hand; the macro handles
+    /// it. If you are hand-rolling an `ExtensionCapability` impl (only
+    /// needed inside the engine crate for testing), return
+    /// `Some(Rc::new(YourAdapter(shared)))`.
+    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Option<std::rc::Rc<Self::Local>>;
+
     /// Creates a local adapter entry from a shared capability factory.
     ///
     /// When a shared-only extension provides this capability, the engine
@@ -63,7 +78,15 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// an `Rc<dyn local::Trait>` backed by the adapter.
     ///
     /// Returns `None` if this capability does not support `SharedAsLocal`
-    /// fallback (i.e., it requires a native local implementation).
+    /// fallback (i.e., it requires a native local implementation). This
+    /// is controlled by [`wrap_shared_as_local`]: returning `None` from
+    /// that hook disables the fallback.
+    ///
+    /// The default impl funnels through
+    /// [`registry::downcast_produced`] so the
+    /// `Box<Box<dyn Shared>> as Box<dyn Any>` erasure convention lives
+    /// in one place. Override only for niche cases where you need to
+    /// sidestep that helper.
     ///
     /// # Per-node freshness
     ///
@@ -78,10 +101,28 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// rather than per node, declare an explicit `local:` variant via
     /// [`extension_capabilities!`] instead of relying on this fallback.
     ///
+    /// # Panics
+    ///
+    /// Panics if `factory` was constructed with the wrong boxing
+    /// convention (a hand-rolled [`SharedCapabilityFactory`] impl that
+    /// bypassed [`TypedSharedFactory`]). This always indicates a bug in
+    /// the registration code.
+    ///
+    /// [`wrap_shared_as_local`]: Self::wrap_shared_as_local
     /// [`Capabilities::require_shared`]: registry::Capabilities::require_shared
+    /// [`SharedCapabilityFactory`]: registry::SharedCapabilityFactory
+    /// [`TypedSharedFactory`]: registry::TypedSharedFactory
     fn adapt_shared_to_local(
         factory: &dyn registry::SharedCapabilityFactory,
-    ) -> Option<std::rc::Rc<dyn std::any::Any>>;
+    ) -> Option<std::rc::Rc<dyn std::any::Any>>
+    where
+        Self: Sized,
+    {
+        let shared = registry::downcast_produced::<Self>(factory)
+            .expect("BUG: SharedCapabilityFactory produced wrong inner type; see downcast_produced docs");
+        let rc_local: std::rc::Rc<Self::Local> = Self::wrap_shared_as_local(shared)?;
+        Some(std::rc::Rc::new(rc_local))
+    }
 }
 
 /// Re-export for use by the `#[capability]` proc macro's generated code.

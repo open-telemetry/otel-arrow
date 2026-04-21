@@ -112,6 +112,41 @@ impl<F: TypedSharedFactory> SharedCapabilityFactory for F {
     }
 }
 
+/// Downcast a factory's [`produce_any`] output to `Box<C::Shared>`.
+///
+/// Hides the double-box erasure convention
+/// (`Box<Box<dyn Shared>>` stored as `Box<dyn Any + Send>`) that
+/// [`SharedCapabilityFactory::produce_any`] uses. All internal call
+/// sites — [`Capabilities::require_shared`] and the default
+/// [`ExtensionCapability::adapt_shared_to_local`] — funnel through this
+/// helper so the double-box lives in one place (here + the blanket
+/// impl above).
+///
+/// # Errors
+///
+/// Returns [`Error::InternalError`] if the factory produced a
+/// `Box<dyn Any + Send>` whose inner type is not `Box<C::Shared>`. This
+/// indicates a bug in the registration code (a hand-rolled
+/// [`SharedCapabilityFactory`] that bypassed [`TypedSharedFactory`]).
+///
+/// [`produce_any`]: SharedCapabilityFactory::produce_any
+/// [`ExtensionCapability::adapt_shared_to_local`]: super::ExtensionCapability::adapt_shared_to_local
+#[doc(hidden)]
+pub fn downcast_produced<C: super::ExtensionCapability>(
+    factory: &dyn SharedCapabilityFactory,
+) -> Result<Box<C::Shared>, Error> {
+    factory
+        .produce_any()
+        .downcast::<Box<C::Shared>>()
+        .map(|b| *b)
+        .map_err(|_| Error::InternalError {
+            message: format!(
+                "capability '{}': shared entry type mismatch (internal error)",
+                C::name(),
+            ),
+        })
+}
+
 // ── Type-erased entries ──────────────────────────────────────────────────────
 
 /// A type-erased local (!Send) capability entry.
@@ -401,15 +436,7 @@ impl Capabilities {
                 C::name(),
             ),
         })?;
-        let boxed_any = entry.factory.produce_any();
-        let trait_object = *boxed_any
-            .downcast::<Box<C::Shared>>()
-            .map_err(|_| Error::InternalError {
-                message: format!(
-                    "capability '{}': shared entry type mismatch (internal error)",
-                    C::name(),
-                ),
-            })?;
+        let trait_object = downcast_produced::<C>(&*entry.factory)?;
         entry.consumed.set(true);
         Ok(trait_object)
     }
@@ -768,21 +795,14 @@ mod tests {
         type Local = dyn TestCapLocal;
         type Shared = dyn TestCapShared;
 
-        fn adapt_shared_to_local(
-            factory: &dyn SharedCapabilityFactory,
-        ) -> Option<Rc<dyn Any>> {
-            let boxed_any = factory.produce_any();
-            let boxed_shared: Box<dyn TestCapShared> = *boxed_any
-                .downcast::<Box<dyn TestCapShared>>()
-                .expect("BUG: factory for test_cap must produce Box<Box<dyn TestCapShared>>");
+        fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Option<Rc<Self::Local>> {
             struct Adapter(Box<dyn TestCapShared>);
             impl TestCapLocal for Adapter {
                 fn value(&self) -> &str {
                     self.0.value()
                 }
             }
-            let rc_local: Rc<dyn TestCapLocal> = Rc::new(Adapter(boxed_shared));
-            Some(Rc::new(rc_local))
+            Some(Rc::new(Adapter(shared)))
         }
     }
 
