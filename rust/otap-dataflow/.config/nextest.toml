@@ -1,6 +1,30 @@
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 2 }
+retries = 2
 
 [profile.ci]
 slow-timeout = { period = "60s", terminate-after = 2 }
 max-fail = 10
+retries = 2
+
+# JUnit output for flaky test tracking.
+# Tests that fail then pass on retry are marked as "flakyFailure" in the XML.
+[profile.ci.junit]
+path = "junit.xml"
+
+# Overrides for known-flaky tests.
+# Add test filters here to give them extra retries.
+# Filter expression docs: https://nexte.st/docs/filtersets/reference/
+#
+# Examples:
+# [[profile.ci.overrides]]
+# filter = "test(flaky_test_one) | test(flaky_test_two)"  # multiple tests
+# retries = 5
+#
+# [[profile.ci.overrides]]
+# filter = "package(otap-df-network)"  # all tests in a crate
+# retries = 5
+#
+# [[profile.ci.overrides]]
+# filter = "test(/.*timeout.*/)"  # regex pattern
+# retries = 5
