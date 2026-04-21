@@ -4,7 +4,7 @@
 //! An alternative to Tokio fmt::layer().
 
 use super::encoder::level_to_severity_number;
-use super::{LogContext, LogContextFn, LogRecord, SavedCallsite};
+use super::{BorrowedLogRecord, LogContext, LogContextFn, LogRecord, SavedCallsite};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
@@ -133,7 +133,7 @@ impl RawLoggingLayer {
     pub fn dispatch_event(&self, event: &Event<'_>) {
         let time = SystemTime::now();
         let record = LogRecord::new(event, (self.context_fn)());
-        self.writer.print_log_record(time, &record, |w| {
+        self.writer.print_log(time, &record.as_view(), |w| {
             w.format_entity_suffix_without_registry(&record.context);
         });
     }
@@ -181,46 +181,22 @@ impl ConsoleWriter {
         self.color_mode
     }
 
-    /// Print a LogRecord directly to stdout or stderr (based on level).
+    /// Print a log record directly to stdout or stderr (based on level).
     ///
     /// The `scope_formatter` callback is invoked after the log body/attributes,
     /// before the newline. This allows callers to append scope information
     /// (e.g., entity context from a registry) atomically within the same write.
-    pub fn print_log_record<F>(&self, time: SystemTime, record: &LogRecord, scope_formatter: F)
+    pub fn print_log<F>(&self, time: SystemTime, view: &BorrowedLogRecord<'_>, scope_formatter: F)
     where
         F: FnOnce(&mut StyledBufWriter<'_>),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let len = {
             let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
-            w.format_log_record(Some(time), record, scope_formatter);
+            w.format_log(Some(time), view, scope_formatter);
             w.position()
         };
-        self.write_line(record.callsite().level(), &buf[..len]);
-    }
-
-    /// Print pre-encoded protobuf bytes directly to stdout or stderr.
-    ///
-    /// This is the zero-allocation formatting path used by [`raw_error!`].
-    /// It takes raw body/attribute bytes and callsite info instead of a
-    /// `LogRecord`, avoiding the `Bytes` allocation that `LogRecord::new()`
-    /// would require.
-    pub fn print_raw_log<F>(
-        &self,
-        time: SystemTime,
-        body_attrs_bytes: &[u8],
-        callsite: &SavedCallsite,
-        scope_formatter: F,
-    ) where
-        F: FnOnce(&mut StyledBufWriter<'_>),
-    {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = {
-            let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
-            w.format_raw_log(Some(time), body_attrs_bytes, callsite, scope_formatter);
-            w.position()
-        };
-        self.write_line(callsite.level(), &buf[..len]);
+        self.write_line(view.callsite.level(), &buf[..len]);
     }
 }
 
@@ -238,9 +214,6 @@ pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
 
 impl StyledBufWriter<'_> {
     /// Format a LogRecord with custom suffix formatter.
-    ///
-    /// This is the core formatting method for log records. The `write_suffix` callback
-    /// is invoked after the log body/attributes, before the newline.
     pub fn format_log_record<F>(
         &mut self,
         time: Option<SystemTime>,
@@ -249,36 +222,31 @@ impl StyledBufWriter<'_> {
     ) where
         F: FnOnce(&mut Self),
     {
-        self.format_raw_log(
-            time,
-            record.body_attrs_bytes.as_ref(),
-            &record.callsite(),
-            write_suffix,
-        );
+        self.format_log(time, &record.as_view(), write_suffix);
     }
 
-    /// Format from raw pre-encoded bytes and callsite info.
+    /// Format a log record view with custom suffix formatter.
     ///
-    /// This is the zero-allocation formatting path: it accepts `&[u8]`
-    /// directly instead of going through `LogRecord` / `Bytes`.
-    pub fn format_raw_log<F>(
+    /// This is the core formatting method. It accepts a borrowed
+    /// [`BorrowedLogRecord`] so both owned `LogRecord` and zero-copy
+    /// stack paths can share the same logic.
+    pub fn format_log<F>(
         &mut self,
         time: Option<SystemTime>,
-        body_attrs_bytes: &[u8],
-        callsite: &SavedCallsite,
+        view: &BorrowedLogRecord<'_>,
         write_suffix: F,
     ) where
         F: FnOnce(&mut Self),
     {
-        let view = RawLogRecord::new(body_attrs_bytes);
-        let level = *callsite.level();
+        let raw_view = RawLogRecord::new(view.body_attrs_bytes);
+        let level = *view.callsite.level();
 
         self.format_log_line(
             time,
-            &view,
+            &raw_view,
             |w| w.write_level(&level),
             |w| {
-                w.write_styled(AnsiCode::Bold, |w| write_event_name_to(w, callsite));
+                w.write_styled(AnsiCode::Bold, |w| write_event_name_to(w, &view.callsite));
             },
             write_suffix,
         );

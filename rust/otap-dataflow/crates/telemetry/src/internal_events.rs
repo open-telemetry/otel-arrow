@@ -197,14 +197,18 @@ macro_rules! otel_event {
 #[macro_export]
 macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
-        use $crate::self_tracing::{ConsoleWriter, SavedCallsite};
+        use $crate::self_tracing::{ConsoleWriter, BorrowedLogRecord, SavedCallsite};
 
         $crate::__encode_event_impl!(
             $crate::_private::Level::ERROR, $name,
             |meta, buf| {
                 let now = std::time::SystemTime::now();
-                let callsite = SavedCallsite::new(meta);
-                ConsoleWriter::no_color().print_raw_log(now, buf.as_ref(), &callsite, |_| {});
+                let view = BorrowedLogRecord {
+                    body_attrs_bytes: buf.as_ref(),
+                    callsite: SavedCallsite::new(meta),
+                    dropped_attributes_count: buf.dropped(),
+                };
+                ConsoleWriter::no_color().print_log(now, &view, |_| {});
             }
             $(, $($fields)*)?
         );

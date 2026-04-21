@@ -57,6 +57,21 @@ pub struct LogRecord {
     pub context: LogContext,
 }
 
+/// Borrowed view of a log record for zero-copy formatting.
+///
+/// This is the common interface for formatting / printing log records.
+/// `raw_error!` constructs one directly from a stack buffer (zero
+/// allocation); `LogRecord` produces one via [`as_view()`](LogRecord::as_view).
+#[derive(Debug, Clone)]
+pub struct BorrowedLogRecord<'a> {
+    /// Pre-encoded body and attributes in OTLP bytes.
+    pub body_attrs_bytes: &'a [u8],
+    /// Callsite information (level, target, name, file, line).
+    pub callsite: SavedCallsite,
+    /// Number of attribute fields dropped due to truncation.
+    pub dropped_attributes_count: u32,
+}
+
 /// Context for log records: entity keys that identify scope attribute
 /// sets in the telemetry registry.
 pub type LogContext = SmallVec<[EntityKey; 1]>;
@@ -191,6 +206,16 @@ impl LogRecord {
     #[must_use]
     pub fn callsite(&self) -> SavedCallsite {
         SavedCallsite::new(self.callsite_id.0.metadata())
+    }
+
+    /// Create a borrowed view for zero-copy formatting.
+    #[must_use]
+    pub fn as_view(&self) -> BorrowedLogRecord<'_> {
+        BorrowedLogRecord {
+            body_attrs_bytes: self.body_attrs_bytes.as_ref(),
+            callsite: self.callsite(),
+            dropped_attributes_count: self.dropped_attributes_count as u32,
+        }
     }
 }
 
