@@ -3,11 +3,9 @@
 
 //! An alternative to Tokio fmt::layer().
 
-use super::encoder::DirectFieldVisitor;
 use super::encoder::level_to_severity_number;
-use super::{BorrowedLogRecord, ENCODE_INLINE, LogContext, LogContextFn, LogRecord, SavedCallsite};
+use super::{BorrowedLogRecord, LogContext, LogContextFn, LogRecord, SavedCallsite};
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use otap_df_pdata::otlp::ProtoBufferInline;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata_views::views::logs::LogRecordView;
@@ -199,25 +197,6 @@ impl ConsoleWriter {
             w.position()
         };
         self.write_line(view.callsite.level(), &buf[..len]);
-    }
-
-    /// Print a tracing Event directly to stderr with zero allocation.
-    ///
-    /// Encodes body/attributes on the stack and formats directly.
-    pub fn print_event(&self, event: &Event<'_>) {
-        let time = SystemTime::now();
-        let metadata = event.metadata();
-        let mut buf = ProtoBufferInline::<ENCODE_INLINE>::with_inline();
-        {
-            let mut visitor = DirectFieldVisitor::new(&mut buf);
-            event.record(&mut visitor);
-        }
-        let view = BorrowedLogRecord {
-            body_attrs_bytes: buf.as_ref(),
-            callsite: SavedCallsite::new(metadata),
-            dropped_attributes_count: buf.dropped(),
-        };
-        self.print_log(time, &view, |_| {});
     }
 }
 

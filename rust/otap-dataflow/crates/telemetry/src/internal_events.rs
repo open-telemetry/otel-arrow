@@ -196,32 +196,24 @@ macro_rules! otel_event {
 #[macro_export]
 macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
-        use $crate::_private::Callsite;
         use $crate::self_tracing::ConsoleWriter;
-
-        static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
-            name: $name,
-            kind: $crate::_private::Kind::EVENT,
-            target: env!("CARGO_PKG_NAME"),
-            level: $crate::_private::Level::ERROR,
-            fields: $($($fields)*)?
-        };
-
-        let meta = __CALLSITE.metadata();
-        (|valueset: $crate::_private::ValueSet<'_>| {
-            let event = $crate::_private::Event::new(meta, &valueset);
-            ConsoleWriter::no_color().print_event(&event);
-        })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
+        let now = std::time::SystemTime::now();
+        let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
+        ConsoleWriter::no_color().print_log(now, &record.as_view(), |_| {});
     }};
 }
 
-/// Internal macro that constructs a `LogRecord` from a static callsite.
+/// Internal macro that encodes a tracing event on the stack.
+///
+/// Returns a [`StackLogRecord`] which can be:
+/// - viewed via `.as_view()` for zero-allocation formatting
+/// - converted via `.into_record(context)` for owned `LogRecord` with `Bytes`
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __log_record_impl {
     ($level:expr, $name:expr $(, $($fields:tt)*)?) => {{
         use $crate::_private::Callsite;
-        use $crate::self_tracing::LogRecord;
+        use $crate::self_tracing::StackLogRecord;
 
         static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
             name: $name,
@@ -236,7 +228,7 @@ macro_rules! __log_record_impl {
         // Use closure to extend valueset lifetime (same pattern as tracing::event!)
         (|valueset: $crate::_private::ValueSet<'_>| {
             let event = $crate::_private::Event::new(meta, &valueset);
-            LogRecord::new(&event, $crate::LogContext::new())
+            StackLogRecord::new(&event)
         })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
     }};
 }

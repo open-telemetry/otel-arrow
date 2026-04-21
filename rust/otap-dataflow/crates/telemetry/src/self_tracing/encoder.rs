@@ -664,8 +664,8 @@ mod tests {
         let mut scope_cache = ScopeToBytesMap::new(registry.clone());
 
         // Use the macro to create a LogRecord, then override context with entity
-        let mut record = __log_record_impl!(Level::INFO, "test.scope.encoding");
-        record.context = LogContext::from_buf([entity_key]);
+        let record = __log_record_impl!(Level::INFO, "test.scope.encoding")
+            .into_record(LogContext::from_buf([entity_key]));
 
         // Create a LogEvent with known timestamp, empty resource.
         let timestamp_ns: u64 = 1_705_321_845_000_000_000;
@@ -770,8 +770,8 @@ mod tests {
         let entity_key = registry.register_entity(TestMapAttributes::new(custom_map));
         let mut scope_cache = ScopeToBytesMap::new(registry.clone());
 
-        let mut record = __log_record_impl!(Level::INFO, "test.map.encoding");
-        record.context = LogContext::from_buf([entity_key]);
+        let record = __log_record_impl!(Level::INFO, "test.map.encoding")
+            .into_record(LogContext::from_buf([entity_key]));
 
         let timestamp_ns: u64 = 1_705_321_845_000_000_000;
         let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);

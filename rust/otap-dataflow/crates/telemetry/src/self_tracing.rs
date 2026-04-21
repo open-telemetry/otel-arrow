@@ -127,6 +127,54 @@ impl SavedCallsite {
     }
 }
 
+/// A log record encoded on the stack, not yet converted to `Bytes`.
+///
+/// Returned by [`__log_record_impl!`]. Callers choose how to consume it:
+/// - [`as_view()`](Self::as_view) for zero-copy formatting (e.g., `raw_error!`)
+/// - [`into_record()`](Self::into_record) to produce an owned `LogRecord`
+///   with reference-counted `Bytes` storage
+pub struct StackLogRecord {
+    buf: ProtoBufferInline<ENCODE_INLINE>,
+    callsite_id: Identifier,
+}
+
+impl StackLogRecord {
+    /// Construct from an event, encoding body/attributes on the stack.
+    #[must_use]
+    pub fn new(event: &Event<'_>) -> Self {
+        let mut buf = ProtoBufferInline::<ENCODE_INLINE>::with_inline();
+        {
+            let mut visitor = DirectFieldVisitor::new(&mut buf);
+            event.record(&mut visitor);
+        }
+        Self {
+            buf,
+            callsite_id: event.metadata().callsite(),
+        }
+    }
+
+    /// Borrow as a [`BorrowedLogRecord`] for zero-copy formatting.
+    #[must_use]
+    pub fn as_view(&self) -> BorrowedLogRecord<'_> {
+        BorrowedLogRecord {
+            body_attrs_bytes: self.buf.as_ref(),
+            callsite: SavedCallsite::new(self.callsite_id.0.metadata()),
+            dropped_attributes_count: self.buf.dropped(),
+        }
+    }
+
+    /// Convert into an owned [`LogRecord`], allocating `Bytes`.
+    #[must_use]
+    pub fn into_record(self, context: LogContext) -> LogRecord {
+        LogRecord {
+            dropped_attributes_count: self.buf.dropped() as u16,
+            body_attrs_bytes: self.buf.into_bytes(),
+            callsite_id: self.callsite_id,
+            context,
+        }
+    }
+}
+
 impl LogRecord {
     /// Construct a log record with entity context, partially encoding its dynamic content.
     ///
