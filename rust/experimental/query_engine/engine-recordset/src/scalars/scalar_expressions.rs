@@ -1557,7 +1557,7 @@ mod tests {
             ),
             ExpressionError::TypeMismatch(
                 QueryLocation::new_fake(),
-                "Range start for a slice expression should be an integer type, encountered 'Boolean' value".into(),
+                "Range start for a slice expression should be an integer type, encountered 'Boolean' type".into(),
             ),
         );
 
@@ -1587,7 +1587,7 @@ mod tests {
             ),
             ExpressionError::TypeMismatch(
                 QueryLocation::new_fake(),
-                "Range length for a slice expression should be an integer type, encountered 'Boolean' value".into(),
+                "Range length for a slice expression should be an integer type, encountered 'Boolean' type".into(),
             ),
         );
     }
