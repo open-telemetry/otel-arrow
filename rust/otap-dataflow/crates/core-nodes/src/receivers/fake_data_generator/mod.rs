@@ -161,7 +161,7 @@ impl FakeGeneratorReceiver {
 
             // First phase is the open export phase where we pump data as fast as
             // possible one chunk at a time while checking for control messages
-            // inbetween. If we hit backpressure then we just skip that chunk of data
+            // in between. If we hit backpressure then we just skip that chunk of data
             // until we get through the entire iterator.
             loop {
                 // In the first select statement, we try to drain the entire run
