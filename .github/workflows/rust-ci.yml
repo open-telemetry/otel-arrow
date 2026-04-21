@@ -170,12 +170,19 @@ jobs:
       - name: Run tests (partition ${{ matrix.partition }}/3)
         run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Write JUnit artifact metadata
+        if: always()
+        run: |
+          echo '{"job": "${{ github.job }}", "os": "${{ matrix.os }}", "partition": "${{ matrix.partition }}", "folder": "${{ matrix.folder }}"}' \
+            > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: junit-xml-nonrequired-${{ matrix.os }}-${{ matrix.partition }}
-          path: ./rust/${{ matrix.folder }}/target/nextest/ci/junit.xml
+          path: |
+            ./rust/${{ matrix.folder }}/target/nextest/ci/junit.xml
+            ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
           retention-days: 30
           if-no-files-found: ignore
 
@@ -525,12 +532,19 @@ jobs:
       - name: Run tests (partition ${{ matrix.partition }}/3)
         run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Write JUnit artifact metadata
+        if: always()
+        run: |
+          echo '{"job": "${{ github.job }}", "os": "${{ matrix.os }}", "partition": "${{ matrix.partition }}", "folder": "${{ matrix.folder }}"}' \
+            > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: junit-xml-required-${{ matrix.os }}-${{ matrix.partition }}
-          path: ./rust/${{ matrix.folder }}/target/nextest/ci/junit.xml
+          path: |
+            ./rust/${{ matrix.folder }}/target/nextest/ci/junit.xml
+            ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
           retention-days: 30
           if-no-files-found: ignore
 
