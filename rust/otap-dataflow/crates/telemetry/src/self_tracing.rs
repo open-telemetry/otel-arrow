@@ -153,24 +153,6 @@ impl LogRecord {
         }
     }
 
-    /// Construct from pre-encoded protobuf bytes and metadata.
-    ///
-    /// Used by [`__encode_event_impl!`] to avoid duplicating the
-    /// callsite / encoding logic between `raw_error!` and
-    /// `__log_record_impl!`.
-    #[must_use]
-    pub fn from_encoded(
-        metadata: &'static Metadata<'static>,
-        buf: ProtoBufferInline<ENCODE_INLINE>,
-    ) -> Self {
-        Self {
-            callsite_id: metadata.callsite(),
-            dropped_attributes_count: buf.dropped() as u16,
-            body_attrs_bytes: buf.into_bytes(),
-            context: LogContext::new(),
-        }
-    }
-
     /// Construct a log record that encodes into a bounded buffer.
     ///
     /// The encoding phase is zero-allocation: a stack-allocated buffer
