@@ -78,10 +78,10 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     }
 /// }
 ///
-/// // 2. Shared trait — Send + Sync, used by shared pipeline nodes.
+/// // 2. Shared trait — Send, used by shared pipeline nodes.
 /// pub mod shared {
 ///     #[async_trait]
-///     pub trait BearerTokenProvider: Send + Sync {
+///     pub trait BearerTokenProvider: Send {
 ///         async fn get_token(&self) -> Result<BearerToken, Error>;
 ///         fn subscribe_token_refresh(&self) -> watch::Receiver<Option<BearerToken>>;
 ///     }

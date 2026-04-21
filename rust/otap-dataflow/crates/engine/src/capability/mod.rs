@@ -55,7 +55,7 @@ pub trait ExtensionCapability: private::Sealed + 'static {
         Self::NAME
     }
 
-    /// Creates a local adapter entry from a shared clone factory.
+    /// Creates a local adapter entry from a shared capability factory.
     ///
     /// When a shared-only extension provides this capability, the engine
     /// calls this method to auto-populate the local registry slot via
@@ -68,8 +68,8 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// # Per-node freshness
     ///
     /// The engine invokes this method **once per node** that binds the
-    /// capability, calling `clone_fn()` inside to obtain a fresh shared
-    /// instance for that node. This matches the per-caller-fresh
+    /// capability, calling `factory.produce_any()` inside to obtain a fresh
+    /// shared instance for that node. This matches the per-caller-fresh
     /// semantics of [`Capabilities::require_shared`] \u2014 an extension
     /// author can rely on each binding receiving its own instance, even
     /// when the fallback is used.
@@ -80,13 +80,17 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     ///
     /// [`Capabilities::require_shared`]: registry::Capabilities::require_shared
     fn adapt_shared_to_local(
-        clone_fn: &(dyn Fn() -> Box<dyn std::any::Any + Send> + Send + Sync),
+        factory: &dyn registry::SharedCapabilityFactory,
     ) -> Option<std::rc::Rc<dyn std::any::Any>>;
 }
 
 /// Re-export for use by the `#[capability]` proc macro's generated code.
+/// `pub(crate)` (not `pub`) preserves the seal: the macro only expands
+/// inside this crate, so external crates still can't reach `Sealed` to
+/// forge an `ExtensionCapability` impl.
 #[doc(hidden)]
-pub use private::Sealed as CapabilitySealed;
+#[allow(unused_imports)] // used by future `#[capability]` invocations
+pub(crate) use private::Sealed as CapabilitySealed;
 
 // ── KNOWN_CAPABILITIES (link-time registration) ──────────────────────────────
 

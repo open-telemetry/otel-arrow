@@ -7,7 +7,9 @@
 //! generates:
 //!
 //! - `local::<TraitName>` trait (`#[async_trait(?Send)]`)
-//! - `shared::<TraitName>` trait (`#[async_trait]` + `Send + Sync`)
+//! - `shared::<TraitName>` trait (`#[async_trait]`, `: Send`). `Sync` is not
+//!   required by the trait; it is only imposed at the impl site if a method
+//!   signature (e.g. `async fn foo(&self)`) forces it.
 //! - `SharedAsLocal<TraitName>` adapter struct
 //! - Zero-sized `<TraitName>` registration struct
 //! - `Sealed` + `ExtensionCapability` impls
@@ -215,7 +217,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
         })
         .collect();
 
-    // Generate method signatures for shared trait (#[async_trait] + Send + Sync)
+    // Generate method signatures for shared trait (#[async_trait] + Send)
     let shared_methods: Vec<TokenStream> = methods
         .iter()
         .map(|m| {
@@ -300,7 +302,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
             #(#trait_docs)*
             #[::async_trait::async_trait]
-            pub trait #trait_name: Send + Sync {
+            pub trait #trait_name: Send {
                 #(#shared_methods)*
             }
         }
@@ -322,24 +324,30 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
         /// [`Capabilities::require_shared`](crate::capability::registry::Capabilities::require_shared).
         #vis struct #trait_name;
 
+        // Seals `ExtensionCapability` so only `#[capability]`-generated
+        // types can implement it (prevents external impls / misuse).
         impl crate::capability::CapabilitySealed for #trait_name {}
 
+        // Wires the zero-sized registration struct into the capability
+        // system: exposes the capability name, the local/shared trait
+        // object types, and the adapter that turns a shared impl into a
+        // local trait object (used by the registry for resolve-time fan-out).
         impl crate::capability::ExtensionCapability for #trait_name {
             const NAME: &'static str = #cap_name_str;
             type Local = dyn local::#trait_name;
             type Shared = dyn shared::#trait_name;
 
             fn adapt_shared_to_local(
-                clone_fn: &(dyn Fn() -> Box<dyn ::std::any::Any + Send> + Send + Sync),
+                factory: &dyn crate::capability::registry::SharedCapabilityFactory,
             ) -> Option<::std::rc::Rc<dyn ::std::any::Any>> {
-                let boxed_any = clone_fn();
-                // The clone_fn MUST produce Box<Box<dyn shared::Trait>> (double-boxed).
-                // If this panics, the clone_fn was constructed with the wrong boxing
+                let boxed_any = factory.produce_any();
+                // `produce_any` MUST return Box<Box<dyn shared::Trait>> (double-boxed).
+                // If this panics, the factory was constructed with the wrong boxing
                 // convention — this is always a bug in the registration code.
                 let boxed_shared: Box<dyn shared::#trait_name> =
                     *boxed_any.downcast::<Box<dyn shared::#trait_name>>().expect(
                         concat!(
-                            "BUG: clone_fn for capability '", #cap_name_str,
+                            "BUG: factory for capability '", #cap_name_str,
                             "' must produce Box<Box<dyn shared::", stringify!(#trait_name),
                             ">>; got a different type — check the SharedCapabilityEntry registration",
                         )
@@ -351,6 +359,10 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             }
         }
 
+        // Registers the capability in the `KNOWN_CAPABILITIES` distributed
+        // slice at link time, so the engine can enumerate all capabilities
+        // compiled into the binary (by name, description, and TypeId) without
+        // needing an explicit registration call.
         #[::linkme::distributed_slice(crate::capability::KNOWN_CAPABILITIES)]
         #[linkme(crate = ::linkme)]
         static #known_cap_static: crate::capability::KnownCapability =

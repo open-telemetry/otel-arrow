@@ -20,10 +20,50 @@ use std::any::{Any, TypeId};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
 
 /// Error type alias for capability operations.
 pub type Error = crate::error::Error;
+
+// ── Shared-capability factory trait ──────────────────────────────────────────
+
+/// Object-safe factory for the shared variant of a capability.
+///
+/// One concrete impl exists per `(capability, extension)` pair. The impl
+/// holds the extension instance by value (typically a `Clone + Send +
+/// 'static` type with `Arc`-wrapped shared state — see the
+/// [extension system architecture doc][arch]) and:
+///
+/// - [`clone_box`](Self::clone_box) duplicates the factory itself so
+///   each resolved per-node entry owns an independent `Box`. This is
+///   the `Box + Clone` idiom: `dyn Trait` is not `Clone`, so we thread
+///   cloning through an object-safe method.
+/// - [`produce_any`](Self::produce_any) mints a `Box<dyn shared::Trait>`
+///   for a consumer and type-erases it as `Box<dyn Any + Send>` for
+///   downcast at the [`Capabilities`] boundary.
+///
+/// "Factory" here follows the DI-container convention: a thing that
+/// hands you an instance on demand. The lifetime policy is an
+/// implementation detail of [`produce_any`] — today every capability
+/// clones a prototype (GoF Prototype pattern), tomorrow a capability
+/// could construct a fresh instance instead.
+///
+/// The trait is `Send`-only (not `Send + Sync`): registries are never
+/// shared across threads — they are cloned/owned per consumer — and
+/// `Box<T>: Send` does not require `T: Sync`. This matches the extension
+/// design doc's contract that shared extensions are `Clone + Send` with
+/// `Arc`-wrapped state.
+///
+/// [arch]: ../../../docs/extension-system-architecture.md
+#[doc(hidden)]
+pub trait SharedCapabilityFactory: Send {
+    /// Duplicate this factory. Each resolved per-node entry owns its
+    /// own `Box<dyn SharedCapabilityFactory>` produced via this method.
+    fn clone_box(&self) -> Box<dyn SharedCapabilityFactory>;
+    /// Produce a fresh shared trait object for a consumer. The returned
+    /// `Box<dyn Any + Send>` contains `Box<dyn shared::Trait>` — the
+    /// `require_shared` code downcasts to recover the concrete trait.
+    fn produce_any(&self) -> Box<dyn Any + Send>;
+}
 
 // ── Type-erased entries ──────────────────────────────────────────────────────
 
@@ -50,30 +90,26 @@ pub struct LocalCapabilityEntry {
 
 /// A type-erased shared (Send) capability entry.
 ///
-/// Each call to `clone_fn` clones the underlying extension instance and
-/// coerces it to `Box<dyn shared::CapabilityTrait>`, then type-erases to
-/// `Box<dyn Any + Send>`. Consumers downcast via
-/// [`Capabilities::require_shared`].
+/// [`factory`](Self::factory) is a per-`(capability, extension)` producer
+/// that can both clone itself and mint `Box<dyn shared::Trait>`
+/// instances. See [`SharedCapabilityFactory`].
 #[doc(hidden)]
 pub struct SharedCapabilityEntry {
     /// The extension that provided this capability.
     pub(crate) extension_id: ExtensionId,
-    /// Factory that produces a fresh clone of the capability trait object.
-    /// The returned `Box<dyn Any + Send>` contains a `Box<dyn shared::Trait>`.
-    /// Uses `Arc` so the factory can be shared with per-node resolved entries.
-    pub(crate) clone_fn: Arc<dyn Fn() -> Box<dyn Any + Send> + Send + Sync>,
+    /// Cloneable factory for shared capability trait objects.
+    pub(crate) factory: Box<dyn SharedCapabilityFactory>,
 }
 
 /// Type-erased adapter function that creates a local entry from a shared
-/// clone factory. Registered per-capability by the `#[capability]` proc macro
+/// capability factory. Registered per-capability by the `#[capability]` proc macro
 /// via `KNOWN_CAPABILITIES`.
 ///
-/// The function receives the shared `clone_fn` and returns an `Rc<dyn Any>`
+/// The function receives the shared `factory` and returns an `Rc<dyn Any>`
 /// containing `Rc<dyn local::Trait>` (via the generated `SharedAsLocal` adapter).
 /// Returns `None` if the capability doesn't support shared→local fallback.
 #[doc(hidden)]
-pub type SharedAsLocalAdaptFn =
-    fn(&(dyn Fn() -> Box<dyn Any + Send> + Send + Sync)) -> Option<Rc<dyn Any>>;
+pub type SharedAsLocalAdaptFn = fn(&dyn SharedCapabilityFactory) -> Option<Rc<dyn Any>>;
 
 // ── CapabilityRegistry ───────────────────────────────────────────────────────
 
@@ -90,11 +126,6 @@ pub struct CapabilityRegistry {
     local: HashMap<TypeId, HashMap<ExtensionId, LocalCapabilityEntry>>,
     /// Shared entries keyed by (capability TypeId, extension name).
     shared: HashMap<TypeId, HashMap<ExtensionId, SharedCapabilityEntry>>,
-    /// Adapter functions for shared→local fallback, keyed by capability TypeId.
-    /// Populated via [`register_adapter`](Self::register_adapter) — the
-    /// engine build phase iterates [`KNOWN_CAPABILITIES`](super::KNOWN_CAPABILITIES)
-    /// and calls it for each entry.
-    shared_as_local_adapters: HashMap<TypeId, SharedAsLocalAdaptFn>,
 }
 
 impl CapabilityRegistry {
@@ -104,37 +135,7 @@ impl CapabilityRegistry {
         CapabilityRegistry {
             local: HashMap::new(),
             shared: HashMap::new(),
-            shared_as_local_adapters: HashMap::new(),
         }
-    }
-
-    /// Register a `SharedAsLocal` adapter function for a capability type.
-    /// Called once per capability from `KNOWN_CAPABILITIES` entries during
-    /// the engine build phase. Not intended for extension crates — they
-    /// register capability implementations via
-    /// [`register_local`](Self::register_local) / [`register_shared`](Self::register_shared).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InternalError`] if an adapter is already
-    /// registered for this capability — this indicates a duplicate entry
-    /// in `KNOWN_CAPABILITIES`, which is an engine/proc-macro bug.
-    pub(crate) fn register_adapter(
-        &mut self,
-        capability_id: TypeId,
-        adapt_fn: SharedAsLocalAdaptFn,
-    ) -> Result<(), Error> {
-        if self.shared_as_local_adapters.contains_key(&capability_id) {
-            return Err(Error::InternalError {
-                message: format!(
-                    "duplicate SharedAsLocal adapter registration for capability TypeId {capability_id:?}",
-                ),
-            });
-        }
-        let _ = self
-            .shared_as_local_adapters
-            .insert(capability_id, adapt_fn);
-        Ok(())
     }
 
     /// Register a local capability entry for the given capability and extension.
@@ -216,8 +217,11 @@ impl CapabilityRegistry {
     /// Returns `true` if any extension provides a **native** local entry
     /// for this capability. Does not count shared entries that could be
     /// adapted via `SharedAsLocal`; a local binding is reachable when
-    /// either `has_local` is true, or both `has_shared` is true and an
-    /// adapter is registered for this capability.
+    /// either `has_local` is true, or `has_shared` is true and the
+    /// capability's [`ExtensionCapability::adapt_shared_to_local`] returns
+    /// `Some` for the extension's factory.
+    ///
+    /// [`ExtensionCapability::adapt_shared_to_local`]: super::ExtensionCapability::adapt_shared_to_local
     #[must_use]
     pub fn has_local(&self, capability_id: &TypeId) -> bool {
         self.local
@@ -231,14 +235,6 @@ impl CapabilityRegistry {
         self.shared
             .get(capability_id)
             .is_some_and(|m| !m.is_empty())
-    }
-
-    /// Returns the `SharedAsLocal` adapter function registered for this
-    /// capability, if any. Used by `resolve_bindings` to build local
-    /// bindings on the fly from shared-only extensions.
-    #[must_use]
-    pub(crate) fn get_adapter(&self, capability_id: &TypeId) -> Option<SharedAsLocalAdaptFn> {
-        self.shared_as_local_adapters.get(capability_id).copied()
     }
 }
 
@@ -270,9 +266,9 @@ pub(crate) struct ResolvedLocalEntry {
 
 /// A resolved shared capability entry for a specific node.
 pub(crate) struct ResolvedSharedEntry {
-    /// Factory that produces a fresh clone of the capability trait object.
-    /// Shared with the registry entry via `Arc`.
-    pub(crate) clone_fn: Arc<dyn Fn() -> Box<dyn Any + Send> + Send + Sync>,
+    /// Per-node factory, produced by cloning the registry entry's factory.
+    /// Each node owns an independent `Box` (no cross-thread aliasing).
+    pub(crate) factory: Box<dyn SharedCapabilityFactory>,
     /// Consumption flag, shared with the `ConsumedTracker`.
     pub(crate) consumed: Rc<Cell<bool>>,
 }
@@ -358,7 +354,7 @@ impl Capabilities {
                 C::name(),
             ),
         })?;
-        let boxed_any = (entry.clone_fn)();
+        let boxed_any = entry.factory.produce_any();
         let trait_object = *boxed_any
             .downcast::<Box<C::Shared>>()
             .map_err(|_| Error::InternalError {
@@ -606,15 +602,10 @@ pub(crate) fn resolve_bindings(
         }
 
         // Resolve local entry: prefer a native local registration; else,
-        // if the extension registered a shared entry and this capability
-        // has a `SharedAsLocal` adapter, build a fresh adapter for this
-        // node wrapping this node's own clone of the shared instance.
+        // if the extension registered a shared entry, invoke the
+        // capability's `SharedAsLocal` adapter to build a fresh local
+        // wrapper around this node's own clone of the shared instance.
         let native_local = local_entry;
-        let shared_as_local_adapter: Option<SharedAsLocalAdaptFn> = if native_local.is_none() {
-            shared_entry.and_then(|_| registry.get_adapter(&cap_type_id))
-        } else {
-            None
-        };
 
         if let Some(local_entry) = native_local {
             let consumed = tracker.track_local(
@@ -631,10 +622,15 @@ pub(crate) fn resolve_bindings(
                     consumed,
                 },
             );
-        } else if let (Some(shared_entry), Some(adapt_fn)) = (shared_entry, shared_as_local_adapter) {
-            // SharedAsLocal fallback: invoke adapter with this node's own
-            // clone of the shared instance. Each node gets a fresh adapter.
-            let trait_object = adapt_fn(&*shared_entry.clone_fn).ok_or_else(|| {
+        } else if let Some(shared_entry) = shared_entry {
+            // SharedAsLocal fallback: invoke the capability's adapter with
+            // this node's own clone of the shared instance. Each node gets
+            // a fresh adapter. The adapter fn is a required method on
+            // `ExtensionCapability`, so it's always present; it may
+            // legitimately return `None` to signal that this capability
+            // does not support shared→local adaptation.
+            let adapt_fn = known_cap.adapt_shared_to_local;
+            let trait_object = adapt_fn(&*shared_entry.factory).ok_or_else(|| {
                 Error::InternalError {
                     message: format!(
                         "capability '{cap_name_str}': SharedAsLocal adapter for extension '{ext_name_str}' returned None",
@@ -678,7 +674,7 @@ pub(crate) fn resolve_bindings(
             let _ = shared_entries.insert(
                 cap_type_id,
                 ResolvedSharedEntry {
-                    clone_fn: Arc::clone(&shared_entry.clone_fn),
+                    factory: shared_entry.factory.clone_box(),
                     consumed,
                 },
             );
@@ -711,7 +707,7 @@ mod tests {
     }
 
     /// A minimal test capability trait (shared version).
-    trait TestCapShared: Send + Sync {
+    trait TestCapShared: Send {
         fn value(&self) -> &str;
     }
 
@@ -726,12 +722,12 @@ mod tests {
         type Shared = dyn TestCapShared;
 
         fn adapt_shared_to_local(
-            clone_fn: &(dyn Fn() -> Box<dyn Any + Send> + Send + Sync),
+            factory: &dyn SharedCapabilityFactory,
         ) -> Option<Rc<dyn Any>> {
-            let boxed_any = clone_fn();
+            let boxed_any = factory.produce_any();
             let boxed_shared: Box<dyn TestCapShared> = *boxed_any
                 .downcast::<Box<dyn TestCapShared>>()
-                .expect("BUG: clone_fn for test_cap must produce Box<Box<dyn TestCapShared>>");
+                .expect("BUG: factory for test_cap must produce Box<Box<dyn TestCapShared>>");
             struct Adapter(Box<dyn TestCapShared>);
             impl TestCapLocal for Adapter {
                 fn value(&self) -> &str {
@@ -774,18 +770,31 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
+    // Reusable test factory: per-`(cap, ext)` producer that clones a
+    // `&'static str` value and produces fresh `Box<dyn TestCapShared>`
+    // instances. Mirrors how real extension-registration code will shape
+    // factories (concrete Clone + Send type carrying the extension state).
+    struct TestFactory {
+        val: &'static str,
+    }
+    impl SharedCapabilityFactory for TestFactory {
+        fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
+            Box::new(TestFactory { val: self.val })
+        }
+        fn produce_any(&self) -> Box<dyn Any + Send> {
+            let b: Box<dyn TestCapShared> = Box::new(SharedImpl(self.val));
+            Box::new(b) as Box<dyn Any + Send>
+        }
+    }
+
     fn register_shared(registry: &mut CapabilityRegistry, ext_id: &'static str, val: &'static str) {
         let ext_id: ExtensionId = ext_id.into();
-        let clone_val = val;
         registry
             .register_shared(
                 TypeId::of::<TestCap>(),
                 SharedCapabilityEntry {
                     extension_id: ext_id,
-                    clone_fn: Arc::new(move || {
-                        let b: Box<dyn TestCapShared> = Box::new(SharedImpl(clone_val));
-                        Box::new(b) as Box<dyn Any + Send>
-                    }),
+                    factory: Box::new(TestFactory { val }),
                 },
             )
             .unwrap();
@@ -801,15 +810,6 @@ mod tests {
                     extension_id: ext_id,
                     trait_object: Rc::new(rc_local),
                 },
-            )
-            .unwrap();
-    }
-
-    fn register_adapter(registry: &mut CapabilityRegistry) {
-        registry
-            .register_adapter(
-                TypeId::of::<TestCap>(),
-                <TestCap as super::super::ExtensionCapability>::adapt_shared_to_local,
             )
             .unwrap();
     }
@@ -842,7 +842,6 @@ mod tests {
     fn test_resolve_bindings_shared_only() {
         let mut reg = CapabilityRegistry::new();
         register_shared(&mut reg, "ext-a", "shared-val");
-        register_adapter(&mut reg);
 
         let mut tracker = ConsumedTracker::new();
         let caps = resolve_bindings(
@@ -973,7 +972,6 @@ mod tests {
     fn test_consumed_tracking_local_marks_shared_via_adapter() {
         let mut reg = CapabilityRegistry::new();
         register_shared(&mut reg, "ext-a", "val");
-        register_adapter(&mut reg);
 
         let mut tracker = ConsumedTracker::new();
         let caps = resolve_bindings(
@@ -1167,24 +1165,32 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static CLONE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-        // Register a shared impl whose clone_fn bumps a counter every
+        // Register a shared impl whose factory bumps a counter every
         // time the extension is cloned.
         CLONE_COUNT.store(0, Ordering::SeqCst);
         let mut reg = CapabilityRegistry::new();
         let ext_id: ExtensionId = "ext-a".into();
+
+        struct CountingFactory;
+        impl SharedCapabilityFactory for CountingFactory {
+            fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
+                Box::new(CountingFactory)
+            }
+            fn produce_any(&self) -> Box<dyn Any + Send> {
+                let _ = CLONE_COUNT.fetch_add(1, Ordering::SeqCst);
+                let b: Box<dyn TestCapShared> = Box::new(SharedImpl("val"));
+                Box::new(b) as Box<dyn Any + Send>
+            }
+        }
+
         reg.register_shared(
             TypeId::of::<TestCap>(),
             SharedCapabilityEntry {
                 extension_id: ext_id,
-                clone_fn: Arc::new(|| {
-                    let _ = CLONE_COUNT.fetch_add(1, Ordering::SeqCst);
-                    let b: Box<dyn TestCapShared> = Box::new(SharedImpl("val"));
-                    Box::new(b) as Box<dyn Any + Send>
-                }),
+                factory: Box::new(CountingFactory),
             },
         )
         .unwrap();
-        register_adapter(&mut reg);
 
         // The adapter must not run at registration time — work is deferred
         // to resolve_bindings so each node gets a fresh shared clone.
@@ -1242,30 +1248,12 @@ mod tests {
                 TypeId::of::<TestCap>(),
                 SharedCapabilityEntry {
                     extension_id: "ext-a".into(),
-                    clone_fn: Arc::new(|| {
-                        let b: Box<dyn TestCapShared> = Box::new(SharedImpl("v2"));
-                        Box::new(b) as Box<dyn Any + Send>
-                    }),
+                    factory: Box::new(TestFactory { val: "v2" }),
                 },
             )
             .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("duplicate"), "error: {msg}");
         assert!(msg.contains("ext-a"), "error: {msg}");
-    }
-
-    #[test]
-    fn test_register_adapter_rejects_duplicate() {
-        let mut reg = CapabilityRegistry::new();
-        register_adapter(&mut reg);
-
-        let err = reg
-            .register_adapter(
-                TypeId::of::<TestCap>(),
-                <TestCap as super::super::ExtensionCapability>::adapt_shared_to_local,
-            )
-            .unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("duplicate"), "error: {msg}");
     }
 }

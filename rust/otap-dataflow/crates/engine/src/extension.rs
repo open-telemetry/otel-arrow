@@ -252,7 +252,7 @@ mod sealed_provider {
     pub trait SealedLocal {}
 }
 
-// Clone is required by the capability system for `Box<dyn CloneAnySend>`.
+// Clone is required by the capability system for `Box<dyn SharedCapabilityFactory>`.
 impl<E: shared_ext::Extension + Clone + Send + 'static> sealed_provider::SealedShared
     for Active<E>
 {
