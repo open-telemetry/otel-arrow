@@ -62,36 +62,63 @@ pub trait SharedCapabilityFactory: Send {
     /// Produce a fresh shared trait object for a consumer. The returned
     /// `Box<dyn Any + Send>` contains `Box<dyn shared::Trait>` — the
     /// `require_shared` code downcasts to recover the concrete trait.
+    ///
+    /// # Why two `Box`es?
+    ///
+    /// The registry stores factories for many different capabilities in
+    /// one `HashMap`, so the factory trait must be object-safe and its
+    /// produce method must return a single uniform type — hence
+    /// [`Box<dyn Any + Send>`]. But `Any` requires its contents to be
+    /// `Sized`, and `dyn shared::Trait` is `!Sized`. Wrapping the trait
+    /// object in an inner `Box<dyn shared::Trait>` makes it `Sized` (a
+    /// fat pointer) so it can ride inside the `Any` envelope. The
+    /// outer `Box` is the uniform storage; the inner `Box` owns the
+    /// heap-allocated trait object.
+    ///
+    /// This trait is only implemented by engine-internal build-phase
+    /// code (via the blanket impl over [`TypedSharedFactory`]). The
+    /// internal helpers [`Capabilities::require_shared`] and
+    /// [`downcast_produced`] hide the downcast on the consumer side.
     fn produce_any(&self) -> Box<dyn Any + Send>;
 }
 
-/// Type-safe authoring surface for capability factories.
+/// Engine-internal typed authoring surface for capability factories.
 ///
-/// Implement this trait on your factory type; a blanket impl supplies
-/// the erased [`SharedCapabilityFactory`] automatically. The blanket
-/// impl encodes the `produce_any` double-box convention
-/// (`Box<Box<dyn Shared>> as Box<dyn Any + Send>`) at the type level,
-/// so it's impossible to produce a `Box<dyn Any + Send>` with the wrong
-/// inner box type.
+/// Not intended for use outside the engine crate. Capability definers
+/// use the `#[capability]` proc macro; extension authors declare what
+/// they provide via `extension_capabilities!`. The engine's build
+/// phase synthesizes the `TypedSharedFactory` impl that bridges
+/// `MyExt` → `dyn C::Shared`.
 ///
-/// Prefer this trait over implementing [`SharedCapabilityFactory`]
-/// directly. Hand-rolling the erased trait bypasses the type-level
-/// contract and is only useful for niche cases (e.g. dynamically
-/// selecting the produced type at runtime).
+/// A blanket impl supplies the erased [`SharedCapabilityFactory`]
+/// automatically, encoding the `produce_any` double-box convention
+/// (`Box<Box<dyn Shared>> as Box<dyn Any + Send>`) at the type level
+/// so it cannot be spelled incorrectly.
 ///
-/// # Example
+/// # Why a separate trait?
 ///
-/// ```rust,ignore
-/// #[derive(Clone)]
-/// struct MyFactory { template: MyExt }
+/// This is defensive, not an author-facing API. External misuse
+/// is already foreclosed: [`SharedCapabilityFactory`] and
+/// `TypedSharedFactory` are both `#[doc(hidden)]`, and
+/// [`ExtensionCapability`] is sealed so no external crate can even
+/// define a capability to register a factory for. What this trait
+/// additionally guards against is **intra-crate regressions** — an
+/// engine contributor editing the registry cannot accidentally
+/// hand-roll a [`SharedCapabilityFactory`] with the wrong inner box
+/// type and have it pass clippy/tests. The blanket impl makes the
+/// double-box convention a compile-time invariant instead of a
+/// reviewer-vigilance one.
 ///
-/// impl TypedSharedFactory for MyFactory {
-///     type Shared = dyn MySharedTrait;
-///     fn produce(&self) -> Box<Self::Shared> {
-///         Box::new(self.template.clone())
-///     }
-/// }
-/// ```
+/// # TODO(extension-system): possible future simplification
+///
+/// Once the build phase that wires this trait stabilizes, the two
+/// traits could be folded into a single sealed trait with a
+/// `type Shared` associated type and a provided `produce_any` method
+/// — same invariant, one fewer name. Not a priority while the
+/// scaffolding is still in flux.
+///
+/// [`ExtensionCapability`]: super::ExtensionCapability
+#[doc(hidden)]
 pub trait TypedSharedFactory: Clone + Send + 'static {
     /// The `dyn shared::Trait` this factory produces
     /// (e.g. `dyn BearerTokenProvider`).
@@ -131,8 +158,7 @@ impl<F: TypedSharedFactory> SharedCapabilityFactory for F {
 ///
 /// [`produce_any`]: SharedCapabilityFactory::produce_any
 /// [`ExtensionCapability::adapt_shared_to_local`]: super::ExtensionCapability::adapt_shared_to_local
-#[doc(hidden)]
-pub fn downcast_produced<C: super::ExtensionCapability>(
+pub(crate) fn downcast_produced<C: super::ExtensionCapability>(
     factory: &dyn SharedCapabilityFactory,
 ) -> Result<Box<C::Shared>, Error> {
     factory
@@ -189,9 +215,10 @@ pub struct SharedCapabilityEntry {
 ///
 /// The function receives the shared `factory` and returns an `Rc<dyn Any>`
 /// containing `Rc<dyn local::Trait>` (via the generated `SharedAsLocal` adapter).
-/// Returns `None` if the capability doesn't support shared→local fallback.
+/// Every shared registration is always reachable as a local binding — there
+/// is no opt-out.
 #[doc(hidden)]
-pub type SharedAsLocalAdaptFn = fn(&dyn SharedCapabilityFactory) -> Option<Rc<dyn Any>>;
+pub type SharedAsLocalAdaptFn = fn(&dyn SharedCapabilityFactory) -> Rc<dyn Any>;
 
 // ── CapabilityRegistry ───────────────────────────────────────────────────────
 
@@ -297,15 +324,13 @@ impl CapabilityRegistry {
     }
 
     /// Returns `true` if any extension provides a **native** local entry
-    /// for this capability. Does not count shared entries that could be
-    /// adapted via `SharedAsLocal`; a local binding is reachable when
-    /// either `has_local` is true, or `has_shared` is true and the
-    /// capability's [`ExtensionCapability::adapt_shared_to_local`] returns
-    /// `Some` for the extension's factory.
-    ///
-    /// [`ExtensionCapability::adapt_shared_to_local`]: super::ExtensionCapability::adapt_shared_to_local
+    /// for this capability. A local binding is also reachable whenever
+    /// [`has_shared`](Self::has_shared) is true — shared registrations
+    /// are always adaptable via `SharedAsLocal`. For the composite
+    /// "can a node bind this as local?" predicate, use
+    /// `has_native_local(id) || has_shared(id)`.
     #[must_use]
-    pub fn has_local(&self, capability_id: &TypeId) -> bool {
+    pub(crate) fn has_native_local(&self, capability_id: &TypeId) -> bool {
         self.local
             .get(capability_id)
             .is_some_and(|m| !m.is_empty())
@@ -313,7 +338,7 @@ impl CapabilityRegistry {
 
     /// Returns `true` if any extension provides a shared entry for this capability.
     #[must_use]
-    pub fn has_shared(&self, capability_id: &TypeId) -> bool {
+    pub(crate) fn has_shared(&self, capability_id: &TypeId) -> bool {
         self.shared
             .get(capability_id)
             .is_some_and(|m| !m.is_empty())
@@ -323,6 +348,17 @@ impl CapabilityRegistry {
 impl Default for CapabilityRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for CapabilityRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The entry values are type-erased (`dyn Any` / `dyn SharedCapabilityFactory`)
+        // and can't be printed. Summarize the shape instead.
+        f.debug_struct("CapabilityRegistry")
+            .field("local_capabilities", &self.local.len())
+            .field("shared_capabilities", &self.shared.len())
+            .finish()
     }
 }
 
@@ -336,13 +372,12 @@ pub(crate) struct ResolvedLocalEntry {
     pub(crate) trait_object: Rc<dyn Any>,
     /// Consumption flag for the underlying extension variant.
     ///
-    /// - For native local bindings: the cell is registered in
-    ///   [`ConsumedTracker::local`] for the `(capability, extension)` pair.
-    /// - For `SharedAsLocal` bindings: the cell is registered in
-    ///   [`ConsumedTracker::shared`] for the `(capability, extension)`
-    ///   pair — consuming the adapter is considered a use of the shared
-    ///   variant, because that's the only variant the extension actually
-    ///   provided. No phantom local entry is recorded.
+    /// - For native local bindings: the cell lives under the tracker's
+    ///   *local* bucket for the `(capability, extension)` pair.
+    /// - For `SharedAsLocal` bindings: the cell lives under the tracker's
+    ///   *shared* bucket — consuming the adapter is considered a use of
+    ///   the shared variant, because that's the only variant the
+    ///   extension actually provided. No phantom local entry is recorded.
     pub(crate) consumed: Rc<Cell<bool>>,
 }
 
@@ -395,15 +430,22 @@ impl Capabilities {
     ///
     /// # Errors
     ///
-    /// Returns an error if no extension provides this capability in
-    /// local (or shared-with-fallback) mode.
+    /// - [`Error::ConfigError`] if no extension is bound to this
+    ///   capability for this node. The user must add a binding to the
+    ///   node's config.
+    /// - [`Error::InternalError`] on a type-erasure downcast mismatch
+    ///   (indicates a registry bug).
     pub fn require_local<C: super::ExtensionCapability>(&self) -> Result<Rc<C::Local>, Error> {
         let id = TypeId::of::<C>();
-        let entry = self.local.get(&id).ok_or_else(|| Error::InternalError {
-            message: format!(
-                "required local capability '{}' not bound for this node",
-                C::name(),
-            ),
+        let entry = self.local.get(&id).ok_or_else(|| {
+            Error::ConfigError(Box::new(
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "required local capability '{}' not bound for this node",
+                        C::name(),
+                    ),
+                },
+            ))
         })?;
         let trait_object = entry
             .trait_object
@@ -426,15 +468,22 @@ impl Capabilities {
     ///
     /// # Errors
     ///
-    /// Returns an error if no extension provides this capability in
-    /// shared mode.
+    /// - [`Error::ConfigError`] if no extension is bound to this
+    ///   capability for this node. The user must add a binding to the
+    ///   node's config.
+    /// - [`Error::InternalError`] on a type-erasure downcast mismatch
+    ///   (indicates a registry bug).
     pub fn require_shared<C: super::ExtensionCapability>(&self) -> Result<Box<C::Shared>, Error> {
         let id = TypeId::of::<C>();
-        let entry = self.shared.get(&id).ok_or_else(|| Error::InternalError {
-            message: format!(
-                "required shared capability '{}' not bound for this node",
-                C::name(),
-            ),
+        let entry = self.shared.get(&id).ok_or_else(|| {
+            Error::ConfigError(Box::new(
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "required shared capability '{}' not bound for this node",
+                        C::name(),
+                    ),
+                },
+            ))
         })?;
         let trait_object = downcast_produced::<C>(&*entry.factory)?;
         entry.consumed.set(true);
@@ -486,6 +535,16 @@ impl Capabilities {
     }
 }
 
+impl std::fmt::Debug for Capabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Entry values are type-erased; only the shape is printable.
+        f.debug_struct("Capabilities")
+            .field("local_bindings", &self.local.len())
+            .field("shared_bindings", &self.shared.len())
+            .finish()
+    }
+}
+
 // ── ConsumedTracker ──────────────────────────────────────────────────────────
 
 /// Tracks which capability variants were consumed by node factories.
@@ -501,6 +560,18 @@ impl Capabilities {
 pub(crate) struct ConsumedTracker {
     local: HashMap<(TypeId, ExtensionId), ConsumedEntry>,
     shared: HashMap<(TypeId, ExtensionId), ConsumedEntry>,
+}
+
+impl std::fmt::Debug for ConsumedTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `TypeId` is `Debug` but its output is opaque (`TypeId { t: ... }`);
+        // summarize counts instead. For detail, see `unconsumed_local` /
+        // `unconsumed_shared`, which return human-readable names.
+        f.debug_struct("ConsumedTracker")
+            .field("local_slots", &self.local.len())
+            .field("shared_slots", &self.shared.len())
+            .finish()
+    }
 }
 
 /// A single consumption tracking entry.
@@ -523,15 +594,16 @@ impl ConsumedTracker {
     }
 
     /// Returns the `Rc<Cell<bool>>` tracking local consumption for this
-    /// `(capability, extension)` pair, creating a fresh entry if none
-    /// exists yet. Any returned clone shared with a resolved entry will
-    /// flip the same cell when consumed.
-    pub(crate) fn track_local(
+    /// `(capability, extension)` pair, creating a fresh cell (initialized
+    /// to `false`) if none exists yet. This **registers** the consumer
+    /// slot; it does **not** mark the capability as consumed. The cell
+    /// is flipped to `true` later, only when a consumer calls
+    /// [`Capabilities::require_local`] / [`Capabilities::optional_local`].
+    pub(crate) fn ensure_local_consumer_slot(
         &mut self,
         capability_id: TypeId,
         name: &'static str,
         extension_id: ExtensionId,
-        consumed: Rc<Cell<bool>>,
     ) -> Rc<Cell<bool>> {
         let entry = self
             .local
@@ -539,20 +611,24 @@ impl ConsumedTracker {
             .or_insert_with(|| ConsumedEntry {
                 name,
                 extension_id,
-                consumed,
+                consumed: Rc::new(Cell::new(false)),
             });
         Rc::clone(&entry.consumed)
     }
 
     /// Returns the `Rc<Cell<bool>>` tracking shared consumption for this
-    /// `(capability, extension)` pair, creating a fresh entry if none
-    /// exists yet.
-    pub(crate) fn track_shared(
+    /// `(capability, extension)` pair, creating a fresh cell (initialized
+    /// to `false`) if none exists yet. This **registers** the consumer
+    /// slot; it does **not** mark the capability as consumed. The cell
+    /// is flipped to `true` later, only when a consumer calls
+    /// [`Capabilities::require_shared`] / [`Capabilities::optional_shared`]
+    /// (or [`Capabilities::require_local`] / [`Capabilities::optional_local`]
+    /// for an extension that only provides a shared variant).
+    pub(crate) fn ensure_shared_consumer_slot(
         &mut self,
         capability_id: TypeId,
         name: &'static str,
         extension_id: ExtensionId,
-        consumed: Rc<Cell<bool>>,
     ) -> Rc<Cell<bool>> {
         let entry = self
             .shared
@@ -560,7 +636,7 @@ impl ConsumedTracker {
             .or_insert_with(|| ConsumedEntry {
                 name,
                 extension_id,
-                consumed,
+                consumed: Rc::new(Cell::new(false)),
             });
         Rc::clone(&entry.consumed)
     }
@@ -603,7 +679,10 @@ impl ConsumedTracker {
 ///
 /// # Errors
 ///
-/// Returns an error on the first validation failure with a descriptive message.
+/// Returns an error on a validation failure with a descriptive message.
+/// `bindings` is iterated in unspecified order (it's a `HashMap`), so
+/// when multiple bindings are invalid the specific one reported is not
+/// stable across runs.
 pub(crate) fn resolve_bindings(
     bindings: &HashMap<otap_df_config::CapabilityId, ExtensionId>,
     registry: &CapabilityRegistry,
@@ -649,9 +728,9 @@ pub(crate) fn resolve_bindings(
         let cap_type_id = (known_cap.type_id)();
 
         // Step 3: At least one extension must provide this capability
-        let has_local = registry.has_local(&cap_type_id);
+        let has_native_local = registry.has_native_local(&cap_type_id);
         let has_shared = registry.has_shared(&cap_type_id);
-        if !has_local && !has_shared {
+        if !has_native_local && !has_shared {
             return Err(Error::ConfigError(Box::new(
                 otap_df_config::error::Error::InvalidUserConfig {
                     error: format!(
@@ -682,11 +761,10 @@ pub(crate) fn resolve_bindings(
         let native_local = local_entry;
 
         if let Some(local_entry) = native_local {
-            let consumed = tracker.track_local(
+            let consumed = tracker.ensure_local_consumer_slot(
                 cap_type_id,
                 known_cap.name,
                 local_entry.extension_id.clone(),
-                Rc::new(Cell::new(false)),
             );
 
             let _ = local_entries.insert(
@@ -699,32 +777,24 @@ pub(crate) fn resolve_bindings(
         } else if let Some(shared_entry) = shared_entry {
             // SharedAsLocal fallback: invoke the capability's adapter with
             // this node's own clone of the shared instance. Each node gets
-            // a fresh adapter. The adapter fn is a required method on
-            // `ExtensionCapability`, so it's always present; it may
-            // legitimately return `None` to signal that this capability
-            // does not support shared→local adaptation.
+            // a fresh adapter. The adapter is a default method on
+            // `ExtensionCapability` and always succeeds — shared
+            // registrations are always adaptable to local.
             let adapt_fn = known_cap.adapt_shared_to_local;
-            let trait_object = adapt_fn(&*shared_entry.factory).ok_or_else(|| {
-                Error::InternalError {
-                    message: format!(
-                        "capability '{cap_name_str}': SharedAsLocal adapter for extension '{ext_name_str}' returned None",
-                    ),
-                }
-            })?;
+            let trait_object = adapt_fn(&*shared_entry.factory);
 
-            // The extension only provided a shared variant — track the
-            // adapter consumer under the shared bucket. The follow-up
-            // `// Resolve shared entry` block below also calls
-            // `track_shared` for this `(cap, ext)` pair; `track_shared`
-            // is get-or-insert, so both users share the same
+            // The extension only provided a shared variant — route the
+            // adapter consumer's cell under the shared bucket. The
+            // follow-up `// Resolve shared entry` block below also calls
+            // `ensure_shared_consumer_slot` for this `(cap, ext)` pair;
+            // that method is get-or-insert, so both users share the same
             // `Rc<Cell<bool>>` and either one flipping marks the shared
             // variant consumed. No phantom entry is created in
             // `tracker.local`.
-            let consumed = tracker.track_shared(
+            let consumed = tracker.ensure_shared_consumer_slot(
                 cap_type_id,
                 known_cap.name,
                 shared_entry.extension_id.clone(),
-                Rc::new(Cell::new(false)),
             );
 
             let _ = local_entries.insert(
@@ -736,13 +806,16 @@ pub(crate) fn resolve_bindings(
             );
         }
 
-        // Resolve shared entry
+        // Resolve shared entry. If the SharedAsLocal fallback above
+        // already called `ensure_shared_consumer_slot` for this
+        // `(cap, ext)` pair, this call is a no-op lookup that returns
+        // the same cell — get-or-insert idempotency keeps the two
+        // users pointing at one slot.
         if let Some(shared_entry) = shared_entry {
-            let consumed = tracker.track_shared(
+            let consumed = tracker.ensure_shared_consumer_slot(
                 cap_type_id,
                 known_cap.name,
                 shared_entry.extension_id.clone(),
-                Rc::new(Cell::new(false)),
             );
 
             let _ = shared_entries.insert(
@@ -795,14 +868,14 @@ mod tests {
         type Local = dyn TestCapLocal;
         type Shared = dyn TestCapShared;
 
-        fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Option<Rc<Self::Local>> {
+        fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Rc<Self::Local> {
             struct Adapter(Box<dyn TestCapShared>);
             impl TestCapLocal for Adapter {
                 fn value(&self) -> &str {
                     self.0.value()
                 }
             }
-            Some(Rc::new(Adapter(shared)))
+            Rc::new(Adapter(shared))
         }
     }
 

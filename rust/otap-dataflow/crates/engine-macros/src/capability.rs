@@ -339,9 +339,9 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
             fn wrap_shared_as_local(
                 shared: Box<Self::Shared>,
-            ) -> Option<::std::rc::Rc<Self::Local>> {
+            ) -> ::std::rc::Rc<Self::Local> {
                 let adapter = #shared_as_local_name(shared);
-                Some(::std::rc::Rc::new(adapter))
+                ::std::rc::Rc::new(adapter)
             }
         }
 

@@ -103,7 +103,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     const NAME: &'static str = "bearer_token_provider";
 ///     type Local = dyn local::BearerTokenProvider;
 ///     type Shared = dyn shared::BearerTokenProvider;
-///     fn adapt_shared_to_local(...) -> Option<Rc<dyn Any>> { /* wraps in adapter */ }
+///     fn wrap_shared_as_local(...) -> Rc<Self::Local> { /* wraps in adapter */ }
 /// }
 ///
 /// // 6. KNOWN_CAPABILITIES entry — link-time registration for config validation.
