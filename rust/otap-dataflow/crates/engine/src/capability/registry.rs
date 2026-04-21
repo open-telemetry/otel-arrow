@@ -65,6 +65,53 @@ pub trait SharedCapabilityFactory: Send {
     fn produce_any(&self) -> Box<dyn Any + Send>;
 }
 
+/// Type-safe authoring surface for capability factories.
+///
+/// Implement this trait on your factory type; a blanket impl supplies
+/// the erased [`SharedCapabilityFactory`] automatically. The blanket
+/// impl encodes the `produce_any` double-box convention
+/// (`Box<Box<dyn Shared>> as Box<dyn Any + Send>`) at the type level,
+/// so it's impossible to produce a `Box<dyn Any + Send>` with the wrong
+/// inner box type.
+///
+/// Prefer this trait over implementing [`SharedCapabilityFactory`]
+/// directly. Hand-rolling the erased trait bypasses the type-level
+/// contract and is only useful for niche cases (e.g. dynamically
+/// selecting the produced type at runtime).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(Clone)]
+/// struct MyFactory { template: MyExt }
+///
+/// impl TypedSharedFactory for MyFactory {
+///     type Shared = dyn MySharedTrait;
+///     fn produce(&self) -> Box<Self::Shared> {
+///         Box::new(self.template.clone())
+///     }
+/// }
+/// ```
+pub trait TypedSharedFactory: Clone + Send + 'static {
+    /// The `dyn shared::Trait` this factory produces
+    /// (e.g. `dyn BearerTokenProvider`).
+    type Shared: ?Sized + Send + 'static;
+    /// Produce a fresh shared trait object for a consumer.
+    fn produce(&self) -> Box<Self::Shared>;
+}
+
+impl<F: TypedSharedFactory> SharedCapabilityFactory for F {
+    fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
+        Box::new(self.clone())
+    }
+    fn produce_any(&self) -> Box<dyn Any + Send> {
+        // Double-box convention: Box<Box<dyn Shared>> type-erased as
+        // Box<dyn Any + Send>. Enforced by the type signature of
+        // `TypedSharedFactory::produce`.
+        Box::new(self.produce())
+    }
+}
+
 // ── Type-erased entries ──────────────────────────────────────────────────────
 
 /// A type-erased local (!Send) capability entry.
@@ -772,18 +819,16 @@ mod tests {
 
     // Reusable test factory: per-`(cap, ext)` producer that clones a
     // `&'static str` value and produces fresh `Box<dyn TestCapShared>`
-    // instances. Mirrors how real extension-registration code will shape
-    // factories (concrete Clone + Send type carrying the extension state).
+    // instances. Uses the typed authoring surface so the double-box
+    // invariant is supplied by the blanket impl.
+    #[derive(Clone)]
     struct TestFactory {
         val: &'static str,
     }
-    impl SharedCapabilityFactory for TestFactory {
-        fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
-            Box::new(TestFactory { val: self.val })
-        }
-        fn produce_any(&self) -> Box<dyn Any + Send> {
-            let b: Box<dyn TestCapShared> = Box::new(SharedImpl(self.val));
-            Box::new(b) as Box<dyn Any + Send>
+    impl TypedSharedFactory for TestFactory {
+        type Shared = dyn TestCapShared;
+        fn produce(&self) -> Box<Self::Shared> {
+            Box::new(SharedImpl(self.val))
         }
     }
 
@@ -1171,15 +1216,13 @@ mod tests {
         let mut reg = CapabilityRegistry::new();
         let ext_id: ExtensionId = "ext-a".into();
 
+        #[derive(Clone)]
         struct CountingFactory;
-        impl SharedCapabilityFactory for CountingFactory {
-            fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
-                Box::new(CountingFactory)
-            }
-            fn produce_any(&self) -> Box<dyn Any + Send> {
+        impl TypedSharedFactory for CountingFactory {
+            type Shared = dyn TestCapShared;
+            fn produce(&self) -> Box<Self::Shared> {
                 let _ = CLONE_COUNT.fetch_add(1, Ordering::SeqCst);
-                let b: Box<dyn TestCapShared> = Box::new(SharedImpl("val"));
-                Box::new(b) as Box<dyn Any + Send>
+                Box::new(SharedImpl("val"))
             }
         }
 
