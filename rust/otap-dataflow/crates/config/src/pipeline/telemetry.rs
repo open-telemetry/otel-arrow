@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, time::Duration};
 
 /// Telemetry backend configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TelemetryConfig {
     /// The size of the reporting channel, measured in the number of internal metric events shared across all cores.
     #[serde(default = "default_reporting_channel_size")]
@@ -31,6 +31,13 @@ pub struct TelemetryConfig {
     /// Resource attributes to associate with telemetry data.
     #[serde(default)]
     pub resource: HashMap<String, AttributeValue>,
+}
+
+impl TelemetryConfig {
+    /// Validates the telemetry configuration, including all metric readers.
+    pub fn validate(&self) -> Result<(), crate::error::Error> {
+        self.metrics.validate()
+    }
 }
 
 impl Default for TelemetryConfig {
@@ -281,7 +288,7 @@ mod tests {
                 readers:
                     - periodic:
                         exporter:
-                            console:
+                            type: console
             "#;
         let config: TelemetryConfig = serde_yaml::from_str(yaml_str).unwrap();
 

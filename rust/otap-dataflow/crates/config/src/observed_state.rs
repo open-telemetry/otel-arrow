@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Configuration for the observed state store.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ObservedStateSettings {
     /// Size of the bounded channel used for lossy observed events such as
     /// async internal logs.
@@ -29,7 +29,7 @@ pub struct ObservedStateSettings {
 }
 
 /// How to act when an asynchronous event can't be sent.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct SendPolicy {
     /// If set, wait for a timeout.
     pub blocking_timeout: Option<Duration>,

@@ -22,6 +22,7 @@ otap-df-engine = { workspace = true }
 otap-df-telemetry = { workspace = true }
 otap-df-admin = { workspace = true }
 
+sysinfo = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 core_affinity = { workspace = true }

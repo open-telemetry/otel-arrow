@@ -8,7 +8,7 @@
 #      cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --port 9999
 #
 #   2. Run the pipeline:
-#      cargo run --features azure-monitor-exporter -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/fakegen-ame-local.yaml
+#      cargo run --release --features azure-monitor-exporter -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/fakegen-ame-local.yaml --num-cores 1
 #
 # Error simulation examples:
 #   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1                  # 10% -> 500
@@ -41,7 +41,7 @@ groups:
               data_source: static
               generation_strategy: fresh
               traffic_config:
-                signals_per_second: 1000
+                signals_per_second: null # uncapped. Use a different number to limit the rate
                 max_batch_size: 50
                 metric_weight: 0
                 trace_weight: 0
@@ -58,18 +58,17 @@ groups:
                 schema:
                   resource_mapping:
                     "service.name": "ServiceName"
-                  scope_mapping:
-                    "otel.library.name": "InstrumentationLibrary"
+                    "service.version": "ServiceVersion"
+                    "service.instance.id": "ServiceInstanceId"
                   log_record_mapping:
                     "body": "Message"
                     "severity_text": "SeverityText"
                     "severity_number": "SeverityNumber"
                     "time_unix_nano": "TimeGenerated"
-                    "trace_id": "TraceId"
-                    "span_id": "SpanId"
+                    "observed_time_unix_nano": "ObservedTime"
                     "attributes":
-                      "http.method": "HttpMethod"
-                      "http.status_code": "HttpStatusCode"
+                      "thread.id": "ThreadId"
+                      "thread.name": "ThreadName"
 
               auth:
                 method: "dev"

@@ -150,6 +150,12 @@ pub struct StreamMetadata {
     /// The slot this stream serves.
     pub slot_id: SlotId,
     /// Schema fingerprint for all batches in this stream.
+    ///
+    /// **Note:** This fingerprint is computed from the *ingestion* schema.
+    /// The actual Arrow IPC schema in the segment file may differ due to
+    /// dictionary unification (key widening or fallback to native type).
+    /// Do not use this fingerprint to validate the IPC schema on the read
+    /// path; use the schema from the IPC file header instead.
     pub schema_fingerprint: SchemaFingerprint,
     /// Byte offset from segment start to the stream's Arrow IPC data.
     pub byte_offset: u64,

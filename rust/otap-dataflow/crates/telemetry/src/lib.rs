@@ -45,6 +45,8 @@ pub mod event;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
+/// Internal log tap for admin-side log queries.
+pub mod log_tap;
 pub mod metrics;
 /// OpenTelemetry SDK provider configuration.
 pub mod otel_sdk;
@@ -141,6 +143,8 @@ pub struct InternalTelemetrySettings {
     pub resource_bytes: bytes::Bytes,
     /// Handle to the telemetry registry for looking up entity attributes.
     pub registry: TelemetryRegistryHandle,
+    /// Optional retained-log sink shared with admin consumers.
+    pub log_tap: Option<log_tap::InternalLogTapHandle>,
 }
 
 impl std::fmt::Debug for InternalTelemetrySettings {
@@ -201,6 +205,9 @@ pub struct InternalTelemetrySystem {
     /// Event reporter for ITS mode (Internal Telemetry System).
     its_reporter: Option<ObservedEventReporter>,
 
+    /// Optional handle for querying retained internal logs.
+    log_tap_handle: Option<log_tap::InternalLogTapHandle>,
+
     /// Internal telemetry pipeline setup.
     its_settings: Option<InternalTelemetrySettings>,
 }
@@ -228,6 +235,7 @@ impl InternalTelemetrySystem {
         telemetry_registry: TelemetryRegistryHandle,
         console_async_reporter: Option<ObservedEventReporter>,
         context_fn: LogContextFn,
+        log_tap_handle: Option<log_tap::InternalLogTapHandle>,
     ) -> Result<Self, Error> {
         // Validate logs config
         config
@@ -252,7 +260,12 @@ impl InternalTelemetrySystem {
         // 3. Create ITS channel if any provider uses ITS mode
         let (its_reporter, its_settings) = if config.logs.providers.uses_its_provider() {
             let (sender, logs_receiver) = flume::bounded(config.reporting_channel_size);
-            let reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
+            let reporter = if let Some(log_tap) = &log_tap_handle {
+                ObservedEventReporter::new(SendPolicy::default(), sender)
+                    .with_drop_counter(log_tap.ingest_drop_counter())
+            } else {
+                ObservedEventReporter::new(SendPolicy::default(), sender)
+            };
             let resource_bytes = otel_sdk::encode_resource_bytes(&config.resource);
             (
                 Some(reporter),
@@ -260,6 +273,7 @@ impl InternalTelemetrySystem {
                     logs_receiver,
                     resource_bytes,
                     registry: telemetry_registry.clone(),
+                    log_tap: log_tap_handle.clone(),
                 }),
             )
         } else {
@@ -278,6 +292,7 @@ impl InternalTelemetrySystem {
             context_fn,
             console_async_reporter,
             its_reporter,
+            log_tap_handle,
             its_settings,
         })
     }
@@ -348,6 +363,12 @@ impl InternalTelemetrySystem {
         self.its_settings.clone()
     }
 
+    /// Returns a shareable handle to the internal log tap, if enabled.
+    #[must_use]
+    pub fn log_tap_handle(&self) -> Option<log_tap::InternalLogTapHandle> {
+        self.log_tap_handle.clone()
+    }
+
     /// Returns the configured log level.
     #[must_use]
     pub const fn log_level(&self) -> &LogLevel {
@@ -403,6 +424,7 @@ impl Default for InternalTelemetrySystem {
             TelemetryRegistryHandle::new(),
             Some(dummy_reporter),
             LogContext::new,
+            None,
         )
         .expect("default telemetry config should be valid")
     }
@@ -446,6 +468,7 @@ mod tests {
                 TelemetryRegistryHandle::new(),
                 Some(test_reporter()),
                 LogContext::new,
+                None,
             )
             .expect("should create");
             assert!(
@@ -465,6 +488,7 @@ mod tests {
                 TelemetryRegistryHandle::new(),
                 Some(test_reporter()),
                 LogContext::new,
+                None,
             )
             .expect("should create");
             let its_settings = its.internal_telemetry_settings();
@@ -474,7 +498,7 @@ mod tests {
             assert!(rx.is_empty(), "receiver starts empty");
 
             // Emit a log using the engine tracing setup (which uses ITS)
-            its.engine_tracing_setup().with_subscriber(|| {
+            its.engine_tracing_setup().with_subscriber_ignoring_env(|| {
                 crate::otel_info!("test log message");
             });
 
@@ -503,6 +527,7 @@ mod tests {
             TelemetryRegistryHandle::new(),
             Some(test_reporter()),
             LogContext::new,
+            None,
         )
         .expect("should create");
 

@@ -5,6 +5,10 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::{
+    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, LogicalExprDataSource, ScopedLogicalExpr,
+    ScopedPhysicalExpr,
+};
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
@@ -19,7 +23,8 @@ use arrow::datatypes::UInt16Type;
 use async_trait::async_trait;
 use data_engine_expressions::{
     BooleanValue, ContainsLogicalExpression, Expression, LogicalExpression,
-    MatchesLogicalExpression, ScalarExpression, StaticScalarExpression,
+    MatchesLogicalExpression, PipelineFunction, ScalarExpression, StaticScalarExpression,
+    StringScalarExpression, StringValue,
 };
 use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
@@ -27,7 +32,7 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
+use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
@@ -134,16 +139,24 @@ impl<T> From<T> for Composite<T> {
 
 /// A logical plan for filtering data across root batch's columns and attributes.
 ///
-/// Supports two types of filters that can be applied independently or together:
-/// - `source_filter`: Filters on regular columns in the source data
-/// - `attribute_filter`: Filters on key-value attribute pairs
+/// Supports three types of filters that can be applied independently or together:
+/// - `source_filter`: Filters on regular columns in the source data (fast path)
+/// - `attribute_filter`: Filters on key-value attribute pairs (fast path)
+/// - `expr_filter`: General-purpose filter using the expression evaluation system, supporting
+///   cross-scope comparisons (e.g. column vs attribute), function calls, arithmetic, etc.
 ///
-/// When both types of filters are present, the resulting execution of the plan will be the
-/// intersection of the two filters.
+/// When multiple filter types are present, the resulting execution of the plan will be the
+/// intersection of all filters.
 ///
-/// Can be constructed from either a DataFusion `Expr` (for root batch's filters) or an
+/// Can be constructed from either a DataFusion `Expr` (for root batch's filters) an,
 /// `AttributesFilterPlan` (for attribute filters), and can be composed into boolean expressions
-/// using `Composite`.
+/// using `Composite`, or a more general purpose expression.
+///
+/// The code paths for comparing attributes or columns from the root record batch to literals are
+/// well optimized. In cases where a more general purpose expression is involved, we fall back
+/// to evaluating the expression which may involve realigning data from sub-expressions using the
+/// expression evaluation's join mechanics.
+///
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
@@ -152,6 +165,15 @@ pub struct FilterPlan {
     /// filters that will be applied to the attributes record batch in order fo filter the
     /// rows of the root batch
     pub attribute_filter: Option<Composite<AttributesFilterPlan>>,
+
+    /// General-purpose expression-based filter. Used for cases that cannot be handled by the
+    /// fast-path `source_filter` and `attribute_filter`, such as comparing two fields,
+    /// cross-scope comparisons (e.g. `severity_number == attributes["x"]`), function calls
+    /// in filters, arithmetic expressions, etc.
+    ///
+    /// This uses the same expression evaluation infrastructure as `set` expressions, including
+    /// support for joins across data scopes.
+    pub expr_filter: Option<ScopedLogicalExpr>,
 }
 
 impl From<Expr> for FilterPlan {
@@ -159,6 +181,7 @@ impl From<Expr> for FilterPlan {
         Self {
             source_filter: Some(expr),
             attribute_filter: None,
+            expr_filter: None,
         }
     }
 }
@@ -168,6 +191,7 @@ impl From<AttributesFilterPlan> for FilterPlan {
         Self {
             source_filter: None,
             attribute_filter: Some(attrs_filter.into()),
+            expr_filter: None,
         }
     }
 }
@@ -177,6 +201,18 @@ impl From<Composite<AttributesFilterPlan>> for FilterPlan {
         Self {
             source_filter: None,
             attribute_filter: Some(attrs_filter),
+            expr_filter: None,
+        }
+    }
+}
+
+impl FilterPlan {
+    /// Create a FilterPlan that uses the general expression evaluation path.
+    fn from_expr(expr: ScopedLogicalExpr) -> Self {
+        Self {
+            source_filter: None,
+            attribute_filter: None,
+            expr_filter: Some(expr),
         }
     }
 }
@@ -190,14 +226,33 @@ impl FilterPlan {
     /// - a column (e.g. severity_text, event_name, etc.)
     /// - a column nested within a struct (e.g. resource.schema_url, instrumentation_scope.name, etc.)
     /// - a literal (e.g. "a", 1234, true, etc.)
+    /// - a function invocation (e.g. encode(severity_text, "base64"))
+    /// - an arithmetic expression (e.g. severity_number + 1)
     ///
+    /// For common patterns (column vs literal, attribute vs literal), optimized fast paths are used.
+    /// For all other combinations (column vs column, attribute vs column, function calls, etc.),
+    /// the general expression evaluation system is used as a fallback.
     fn try_from_binary_expr(
         left_expr: &ScalarExpression,
-        binary_op: Operator,
+        mut binary_op: Operator,
         right_expr: &ScalarExpression,
+        case_sensitive: bool,
+        attr_keys_case_sensitive: bool,
+        functions: &[PipelineFunction],
     ) -> Result<Self> {
-        let left_arg = BinaryArg::try_from(left_expr)?;
-        let right_arg = BinaryArg::try_from(right_expr)?;
+        // Try to convert both sides to BinaryArg for the fast path. If either side is a
+        // complex expression (e.g. arithmetic, function call), BinaryArg::try_from will fail
+        // and we fall back to the general expression evaluation path.
+        let left_arg = BinaryArg::try_from(left_expr);
+        let right_arg = BinaryArg::try_from(right_expr);
+        let (mut left_arg, mut right_arg) = match (left_arg, right_arg) {
+            (Ok(l), Ok(r)) => (l, r),
+            _ => {
+                return Self::try_from_binary_expr_via_expr_eval(
+                    left_expr, binary_op, right_expr, functions,
+                );
+            }
+        };
 
         // don't allow non equals comparisons for null
         if binary_op != Operator::Eq
@@ -212,12 +267,9 @@ impl FilterPlan {
             });
         }
 
-        // TODO there are several branches below which are not yet supported
-        // - comparing two literals. e.g "a" == "b"
-        // - comparing non-literal left with non-literal right. e.g.
-        //   - severity_text == event_name
-        //   - attributes["x"] == severity_text
-        //   - etc.
+        if !case_sensitive {
+            Self::transform_case_insensitive_equals(&mut left_arg, &mut binary_op, &mut right_arg);
+        }
 
         match left_arg {
             BinaryArg::Column(left_column) => match left_column {
@@ -236,9 +288,9 @@ impl FilterPlan {
                         // left = column & right == null
                         Ok(FilterPlan::from(col(left_col_name).is_null()))
                     }
-                    _ => Err(Error::NotYetSupportedError {
-                        message: "comparing left column with non-literal right in filter.".into(),
-                    }),
+                    _ => Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    ),
                 },
                 ColumnAccessor::StructCol(left_struct_name, left_struct_field) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
@@ -259,17 +311,17 @@ impl FilterPlan {
                             col(left_struct_name).field(left_struct_field).is_null(),
                         ))
                     }
-                    _ => Err(Error::NotYetSupportedError {
-                        message: "comparing left struct column with non-literal right in filter"
-                            .into(),
-                    }),
+                    _ => Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    ),
                 },
                 ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                     match right_arg {
                         BinaryArg::Literal(right_lit) => {
                             // left = attribute & right = literal
                             Ok(FilterPlan::from(AttributesFilterPlan::new(
-                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
+                                // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
+                                Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                         &right_lit, binary_op,
                                     )?),
@@ -280,21 +332,24 @@ impl FilterPlan {
                         BinaryArg::Null => {
                             // left = attribute & right = null (e.g. doesn't have attribute)
                             Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
-                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
+                                Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive),
+                                // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
                                 attrs_identifier,
                             ))))
                         }
-                        _ => Err(Error::NotYetSupportedError {
-                            message: "comparing left attribute with non-literal right in filter"
-                                .into(),
-                        }),
+                        _ => Self::try_from_binary_expr_via_expr_eval(
+                            left_expr, binary_op, right_expr, functions,
+                        ),
                     }
                 }
             },
             BinaryArg::Literal(left_lit) => match right_arg {
-                BinaryArg::Literal(_right_lit) => Err(Error::NotYetSupportedError {
-                    message: "comparing literals in filter".into(),
-                }),
+                BinaryArg::Literal(_right_lit) => {
+                    // comparing two literals
+                    Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    )
+                }
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
                         // left = literal & right = column
@@ -321,20 +376,22 @@ impl FilterPlan {
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = literal & right = attribute
                         Ok(FilterPlan::from(AttributesFilterPlan::new(
-                            col(consts::ATTRIBUTE_KEY)
-                                .eq(lit(attrs_key))
-                                .and(Expr::BinaryExpr(try_attrs_value_filter_from_literal(
+                            // col(consts::ATTRIBUTE_KEY)
+                            //     .eq(lit(attrs_key))
+                            Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
+                                Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                     &left_lit, binary_op,
-                                )?)),
+                                )?),
+                            ),
                             attrs_identifier,
                         )))
                     }
                 },
                 BinaryArg::Null => {
                     // literal == null
-                    Err(Error::NotYetSupportedError {
-                        message: "comparing left literal with right null".into(),
-                    })
+                    Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    )
                 }
             },
             BinaryArg::Null => match right_arg {
@@ -352,114 +409,115 @@ impl FilterPlan {
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = null & right = attribute (e.g. doesn't have attribute)
                         Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
-                            col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
+                            Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive),
                             attrs_identifier,
                         ))))
                     }
                 },
                 BinaryArg::Literal(_lit) => {
                     // null == lit
-                    Err(Error::NotYetSupportedError {
-                        message: "comparing left null with right literal".into(),
-                    })
+                    // Note: most of the time, the folding mechanism of expression crate will
+                    // take care of folding this into a boolean literal.
+                    Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    )
                 }
                 BinaryArg::Null => {
                     // null == null
-                    Err(Error::NotYetSupportedError {
-                        message: "comparing left null with right null".into(),
-                    })
+                    // Note: most of the time, the folding mechanism of expression crate will
+                    // take care of folding this into a boolean literal.
+                    Self::try_from_binary_expr_via_expr_eval(
+                        left_expr, binary_op, right_expr, functions,
+                    )
                 }
             },
         }
     }
 
-    /// constructs the Expr that will get passed to the "contains" function for a column
-    /// e.g. the first argument in an expression like contains(attributes["x"], "hello")
+    /// Fallback path: plan a binary comparison filter expression using the general expression
+    /// evaluation system. This handles cases that the optimized fast paths don't cover, such
+    /// as comparing two columns, cross-scope comparisons, function calls, etc.
+    fn try_from_binary_expr_via_expr_eval(
+        left_expr: &ScalarExpression,
+        binary_op: Operator,
+        right_expr: &ScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<Self> {
+        let planner = ExprLogicalPlanner::default();
+        let left = planner.plan_scalar_expr(left_expr, functions)?;
+        let right = planner.plan_scalar_expr(right_expr, functions)?;
+
+        // build the comparison expression using the expr system's scoping logic
+        let expr = Self::build_scoped_comparison_expr(left, binary_op, right)?;
+        Ok(FilterPlan::from_expr(expr))
+    }
+
+    /// Build a `ScopedLogicalExpr` that performs a boolean comparison (eq, gt, etc.) on the
+    /// results of two child expressions. Handles both same-scope and cross-scope cases.
     ///
-    /// The second return value contains which attribute we're passing to contains. This
-    /// can be used by the caller to construct the appropriate logical expr for checking
-    /// if attribute value contains some text
-    fn contains_column_arg(
-        column_accessor: ColumnAccessor,
-    ) -> (Expr, Option<(AttributesIdentifier, String)>) {
-        let mut attrs = None;
-        let expr = match column_accessor {
-            ColumnAccessor::ColumnName(col_name) => col(col_name),
-            ColumnAccessor::StructCol(struct_name, struct_field) => {
-                col(struct_name).field(struct_field)
-            }
-            ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
-                attrs = Some((attrs_identifier, attrs_key));
-                // for now we assume that text contains is always applied to the str column
-                col(consts::ATTRIBUTE_STR)
-            }
+    /// Type coercion is applied to ensure both sides have compatible types for the comparison
+    /// (e.g., Int32 vs Int64 will have the narrower side cast to Int64).
+    fn build_scoped_comparison_expr(
+        mut left: ScopedLogicalExpr,
+        binary_op: Operator,
+        mut right: ScopedLogicalExpr,
+    ) -> Result<ScopedLogicalExpr> {
+        use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic};
+        use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
+
+        // Apply type coercion so both sides of the comparison have compatible types.
+        // We reuse the arithmetic coercion rules (which handle Int32 vs Int64, AnyValue vs
+        // concrete types, etc.) -- the side-effect of adding cast expressions is what we need.
+        // We ignore the returned result type since comparisons always produce Boolean.
+        let _ = coerce_arithmetic(&mut left, &mut right);
+
+        // check if both sides can be evaluated in the same scope (no join needed)
+        let possible_combined_scope = match (&left.source, &right.source) {
+            (
+                LogicalExprDataSource::DataSource(left_scope),
+                LogicalExprDataSource::DataSource(right_scope),
+            ) => left_scope
+                .can_combine(right_scope)
+                .then_some(if !left_scope.is_scalar() {
+                    left_scope
+                } else {
+                    right_scope
+                }),
+            _ => None,
         };
 
-        (expr, attrs)
-    }
-}
-
-impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
-    type Error = Error;
-
-    fn try_from(logical_expr: &LogicalExpression) -> Result<Self> {
-        match logical_expr {
-            LogicalExpression::EqualTo(equals_to_expr) => FilterPlan::try_from_binary_expr(
-                equals_to_expr.get_left(),
-                Operator::Eq,
-                equals_to_expr.get_right(),
-            )
-            .map(|plan| plan.into()),
-            LogicalExpression::GreaterThan(gt_expr) => FilterPlan::try_from_binary_expr(
-                gt_expr.get_left(),
-                Operator::Gt,
-                gt_expr.get_right(),
-            )
-            .map(|plan| plan.into()),
-            LogicalExpression::GreaterThanOrEqualTo(geq_expr) => FilterPlan::try_from_binary_expr(
-                geq_expr.get_left(),
-                Operator::GtEq,
-                geq_expr.get_right(),
-            )
-            .map(|plan| plan.into()),
-            LogicalExpression::And(and_expr) => {
-                let left = Self::try_from(and_expr.get_left())?;
-                let right = Self::try_from(and_expr.get_right())?;
-                Ok(Self::and(left, right))
-            }
-            LogicalExpression::Or(or_expr) => {
-                let left = Self::try_from(or_expr.get_left())?;
-                let right = Self::try_from(or_expr.get_right())?;
-                Ok(Self::or(left, right))
-            }
-            LogicalExpression::Not(not_expr) => {
-                let inner = Self::try_from(not_expr.get_inner_expression())?;
-                Ok(Self::not(inner))
-            }
-            LogicalExpression::Contains(contains_expr) => {
-                Ok(Self::from(FilterPlan::try_from(contains_expr)?))
-            }
-            LogicalExpression::Matches(matches_expr) => {
-                Ok(Self::from(FilterPlan::try_from(matches_expr)?))
-            }
-
-            LogicalExpression::Scalar(scalar_expr) => match scalar_expr {
-                ScalarExpression::Static(StaticScalarExpression::Boolean(bool)) => {
-                    Ok(Self::from(FilterPlan::from(lit(bool.get_value()))))
-                }
-                // TODO add support for these expressions eventually
-                _ => Err(Error::NotYetSupportedError {
-                    message: format!("Logical expression not yet supported {logical_expr:?}"),
-                }),
-            },
+        if let Some(combined_scope) = possible_combined_scope {
+            let dict_downcast = left.requires_dict_downcast || right.requires_dict_downcast;
+            Ok(ScopedLogicalExpr {
+                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(left.logical_expr),
+                    binary_op,
+                    Box::new(right.logical_expr),
+                )),
+                source: LogicalExprDataSource::DataSource(combined_scope.clone()),
+                expr_type: ExprLogicalType::Boolean,
+                requires_dict_downcast: dict_downcast,
+            })
+        } else {
+            // different scopes -- need a join
+            Ok(ScopedLogicalExpr {
+                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(col(LEFT_COLUMN_NAME)),
+                    binary_op,
+                    Box::new(col(RIGHT_COLUMN_NAME)),
+                )),
+                source: LogicalExprDataSource::Join(Box::new(left), Box::new(right)),
+                expr_type: ExprLogicalType::Boolean,
+                requires_dict_downcast: true,
+            })
         }
     }
-}
 
-impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
-    type Error = Error;
-
-    fn try_from(contains_expr: &ContainsLogicalExpression) -> Result<Self> {
+    fn try_from_contains_expr(
+        contains_expr: &ContainsLogicalExpression,
+        attr_keys_case_sensitive: bool,
+        functions: &[PipelineFunction],
+    ) -> Result<Self> {
         let left_arg = BinaryArg::try_from(contains_expr.get_haystack())?;
         let right_arg = BinaryArg::try_from(contains_expr.get_needle())?;
 
@@ -469,11 +527,11 @@ impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
                 let right_expr = match right_arg {
                     BinaryArg::Literal(right_lit) => try_static_scalar_to_attr_literal(&right_lit)?,
                     _ => {
-                        return Err(Error::NotYetSupportedError {
-                            message:
-                                "text contains predicate comparing column left to non literal right"
-                                    .into(),
-                        });
+                        // non-literal needle -- fall back to expression evaluation
+                        return Self::try_from_contains_expr_via_expr_eval(
+                            contains_expr,
+                            functions,
+                        );
                     }
                 };
 
@@ -482,8 +540,7 @@ impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
                     None => FilterPlan::from(contains_expr),
                     Some((attrs_identifier, attrs_key)) => {
                         FilterPlan::from(AttributesFilterPlan::new(
-                            col(consts::ATTRIBUTE_KEY)
-                                .eq(lit(attrs_key))
+                            Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive)
                                 .and(contains_expr),
                             attrs_identifier,
                         ))
@@ -495,9 +552,11 @@ impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
                 let (right_expr, attrs) = match right_arg {
                     BinaryArg::Column(right_column) => Self::contains_column_arg(right_column),
                     _ => {
-                        return Err(Error::NotYetSupportedError {
-                            message: "contains with left literal and right non-column".into(),
-                        });
+                        // non-column right side -- fall back to expression evaluation
+                        return Self::try_from_contains_expr_via_expr_eval(
+                            contains_expr,
+                            functions,
+                        );
                     }
                 };
 
@@ -506,25 +565,77 @@ impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
                     None => FilterPlan::from(contains_expr),
                     Some((attrs_identifier, attrs_key)) => {
                         FilterPlan::from(AttributesFilterPlan::new(
-                            col(consts::ATTRIBUTE_KEY)
-                                .eq(lit(attrs_key))
+                            Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive)
                                 .and(contains_expr),
                             attrs_identifier,
                         ))
                     }
                 })
             }
-            BinaryArg::Null => Err(Error::NotYetSupportedError {
-                message: "contains with left literal null".into(),
-            }),
+            BinaryArg::Null => Self::try_from_contains_expr_via_expr_eval(contains_expr, functions),
         }
     }
-}
 
-impl TryFrom<&MatchesLogicalExpression> for FilterPlan {
-    type Error = Error;
+    /// Fallback path for contains expressions that can't be handled by the fast path.
+    fn try_from_contains_expr_via_expr_eval(
+        contains_expr: &ContainsLogicalExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<Self> {
+        let planner = ExprLogicalPlanner::default();
+        let haystack = planner.plan_scalar_expr(contains_expr.get_haystack(), functions)?;
+        let needle = planner.plan_scalar_expr(contains_expr.get_needle(), functions)?;
 
-    fn try_from(matches_expr: &MatchesLogicalExpression) -> Result<Self> {
+        // Build a contains function call as a ScopedLogicalExpr
+        let expr = Self::build_scoped_contains_expr(haystack, needle)?;
+        Ok(FilterPlan::from_expr(expr))
+    }
+
+    /// Build a `ScopedLogicalExpr` that performs a contains check on two expressions.
+    fn build_scoped_contains_expr(
+        haystack: ScopedLogicalExpr,
+        needle: ScopedLogicalExpr,
+    ) -> Result<ScopedLogicalExpr> {
+        use crate::pipeline::expr::types::ExprLogicalType;
+
+        // check if both sides can be evaluated in the same scope
+        let possible_combined_scope = match (&haystack.source, &needle.source) {
+            (
+                LogicalExprDataSource::DataSource(left_scope),
+                LogicalExprDataSource::DataSource(right_scope),
+            ) => left_scope
+                .can_combine(right_scope)
+                .then_some(if !left_scope.is_scalar() {
+                    left_scope
+                } else {
+                    right_scope
+                }),
+            _ => None,
+        };
+
+        if let Some(combined_scope) = possible_combined_scope {
+            let dict_downcast = haystack.requires_dict_downcast || needle.requires_dict_downcast;
+            Ok(ScopedLogicalExpr {
+                logical_expr: contains(haystack.logical_expr, needle.logical_expr),
+                source: LogicalExprDataSource::DataSource(combined_scope.clone()),
+                expr_type: ExprLogicalType::Boolean,
+                requires_dict_downcast: dict_downcast,
+            })
+        } else {
+            use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
+            Ok(ScopedLogicalExpr {
+                logical_expr: contains(col(LEFT_COLUMN_NAME), col(RIGHT_COLUMN_NAME)),
+                source: LogicalExprDataSource::Join(Box::new(haystack), Box::new(needle)),
+                expr_type: ExprLogicalType::Boolean,
+                requires_dict_downcast: true,
+            })
+        }
+    }
+
+    fn try_from_matches_expr(
+        matches_expr: &MatchesLogicalExpression,
+        attr_keys_case_sensitive: bool,
+        _functions: &[PipelineFunction],
+    ) -> Result<Self> {
         let left_arg = BinaryArg::try_from(matches_expr.get_haystack())?;
         let pattern = match matches_expr.get_pattern() {
             ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
@@ -554,13 +665,9 @@ impl TryFrom<&MatchesLogicalExpression> for FilterPlan {
                 }
                 ColumnAccessor::Attributes(attrs_identifier, attr_key) => {
                     FilterPlan::from(AttributesFilterPlan::new(
-                        col(consts::ATTRIBUTE_KEY)
-                            .eq(lit(attr_key))
-                            .and(binary_expr(
-                                col(consts::ATTRIBUTE_STR),
-                                Operator::RegexMatch,
-                                pattern,
-                            )),
+                        Self::attr_key_equals(&attr_key, attr_keys_case_sensitive).and(
+                            binary_expr(col(consts::ATTRIBUTE_STR), Operator::RegexMatch, pattern),
+                        ),
                         attrs_identifier,
                     ))
                 }
@@ -572,6 +679,199 @@ impl TryFrom<&MatchesLogicalExpression> for FilterPlan {
                 cause: "cannot match null against regex".into(),
                 query_location: Some(matches_expr.get_query_location().clone()),
             }),
+        }
+    }
+
+    /// transform the arguments for a binary filter expression into case-insensitive equals
+    /// if the operator and the types would support it
+    ///
+    /// TODO: Currently this uses ILikeMatch to implement case insensitive equals. We'll eventually
+    /// revisit this. There are two small issues with the current implementation:
+    /// - In the future, we will probably support filtering where one side is not a static, so
+    ///   we won't be able to statically determine that this is the appropriate operator
+    /// - If the string literal to which we're comparing contains special characters used in
+    ///   SQL Like expressions, such as "%", "_" or "\\", the underlying arrow_string kernel will
+    ///   do the comparison using a case insensitive regex match (even if the characters are
+    ///   escaped), and this is slower than it just calling eq_ignore_case.
+    ///
+    /// The better solution in the future is probably to implement our kernel for checking string
+    /// equality while ignoring ascii case and embedding it in either a PhysicalExpr or ScalarUDF.
+    /// However, this will be a lot easier to implement with some changes to arrow_string crate.
+    ///
+    fn transform_case_insensitive_equals(
+        left_arg: &mut BinaryArg,
+        binary_op: &mut Operator,
+        right_arg: &mut BinaryArg,
+    ) {
+        if binary_op != &Operator::Eq {
+            return;
+        }
+
+        if let BinaryArg::Literal(StaticScalarExpression::String(literal)) = left_arg {
+            *binary_op = Operator::ILikeMatch;
+            let literal_val = literal.get_value();
+            if Self::contains_like_pattern(literal_val) {
+                *literal = StringScalarExpression::new(
+                    literal.get_query_location().clone(),
+                    &Self::escape_like_pattern(literal_val),
+                )
+            }
+        }
+
+        if let BinaryArg::Literal(StaticScalarExpression::String(literal)) = right_arg {
+            *binary_op = Operator::ILikeMatch;
+            let literal_val = literal.get_value();
+            if Self::contains_like_pattern(literal_val) {
+                *literal = StringScalarExpression::new(
+                    literal.get_query_location().clone(),
+                    &Self::escape_like_pattern(literal_val),
+                )
+            }
+        }
+    }
+
+    fn contains_like_pattern(pattern: &str) -> bool {
+        memchr::memchr3(b'%', b'_', b'\\', pattern.as_bytes()).is_some()
+    }
+
+    fn escape_like_pattern(value: &str) -> String {
+        let mut result = String::with_capacity(value.len());
+        for ch in value.chars() {
+            if ch == '%' || ch == '_' || ch == '\\' {
+                result.push('\\');
+            }
+            result.push(ch);
+        }
+        result
+    }
+
+    /// Create the expression that checks the name of some attribute.
+    ///
+    /// If case sensitive, it simply checks the value in thea attribute key column is equal to
+    /// the attribute key. When case insensitive, it uses ILikeMatch which will actually get
+    /// evaluated using `str.equals_ignore_case` inside `arrow_string::predicate`
+    fn attr_key_equals(attrs_key: &str, case_sensitive: bool) -> Expr {
+        if case_sensitive {
+            col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
+        } else {
+            let rhs_expr = if Self::contains_like_pattern(attrs_key) {
+                lit(Self::escape_like_pattern(attrs_key))
+            } else {
+                lit(attrs_key)
+            };
+            binary_expr(col(consts::ATTRIBUTE_KEY), Operator::ILikeMatch, rhs_expr)
+        }
+    }
+
+    /// constructs the Expr that will get passed to the "contains" function for a column
+    /// e.g. the first argument in an expression like contains(attributes["x"], "hello")
+    ///
+    /// The second return value contains which attribute we're passing to contains. This
+    /// can be used by the caller to construct the appropriate logical expr for checking
+    /// if attribute value contains some text
+    fn contains_column_arg(
+        column_accessor: ColumnAccessor,
+    ) -> (Expr, Option<(AttributesIdentifier, String)>) {
+        let mut attrs = None;
+        let expr = match column_accessor {
+            ColumnAccessor::ColumnName(col_name) => col(col_name),
+            ColumnAccessor::StructCol(struct_name, struct_field) => {
+                col(struct_name).field(struct_field)
+            }
+            ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
+                attrs = Some((attrs_identifier, attrs_key));
+                // for now we assume that text contains is always applied to the str column
+                col(consts::ATTRIBUTE_STR)
+            }
+        };
+
+        (expr, attrs)
+    }
+}
+
+impl Composite<FilterPlan> {
+    pub fn try_from(
+        logical_expr: &LogicalExpression,
+        attr_keys_case_sensitive: bool,
+        functions: &[PipelineFunction],
+    ) -> Result<Self> {
+        match logical_expr {
+            LogicalExpression::EqualTo(equals_to_expr) => FilterPlan::try_from_binary_expr(
+                equals_to_expr.get_left(),
+                Operator::Eq,
+                equals_to_expr.get_right(),
+                !equals_to_expr.get_case_insensitive(),
+                attr_keys_case_sensitive,
+                functions,
+            )
+            .map(|plan| plan.into()),
+            LogicalExpression::GreaterThan(gt_expr) => FilterPlan::try_from_binary_expr(
+                gt_expr.get_left(),
+                Operator::Gt,
+                gt_expr.get_right(),
+                Default::default(),
+                attr_keys_case_sensitive,
+                functions,
+            )
+            .map(|plan| plan.into()),
+            LogicalExpression::GreaterThanOrEqualTo(geq_expr) => FilterPlan::try_from_binary_expr(
+                geq_expr.get_left(),
+                Operator::GtEq,
+                geq_expr.get_right(),
+                Default::default(),
+                attr_keys_case_sensitive,
+                functions,
+            )
+            .map(|plan| plan.into()),
+            LogicalExpression::And(and_expr) => {
+                let left =
+                    Self::try_from(and_expr.get_left(), attr_keys_case_sensitive, functions)?;
+                let right =
+                    Self::try_from(and_expr.get_right(), attr_keys_case_sensitive, functions)?;
+                Ok(Self::and(left, right))
+            }
+            LogicalExpression::Or(or_expr) => {
+                let left = Self::try_from(or_expr.get_left(), attr_keys_case_sensitive, functions)?;
+                let right =
+                    Self::try_from(or_expr.get_right(), attr_keys_case_sensitive, functions)?;
+                Ok(Self::or(left, right))
+            }
+            LogicalExpression::Not(not_expr) => {
+                let inner = Self::try_from(
+                    not_expr.get_inner_expression(),
+                    attr_keys_case_sensitive,
+                    functions,
+                )?;
+                Ok(Self::not(inner))
+            }
+            LogicalExpression::Contains(contains_expr) => {
+                Ok(Self::from(FilterPlan::try_from_contains_expr(
+                    contains_expr,
+                    attr_keys_case_sensitive,
+                    functions,
+                )?))
+            }
+            LogicalExpression::Matches(matches_expr) => {
+                Ok(Self::from(FilterPlan::try_from_matches_expr(
+                    matches_expr,
+                    attr_keys_case_sensitive,
+                    functions,
+                )?))
+            }
+
+            LogicalExpression::Scalar(scalar_expr) => match scalar_expr {
+                ScalarExpression::Static(StaticScalarExpression::Boolean(bool)) => {
+                    Ok(Self::from(FilterPlan::from(lit(bool.get_value()))))
+                }
+                // For any other scalar expression, plan it via the expression evaluation system.
+                // This handles cases like function calls that return booleans, boolean column
+                // references, etc.
+                other => {
+                    let planner = ExprLogicalPlanner::default();
+                    let expr = planner.plan_scalar_expr(other, functions)?;
+                    Ok(Self::from(FilterPlan::from_expr(expr)))
+                }
+            },
         }
     }
 }
@@ -595,6 +895,16 @@ impl ToExec for FilterPlan {
             .map(|attr_filter| attr_filter.to_exec(session_ctx, otap_batch))
             .transpose()?;
 
+        let expr_predicate = self
+            .expr_filter
+            .as_ref()
+            .map(|logical_expr| {
+                let planner = ExprPhysicalPlanner::default();
+                // clone the logical expr since into_physical consumes it
+                planner.plan(logical_expr.clone())
+            })
+            .transpose()?;
+
         // compute how to handle missing attributes. If the attrs filter is not(attr exists), then
         // if the id column null for some row (meaning no attributes), or if the ID column is
         // absent entirely (meaning now rows have attributes) then we treat the rows as it passes
@@ -610,6 +920,7 @@ impl ToExec for FilterPlan {
         Ok(FilterExec {
             predicate: physical_expr,
             attributes_filter: attrs_filter,
+            expr_predicate,
             missing_attrs_pass,
         })
     }
@@ -717,6 +1028,11 @@ pub struct FilterExec {
 
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 
+    /// General-purpose expression-based predicate. Evaluated using the expression evaluation
+    /// system (supporting joins across data scopes). The result is converted to a
+    /// `BooleanArray` aligned to the root record batch.
+    expr_predicate: Option<ScopedPhysicalExpr>,
+
     /// determines how we treat rows that where there are no attributes. if false, this cause the
     /// row not to pass the filter, unless this is true which it should be set it as for filters/
     /// like `attributes["x"] == null`
@@ -728,6 +1044,7 @@ impl From<AdaptivePhysicalExprExec> for FilterExec {
         Self {
             predicate: Some(predicate),
             attributes_filter: None,
+            expr_predicate: None,
             missing_attrs_pass: false,
         }
     }
@@ -833,6 +1150,17 @@ impl FilterExec {
             });
         }
 
+        // evaluate the general expression-based predicate (if present)
+        if let Some(expr_pred) = &mut self.expr_predicate {
+            let expr_selection_vec =
+                Self::evaluate_expr_predicate(expr_pred, otap_batch, session_ctx, root_rb)?;
+
+            selection_vec = Some(match selection_vec {
+                Some(sv) => and(&sv, &expr_selection_vec)?,
+                None => expr_selection_vec,
+            });
+        }
+
         // if for some reason this filter was empty (would be unusual b/c we shouldn't be planning
         // filters like this), we just return a vec indicating that all rows passed the predicate
         let result = selection_vec.unwrap_or(BooleanArray::new(
@@ -841,6 +1169,205 @@ impl FilterExec {
         ));
 
         Ok(result)
+    }
+
+    /// Evaluates a [`ScopedPhysicalExpr`] and converts the result to a `BooleanArray` selection
+    /// vector aligned to the root record batch.
+    ///
+    /// The expression may produce results from any data scope (root, attributes, join result, or
+    /// scalar). This method handles the alignment:
+    /// - Root scope: result is already aligned, just extract the boolean array
+    /// - Scalar scope: broadcast the scalar boolean to all rows
+    /// - Attributes scope: use parent_id -> root join to align
+    fn evaluate_expr_predicate(
+        expr_pred: &mut ScopedPhysicalExpr,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+        root_rb: &RecordBatch,
+    ) -> Result<BooleanArray> {
+        let num_rows = root_rb.num_rows();
+
+        let eval_result = match expr_pred.execute(otap_batch, session_ctx)? {
+            Some(result) => result,
+            None => {
+                // expression result was null/absent -- treat as all rows failing the filter
+                return Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None));
+            }
+        };
+
+        // convert the ColumnarValue to an array
+        let result_array = match &eval_result.values {
+            ColumnarValue::Scalar(scalar) => {
+                // scalar result -- broadcast to all rows of root batch
+                let bool_val = match scalar {
+                    ScalarValue::Boolean(Some(b)) => *b,
+                    ScalarValue::Boolean(None) | ScalarValue::Null => false,
+                    other => {
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "expression predicate must evaluate to a boolean, found {:?}",
+                                other.data_type()
+                            ),
+                        });
+                    }
+                };
+                return Ok(BooleanArray::new(
+                    if bool_val {
+                        BooleanBuffer::new_set(num_rows)
+                    } else {
+                        BooleanBuffer::new_unset(num_rows)
+                    },
+                    None,
+                ));
+            }
+            ColumnarValue::Array(arr) => arr.clone(),
+        };
+
+        let boolean_arr =
+            as_boolean_array(&result_array)
+                .cloned()
+                .map_err(|_| Error::ExecutionError {
+                    cause: format!(
+                        "expression predicate must evaluate to a boolean, found {}",
+                        result_array.data_type()
+                    ),
+                })?;
+
+        // strip nulls: treat null predicate results as false
+        let (values, null_buffer) = boolean_arr.clone().into_parts();
+        let boolean_arr = match null_buffer {
+            None => boolean_arr.clone(),
+            Some(null_buffer) => {
+                // AND values with null_buffer to turn null positions into false
+                let null_mask = BooleanArray::new(null_buffer.into_inner(), None);
+                // safety: both arrays have the same length (they came from the same BooleanArray)
+                and(&BooleanArray::new(values, None), &null_mask).expect("same length arrays")
+            }
+        };
+
+        // check if the result is already aligned to the root batch
+        match eval_result.data_scope.as_ref() {
+            DataScope::Root | DataScope::StaticScalar => {
+                // result is already aligned to root batch rows
+                Ok(boolean_arr)
+            }
+            DataScope::Attributes(attrs_id, _) => {
+                // result is aligned to some filtered attributes batch -- need to map back to root
+                // using parent_id -> root.id join. Rows in root that have no matching attribute
+                // will be treated as not passing the filter.
+                Self::align_attrs_result_to_root(
+                    &boolean_arr,
+                    &eval_result,
+                    *attrs_id,
+                    otap_batch,
+                    root_rb,
+                )
+            }
+        }
+    }
+
+    /// Aligns a boolean result from an attributes-scoped expression evaluation back to the root
+    /// record batch.
+    ///
+    /// This uses a similar approach to the existing attribute filter path: we build a
+    /// `BooleanArray` for the root batch by looking up which parent_ids passed the expression
+    /// predicate.
+    fn align_attrs_result_to_root(
+        boolean_arr: &BooleanArray,
+        eval_result: &crate::pipeline::expr::PhysicalExprEvalResult,
+        attrs_id: AttributesIdentifier,
+        otap_batch: &OtapArrowRecords,
+        root_rb: &RecordBatch,
+    ) -> Result<BooleanArray> {
+        let num_rows = root_rb.num_rows();
+
+        // get parent_id column from the expression result
+        let parent_ids = eval_result
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "expression predicate result from attributes scope missing parent_id column"
+                    .into(),
+            })?;
+        let parent_id_col = parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: format!(
+                    "expected parent_id to be UInt16, found {:?}",
+                    parent_ids.data_type()
+                ),
+            })?;
+
+        // get the id column from the root batch that corresponds to the attributes payload type
+        let attrs_payload_type = match attrs_id {
+            AttributesIdentifier::Root => match otap_batch.root_payload_type() {
+                ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
+                ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
+                _ => ArrowPayloadType::MetricAttrs,
+            },
+            AttributesIdentifier::NonRoot(payload_type) => payload_type,
+        };
+
+        let id_col = match UInt16Type::get_id_col_from_parent(root_rb, attrs_payload_type)? {
+            Some(MaybeDictArrayAccessor::Native(id_col)) => id_col,
+            Some(_) => {
+                return Err(Error::ExecutionError {
+                    cause: "invalid type for ID column on root batch".into(),
+                });
+            }
+            None => {
+                // no ID column means no attributes exist -- all rows fail
+                return Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None));
+            }
+        };
+
+        // build a lookup from parent_id -> boolean result. For attributes, multiple rows may
+        // share the same parent_id (shouldn't normally happen for a key-filtered result, but
+        // we handle it defensively). We use OR semantics: if any attribute row for a parent_id
+        // passes, the parent passes.
+        //
+        // We use a simple array indexed by parent_id value (u16 range is small enough)
+        // 0 = not seen, 1 = seen but false, 2 = seen and true
+        let mut id_result: Vec<u8> = vec![0u8; 65536];
+        for i in 0..parent_id_col.len() {
+            if parent_id_col.is_valid(i) {
+                let pid = parent_id_col.value(i) as usize;
+                let passes = boolean_arr.value(i);
+                if passes {
+                    id_result[pid] = 2;
+                } else if id_result[pid] == 0 {
+                    id_result[pid] = 1;
+                }
+            }
+        }
+
+        // map the root batch's id column through the lookup
+        let mut builder = BooleanBufferBuilder::new(num_rows);
+        let mut segment_validity = false;
+        let mut segment_len = 0usize;
+
+        for index in 0..id_col.len() {
+            let row_passes = if id_col.is_valid(index) {
+                id_result[id_col.value(index) as usize] == 2
+            } else {
+                false
+            };
+
+            if segment_validity != row_passes {
+                if segment_len > 0 {
+                    builder.append_n(segment_len, segment_validity);
+                }
+                segment_validity = row_passes;
+                segment_len = 0;
+            }
+            segment_len += 1;
+        }
+        if segment_len > 0 {
+            builder.append_n(segment_len, segment_validity);
+        }
+
+        Ok(BooleanArray::new(builder.finish(), None))
     }
 }
 
@@ -1355,7 +1882,7 @@ impl PipelineStage for FilterPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use crate::pipeline::Pipeline;
+    use crate::pipeline::{Pipeline, PipelineOptions};
 
     use super::*;
 
@@ -1394,14 +1921,14 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::{
-        otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
+        otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
     };
 
     use crate::pipeline::test::{
         exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
     };
 
-    async fn test_simple_filter<P: Parser>() {
+    async fn test_simple_filter<P: Parser, F: Fn(&str) -> String>(date_time_formatter: F) {
         let ns_per_second: u64 = 1000 * 1000 * 1000;
         let log_records = vec![
             LogRecord::build()
@@ -1466,7 +1993,10 @@ mod test {
         );
 
         let result = exec_logs_pipeline::<P>(
-            "logs | where time_unix_nano > datetime(1970-01-01 00:00:01.1)",
+            &format!(
+                "logs | where time_unix_nano > {} ",
+                date_time_formatter("1970-01-01T00:00:01.1")
+            ),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -1476,7 +2006,10 @@ mod test {
         );
 
         let result = exec_logs_pipeline::<P>(
-            "logs | where datetime(1970-01-01 00:00:01.1) > time_unix_nano",
+            &format!(
+                "logs | where {} > time_unix_nano",
+                date_time_formatter("1970-01-01T00:00:01.1")
+            ),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -1500,12 +2033,12 @@ mod test {
 
     #[tokio::test]
     async fn test_simple_filter_kql_parser() {
-        test_simple_filter::<KqlParser>().await;
+        test_simple_filter::<KqlParser, _>(|dt| format!("datetime({dt})")).await;
     }
 
     #[tokio::test]
-    async fn test_simple_filter_op_parser() {
-        test_simple_filter::<OplParser>().await
+    async fn test_simple_filter_opl_parser() {
+        test_simple_filter::<OplParser, _>(|dt| format!("date_time\"{dt}\"")).await
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
@@ -1774,6 +2307,15 @@ mod test {
         .await;
     }
 
+    #[tokio::test]
+    async fn test_filter_matches_regex_opl_regex_literal() {
+        test_filter_matches_regex::<OplParser>(
+            r#"logs | where matches(event_name, r"^err.*")"#,
+            r#"logs | where matches(attributes["username"], r"^t.*")"#,
+        )
+        .await;
+    }
+
     async fn test_filter_text_matches_regex_struct_cols<P: Parser>(q1: &str) {
         let input = LogsData {
             resource_logs: vec![
@@ -1922,6 +2464,7 @@ mod test {
                 ])
                 .links(vec![
                     Link::build()
+                        .trace_id(vec![11; 16])
                         .span_id(vec![11; 8])
                         .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
                         .finish(),
@@ -1948,6 +2491,7 @@ mod test {
                 ])
                 .links(vec![
                     Link::build()
+                        .trace_id(vec![21; 16])
                         .span_id(vec![21; 8])
                         .attributes(vec![
                             KeyValue::new("key2", AnyValue::new_string("val2")),
@@ -1955,6 +2499,7 @@ mod test {
                         ])
                         .finish(),
                     Link::build()
+                        .trace_id(vec![22; 16])
                         .span_id(vec![22; 8])
                         .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
                         .finish(),
@@ -1977,8 +2522,12 @@ mod test {
                     Event::build().name("event3.2").finish(),
                 ])
                 .links(vec![
-                    Link::build().span_id(vec![31; 8]).finish(),
                     Link::build()
+                        .trace_id(vec![31; 16])
+                        .span_id(vec![31; 8])
+                        .finish(),
+                    Link::build()
+                        .trace_id(vec![32; 16])
                         .span_id(vec![32; 8])
                         .attributes(vec![
                             KeyValue::new("key2", AnyValue::new_string("val2")),
@@ -1987,7 +2536,10 @@ mod test {
                             KeyValue::new("key3", AnyValue::new_string("val2")),
                         ])
                         .finish(),
-                    Link::build().span_id(vec![33; 8]).finish(),
+                    Link::build()
+                        .trace_id(vec![33; 16])
+                        .span_id(vec![33; 8])
+                        .finish(),
                 ])
                 .finish(),
         ];
@@ -2084,9 +2636,11 @@ mod test {
                 .data_gauge(Gauge {
                     data_points: vec![
                         NumberDataPoint::build()
+                            .time_unix_nano(1000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(100u64)
                                     .trace_id(vec![1; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2104,9 +2658,11 @@ mod test {
                 .data_gauge(Gauge {
                     data_points: vec![
                         NumberDataPoint::build()
+                            .time_unix_nano(2000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(200u64)
                                     .trace_id(vec![2; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2124,9 +2680,11 @@ mod test {
                 .data_histogram(Histogram {
                     data_points: vec![
                         HistogramDataPoint::build()
+                            .time_unix_nano(3000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(300u64)
                                     .trace_id(vec![1; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2145,9 +2703,11 @@ mod test {
                 .data_histogram(Histogram {
                     data_points: vec![
                         HistogramDataPoint::build()
+                            .time_unix_nano(4000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(400u64)
                                     .trace_id(vec![2; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2166,9 +2726,11 @@ mod test {
                 .data_exponential_histogram(ExponentialHistogram {
                     data_points: vec![
                         ExponentialHistogramDataPoint::build()
+                            .time_unix_nano(5000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(500u64)
                                     .trace_id(vec![1; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2189,9 +2751,11 @@ mod test {
                 .data_exponential_histogram(ExponentialHistogram {
                     data_points: vec![
                         ExponentialHistogramDataPoint::build()
+                            .time_unix_nano(6000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .exemplars(vec![
                                 Exemplar::build()
+                                    .time_unix_nano(600u64)
                                     .trace_id(vec![2; 16])
                                     .filtered_attributes(vec![KeyValue::new(
                                         "key",
@@ -2210,6 +2774,7 @@ mod test {
                 .data_summary(Summary {
                     data_points: vec![
                         SummaryDataPoint::build()
+                            .time_unix_nano(7000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
                             .finish(),
                     ],
@@ -2221,6 +2786,7 @@ mod test {
                 .data_summary(Summary {
                     data_points: vec![
                         SummaryDataPoint::build()
+                            .time_unix_nano(8000u64)
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .finish(),
                     ],
@@ -4129,6 +4695,7 @@ mod test {
                 Field::new("parent_id", DataType::UInt16, false),
                 Field::new("key", DataType::Utf8, false),
                 Field::new("str", DataType::Utf8, true),
+                Field::new("type", DataType::UInt8, true),
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values([0, 0, 1, 1, 2, 2])),
@@ -4138,6 +4705,7 @@ mod test {
                 Arc::new(StringArray::from_iter_values([
                     "a", "d", "b", "e", "c", "f",
                 ])),
+                Arc::new(UInt8Array::from_iter_values([1, 1, 1, 1, 1, 1])),
             ],
         )
         .unwrap();
@@ -4501,10 +5069,7 @@ mod test {
             self
         }
 
-        fn evaluate(
-            &self,
-            _batch: &RecordBatch,
-        ) -> datafusion::error::Result<datafusion::logical_expr::ColumnarValue> {
+        fn evaluate(&self, _batch: &RecordBatch) -> datafusion::error::Result<ColumnarValue> {
             panic!("this shouldn't get called")
         }
 
@@ -4622,10 +5187,12 @@ mod test {
             Arc::new(Schema::new(vec![
                 Field::new("parent_id", DataType::UInt16, false),
                 Field::new("key", DataType::Utf8, false),
+                Field::new("type", DataType::UInt8, false),
             ])),
             vec![
                 Arc::new(UInt16Array::from(vec![0u16, 1, 2])),
                 Arc::new(StringArray::from_iter_values(["a", "b", "c"])),
+                Arc::new(UInt8Array::from_iter_values([1, 1, 1])),
             ],
         )
         .unwrap();
@@ -4647,5 +5214,848 @@ mod test {
             .execute(&otap_batch, &session_ctx, true, &mut pool)
             .unwrap();
         assert_eq!(result, IdMask::All);
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_key_match() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val1"))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key1\"] == \"val1\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_key_match_escape_special_chars() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key%1_1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "keyabcd1x1",
+                    AnyValue::new_string("val1"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("KEY%1_1", AnyValue::new_string("val1"))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key%1_1\"] == \"val1\"";
+        let pipeline_expr = KqlParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_key_match_record_has_same_key_different_case()
+     {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("key1", AnyValue::new_string("val1")),
+                    KeyValue::new("KEY1", AnyValue::new_string("val2")),
+                ])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key1\"] == \"val1\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        // test that since at least one of the attributes passes predicate, we get the result
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
+
+        // test the negation as well: since one of the attributes having "key1" is equal to
+        // "val1", we filter out the record
+        let query = "logs | where attributes[\"key1\"] != \"val2\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+        assert!(&result.resource_logs.is_empty());
+    }
+
+    async fn test_filter_by_attributes_case_insensitive_equals<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("VAL1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key1\"] =~ \"val1\"";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+
+        // check it also works w/ the literal on the left
+        let query = "logs | where \"val1\" =~ attributes[\"key1\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_equals_opl_parser() {
+        test_filter_by_attributes_case_insensitive_equals::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_equals_kql_parser() {
+        test_filter_by_attributes_case_insensitive_equals::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_case_insensitive_equals_escapes_special_chars() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val%1_1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("VAL%1_1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("valA1B1"))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"key1\"] =~ \"val%1_1\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+
+        // check it also escapes correctly when the literal is on the left
+        let query = "logs | where  \"val%1_1\" =~ attributes[\"key1\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_case_insensitive_key_match() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let query = "logs | where contains(attributes[\"key1\"], \"1\")";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_matches_case_insensitive_key_match() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("KEY1", AnyValue::new_string("val1"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key1", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let query = "logs | where matches(attributes[\"key1\"], \".*1\")";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                filter_attribute_keys_case_sensitive: false,
+            },
+        );
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+            panic!("invalid variant {:?}", result)
+        };
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for expression-backed filter predicates
+    // -----------------------------------------------------------------------
+
+    /// Filter comparing two root columns: severity_text == event_name
+    async fn test_filter_column_vs_column<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("match")
+                .event_name("match")
+                .finish(),
+            LogRecord::build()
+                .severity_text("a")
+                .event_name("b")
+                .finish(),
+            LogRecord::build()
+                .severity_text("other")
+                .event_name("other")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_text == event_name",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_column_vs_column_kql_parser() {
+        test_filter_column_vs_column::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_column_vs_column_opl_parser() {
+        test_filter_column_vs_column::<OplParser>().await;
+    }
+
+    /// Filter comparing a root column to an attribute: severity_number == attributes["x"]
+    async fn test_filter_column_vs_attribute<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("1")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(10))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("2")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(99))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(5)
+                .event_name("3")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_number == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_column_vs_attribute_kql_parser() {
+        test_filter_column_vs_attribute::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_column_vs_attribute_opl_parser() {
+        test_filter_column_vs_attribute::<OplParser>().await;
+    }
+
+    /// Filter comparing two attributes: attributes["x"] == attributes["y"]
+    async fn test_filter_attribute_vs_attribute<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("same")),
+                    KeyValue::new("y", AnyValue::new_string("same")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("b")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("match")),
+                    KeyValue::new("y", AnyValue::new_string("match")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] == attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_vs_attribute_kql_parser() {
+        test_filter_attribute_vs_attribute::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_vs_attribute_opl_parser() {
+        test_filter_attribute_vs_attribute::<OplParser>().await;
+    }
+
+    /// Filter with arithmetic in the predicate: severity_number + 1 > 10
+    async fn test_filter_arithmetic_in_predicate<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(9)
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .severity_number(17)
+                .event_name("3")
+                .finish(),
+        ];
+
+        // severity_number + 1 > 10 means severity_number > 9
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_number + 1 > 10",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_arithmetic_in_predicate_kql_parser() {
+        test_filter_arithmetic_in_predicate::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_arithmetic_in_predicate_opl_parser() {
+        test_filter_arithmetic_in_predicate::<OplParser>().await;
+    }
+
+    /// Filter with cross-scope arithmetic: severity_number > attributes["threshold"]
+    async fn test_filter_cross_scope_gt<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("1")
+                .attributes(vec![KeyValue::new("threshold", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(3)
+                .event_name("2")
+                .attributes(vec![KeyValue::new("threshold", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(20)
+                .event_name("3")
+                .attributes(vec![KeyValue::new("threshold", AnyValue::new_int(15))])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_number > attributes[\"threshold\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_cross_scope_gt_kql_parser() {
+        test_filter_cross_scope_gt::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_cross_scope_gt_opl_parser() {
+        test_filter_cross_scope_gt::<OplParser>().await;
+    }
+
+    /// Filter combining expr-based predicate with traditional fast-path filter via AND
+    async fn test_filter_expr_combined_with_fast_path<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .severity_number(17)
+                .event_name("match_both")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(17))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .severity_number(10)
+                .event_name("match_text_only")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(99))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .severity_number(5)
+                .event_name("match_neither")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+        ];
+
+        // severity_text == "ERROR" uses fast path; severity_number == attributes["x"] uses expr path
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_text == \"ERROR\" and severity_number == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_combined_with_fast_path_kql_parser() {
+        test_filter_expr_combined_with_fast_path::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_combined_with_fast_path_opl_parser() {
+        test_filter_expr_combined_with_fast_path::<OplParser>().await;
+    }
+
+    /// Filter where no rows match the expression predicate
+    async fn test_filter_expr_no_match<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("a")
+                .event_name("x")
+                .finish(),
+            LogRecord::build()
+                .severity_text("b")
+                .event_name("y")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_text == event_name",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert!(result.resource_logs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_no_match_kql_parser() {
+        test_filter_expr_no_match::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_no_match_opl_parser() {
+        test_filter_expr_no_match::<OplParser>().await;
+    }
+
+    /// Filter with missing attributes -- rows without the attribute should not pass
+    async fn test_filter_expr_missing_attribute<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("has_attr")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(10))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(10)
+                .event_name("no_attr")
+                .finish(),
+        ];
+
+        // the second record has no attributes so the cross-scope join produces no result
+        // for it -- it should not pass the filter
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_number == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_missing_attribute_kql_parser() {
+        test_filter_expr_missing_attribute::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_expr_missing_attribute_opl_parser() {
+        test_filter_expr_missing_attribute::<OplParser>().await;
+    }
+
+    /// Filter using substring function result in the predicate
+    async fn test_filter_with_substring<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERR_timeout")
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO_normal")
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERR_connection")
+                .event_name("3")
+                .finish(),
+        ];
+
+        // substring(severity_text, 0, 3) extracts the first 3 chars
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_substring_kql_parser() {
+        test_filter_with_substring::<KqlParser>(
+            r#"logs | where substring(severity_text, 0, 3) == "ERR""#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_substring_opl_parser() {
+        test_filter_with_substring::<OplParser>(
+            r#"logs | where substring(severity_text, 0, 3) == "ERR""#,
+        )
+        .await;
+    }
+
+    /// Filter using substring on an attribute value
+    async fn test_filter_with_substring_on_attribute<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![KeyValue::new("code", AnyValue::new_string("ERR-001"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![KeyValue::new("code", AnyValue::new_string("OK-200"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![KeyValue::new("code", AnyValue::new_string("ERR-502"))])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_substring_on_attribute_kql_parser() {
+        test_filter_with_substring_on_attribute::<KqlParser>(
+            r#"logs | where substring(attributes["code"], 0, 3) == "ERR""#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_substring_on_attribute_opl_parser() {
+        test_filter_with_substring_on_attribute::<OplParser>(
+            r#"logs | where substring(attributes["code"], 0, 3) == "ERR""#,
+        )
+        .await;
+    }
+
+    /// Filter using contains where the needle is a column reference (not a literal).
+    /// This exercises the `try_from_contains_expr_via_expr_eval` fallback.
+    async fn test_filter_contains_column_needle<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("error in module auth")
+                .event_name("auth")
+                .finish(),
+            LogRecord::build()
+                .severity_text("warning from module payments")
+                .event_name("payments")
+                .finish(),
+            LogRecord::build()
+                .severity_text("error in module auth")
+                .event_name("missing")
+                .finish(),
+        ];
+
+        // contains(severity_text, event_name) -- needle is a column, not a literal
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_column_needle_kql_parser() {
+        test_filter_contains_column_needle::<KqlParser>(
+            r#"logs | where severity_text contains event_name"#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_column_needle_opl_parser() {
+        test_filter_contains_column_needle::<OplParser>(
+            r#"logs | where contains(severity_text, event_name)"#,
+        )
+        .await;
+    }
+
+    /// Filter using contains where the needle is an attribute (cross-scope contains).
+    /// This exercises the expression-eval fallback for contains with cross-scope args.
+    async fn test_filter_contains_attribute_needle<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("error: timeout occurred")
+                .event_name("1")
+                .attributes(vec![KeyValue::new(
+                    "keyword",
+                    AnyValue::new_string("timeout"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .severity_text("info: all good")
+                .event_name("2")
+                .attributes(vec![KeyValue::new(
+                    "keyword",
+                    AnyValue::new_string("failure"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .severity_text("warn: disk failure detected")
+                .event_name("3")
+                .attributes(vec![KeyValue::new(
+                    "keyword",
+                    AnyValue::new_string("failure"),
+                )])
+                .finish(),
+        ];
+
+        // contains(severity_text, attributes["keyword"]) -- cross-scope contains
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_attribute_needle_kql_parser() {
+        test_filter_contains_attribute_needle::<KqlParser>(
+            r#"logs | where severity_text contains attributes["keyword"]"#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_attribute_needle_opl_parser() {
+        test_filter_contains_attribute_needle::<OplParser>(
+            r#"logs | where contains(severity_text, attributes["keyword"])"#,
+        )
+        .await;
+    }
+
+    /// Filter using contains where both haystack and needle are attributes (cross-scope
+    /// on both sides). This exercises `build_scoped_contains_expr` with a Join.
+    async fn test_filter_contains_attribute_both_sides<P: Parser>(q: &str) {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![
+                    KeyValue::new("haystack", AnyValue::new_string("hello world")),
+                    KeyValue::new("needle", AnyValue::new_string("world")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("haystack", AnyValue::new_string("foo bar")),
+                    KeyValue::new("needle", AnyValue::new_string("baz")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![
+                    KeyValue::new("haystack", AnyValue::new_string("quick brown fox")),
+                    KeyValue::new("needle", AnyValue::new_string("brown")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<P>(q, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_attribute_both_sides_kql_parser() {
+        test_filter_contains_attribute_both_sides::<KqlParser>(
+            r#"logs | where attributes["haystack"] contains attributes["needle"]"#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_contains_attribute_both_sides_opl_parser() {
+        test_filter_contains_attribute_both_sides::<OplParser>(
+            r#"logs | where contains(attributes["haystack"], attributes["needle"])"#,
+        )
+        .await;
     }
 }

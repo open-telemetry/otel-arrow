@@ -5,6 +5,7 @@ use arc_swap::ArcSwap;
 use base64::prelude::*;
 use futures::{Stream, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
+use otap_df_config::tls::TlsClientConfig;
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use rustls::RootCertStore;
@@ -25,16 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
-use tonic::transport::{Identity, ServerTlsConfig};
-
-#[cfg(feature = "experimental-tls")]
 use tokio::sync::OnceCell;
-
-#[cfg(feature = "experimental-tls")]
-use otap_df_config::tls::TlsClientConfig;
-
-#[cfg(feature = "experimental-tls")]
 use tonic::transport::{Certificate, ClientTlsConfig};
+use tonic::transport::{Identity, ServerTlsConfig};
 
 /// Maximum allowed size for TLS certificate and key files (4MB).
 /// This limit is chosen to be generous enough for typical certificate chains (which are usually < 10KB)
@@ -173,7 +167,6 @@ pub async fn load_server_tls_config(
 ///   with tonic's transport layer)
 ///
 /// Consider implementing certificate hot reload if this becomes an operational requirement.
-#[cfg(feature = "experimental-tls")]
 pub(crate) async fn load_client_tls_config(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,
@@ -325,7 +318,6 @@ pub(crate) async fn load_client_tls_config(
     Ok(Some(tls))
 }
 
-#[cfg(feature = "experimental-tls")]
 async fn add_system_trust_anchors_if_enabled(
     tls: ClientTlsConfig,
     include_system: bool,

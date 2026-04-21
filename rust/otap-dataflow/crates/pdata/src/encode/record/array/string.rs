@@ -18,7 +18,9 @@ use crate::encode::record::array::{
 };
 
 use super::dictionary::{DictionaryArrayAppend, DictionaryBuilderError as Error, Result};
-use super::{ArrayBuilder, ArrayBuilderConstructor, dictionary::UpdateDictionaryIndexInto};
+use super::{
+    ArrayBuilder, ArrayBuilderConstructor, ArrayLen, dictionary::UpdateDictionaryIndexInto,
+};
 
 impl ArrayBuilderConstructor for StringBuilder {
     type Args = NoArgs;
@@ -73,6 +75,21 @@ impl DefaultValueProvider<String, NoArgs> for StringBuilder {
 impl ArrayBuilder for StringBuilder {
     fn finish(&mut self) -> ArrayRef {
         Arc::new(self.finish())
+    }
+}
+
+impl ArrayLen for StringBuilder {
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(self)
+    }
+}
+
+impl<K> ArrayLen for StringDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+{
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(self)
     }
 }
 

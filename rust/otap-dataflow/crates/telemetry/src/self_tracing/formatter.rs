@@ -266,7 +266,12 @@ impl StyledBufWriter<'_> {
     fn write_body_and_attrs<V: LogRecordView>(&mut self, record: &V, has_event_name: bool) {
         let body = record.body();
         let mut attrs = record.attributes().peekable();
-        let has_body = body.is_some();
+        // Treat an empty-string body as absent. The otel_*! macros produce
+        // an empty body because tracing requires at least a format string.
+        // See also: `encode_body_string` in encoder.rs.
+        let has_body = body
+            .as_ref()
+            .is_some_and(|v| v.as_string().is_none_or(|s| !s.is_empty()));
         let has_attrs = attrs.peek().is_some();
 
         // Print separator after event_name if there's content following

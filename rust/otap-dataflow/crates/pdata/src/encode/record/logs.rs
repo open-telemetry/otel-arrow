@@ -702,6 +702,7 @@ impl ScopeBuilder {
             columns.push(array);
         }
 
-        StructArray::try_new(Fields::from(fields), columns, None)
+        let len = columns.first().map(Array::len).unwrap_or_default();
+        StructArray::try_new_with_length(Fields::from(fields), columns, None, len)
     }
 }

@@ -33,6 +33,7 @@ pub enum ExprLogicalType {
     ScalarInt,
 
     Boolean,
+    Binary,
     FixedSizeBinary(usize),
     Float64,
     Int32,
@@ -67,6 +68,7 @@ impl ExprLogicalType {
     /// is not associated with a single datatype, such as with AnyValue* and ScalarInt
     pub fn datatype(&self) -> Option<DataType> {
         Some(match self {
+            Self::Binary => DataType::Binary,
             Self::Boolean => DataType::Boolean,
             Self::FixedSizeBinary(len) => DataType::FixedSizeBinary(*len as i32),
             Self::Float64 => DataType::Float64,

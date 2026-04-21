@@ -14,7 +14,7 @@ workspace = true
 
 [features]
 testing = []
-jemalloc = ["dep:tikv-jemalloc-ctl"]
+jemalloc = ["dep:tikv-jemalloc-ctl", "dep:tikv-jemalloc-sys"]
 jemalloc-testing = ["jemalloc"]
 test-utils = []
 
@@ -53,6 +53,7 @@ async-channel = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemalloc-ctl = { workspace = true, optional = true }
+tikv-jemalloc-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
 otap-df-engine = { workspace = true, features = ["test-utils"] }

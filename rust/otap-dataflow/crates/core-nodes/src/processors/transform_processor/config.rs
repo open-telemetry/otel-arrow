@@ -30,6 +30,17 @@ pub struct Config {
     /// for some security purpose, this sanitization pass should not be skipped.
     #[serde(default = "default_skip_sanitize_result")]
     pub skip_sanitize_result: bool,
+
+    /// Whether to treat attribute key match as case sensitive during filtering stages.
+    ///
+    /// For example, in a query like the following:
+    /// ```text
+    /// logs | where attributes["x"] = "y"
+    /// ```
+    /// If this were set to `false`, logs with attributes `{"x": "y"}` as well as those
+    /// with attributes `{"X": "y"}` would pass the filter`
+    #[serde(default = "default_filter_attribute_keys_case_sensitive")]
+    pub filter_attribute_keys_case_sensitive: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,4 +61,8 @@ const fn default_outbound_request_limit() -> NonZeroUsize {
 
 const fn default_skip_sanitize_result() -> bool {
     false
+}
+
+const fn default_filter_attribute_keys_case_sensitive() -> bool {
+    true
 }

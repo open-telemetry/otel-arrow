@@ -1,5 +1,7 @@
 # OTLP Receiver
 
+<!-- markdownlint-disable MD013 -->
+
 The OTLP Receiver ingests telemetry data via the OpenTelemetry Protocol (OTLP)
 and forwards it into the OTAP dataflow pipeline. It supports both gRPC (HTTP/2)
 and HTTP/1.1 protocols with unified concurrency control.
@@ -343,8 +345,10 @@ nodes:
           # --- Concurrency limits ---
           # 0 = auto-tune to downstream channel capacity
           max_concurrent_requests: 0
-          max_concurrent_streams: null  # HTTP/2 streams per connection (null = auto)
-          transport_concurrency_limit: null  # Per-connection limit (null = auto)
+          # HTTP/2 streams per connection (null = auto)
+          max_concurrent_streams: null
+          # Per-connection limit (null = auto)
+          transport_concurrency_limit: null
           load_shed: true               # Fast reject when overloaded
 
           # --- Compression ---
@@ -506,7 +510,7 @@ match downstream channel capacity.
 
 ## TLS Support
 
-TLS is available via the `experimental-tls` feature flag. Each protocol has its
+TLS is available by default. Each protocol has its
 own independent TLS configuration:
 
 ```yaml
@@ -548,7 +552,8 @@ ACK/NACK routed back through the pipeline result path before responding to the
 client:
 
 ```text
-Client -> Receiver -> Pipeline -> [Downstream nodes] -> Ack/Nack unwind -> Receiver -> Client
+Client -> Receiver -> Pipeline -> [Downstream nodes]
+       -> Ack/Nack unwind -> Receiver -> Client
 ```
 
 This provides delivery confirmation but does NOT guarantee end-to-end delivery

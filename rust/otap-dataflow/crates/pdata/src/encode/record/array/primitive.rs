@@ -13,7 +13,7 @@ use crate::encode::record::array::dictionary::{DictionaryBuilder, UpdateDictiona
 use crate::encode::record::array::{ArrayAppendNulls, DefaultValueProvider, NoArgs};
 
 use super::dictionary::{self, ConvertToNativeHelper, DictionaryArrayAppend};
-use super::{ArrayAppend, ArrayBuilder, ArrayBuilderConstructor, ArrayRef};
+use super::{ArrayAppend, ArrayBuilder, ArrayBuilderConstructor, ArrayLen, ArrayRef};
 
 impl<T> ArrayAppend for PrimitiveBuilder<T>
 where
@@ -61,6 +61,25 @@ where
 {
     fn finish(&mut self) -> ArrayRef {
         Arc::new(self.finish())
+    }
+}
+
+impl<T> ArrayLen for PrimitiveBuilder<T>
+where
+    T: ArrowPrimitiveType,
+{
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(self)
+    }
+}
+
+impl<K, V> ArrayLen for PrimitiveDictionaryBuilder<K, V>
+where
+    K: ArrowDictionaryKeyType,
+    V: ArrowPrimitiveType,
+{
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(self)
     }
 }
 

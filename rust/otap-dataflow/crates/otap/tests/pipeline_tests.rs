@@ -68,7 +68,8 @@ fn test_telemetry_registries_cleanup() {
             config.clone(),
             channel_capacity_policy.clone(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -104,12 +105,16 @@ fn test_telemetry_registries_cleanup() {
     let run_result = {
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
+        let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
+            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+        );
         runtime_pipeline.run_forever(
             pipeline_key,
             pipeline_ctx,
             event_reporter,
             metrics_reporter,
             Duration::from_secs(1),
+            memory_pressure_rx,
             runtime_ctrl_tx,
             runtime_ctrl_rx,
             pipeline_completion_tx,
@@ -155,7 +160,8 @@ fn test_pipeline_fan_in_builds() {
             config,
             ChannelCapacityPolicy::default(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build fan-in pipeline");
 
@@ -192,7 +198,8 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
             config,
             ChannelCapacityPolicy::default(),
             telemetry_policy,
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build mixed receiver pipeline");
 

@@ -110,6 +110,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         let internal = self.internal_telemetry.clone();
         let logs_receiver = internal.logs_receiver;
         let resource_bytes = internal.resource_bytes;
+        let log_tap = internal.log_tap;
         let mut scope_cache = ScopeToBytesMap::new(internal.registry);
 
         // Start periodic telemetry collection
@@ -127,6 +128,9 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
+                                    if let Some(log_tap) = log_tap.as_ref() {
+                                        log_tap.record(log_event.clone());
+                                    }
                                     Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
                                 }
                             }
@@ -137,6 +141,9 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             // Drain any remaining logs from channel before shutdown
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
+                                    if let Some(log_tap) = log_tap.as_ref() {
+                                        log_tap.record(log_event.clone());
+                                    }
                                     Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
                                 }
                             }
@@ -158,6 +165,9 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 result = logs_receiver.recv_async() => {
                     match result {
                         Ok(ObservedEvent::Log(log_event)) => {
+                            if let Some(log_tap) = log_tap.as_ref() {
+                                log_tap.record(log_event.clone());
+                            }
                             Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
                         }
                         Ok(ObservedEvent::Engine(_)) => {

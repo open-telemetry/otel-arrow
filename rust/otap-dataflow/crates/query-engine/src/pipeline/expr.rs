@@ -48,14 +48,24 @@ use std::sync::{Arc, LazyLock};
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema};
 use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, BooleanValue, DoubleValue, Expression, IntegerValue,
-    MathScalarExpression, ScalarExpression, StaticScalarExpression, StringValue,
+    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
+    CollectionScalarExpression, CombineScalarExpression, DoubleValue, Expression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
+    ReplaceTextScalarExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
+    StringValue, TextScalarExpression,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
+use datafusion::functions::crypto::sha256;
+use datafusion::functions::encoding::encode;
+use datafusion::functions::string::{concat, concat_ws, replace};
+use datafusion::logical_expr::expr::ScalarFunction;
+use datafusion::logical_expr::{
+    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
+};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
@@ -67,11 +77,13 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
+use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
-use crate::pipeline::expr::join::join;
+use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
+use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -81,6 +93,15 @@ pub(crate) mod types;
 pub(crate) const VALUE_COLUMN_NAME: &str = "value";
 pub(crate) const LEFT_COLUMN_NAME: &str = "left";
 pub(crate) const RIGHT_COLUMN_NAME: &str = "right";
+
+/// Returns a column name for a multi-join argument at the given index.
+///
+/// Used when function arguments come from different data scopes and need to be joined
+/// before the function can be evaluated. Each argument in the join result gets a column
+/// named "arg_0", "arg_1", etc.
+pub(crate) fn arg_column_name(index: usize) -> String {
+    format!("arg_{index}")
+}
 
 /// Identifies OTAP data either consumed or produced by some expression.
 ///
@@ -110,7 +131,7 @@ impl DataScope {
     /// Rules:
     /// - Any scope can combine with StaticScalar (constants)
     /// - Same scopes can combine (e.g., Root + Root), because the row order is the same.
-    fn can_combine(&self, other: &Self) -> bool {
+    pub(crate) fn can_combine(&self, other: &Self) -> bool {
         self.is_scalar() || other.is_scalar() || (self == other)
     }
 
@@ -132,20 +153,30 @@ impl From<&ColumnAccessor> for DataScope {
 }
 
 /// Identifier of the incoming source data for some scoped expression.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LogicalExprDataSource {
     /// This indicates the input to the expression data from the incoming OTAP batch
     DataSource(DataScope),
 
-    /// The input to the expression is the result of joining two child expressions
+    /// The input to the expression is the result of joining two child expressions.
+    ///
+    /// Used when there are binary expressions such as in arithmetic or comparing two columns.
+    /// The results are joined into a single record batch with columns named "left" and "right".
     Join(Box<ScopedLogicalExpr>, Box<ScopedLogicalExpr>),
+
+    /// The input to the expression is the result of joining multiple child expressions.
+    ///
+    /// This is used when a function call has arguments from different data scopes. Each child
+    /// expression is evaluated independently, and the results are joined pairwise into a single
+    /// record batch with columns named "arg_0", "arg_1", ..., "arg_{N-1}".
+    MultiJoin(Vec<ScopedLogicalExpr>),
 }
 
 /// Represents an expression during the logical planning phase.
 ///
 /// This combines a DataFusion logical expression with data source, result type and input type
 /// coercion information
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ScopedLogicalExpr {
     /// the definition of the datafusion that should be applied to the input data
     pub(crate) logical_expr: Expr,
@@ -174,7 +205,7 @@ pub struct ScopedLogicalExpr {
     // TODO: it would be cleaner to just have custom expression impl we could add to the plan to
     // remove dictionary encoding from some column, instead of passing this flag down and doing it
     // during projection.
-    requires_dict_downcast: bool,
+    pub(crate) requires_dict_downcast: bool,
 }
 
 impl ScopedLogicalExpr {
@@ -192,6 +223,13 @@ impl ScopedLogicalExpr {
                 Box::new(left.into_physical()?),
                 Box::new(right.into_physical()?),
             ),
+            LogicalExprDataSource::MultiJoin(children) => {
+                let physical_children = children
+                    .into_iter()
+                    .map(|child| child.into_physical())
+                    .collect::<Result<Vec<_>>>()?;
+                PhysicalExprDataSource::MultiJoin(physical_children)
+            }
         };
         let projection = Projection::try_new(&self.logical_expr)?;
 
@@ -215,6 +253,7 @@ impl ExprLogicalPlanner {
     pub fn plan_scalar_expr(
         &self,
         scalar_expression: &ScalarExpression,
+        functions: &[PipelineFunction],
     ) -> Result<ScopedLogicalExpr> {
         match scalar_expression {
             ScalarExpression::Source(source_scalar_expr) => {
@@ -277,6 +316,9 @@ impl ExprLogicalPlanner {
                     StaticScalarExpression::String(string_expr) => {
                         (lit(string_expr.get_value()), ExprLogicalType::String)
                     }
+                    StaticScalarExpression::Null(_) => {
+                        (Expr::default(), ExprLogicalType::AnyValue) // default is lit(null)
+                    }
                     _ => {
                         return Err(Error::NotYetSupportedError {
                             message: format!(
@@ -294,26 +336,59 @@ impl ExprLogicalPlanner {
                     requires_dict_downcast: false,
                 })
             }
+            ScalarExpression::InvokeFunction(invoke_function_expression) => {
+                self.plan_function_invocation(invoke_function_expression, functions)
+            }
             ScalarExpression::Math(math_scalar_expr) => match math_scalar_expr {
                 MathScalarExpression::Add(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Plus)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Plus, functions)
                 }
                 MathScalarExpression::Subtract(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Minus)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Minus, functions)
                 }
                 MathScalarExpression::Multiply(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Multiply)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Multiply, functions)
                 }
                 MathScalarExpression::Divide(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Divide)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Divide, functions)
                 }
                 MathScalarExpression::Modulus(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Modulo)
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Modulo, functions)
                 }
                 other_math_expr => Err(Error::NotYetSupportedError {
                     message: format!("math expression not yet supported {other_math_expr:?}"),
                 }),
             },
+            ScalarExpression::Slice(slice_scalar_expr) => {
+                // plan the expression for substring start
+                let start_scalar_expr = slice_scalar_expr.get_range_start().ok_or_else(|| {
+                    Error::InvalidPipelineError {
+                        cause: "start index is required for substring".into(),
+                        query_location: Some(slice_scalar_expr.get_query_location().clone()),
+                    }
+                })?;
+
+                let mut slice_arg_exprs: Vec<&ScalarExpression> =
+                    vec![slice_scalar_expr.get_source(), start_scalar_expr];
+
+                if let Some(end_scalar_expr) = slice_scalar_expr.get_range_length() {
+                    slice_arg_exprs.push(end_scalar_expr);
+                }
+
+                let (arg_exprs, source_scope, requires_dict_downcast) =
+                    self.plan_function_args(slice_arg_exprs.into_iter(), functions)?;
+
+                Ok(ScopedLogicalExpr {
+                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                        substring(),
+                        arg_exprs,
+                    )),
+                    expr_type: ExprLogicalType::String,
+                    source: source_scope,
+                    requires_dict_downcast,
+                })
+            }
+            ScalarExpression::Text(text) => self.plan_text_expr(text, functions),
             other_expr => Err(Error::NotYetSupportedError {
                 message: format!("expression not yet supported {other_expr:?}"),
             }),
@@ -324,10 +399,12 @@ impl ExprLogicalPlanner {
         &self,
         binary_math_expr: &BinaryMathematicalScalarExpression,
         operator: Operator,
+        functions: &[PipelineFunction],
     ) -> Result<ScopedLogicalExpr> {
         // Recursively plan left and right sub-expressions
-        let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
-        let mut right = self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
+        let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression(), functions)?;
+        let mut right =
+            self.plan_scalar_expr(binary_math_expr.get_right_expression(), functions)?;
 
         let expr_type = coerce_arithmetic(&mut left, &mut right).ok_or_else(|| {
             Error::InvalidPipelineError {
@@ -382,6 +459,371 @@ impl ExprLogicalPlanner {
                 requires_dict_downcast: true,
             })
         }
+    }
+
+    fn plan_concat_expr(
+        &self,
+        combine_expr: &CombineScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        match combine_expr.get_values_expression() {
+            ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
+                let (df_udf_args, source_scope, _) =
+                    self.plan_function_args(list_expr.get_value_expressions().iter(), functions)?;
+                Ok(ScopedLogicalExpr {
+                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                        concat(),
+                        df_udf_args,
+                    )),
+                    expr_type: ExprLogicalType::String,
+                    source: source_scope,
+                    requires_dict_downcast: true,
+                })
+            }
+            other => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "Unexpected scalar expression for CombineScalarExpression values {other:?}"
+                ),
+                query_location: Some(combine_expr.get_query_location().clone()),
+            }),
+        }
+    }
+
+    fn plan_function_invocation(
+        &self,
+        invoke_function_expression: &InvokeFunctionScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        // get function definition
+        let function_id = invoke_function_expression.get_function_id();
+        let function = functions
+            .get(function_id)
+            .ok_or_else(|| Error::InvalidPipelineError {
+                cause: format!("function id {function_id} not found"),
+                query_location: Some(invoke_function_expression.get_query_location().clone()),
+            })?;
+
+        // get function name
+        let PipelineFunctionImplementation::External(func_name) = function.get_implementation()
+        else {
+            return Err(Error::NotYetSupportedError {
+                message: "Only external functions currently supported in expression".into(),
+            });
+        };
+
+        // get function scalar UDF + metadata
+        let df_udf = DataFusionFunctionDef::from_func_name(func_name).ok_or_else(|| {
+            Error::InvalidPipelineError {
+                cause: format!("Unknown function '{func_name}"),
+                query_location: Some(invoke_function_expression.get_query_location().clone()),
+            }
+        })?;
+
+        let invoke_arg_exprs = invoke_function_expression.get_arguments();
+        let num_args = invoke_arg_exprs.len();
+
+        // check that we've been passed the correct number of arguments.
+        //
+        // TODO: in future we could also do some additional checking here on the types
+        if let Some(arity_range) = arity_range(&df_udf.scalar_udf.signature().type_signature) {
+            if !arity_range.contains(&num_args) {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "function '{func_name}' expects {} arguments. Received {num_args}",
+                        if arity_range.len() > 1 {
+                            format!("{}-{}", arity_range.start, arity_range.end - 1)
+                        } else {
+                            format!("{}", arity_range.start)
+                        }
+                    ),
+                    query_location: Some(invoke_function_expression.get_query_location().clone()),
+                });
+            }
+        }
+
+        if invoke_arg_exprs.is_empty() {
+            // TODO: support functions with zero arguments, such as `now()`.
+            Err(Error::NotYetSupportedError {
+                message: "Only functions with one or more arguments currently supported".into(),
+            })
+        } else {
+            let scalar_arg_exprs = invoke_arg_exprs
+                .iter()
+                .map(|arg| match arg {
+                    InvokeFunctionArgument::Scalar(scalar_expr) => Ok(scalar_expr),
+                    InvokeFunctionArgument::MutableValue(_) => Err(Error::NotYetSupportedError {
+                        message:
+                            "Mutable value as function argument not yet supported in expression"
+                                .into(),
+                    }),
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let (arg_exprs, source_scope, source_requires_dict_downcast) =
+                self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?;
+
+            let mut logical_expr =
+                Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
+
+            if let Some(data_type) = df_udf.cast_result_to {
+                logical_expr = cast(logical_expr, data_type)
+            }
+
+            // TODO: currently this will eagerly remove dictionary encoding when projecting the
+            // source if dictionary encoding is not supported by the function being invoked.
+            // However there may be cases where the overall expression may evaluate faster on
+            // dict-encoded data and we may wish to defer removing the dict encoding.
+            let requires_dict_downcast =
+                source_requires_dict_downcast | df_udf.requires_dict_downcast;
+
+            Ok(ScopedLogicalExpr {
+                logical_expr,
+                expr_type: df_udf.return_type,
+                source: source_scope,
+                requires_dict_downcast,
+            })
+        }
+    }
+
+    fn plan_function_args<'a>(
+        &self,
+        arg_exprs: impl Iterator<Item = &'a ScalarExpression>,
+        functions: &[PipelineFunction],
+    ) -> Result<(Vec<Expr>, LogicalExprDataSource, bool)> {
+        let scoped_logical_args: Vec<ScopedLogicalExpr> = arg_exprs
+            .map(|arg| self.plan_scalar_expr(arg, functions))
+            .collect::<Result<Vec<_>>>()?;
+
+        if scoped_logical_args.is_empty() {
+            return Ok((
+                Vec::new(),
+                LogicalExprDataSource::DataSource(DataScope::StaticScalar),
+                false,
+            ));
+        }
+
+        // Check if all arguments can be combined into a single scope without joining.
+        let mut combined_scope: Option<DataScope> = None;
+        let mut all_combinable = true;
+        let mut requires_dict_downcast = false;
+
+        for scoped_logical_arg in &scoped_logical_args {
+            requires_dict_downcast |= scoped_logical_arg.requires_dict_downcast;
+
+            let arg_scope = match &scoped_logical_arg.source {
+                LogicalExprDataSource::DataSource(scope) => scope,
+                // If any arg already requires a join, we can't combine scopes so must multi join
+                _ => {
+                    all_combinable = false;
+                    break;
+                }
+            };
+
+            combined_scope = match combined_scope.take() {
+                None => Some(arg_scope.clone()),
+                Some(existing) => {
+                    if existing.can_combine(arg_scope) {
+                        Some(if !existing.is_scalar() {
+                            existing
+                        } else {
+                            arg_scope.clone()
+                        })
+                    } else {
+                        all_combinable = false;
+                        break;
+                    }
+                }
+            };
+        }
+
+        if all_combinable {
+            // All arguments share a compatible scope. Return their logical exprs directly.
+            let arg_logical_exprs = scoped_logical_args
+                .into_iter()
+                .map(|a| a.logical_expr)
+                .collect();
+            let scope = LogicalExprDataSource::DataSource(
+                combined_scope.unwrap_or(DataScope::StaticScalar),
+            );
+            Ok((arg_logical_exprs, scope, requires_dict_downcast))
+        } else {
+            // Arguments come from different scopes. Create a MultiJoin: each argument
+            // becomes a child expression in the join, and the function's argument Exprs
+            // are rewritten to reference the join result columns ("arg_0", "arg_1", ...).
+            let requires_dict_downcast =
+                scoped_logical_args.iter().any(|a| a.requires_dict_downcast);
+
+            let arg_col_exprs: Vec<Expr> = (0..scoped_logical_args.len())
+                .map(|i| col(arg_column_name(i)))
+                .collect();
+
+            let source = LogicalExprDataSource::MultiJoin(scoped_logical_args);
+            Ok((arg_col_exprs, source, requires_dict_downcast))
+        }
+    }
+
+    fn plan_join_text_expr(
+        &self,
+        join_text_expr: &JoinTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        match join_text_expr.get_values_expression() {
+            ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
+                let (df_udf_args, source_scope, _) = self.plan_function_args(
+                    [join_text_expr.get_separator_expression()]
+                        .into_iter()
+                        .chain(list_expr.get_value_expressions().iter()),
+                    functions,
+                )?;
+
+                Ok(ScopedLogicalExpr {
+                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                        concat_ws(),
+                        df_udf_args,
+                    )),
+                    expr_type: ExprLogicalType::String,
+                    source: source_scope,
+                    requires_dict_downcast: true,
+                })
+            }
+            other => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "Unexpected scalar expression for JoinTextScalarExpression values {other:?}"
+                ),
+                query_location: Some(join_text_expr.get_query_location().clone()),
+            }),
+        }
+    }
+
+    fn plan_regex_capture_text_expr(
+        &self,
+        capture_text_expr: &CaptureTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let capture_scalar_expr = match capture_text_expr.get_pattern() {
+            ScalarExpression::Static(StaticScalarExpression::Regex(regexp_expr)) => {
+                // the datafusion UDF for this expects a string, so if the arg is a scalar regex
+                // convert it into a string so it will be planed as a scalar string literal
+                Cow::Owned(ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(
+                        regexp_expr.get_query_location().clone(),
+                        regexp_expr.get_value().as_str(),
+                    ),
+                )))
+            }
+            other => Cow::Borrowed(other),
+        };
+
+        let (mut df_udf_args, source_scope, requires_dict_downcast) = self.plan_function_args(
+            [
+                capture_text_expr.get_haystack(),
+                &capture_scalar_expr,
+                capture_text_expr.get_capture_group(),
+            ]
+            .into_iter(),
+            functions,
+        )?;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
+                regexp_substr(),
+                vec![
+                    df_udf_args.remove(0), // source
+                    df_udf_args.remove(0), // pattern
+                    lit(1),                // start
+                    lit(1),                // occurrence
+                    Expr::default(),       // flags = literal Null
+                    df_udf_args.remove(0), // group
+                ],
+            )),
+            expr_type: ExprLogicalType::String,
+            source: source_scope,
+            requires_dict_downcast,
+        })
+    }
+
+    fn plan_replace_text_expr(
+        &self,
+        replace_text_expr: &ReplaceTextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let (df_udf_args, source_scope, _) = self.plan_function_args(
+            [
+                replace_text_expr.get_haystack_expression(),
+                replace_text_expr.get_needle_expression(),
+                replace_text_expr.get_replacement_expression(),
+            ]
+            .into_iter(),
+            functions,
+        )?;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(replace(), df_udf_args)),
+            expr_type: ExprLogicalType::String,
+            source: source_scope,
+            requires_dict_downcast: true,
+        })
+    }
+
+    fn plan_text_expr(
+        &self,
+        text_expr: &TextScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        match text_expr {
+            TextScalarExpression::Concat(combine_expr) => {
+                self.plan_concat_expr(combine_expr, functions)
+            }
+            TextScalarExpression::Join(join_text_expr) => {
+                self.plan_join_text_expr(join_text_expr, functions)
+            }
+            TextScalarExpression::Replace(replace_text_expr) => {
+                self.plan_replace_text_expr(replace_text_expr, functions)
+            }
+            TextScalarExpression::Capture(capture_text_expr) => {
+                self.plan_regex_capture_text_expr(capture_text_expr, functions)
+            }
+        }
+    }
+}
+
+struct DataFusionFunctionDef {
+    scalar_udf: Arc<ScalarUDF>,
+    return_type: ExprLogicalType,
+    requires_dict_downcast: bool,
+    cast_result_to: Option<DataType>,
+}
+
+impl DataFusionFunctionDef {
+    fn new(
+        scalar_udf: Arc<ScalarUDF>,
+        return_type: ExprLogicalType,
+        requires_dict_downcast: bool,
+        cast_result_to: Option<DataType>,
+    ) -> Self {
+        Self {
+            scalar_udf,
+            return_type,
+            requires_dict_downcast,
+            cast_result_to,
+        }
+    }
+
+    fn from_func_name(func_name: &str) -> Option<Self> {
+        // TODO: some functions may produce different result types depending on the input type.
+        // In these cases, we may wish to not have a hard-coded return type, and instead attempt
+        // to compute the return type from the types of the input expressions.
+        // TODO: some of these functions that involve expanding to dictionary, we may wish to
+        // implement our own versions that can operate directly on dictionary arrays (or fix this
+        // upstream in datafusion_functions)
+        Some(match func_name {
+            ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            REGEXP_SUBSTR_FUNC_NAME => {
+                Self::new(regexp_substr(), ExprLogicalType::String, false, None)
+            }
+            SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
+            _ => return None,
+        })
     }
 }
 
@@ -442,6 +884,10 @@ enum PhysicalExprDataSource {
 
     /// Source the data by evaluating left/right child expressions and joining the results
     Join(Box<ScopedPhysicalExpr>, Box<ScopedPhysicalExpr>),
+
+    /// Source the data by evaluating multiple child expressions and joining the results
+    /// pairwise into a single record batch with columns named "arg_0", "arg_1", etc.
+    MultiJoin(Vec<ScopedPhysicalExpr>),
 }
 
 /// To evaluate expressions that only produce scalar values, we need to pass some RecordBatch into
@@ -500,6 +946,17 @@ impl ScopedPhysicalExpr {
                     }
                     _ => return Ok(None),
                 }
+            }
+            PhysicalExprDataSource::MultiJoin(children) => {
+                let mut results = Vec::with_capacity(children.len());
+                for child in children.iter_mut() {
+                    match child.execute(otap_batch, session_context)? {
+                        Some(result) => results.push(result),
+                        None => return Ok(None),
+                    }
+                }
+                let (joined_rb, result_data_scope) = multi_join(&results, otap_batch)?;
+                (Some(Cow::Owned(joined_rb)), result_data_scope)
             }
         };
 
@@ -711,10 +1168,10 @@ pub(crate) struct PhysicalExprEvalResult {
     pub data_scope: Rc<DataScope>,
 
     // ID columns populated from the source data
-    ids: Option<ArrayRef>,
-    parent_ids: Option<ArrayRef>,
-    scope_ids: Option<ArrayRef>,
-    resource_ids: Option<ArrayRef>,
+    pub(crate) ids: Option<ArrayRef>,
+    pub(crate) parent_ids: Option<ArrayRef>,
+    pub(crate) scope_ids: Option<ArrayRef>,
+    pub(crate) resource_ids: Option<ArrayRef>,
 }
 
 impl PhysicalExprEvalResult {
@@ -781,11 +1238,14 @@ impl PhysicalExprEvalResult {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Float64Array, Int32Array, Int64Array, StructArray, UInt8Array};
+    use arrow::array::{
+        BinaryArray, Float64Array, Int32Array, Int64Array, StructArray, UInt8Array,
+    };
     use arrow::compute::take;
     use data_engine_expressions::{
-        BinaryMathematicalScalarExpression, IntegerScalarExpression, QueryLocation,
-        SourceScalarExpression, StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        BinaryMathematicalScalarExpression, IntegerScalarExpression,
+        InvokeFunctionScalarExpression, QueryLocation, SourceScalarExpression,
+        StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
     use otap_df_pdata::{
         otap::Logs,
@@ -806,7 +1266,8 @@ mod test {
         input_data: &OtapArrowRecords,
     ) -> Option<ColumnarValue> {
         let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+        let functions = [];
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
         let result = physical_expr.execute(input_data, &session_ctx).unwrap();
@@ -818,7 +1279,8 @@ mod test {
         input_data: &OtapArrowRecords,
     ) -> Error {
         let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+        let functions = [];
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
         physical_expr.execute(input_data, &session_ctx).unwrap_err()
@@ -848,7 +1310,8 @@ mod test {
             IntegerScalarExpression::new(QueryLocation::new_fake(), 99),
         ));
 
-        let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
+        let functions = [];
+        let logical_expr = planner.plan_scalar_expr(&static_expr, &functions).unwrap();
 
         // Convert to physical
         let mut physical_expr = logical_expr.into_physical().unwrap();
@@ -2531,14 +2994,18 @@ mod test {
         // Check it returns an error when it detects at planning time that it won't be able to add
         // these two fields.
         let planner = ExprLogicalPlanner {};
+        let functions = [];
         let err = planner
-            .plan_scalar_expr(&ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathematicalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    left_expr.clone(),
-                    right_expr.clone(),
-                ),
-            )))
+            .plan_scalar_expr(
+                &ScalarExpression::Math(MathScalarExpression::Add(
+                    BinaryMathematicalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        left_expr.clone(),
+                        right_expr.clone(),
+                    ),
+                )),
+                &functions,
+            )
             .unwrap_err();
 
         let err_msg = err.to_string();
@@ -2552,14 +3019,18 @@ mod test {
 
         // check it with swapped left/right arguments (for good measure):
         let planner = ExprLogicalPlanner {};
+        let functions = [];
         let err = planner
-            .plan_scalar_expr(&ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathematicalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    right_expr,
-                    left_expr,
-                ),
-            )))
+            .plan_scalar_expr(
+                &ScalarExpression::Math(MathScalarExpression::Add(
+                    BinaryMathematicalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        right_expr,
+                        left_expr,
+                    ),
+                )),
+                &functions,
+            )
             .unwrap_err();
 
         let err_msg = err.to_string();
@@ -2661,5 +3132,683 @@ mod test {
             check_arithmetic_fails(left, right, &otap_batch);
             check_arithmetic_fails(right, left, &otap_batch);
         }
+    }
+
+    #[test]
+    fn test_function_invocation_sha256() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let functions = [PipelineFunction::new_external("sha256", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = BinaryArray::from_iter([
+            None,
+            Some(&[
+                41, 102, 59, 154, 50, 238, 50, 194, 202, 90, 100, 81, 23, 105, 108, 224, 136, 140,
+                132, 179, 159, 143, 217, 28, 14, 196, 235, 205, 9, 2, 93, 244,
+            ]),
+            Some(&[
+                32, 45, 143, 65, 186, 8, 115, 18, 99, 6, 214, 10, 49, 12, 91, 194, 89, 140, 109,
+                30, 102, 152, 208, 151, 71, 205, 33, 139, 40, 71, 49, 226,
+            ]),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected)
+    }
+
+    #[test]
+    fn test_function_invocation_invalid_number_of_args_handled_during_planning() {
+        let invalid_args = vec![
+            vec![], // empty args,
+            vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+            ],
+        ];
+
+        for invalid_arg_set in invalid_args {
+            let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                0,
+                invalid_arg_set,
+            ));
+
+            // expects one argument ...
+            let functions = [PipelineFunction::new_external("sha256", vec![], None)];
+
+            let planner = ExprLogicalPlanner {};
+            let err = planner
+                .plan_scalar_expr(&input_expr, &functions)
+                .unwrap_err();
+            let err_message = err.to_string();
+            assert!(
+                err_message.contains("function 'sha256' expects 1 arguments. Received "),
+                "unexpected error message: {}",
+                err_message
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_invocation_sha256_and_encode_to_hex() {
+        let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            1,
+            vec![
+                InvokeFunctionArgument::Scalar(sha_expr),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hex",
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [
+            PipelineFunction::new_external("sha256", vec![], None),
+            PipelineFunction::new_external("encode", vec![], None),
+        ];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([
+            None,
+            Some("29663b9a32ee32c2ca5a645117696ce0888c84b39f8fd91c0ec4ebcd09025df4"),
+            Some("202d8f41ba0873126306d60a310c5bc2598c6d1e6698d09747cd218b284731e2"),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_sha256_and_encode_to_base64() {
+        let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            1,
+            vec![
+                InvokeFunctionArgument::Scalar(sha_expr),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "base64",
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [
+            PipelineFunction::new_external("sha256", vec![], None),
+            PipelineFunction::new_external("encode", vec![], None),
+        ];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([
+            None,
+            Some("KWY7mjLuMsLKWmRRF2ls4IiMhLOfj9kcDsTrzQkCXfQ"),
+            Some("IC2PQboIcxJjBtYKMQxbwlmMbR5mmNCXR80hiyhHMeI"),
+        ]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    // ----- Tests for multi-scope function arguments (MultiJoin) -----
+
+    /// Tests concat(severity_text, attributes["k1"]) where args come from Root and Attributes
+    /// scopes respectively.
+    #[test]
+    fn test_concat_with_root_and_attribute_args() {
+        use data_engine_expressions::ListScalarExpression;
+
+        let root_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_TEXT,
+                )),
+            )]),
+        ));
+
+        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let input_expr =
+            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(QueryLocation::new_fake(), vec![root_arg, attr_arg]),
+                )),
+            )));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("_a"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("_b"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("DEBUG")
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("_c"))])
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(StringArray::from(vec!["ERROR_a", "INFO_b", "DEBUG_c"]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    /// Tests concat(attributes["k1"], attributes["k2"]) where both args come from different
+    /// attribute scopes (different keys from the same payload type). This triggers a multi-join
+    /// because the data scopes differ (different filtered rows).
+    #[test]
+    fn test_concat_with_two_different_attribute_args() {
+        use data_engine_expressions::ListScalarExpression;
+
+        let attr_k1 = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let attr_k2 = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let input_expr =
+            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(QueryLocation::new_fake(), vec![attr_k1, attr_k2]),
+                )),
+            )));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("hello")),
+                    KeyValue::new("k2", AnyValue::new_string("_world")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("foo")),
+                    KeyValue::new("k2", AnyValue::new_string("_bar")),
+                ])
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(StringArray::from(vec!["hello_world", "foo_bar"]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    /// Tests concat with 3 args from different scopes: root, attribute, and resource attribute.
+    /// This validates that the pairwise multi-join correctly handles more than 2 children.
+    #[test]
+    fn test_concat_with_three_different_scope_args() {
+        use data_engine_expressions::ListScalarExpression;
+
+        let root_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_TEXT,
+                )),
+            )]),
+        ));
+
+        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let resource_attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "rk"),
+                )),
+            ]),
+        ));
+
+        let input_expr =
+            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![root_arg, attr_arg, resource_attr_arg],
+                    ),
+                )),
+            )));
+
+        let logs = LogsData::new(vec![
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("rk", AnyValue::new_string("[R1]"))])
+                        .finish(),
+                ),
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .severity_text("ERROR")
+                            .attributes(vec![KeyValue::new("k1", AnyValue::new_string("-a"))])
+                            .finish(),
+                        LogRecord::build()
+                            .severity_text("INFO")
+                            .attributes(vec![KeyValue::new("k1", AnyValue::new_string("-b"))])
+                            .finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("rk", AnyValue::new_string("[R2]"))])
+                        .finish(),
+                ),
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .severity_text("DEBUG")
+                            .attributes(vec![KeyValue::new("k1", AnyValue::new_string("-c"))])
+                            .finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(StringArray::from(vec![
+            "ERROR-a[R1]",
+            "INFO-b[R1]",
+            "DEBUG-c[R2]",
+        ]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    /// Tests that join_text (concat_ws) works with args from different scopes.
+    /// This validates: concat_ws("-", severity_text, attributes["k1"])
+    #[test]
+    fn test_join_text_with_root_and_attribute_args() {
+        use data_engine_expressions::ListScalarExpression;
+
+        let separator = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "-"),
+        ));
+
+        let root_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_TEXT,
+                )),
+            )]),
+        ));
+
+        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let input_expr =
+            ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                separator,
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(QueryLocation::new_fake(), vec![root_arg, attr_arg]),
+                )),
+            )));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("b"))])
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(StringArray::from(vec!["ERROR-a", "INFO-b"]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    /// Verifies that InvokeFunction planning correctly produces a MultiJoin when child
+    /// InvokeFunction results come from different scopes.
+    ///
+    /// We build: encode(sha256(attributes["k1"]), "hex") which nests sha256 (Attributes scope)
+    /// inside encode with a scalar arg. Since Attributes + Scalar can combine, this should NOT
+    /// produce a MultiJoin. This serves as a sanity check that the planner doesn't over-eagerly
+    /// create MultiJoin nodes for same-scope function args.
+    ///
+    /// Note: a full end-to-end execution test for cross-scope InvokeFunction args is not
+    /// straightforward because DataFusion's built-in multi-arg functions (like encode) require
+    /// some arguments to be scalars. The concat/join_text/replace tests cover the cross-scope
+    /// MultiJoin execution path thoroughly.
+    #[test]
+    fn test_function_invocation_same_scope_does_not_produce_multi_join() {
+        // sha256(attributes["k1"]) - Attributes scope
+        let attr_sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ATTRIBUTES_FIELD_NAME,
+                            ),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                        )),
+                    ]),
+                ),
+            ))],
+        ));
+
+        // encode(sha256(attributes["k1"]), "hex") - Attributes scope + Scalar = Attributes scope
+        let encode_attr_expr =
+            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                1,
+                vec![
+                    InvokeFunctionArgument::Scalar(attr_sha_expr),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "hex",
+                        )),
+                    )),
+                ],
+            ));
+
+        let functions = [
+            PipelineFunction::new_external("sha256", vec![], None),
+            PipelineFunction::new_external("encode", vec![], None),
+        ];
+
+        let planner = ExprLogicalPlanner {};
+
+        // Attributes + Scalar should combine without needing a MultiJoin
+        let planned = planner
+            .plan_scalar_expr(&encode_attr_expr, &functions)
+            .unwrap();
+        assert!(
+            !matches!(planned.source, LogicalExprDataSource::MultiJoin(_)),
+            "Expected non-MultiJoin for same-scope function args, got {:?}",
+            planned.source
+        );
+    }
+
+    /// Tests replace(severity_text, attributes["needle"], attributes["replacement"])
+    /// where the first arg is from Root scope and the other two are from different Attribute
+    /// scopes. This exercises a real 3-arg cross-scope function call via MultiJoin.
+    #[test]
+    fn test_replace_text_with_cross_scope_args() {
+        use data_engine_expressions::ReplaceTextScalarExpression;
+
+        let haystack = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_TEXT,
+                )),
+            )]),
+        ));
+
+        let needle = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "needle"),
+                )),
+            ]),
+        ));
+
+        let replacement = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "repl"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Text(TextScalarExpression::Replace(
+            ReplaceTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                haystack,
+                needle,
+                replacement,
+                false,
+            ),
+        ));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("hello world")
+                .attributes(vec![
+                    KeyValue::new("needle", AnyValue::new_string("world")),
+                    KeyValue::new("repl", AnyValue::new_string("rust")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .severity_text("foo bar baz")
+                .attributes(vec![
+                    KeyValue::new("needle", AnyValue::new_string("bar")),
+                    KeyValue::new("repl", AnyValue::new_string("qux")),
+                ])
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(StringArray::from(vec!["hello rust", "foo qux baz"]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
     }
 }

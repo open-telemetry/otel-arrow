@@ -1563,3 +1563,99 @@
       border-color: rgba(2, 132, 199, 0.6);
       background: rgba(186, 230, 253, 0.6);
     }
+
+    /* -------------------------------------------------------------------------
+       Logs panel (#logs-section)
+       ------------------------------------------------------------------------ */
+
+    .logs-table {
+      border-collapse: collapse;
+      font-family: ui-monospace, "Cascadia Mono", "Fira Mono", monospace;
+      font-size: 0.72rem;
+    }
+
+    .log-th {
+      position: sticky;
+      top: 0;
+      padding: 4px 8px;
+      background: #0f172a;
+      font-weight: 600;
+      white-space: nowrap;
+      z-index: 1;
+    }
+
+    .log-row {
+      border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+    }
+
+    .log-row:last-child {
+      border-bottom: none;
+    }
+
+    .log-row:hover {
+      background: rgba(30, 41, 59, 0.55);
+    }
+
+    .log-ts {
+      padding: 3px 8px;
+      white-space: nowrap;
+      color: #94a3b8;
+      min-width: 7rem;
+    }
+
+    .log-level-cell {
+      padding: 3px 8px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .log-level-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .log-level-error { background: rgba(239,68,68,0.18); color: #f87171; }
+    .log-level-warn  { background: rgba(234,179,8,0.15);  color: #facc15; }
+    .log-level-info  { background: rgba(56,189,248,0.13); color: #7dd3fc; }
+    .log-level-debug { background: rgba(148,163,184,0.12);color: #94a3b8; }
+    .log-level-trace { background: rgba(100,116,139,0.10);color: #64748b; }
+
+    .log-target {
+      padding: 3px 8px;
+      color: #64748b;
+      white-space: nowrap;
+      max-width: 14rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .log-rendered {
+      padding: 3px 8px;
+      color: #cbd5e1;
+      word-break: break-all;
+      max-width: 50vw;
+    }
+
+    /* Day-mode overrides for log panel */
+    body.day-mode .log-th {
+      background: #f1f5f9;
+      color: #334155;
+    }
+
+    body.day-mode .log-row:hover {
+      background: rgba(226, 232, 240, 0.6);
+    }
+
+    body.day-mode .log-ts { color: #475569; }
+    body.day-mode .log-target { color: #64748b; }
+    body.day-mode .log-rendered { color: #1e293b; }
+
+    body.day-mode .log-level-error { background: rgba(239,68,68,0.12); color: #dc2626; }
+    body.day-mode .log-level-warn  { background: rgba(202,138,4,0.12);  color: #b45309; }
+    body.day-mode .log-level-info  { background: rgba(14,165,233,0.12); color: #0284c7; }
+    body.day-mode .log-level-debug { background: rgba(100,116,139,0.1); color: #475569; }
+    body.day-mode .log-level-trace { background: rgba(100,116,139,0.08);color: #64748b; }

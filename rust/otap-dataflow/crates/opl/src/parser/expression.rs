@@ -5,12 +5,16 @@ use std::sync::LazyLock;
 
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-    ContainsLogicalExpression, DoubleScalarExpression, DoubleValue, EqualToLogicalExpression,
-    Expression, GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-    IntegerScalarExpression, IntegerValue, LogicalExpression, MatchesLogicalExpression,
-    MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
-    QueryLocation, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
-    StringScalarExpression, ValueAccessor,
+    CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
+    ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression, DoubleValue,
+    EqualToLogicalExpression, Expression, GreaterThanLogicalExpression,
+    GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+    NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
+    RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
+    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, StringValue,
+    TextScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -20,20 +24,24 @@ use pest::{
     iterators::{Pair, Pairs},
     pratt_parser::PrattParser,
 };
+use regex::Regex;
 
-use crate::parser::{Rule, invalid_child_rule_error, temporal::parse_datetime_expression};
+use crate::parser::{
+    Rule, invalid_child_rule_error, pipeline::PipelineBuilder, temporal::parse_date_time,
+};
 
 fn parse_next_child_rule<F, E>(
+    pipeline_builder: &dyn PipelineBuilder,
     rules: &mut Pairs<'_, Rule>,
     expected_rule: Rule,
     child_parser: F,
 ) -> Option<Result<E, ParserError>>
 where
-    F: Fn(Pair<'_, Rule>) -> Result<E, ParserError>,
+    F: Fn(Pair<'_, Rule>, &dyn PipelineBuilder) -> Result<E, ParserError>,
 {
     rules.next().map(|rule| {
         if rule.as_rule() == expected_rule {
-            child_parser(rule)
+            child_parser(rule, pipeline_builder)
         } else {
             Err(ParserError::SyntaxError(
                 to_query_location(&rule),
@@ -44,16 +52,17 @@ where
 }
 
 fn parse_right<F, E>(
+    pipeline_builder: &dyn PipelineBuilder,
     rules: &mut Pairs<'_, Rule>,
     expected_rule: Rule,
     parser: F,
 ) -> Option<Result<E, ParserError>>
 where
-    F: Fn(Pair<'_, Rule>) -> Result<E, ParserError>,
+    F: Fn(Pair<'_, Rule>, &dyn PipelineBuilder) -> Result<E, ParserError>,
 {
     let right_rule = rules.next()?;
     if right_rule.as_rule() == expected_rule {
-        Some(parser(right_rule))
+        Some(parser(right_rule, pipeline_builder))
     } else {
         Some(Err(ParserError::SyntaxError(
             to_query_location(&right_rule),
@@ -62,12 +71,20 @@ where
     }
 }
 
-pub(crate) fn parse_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+pub(crate) fn parse_expression(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
-    parse_next_child_rule(&mut inner_rules, Rule::or_expression, parse_or_expression)
-        .transpose()?
-        .ok_or_else(|| no_inner_rule_error(query_location))
+    parse_next_child_rule(
+        pipeline_builder,
+        &mut inner_rules,
+        Rule::or_expression,
+        parse_or_expression,
+    )
+    .transpose()?
+    .ok_or_else(|| no_inner_rule_error(query_location))
 }
 
 pub(crate) fn no_inner_rule_error(query_location: QueryLocation) -> ParserError {
@@ -79,16 +96,26 @@ pub(crate) fn no_inner_rule_error(query_location: QueryLocation) -> ParserError 
 
 pub(crate) fn parse_or_expression(
     rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
-    let left_expr =
-        parse_next_child_rule(&mut inner_rules, Rule::and_expression, parse_and_expression)
-            .transpose()?
-            .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+    let left_expr = parse_next_child_rule(
+        pipeline_builder,
+        &mut inner_rules,
+        Rule::and_expression,
+        parse_and_expression,
+    )
+    .transpose()?
+    .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
 
-    let maybe_right =
-        parse_right(&mut inner_rules, Rule::or_expression, parse_or_expression).transpose()?;
+    let maybe_right = parse_right(
+        pipeline_builder,
+        &mut inner_rules,
+        Rule::or_expression,
+        parse_or_expression,
+    )
+    .transpose()?;
 
     Ok(match maybe_right {
         Some(right_expr) => LogicalExpression::Or(OrLogicalExpression::new(
@@ -103,16 +130,26 @@ pub(crate) fn parse_or_expression(
 
 pub(crate) fn parse_and_expression(
     rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
-    let left_expr =
-        parse_next_child_rule(&mut inner_rules, Rule::rel_expression, parse_rel_expression)
-            .transpose()?
-            .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+    let left_expr = parse_next_child_rule(
+        pipeline_builder,
+        &mut inner_rules,
+        Rule::rel_expression,
+        parse_rel_expression,
+    )
+    .transpose()?
+    .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
 
-    let maybe_right =
-        parse_right(&mut inner_rules, Rule::and_expression, parse_and_expression).transpose()?;
+    let maybe_right = parse_right(
+        pipeline_builder,
+        &mut inner_rules,
+        Rule::and_expression,
+        parse_and_expression,
+    )
+    .transpose()?;
 
     Ok(match maybe_right {
         Some(right_expr) => LogicalExpression::And(AndLogicalExpression::new(
@@ -163,10 +200,12 @@ impl From<LogicalOrScalarExpr> for ScalarExpression {
 
 pub(crate) fn parse_rel_expression(
     rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
+        pipeline_builder,
         &mut inner_rules,
         Rule::additive_expression,
         parse_additive_expression,
@@ -175,73 +214,82 @@ pub(crate) fn parse_rel_expression(
     .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
 
     if let Some(op_rule) = inner_rules.next() {
-        let right_expr = parse_right(&mut inner_rules, Rule::rel_expression, parse_rel_expression)
-            .transpose()?
-            .ok_or_else(|| {
-                ParserError::SyntaxError(
-                    query_location.clone(),
-                    "Expected right expression in relational expression".to_string(),
-                )
-            })?
-            .into();
+        let right_expr = parse_right(
+            pipeline_builder,
+            &mut inner_rules,
+            Rule::rel_expression,
+            parse_rel_expression,
+        )
+        .transpose()?
+        .ok_or_else(|| {
+            ParserError::SyntaxError(
+                query_location.clone(),
+                "Expected right expression in relational expression".to_string(),
+            )
+        })?
+        .into();
 
-        let expr =
-            match op_rule.as_rule() {
-                Rule::rel_op_eq => LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+        let expr = match op_rule.as_rule() {
+            Rule::rel_op_eq => LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                query_location,
+                left_expr.into(),
+                right_expr,
+                false,
+            )),
+            Rule::rel_op_eq_case_insensitive => LogicalExpression::EqualTo(
+                EqualToLogicalExpression::new(query_location, left_expr.into(), right_expr, true),
+            ),
+
+            Rule::rel_op_neq => LogicalExpression::Not(NotLogicalExpression::new(
+                query_location.clone(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     query_location,
                     left_expr.into(),
                     right_expr,
-                    true,
+                    false,
                 )),
+            )),
+            Rule::rel_op_gt => LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                query_location,
+                left_expr.into(),
+                right_expr,
+            )),
 
-                Rule::rel_op_neq => LogicalExpression::Not(NotLogicalExpression::new(
-                    query_location.clone(),
-                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                        query_location,
-                        left_expr.into(),
-                        right_expr,
-                        true,
-                    )),
-                )),
-                Rule::rel_op_gt => LogicalExpression::GreaterThan(
-                    GreaterThanLogicalExpression::new(query_location, left_expr.into(), right_expr),
-                ),
-
-                Rule::rel_op_gte => LogicalExpression::GreaterThanOrEqualTo(
+            Rule::rel_op_gte => {
+                LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                    query_location,
+                    left_expr.into(),
+                    right_expr,
+                ))
+            }
+            // a < b  =>  not (a >= b)
+            Rule::rel_op_lt => LogicalExpression::Not(NotLogicalExpression::new(
+                query_location.clone(),
+                LogicalExpression::GreaterThanOrEqualTo(
                     GreaterThanOrEqualToLogicalExpression::new(
                         query_location,
                         left_expr.into(),
                         right_expr,
                     ),
                 ),
-                // a < b  =>  not (a >= b)
-                Rule::rel_op_lt => LogicalExpression::Not(NotLogicalExpression::new(
-                    query_location.clone(),
-                    LogicalExpression::GreaterThanOrEqualTo(
-                        GreaterThanOrEqualToLogicalExpression::new(
-                            query_location,
-                            left_expr.into(),
-                            right_expr,
-                        ),
-                    ),
+            )),
+            // a <= b => not (a > b)
+            Rule::rel_op_lte => LogicalExpression::Not(NotLogicalExpression::new(
+                query_location.clone(),
+                LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                    query_location,
+                    left_expr.into(),
+                    right_expr,
                 )),
-                // a <= b => not (a > b)
-                Rule::rel_op_lte => LogicalExpression::Not(NotLogicalExpression::new(
-                    query_location.clone(),
-                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
-                        query_location,
-                        left_expr.into(),
-                        right_expr,
-                    )),
-                )),
-                invalid_rule => {
-                    return Err(invalid_child_rule_error(
-                        query_location,
-                        Rule::rel_expression,
-                        invalid_rule,
-                    ));
-                }
-            };
+            )),
+            invalid_rule => {
+                return Err(invalid_child_rule_error(
+                    query_location,
+                    Rule::rel_expression,
+                    invalid_rule,
+                ));
+            }
+        };
 
         Ok(expr.into())
     } else {
@@ -259,12 +307,13 @@ pub static MULTIPLICATIVE_PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::
 
 pub(crate) fn parse_multiplicative_expression(
     rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let inner_rules = rule.into_inner();
     MULTIPLICATIVE_PRATT_PARSER
         .map_primary(|primary| match primary.as_rule() {
-            Rule::unary_expression => parse_unary_expression(primary),
+            Rule::unary_expression => parse_unary_expression(primary, pipeline_builder),
             invalid_rule => Err(invalid_child_rule_error(
                 query_location.clone(),
                 Rule::multiplicative_expression,
@@ -309,13 +358,16 @@ pub static ADDITIVE_PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(||
 
 pub(crate) fn parse_additive_expression(
     rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let inner_rules = rule.into_inner();
 
     ADDITIVE_PRATT_PARSER
         .map_primary(|primary| match primary.as_rule() {
-            Rule::multiplicative_expression => parse_multiplicative_expression(primary),
+            Rule::multiplicative_expression => {
+                parse_multiplicative_expression(primary, pipeline_builder)
+            }
             invalid_rule => Err(invalid_child_rule_error(
                 query_location.clone(),
                 Rule::additive_expression,
@@ -348,7 +400,10 @@ pub(crate) fn parse_additive_expression(
         .parse(inner_rules)
 }
 
-fn parse_unary_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+fn parse_unary_expression(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = QueryLocation::new_fake();
     let mut inner_rules = rule.into_inner();
     if inner_rules.len() == 1 {
@@ -358,7 +413,7 @@ fn parse_unary_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, P
             Rule::number_literal => {
                 Ok(ScalarExpression::Static(parse_number_literal(rule)?).into())
             }
-            Rule::member_expression => parse_member_expression(rule),
+            Rule::member_expression => parse_member_expression(rule, pipeline_builder),
             invalid_rule => Err(invalid_child_rule_error(
                 query_location,
                 Rule::unary_expression,
@@ -377,7 +432,7 @@ fn parse_unary_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, P
                 Ok(expr.into())
             }
             (Rule::not_token, Rule::unary_expression) => {
-                let value_expr = parse_unary_expression(value_rule)?;
+                let value_expr = parse_unary_expression(value_rule, pipeline_builder)?;
                 Ok(LogicalExpression::Not(NotLogicalExpression::new(
                     query_location,
                     value_expr.into(),
@@ -440,7 +495,10 @@ fn negate_number_literal(
     })
 }
 
-pub fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+pub fn parse_member_expression(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let rule = inner_rules
@@ -448,14 +506,12 @@ pub fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarEx
         .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
 
     match rule.as_rule() {
-        Rule::index_expression => parse_index_expression(rule),
-        Rule::primitive_expression => parse_primitive_expression(rule),
-        Rule::attribute_selection_expression => parse_attribute_selection_expression(rule),
-        Rule::datetime_expression => {
-            let date_time_expr = parse_datetime_expression(rule)?;
-            Ok(ScalarExpression::Static(date_time_expr).into())
+        Rule::index_expression => parse_index_expression(rule, pipeline_builder),
+        Rule::primitive_expression => parse_primitive_expression(rule, pipeline_builder),
+        Rule::attribute_selection_expression => {
+            parse_attribute_selection_expression(rule, pipeline_builder)
         }
-        Rule::function_call => parse_function_call(rule),
+        Rule::function_call => parse_function_call(rule, pipeline_builder),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
             Rule::member_expression,
@@ -466,6 +522,7 @@ pub fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarEx
 
 pub(crate) fn parse_index_expression(
     rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
@@ -479,7 +536,7 @@ pub(crate) fn parse_index_expression(
                 let source_expr = ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(query_location.clone(), source_rule.as_str()),
                 ));
-                let index_expr = parse_member_expression(index_rule)?;
+                let index_expr = parse_member_expression(index_rule, pipeline_builder)?;
 
                 let value_accessor =
                     ValueAccessor::new_with_selectors(vec![source_expr, index_expr.into()]);
@@ -505,6 +562,7 @@ pub(crate) fn parse_index_expression(
 
 pub(crate) fn parse_attribute_selection_expression(
     rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
@@ -519,21 +577,23 @@ pub(crate) fn parse_attribute_selection_expression(
     for rule in inner_rules {
         let query_location = to_query_location(&rule);
         match rule.as_rule() {
-            Rule::member_expression => match parse_member_expression(rule)?.into() {
-                ScalarExpression::Source(source_expr) => {
-                    let mut inner_sel = source_expr.into_value_accessor().into_selectors();
-                    selections.append(&mut inner_sel);
+            Rule::member_expression => {
+                match parse_member_expression(rule, pipeline_builder)?.into() {
+                    ScalarExpression::Source(source_expr) => {
+                        let mut inner_sel = source_expr.into_value_accessor().into_selectors();
+                        selections.append(&mut inner_sel);
+                    }
+                    invalid_expr => {
+                        return Err(ParserError::SyntaxNotSupported(
+                            query_location,
+                            format!(
+                                "Invalid expression found parsing member expression: {:?}. Expected Source",
+                                invalid_expr
+                            ),
+                        ));
+                    }
                 }
-                invalid_expr => {
-                    return Err(ParserError::SyntaxNotSupported(
-                        query_location,
-                        format!(
-                            "Invalid expression found parsing member expression: {:?}. Expected Source",
-                            invalid_expr
-                        ),
-                    ));
-                }
-            },
+            }
             invalid_rule => {
                 return Err(invalid_child_rule_error(
                     query_location.clone(),
@@ -551,7 +611,10 @@ pub(crate) fn parse_attribute_selection_expression(
     )
 }
 
-fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+fn parse_primitive_expression(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let rule = inner_rules
@@ -577,6 +640,7 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
         Rule::string_literal => {
             Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
         }
+        Rule::tagged_literal => Ok(parse_tagged_literal(rule, query_location)?.into()),
         Rule::bool_true_token => Ok(ScalarExpression::Static(StaticScalarExpression::Boolean(
             BooleanScalarExpression::new(query_location, true),
         ))
@@ -589,7 +653,7 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             NullScalarExpression::new(query_location),
         ))
         .into()),
-        Rule::expression => parse_expression(rule),
+        Rule::expression => parse_expression(rule, pipeline_builder),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
             Rule::primitive_expression,
@@ -598,13 +662,67 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
     }
 }
 
+pub(crate) fn parse_tagged_literal(
+    rule: Pair<'_, Rule>,
+    query_location: QueryLocation,
+) -> Result<ScalarExpression, ParserError> {
+    let mut inner_rules = rule.into_inner();
+    let tag_ident_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+    let tagged_string_literal_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+
+    let tagged_str = match parse_standard_string_literal(tagged_string_literal_rule) {
+        StaticScalarExpression::String(str) => str,
+        invalid_expr => {
+            return Err(ParserError::SyntaxError(
+                query_location.clone(),
+                format!("Expected static string literal, found {:?}", invalid_expr),
+            ));
+        }
+    };
+
+    let static_scalar_expr = match tag_ident_rule.as_str() {
+        "date_time" => {
+            let date_time = parse_date_time(tagged_str.get_value(), &query_location)?;
+            StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                query_location,
+                date_time,
+            ))
+        }
+        "r" => {
+            let pattern = tagged_str.get_value();
+            let regex = Regex::new(pattern).map_err(|e| {
+                ParserError::SyntaxError(
+                    query_location.clone(),
+                    format!("Invalid regex literal '{pattern}': {e}"),
+                )
+            })?;
+            StaticScalarExpression::Regex(RegexScalarExpression::new(query_location, regex))
+        }
+        unknown_tag => {
+            return Err(ParserError::SyntaxError(
+                query_location.clone(),
+                format!("Unknown tag '{unknown_tag}' in tagged literal"),
+            ));
+        }
+    };
+
+    Ok(ScalarExpression::Static(static_scalar_expr))
+}
+
 /// Parses invocation of function
 ///
 /// Currently we only support two known function `matches` and `contains`, both of which
 /// take two arguments and return a boolean value. In the future, our function library
 /// may be expanded to include more functions with various signatures and user defined
 /// functions, so the implementation of this function will be updated accordingly.
-fn parse_function_call(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+fn parse_function_call(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
 
@@ -656,27 +774,24 @@ fn parse_function_call(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, Pars
             ));
         }
 
-        let arg_expr = parse_expression(arg_expr_rule)?.into();
+        let arg_expr = parse_expression(arg_expr_rule, pipeline_builder)?.into();
         args.push(arg_expr);
     }
-
-    // 2 args for both contains and matches
-    if args.len() != 2 {
-        return Err(ParserError::SyntaxError(
-            query_location,
-            format!(
-                "Function '{fn_name}' expects 2 arguments, got {}",
-                args.len()
-            ),
-        ));
-    }
-
-    let haystack = args.remove(0);
-    let rhs = args.remove(0);
 
     match fn_name {
         "contains" => {
             let case_insensitive = true;
+            if args.len() != 2 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 2 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let haystack = args.remove(0);
+            let rhs = args.remove(0);
 
             Ok(LogicalExpression::Contains(ContainsLogicalExpression::new(
                 query_location,
@@ -686,34 +801,183 @@ fn parse_function_call(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, Pars
             ))
             .into())
         }
-        "matches" => Ok(LogicalExpression::Matches(MatchesLogicalExpression::new(
-            query_location,
-            haystack,
-            rhs,
+        "concat" => Ok(ScalarExpression::Text(TextScalarExpression::Concat(
+            CombineScalarExpression::new(
+                query_location.clone(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(query_location, args),
+                )),
+            ),
         ))
         .into()),
-        _ => Err(ParserError::SyntaxNotSupported(
-            query_location,
-            format!(
-                "Unsupported function '{fn_name}'. Only 'contains' and 'matches' are supported."
-            ),
-        )),
+        "join" | "concat_ws" => {
+            if args.is_empty() {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects at least 1 argument, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let delimiter = args.remove(0);
+            Ok(
+                ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                    query_location.clone(),
+                    delimiter,
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(query_location, args),
+                    )),
+                )))
+                .into(),
+            )
+        }
+        "matches" => {
+            if args.len() != 2 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 2 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let haystack = args.remove(0);
+            let rhs = args.remove(0);
+            Ok(LogicalExpression::Matches(MatchesLogicalExpression::new(
+                query_location,
+                haystack,
+                rhs,
+            ))
+            .into())
+        }
+        "regexp_capture" => {
+            if args.len() != 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
+            let source = args.remove(0);
+            let pattern = args.remove(0);
+            let capture_group = args.remove(0);
+            Ok(ScalarExpression::Text(TextScalarExpression::Capture(
+                CaptureTextScalarExpression::new(query_location, source, pattern, capture_group),
+            ))
+            .into())
+        }
+        "replace" => {
+            if args.len() != 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
+            let source = args.remove(0);
+            let substr = args.remove(0);
+            let replacement = args.remove(0);
+            Ok(ScalarExpression::Text(TextScalarExpression::Replace(
+                ReplaceTextScalarExpression::new(
+                    query_location,
+                    source,
+                    substr,
+                    replacement,
+                    false, // case_insensitive = set to false for OPL
+                ),
+            ))
+            .into())
+        }
+        "substring" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects 2 or 3 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            let source = args.remove(0);
+            let start = Some(args.remove(0));
+            let end = args.pop();
+            Ok(ScalarExpression::Slice(SliceScalarExpression::new(
+                query_location,
+                source,
+                start,
+                end,
+            ))
+            .into())
+        }
+
+        func_name => {
+            let function_def = pipeline_builder.get_function(func_name).ok_or_else(|| {
+                ParserError::SyntaxError(
+                    query_location.clone(),
+                    format!("Unknown function {func_name}"),
+                )
+            })?;
+
+            // TODO - this is kind of a sketchy way to get the number of required parameters.
+            // In the future, we may want to consider adding a bit more information in the
+            // function signature.
+            let expected_num_args =
+                function_def.get_parameter_names().len() - function_def.get_default_values().len();
+            if args.len() < expected_num_args {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects {expected_num_args} arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+
+            let arguments = args
+                .into_iter()
+                .map(InvokeFunctionArgument::Scalar)
+                .collect();
+            let invoke_func_expr =
+                ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                    query_location,
+                    None,
+                    function_def.get_id(),
+                    arguments,
+                ));
+            Ok(invoke_func_expr.into())
+        }
     }
 }
 
 #[cfg(test)]
 mod test {
+
+    use std::collections::HashMap;
+
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
+        CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
         ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
         EqualToLogicalExpression, GreaterThanLogicalExpression,
-        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
-        MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
-        OrLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, JoinTextScalarExpression,
+        ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+        NotLogicalExpression, NullScalarExpression, OrLogicalExpression, PipelineFunction,
+        PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation,
+        RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TextScalarExpression, ValueAccessor,
     };
+    use data_engine_parser_abstractions::{ParserError, ParserFunction, ParserState};
     use pest::Parser;
     use pretty_assertions::assert_eq;
+    use regex::Regex;
 
     use crate::parser::{
         Rule,
@@ -723,8 +987,38 @@ mod test {
             parse_unary_expression,
         },
         pest::OplPestParser,
+        pipeline::{PipelineBuilder, RootPipelineBuilder},
         temporal::create_utc,
     };
+
+    struct MockPipelineBuilder {}
+
+    impl PipelineBuilder for MockPipelineBuilder {
+        fn get_function(&self, _name: &str) -> Option<&ParserFunction> {
+            None
+        }
+
+        fn push_data_expression(
+            &mut self,
+            _data_expression: data_engine_expressions::DataExpression,
+        ) {
+            // unreachable because we only give out shared references to the function being tested
+            unreachable!("push_data_expression should not be called")
+        }
+
+        fn push_function_definition(
+            &mut self,
+            _name: &str,
+            _definition: PipelineFunction,
+        ) -> usize {
+            // unreachable because we only give out shared references to the function being tested
+            unreachable!("push_function_definition should not be called")
+        }
+    }
+
+    fn default_pipeline_builder() -> Box<dyn PipelineBuilder> {
+        Box::new(MockPipelineBuilder {})
+    }
 
     #[test]
     fn test_parse_unary_expression_static_primitives() {
@@ -758,6 +1052,13 @@ mod test {
                 )),
             ),
             (
+                "5.06",
+                StaticScalarExpression::Double(DoubleScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    5.06,
+                )),
+            ),
+            (
                 "-4.56",
                 StaticScalarExpression::Double(DoubleScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -783,24 +1084,24 @@ mod test {
                 StaticScalarExpression::Null(NullScalarExpression::new(QueryLocation::new_fake())),
             ),
             (
-                "datetime(2026-02-04)",
+                "date_time\"2026-02-04T00:00:00Z\"",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
                 )),
             ),
             (
-                "datetime(\"2026-02-04\")",
+                "date_time'2026-02-04T00:00:00Z'",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
                 )),
             ),
             (
-                "datetime('2026-02-04')",
-                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                "r\".*hello.*\"",
+                StaticScalarExpression::Regex(RegexScalarExpression::new(
                     QueryLocation::new_fake(),
-                    create_utc(2026, 2, 4, 0, 0, 0, 0),
+                    Regex::new(".*hello.*").unwrap(),
                 )),
             ),
         ];
@@ -808,9 +1109,10 @@ mod test {
         for (input, expected) in test_cases {
             let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
             assert_eq!(rules.len(), 1);
-            let result: ScalarExpression = parse_unary_expression(rules.next().unwrap())
-                .unwrap()
-                .into();
+            let result: ScalarExpression =
+                parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                    .unwrap()
+                    .into();
             let expected = ScalarExpression::Static(expected.clone());
             assert_eq!(result, expected);
         }
@@ -822,9 +1124,10 @@ mod test {
 
         let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: LogicalExpression = parse_unary_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: LogicalExpression =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
         let expected = LogicalExpression::Not(NotLogicalExpression::new(
             QueryLocation::new_fake(),
             LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
@@ -839,9 +1142,10 @@ mod test {
         let input = "some_field";
         let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: ScalarExpression = parse_unary_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: ScalarExpression =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -861,9 +1165,10 @@ mod test {
         let input = "attributes[\"key\"]";
         let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: ScalarExpression = parse_unary_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: ScalarExpression =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -885,9 +1190,10 @@ mod test {
         let input = "attributes.key.subkey";
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: ScalarExpression = parse_member_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -911,9 +1217,10 @@ mod test {
         let input = "resource.attributes[\"key\"]";
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: ScalarExpression = parse_member_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -937,7 +1244,40 @@ mod test {
         let input = "a == 10";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+            QueryLocation::new_fake(),
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "a",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+            )),
+            false,
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_rel_expression_equal_case_insensitive() {
+        let input = "a =~ 10";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -964,7 +1304,10 @@ mod test {
         let input = "a > 10";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -990,7 +1333,10 @@ mod test {
         let input = "a >= 10";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected =
             LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
@@ -1017,7 +1363,10 @@ mod test {
         let input = "a < 10";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = LogicalExpression::Not(NotLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -1046,7 +1395,10 @@ mod test {
         let input = "a <= 10";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = LogicalExpression::Not(NotLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -1142,8 +1494,11 @@ mod test {
         for (input, math_expr) in test_cases {
             let mut rules = OplPestParser::parse(Rule::additive_expression, input).unwrap();
             assert_eq!(rules.len(), 1);
-            let result: LogicalOrScalarExpr =
-                parse_additive_expression(rules.next().unwrap()).unwrap();
+            let result: LogicalOrScalarExpr = parse_additive_expression(
+                rules.next().unwrap(),
+                default_pipeline_builder().as_ref(),
+            )
+            .unwrap();
             let expected: LogicalOrScalarExpr = ScalarExpression::Math(math_expr).into();
 
             assert_eq!(result, expected);
@@ -1214,8 +1569,11 @@ mod test {
         for (input, math_expr) in test_cases {
             let mut rules = OplPestParser::parse(Rule::multiplicative_expression, input).unwrap();
             assert_eq!(rules.len(), 1);
-            let result: LogicalOrScalarExpr =
-                parse_multiplicative_expression(rules.next().unwrap()).unwrap();
+            let result: LogicalOrScalarExpr = parse_multiplicative_expression(
+                rules.next().unwrap(),
+                default_pipeline_builder().as_ref(),
+            )
+            .unwrap();
             let expected: LogicalOrScalarExpr = ScalarExpression::Math(math_expr).into();
             assert_eq!(result, expected);
         }
@@ -1226,7 +1584,10 @@ mod test {
         let input = "1 + 2 * 3 - 4 / 5 % 6";
         let mut rules = OplPestParser::parse(Rule::rel_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: ScalarExpression = parse_rel_expression(rules.next().unwrap()).unwrap().into();
+        let result: ScalarExpression =
+            parse_rel_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = ScalarExpression::Math(MathScalarExpression::Subtract(
             BinaryMathematicalScalarExpression::new(
@@ -1280,7 +1641,10 @@ mod test {
         let input = "b != 20";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = LogicalExpression::Not(NotLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -1298,7 +1662,7 @@ mod test {
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
                 )),
-                true,
+                false,
             )),
         ));
 
@@ -1310,7 +1674,10 @@ mod test {
         let input = "a == 10 or b == 20 and c == 30";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected = LogicalExpression::Or(OrLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -1328,7 +1695,7 @@ mod test {
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
                 )),
-                true,
+                false,
             )),
             LogicalExpression::And(AndLogicalExpression::new(
                 QueryLocation::new_fake(),
@@ -1346,7 +1713,7 @@ mod test {
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
                     )),
-                    true,
+                    false,
                 )),
                 LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
@@ -1362,7 +1729,7 @@ mod test {
                     ScalarExpression::Static(StaticScalarExpression::Integer(
                         IntegerScalarExpression::new(QueryLocation::new_fake(), 30),
                     )),
-                    true,
+                    false,
                 )),
             )),
         ));
@@ -1388,7 +1755,10 @@ mod test {
             )))
         }
 
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
         let expected = LogicalExpression::And(AndLogicalExpression::new(
             QueryLocation::new_fake(),
             LogicalExpression::Or(OrLogicalExpression::new(
@@ -1420,7 +1790,10 @@ mod test {
             )))
         }
 
-        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+        let result: LogicalExpression =
+            parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
         let expected = LogicalExpression::Or(OrLogicalExpression::new(
             QueryLocation::new_fake(),
             LogicalExpression::And(AndLogicalExpression::new(
@@ -1450,9 +1823,10 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        let result: LogicalExpression = parse_member_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: LogicalExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected_haystack = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -1484,9 +1858,10 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        let result: LogicalExpression = parse_member_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: LogicalExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected_haystack = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -1517,9 +1892,10 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        let result: LogicalExpression = parse_member_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: LogicalExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected_haystack = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -1553,9 +1929,10 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        let result: LogicalExpression = parse_member_expression(rules.next().unwrap())
-            .unwrap()
-            .into();
+        let result: LogicalExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
 
         let expected_haystack = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -1589,8 +1966,13 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        let err = parse_member_expression(rules.next().unwrap()).unwrap_err();
-        assert!(err.to_string().contains("Unsupported function"));
+        let err =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("Unknown function"),
+            "Unexpected error message: {err}"
+        );
     }
 
     #[test]
@@ -1599,7 +1981,9 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        let err = parse_member_expression(rules.next().unwrap()).unwrap_err();
+        let err =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
         assert!(
             err.to_string()
                 .contains("Function 'contains' expects 2 arguments, got 1")
@@ -1612,10 +1996,304 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        let err = parse_member_expression(rules.next().unwrap()).unwrap_err();
+        let err =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
         assert!(
             err.to_string()
                 .contains("Function 'matches' expects 2 arguments, got 3")
         )
+    }
+
+    #[test]
+    fn test_parse_external_function_call_wrong_arity() {
+        let input = "myfunc(1234)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let mut parser_state = ParserState::new("");
+        parser_state.push_function(
+            "myfunc",
+            PipelineFunction::new_external(
+                "myfunc",
+                vec![
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                ],
+                None,
+            ),
+            vec!["arg1".into(), "arg2".into()],
+            HashMap::new(),
+        );
+
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
+        let err = parse_member_expression(rules.next().unwrap(), &pipeline_builder).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Function 'myfunc' expects 2 arguments, got 1")
+        )
+    }
+
+    #[test]
+    fn test_parse_concat_function_call() {
+        let input = "concat(\"event happened: \", event_name)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected =
+            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Collection(CollectionScalarExpression::List(
+                    ListScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "event happened: ",
+                                ),
+                            )),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "event_name",
+                                    )),
+                                )]),
+                            )),
+                        ],
+                    ),
+                )),
+            )));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_concat_with_delimiter_function_call() {
+        // "join" is alias for "concat_ws"
+        for fn_name in ["concat_ws", "join"] {
+            let input = format!("{fn_name}(\" \", severity_text, \"event happened:\", event_name)");
+            let mut rules = OplPestParser::parse(Rule::member_expression, &input).unwrap();
+            assert_eq!(rules.len(), 1);
+
+            let result: ScalarExpression =
+                parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                    .unwrap()
+                    .into();
+
+            let expected =
+                ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), " "),
+                    )),
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "severity_text",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "event happened:",
+                                    ),
+                                )),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "event_name",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                            ],
+                        ),
+                    )),
+                )));
+
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_replace_function_call() {
+        let input = "replace(severity_text, \"N\", \"M\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = ScalarExpression::Text(TextScalarExpression::Replace(
+            ReplaceTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "severity_text",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "N"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "M"),
+                )),
+                false,
+            ),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_regexp_capture_function_call() {
+        let input = "regexp_capture(severity_text, \".*(.).*\", 1)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = ScalarExpression::Text(TextScalarExpression::Capture(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "severity_text",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ".*(.).*"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    fn parse_known_func_with_args(
+        fn_name: &str,
+        args: &[&str],
+    ) -> Result<LogicalOrScalarExpr, ParserError> {
+        let input = format!("{}({})", fn_name, args.join(", "));
+        let mut parser_state = ParserState::new("");
+        let pipeline_builder = RootPipelineBuilder::new(&mut parser_state);
+        let mut rules = OplPestParser::parse(Rule::member_expression, &input).unwrap();
+        parse_member_expression(rules.next().unwrap(), &pipeline_builder)
+    }
+
+    #[test]
+    fn parse_replace_function_call_with_wrong_arity() {
+        for args in [
+            vec![],
+            vec!["one"],
+            vec!["one", "two"],
+            vec!["one", "two", "three", "four"],
+        ] {
+            let err = parse_known_func_with_args("replace", &args).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("Function 'replace' expects 3 arguments, got {}", args.len())
+            )
+        }
+    }
+
+    #[test]
+    fn parse_regexp_capture_function_call_with_wrong_arity() {
+        for args in [
+            vec![],
+            vec!["one"],
+            vec!["one", "two"],
+            vec!["one", "two", "three", "four"],
+        ] {
+            let err = parse_known_func_with_args("regexp_capture", &args).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "Function 'regexp_capture' expects 3 arguments, got {}",
+                    args.len()
+                )
+            )
+        }
+    }
+
+    #[test]
+    fn parse_contains_ws_function_call_with_wrong_arity() {
+        let err = parse_known_func_with_args("concat_ws", &[]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Function 'concat_ws' expects at least 1 argument, got 0".to_string(),
+        );
+    }
+
+    #[test]
+    fn parse_catches_invalid_tag() {
+        let input = "test\"hello\"";
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let err =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
+
+        assert_eq!(err.to_string(), "Unknown tag 'test' in tagged literal");
+    }
+
+    #[test]
+    fn parse_catches_invalid_regex() {
+        let input = "r\".*[\""; // unclosed bracket is invalid
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let err =
+            parse_unary_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Invalid regex literal '.*[': regex parse error:\n    \
+            .*[\n      \
+            ^\n\
+            error: unclosed character class"
+        );
     }
 }

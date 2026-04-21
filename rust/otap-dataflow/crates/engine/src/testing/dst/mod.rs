@@ -8,8 +8,8 @@
 //! deterministic time and deterministic interleavings. Rather than
 //! reimplementing shutdown, timers, or Ack/Nack unwinding in a separate
 //! simulator, the harness runs the real
-//! [`crate::message::ProcessorMessageChannel`],
-//! [`crate::message::ExporterMessageChannel`],
+//! [`crate::message::ProcessorInbox`],
+//! [`crate::message::ExporterInbox`],
 //! [`RuntimeCtrlMsgManager`], and [`PipelineCompletionMsgDispatcher`] on the
 //! same kind of single-threaded runtime used by local engine components.
 //!
@@ -24,7 +24,7 @@
 //!
 //! The current engine DST scenarios cover:
 //!
-//! - `dst_message_channel_seeded`: bounded-fair progress between control and
+//! - `dst_inbox_seeded`: bounded-fair progress between control and
 //!   `pdata`, processor shutdown draining after admission reopens, exporter
 //!   shutdown draining of buffered `pdata` without reopening admission, and
 //!   deadline-forced shutdown when a processor keeps admission closed
@@ -143,4 +143,4 @@ mod control_plane;
 #[cfg(test)]
 mod heavy_ingress;
 #[cfg(test)]
-mod message_channel;
+mod inbox;

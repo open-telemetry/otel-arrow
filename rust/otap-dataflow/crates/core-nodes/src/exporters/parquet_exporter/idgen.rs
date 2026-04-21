@@ -216,9 +216,11 @@ impl PartitionSequenceIdGenerator {
 pub mod test {
     use std::collections::HashMap;
 
-    use arrow::array::new_empty_array;
+    use arrow::array::UInt16Array;
     use otap_df_pdata::Consumer;
-    use otap_df_pdata::otap::{Metrics, OtapArrowRecords, Traces, from_record_messages};
+    use otap_df_pdata::otap::{
+        Metrics, OtapArrowRecords, Traces, from_record_messages, testing::complete_batch,
+    };
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::schema::consts::metadata;
     use otap_df_pdata::schema::get_schema_metadata;
@@ -418,7 +420,7 @@ pub mod test {
                 )),
             ])),
             vec![
-                Arc::new(arrow::array::UInt16Array::from_iter_values(vec![0, 0, 0])),
+                Arc::new(UInt16Array::from_iter_values(vec![0, 0, 0])),
                 Arc::new(UInt32Array::from_iter_values(vec![1, 2, 3])),
             ],
         )
@@ -477,13 +479,14 @@ pub mod test {
                 DataType::UInt16,
                 true,
             )])),
-            vec![Arc::new(new_empty_array(&DataType::UInt16))],
+            vec![Arc::new(UInt16Array::from(vec![0u16]))],
         )
         .unwrap();
 
         let mut traces_batch: OtapParquetRecords = {
             let mut t = OtapArrowRecords::Traces(Traces::default());
-            t.set(ArrowPayloadType::Spans, root_batch.clone()).unwrap();
+            let spans_batch = complete_batch(ArrowPayloadType::Spans, root_batch.clone());
+            t.set(ArrowPayloadType::Spans, spans_batch).unwrap();
             t.into()
         };
         let mut id_generator = PartitionSequenceIdGenerator::new();
@@ -495,7 +498,9 @@ pub mod test {
 
         let mut metrics_batch: OtapParquetRecords = {
             let mut m = OtapArrowRecords::Metrics(Metrics::default());
-            m.set(ArrowPayloadType::UnivariateMetrics, root_batch.clone())
+            let metrics_root =
+                complete_batch(ArrowPayloadType::UnivariateMetrics, root_batch.clone());
+            m.set(ArrowPayloadType::UnivariateMetrics, metrics_root)
                 .unwrap();
             m.into()
         };

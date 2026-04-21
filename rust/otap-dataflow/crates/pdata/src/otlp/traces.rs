@@ -605,6 +605,8 @@ mod test {
                     DataType::Struct(span_status_fields.clone()),
                     true,
                 ),
+                Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+                Field::new(consts::NAME, DataType::Utf8, false),
             ])),
             vec![
                 Arc::new(StructArray::new(
@@ -648,6 +650,20 @@ mod test {
                     ],
                     Some(NullBuffer::from_iter([true, true, false])),
                 )),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(
+                        vec![
+                            1u64.to_le_bytes().to_vec(),
+                            2u64.to_le_bytes().to_vec(),
+                            3u64.to_le_bytes().to_vec(),
+                        ]
+                        .into_iter(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(StringArray::from_iter_values([
+                    "span_a", "span_b", "span_c",
+                ])),
             ],
         )
         .unwrap();
@@ -781,6 +797,8 @@ mod test {
                     vec![
                         Span::build()
                             .trace_id(4u128.to_le_bytes().to_vec())
+                            .span_id(1u64.to_le_bytes().to_vec())
+                            .name("span_a")
                             .start_time_unix_nano(1u64)
                             .end_time_unix_nano(2u64)
                             .status(Status::new(StatusCode::Ok, "statusa"))
@@ -802,6 +820,8 @@ mod test {
                         vec![
                             Span::build()
                                 .trace_id(1u128.to_le_bytes().to_vec())
+                                .span_id(2u64.to_le_bytes().to_vec())
+                                .name("span_b")
                                 .start_time_unix_nano(5u64)
                                 .end_time_unix_nano(7u64)
                                 .attributes(vec![KeyValue::new(
@@ -833,6 +853,8 @@ mod test {
                         InstrumentationScope::build().version("scopev2").finish(),
                         vec![Span {
                             trace_id: 8u128.to_le_bytes().to_vec(),
+                            span_id: 3u64.to_le_bytes().to_vec(),
+                            name: "span_c".to_string(),
                             start_time_unix_nano: 8,
                             end_time_unix_nano: 9,
                             links: vec![Link {

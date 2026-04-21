@@ -48,8 +48,8 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                     if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
                         let v = v.to_static_value_mut();
                         let remove = match v {
-                            Some(StaticValueMut::Map(m)) => {
-                                if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
+                            Some(StaticValueMut::Map(m))
+                                if (!inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty()) => {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
                                         r,
@@ -58,12 +58,8 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                                     remove_from_map(execution_context, r, m, inner_reduction);
                                     false
                                 }
-                                else {
-                                    true
-                                }
-                            }
-                            Some(StaticValueMut::Array(a)) => {
-                                if !inner_reduction.indices.is_empty() {
+                            Some(StaticValueMut::Array(a))
+                                if !inner_reduction.indices.is_empty() => {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
                                         r,
@@ -72,10 +68,6 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                                     remove_from_array(execution_context, r, a, inner_reduction);
                                     false
                                 }
-                                else {
-                                    true
-                                }
-                            }
                             _ => true
                         };
 
@@ -125,8 +117,8 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                     if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
                         let v = v.to_static_value_mut();
                         match v {
-                            Some(StaticValueMut::Map(m)) => {
-                                if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
+                            Some(StaticValueMut::Map(m))
+                                if (!inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty()) => {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
                                         r,
@@ -134,9 +126,8 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                                     );
                                     keep_in_map(execution_context, r, m, inner_reduction);
                                 }
-                            }
-                            Some(StaticValueMut::Array(a)) => {
-                                if !inner_reduction.indices.is_empty() {
+                            Some(StaticValueMut::Array(a))
+                                if !inner_reduction.indices.is_empty() => {
                                     execution_context.add_diagnostic_if_enabled(
                                         RecordSetEngineDiagnosticLevel::Verbose,
                                         r,
@@ -144,7 +135,6 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                                     );
                                     keep_in_array(execution_context, r, a, inner_reduction);
                                 }
-                            }
                             _ => {}
                         }
 
@@ -416,8 +406,8 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
         if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
             let v = v.to_static_value_mut();
             let remove = match v {
-                Some(StaticValueMut::Map(m)) => {
-                    if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
+                Some(StaticValueMut::Map(m))
+                    if (!inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty()) => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
                             expression,
@@ -426,12 +416,8 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
                         remove_from_map(execution_context, expression, m, inner_reduction);
                         false
                     }
-                    else {
-                        true
-                    }
-                }
-                Some(StaticValueMut::Array(a)) => {
-                    if !inner_reduction.indices.is_empty() {
+                Some(StaticValueMut::Array(a))
+                    if !inner_reduction.indices.is_empty() => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
                             expression,
@@ -440,10 +426,6 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
                         remove_from_array(execution_context, expression, a, inner_reduction);
                         false
                     }
-                    else {
-                        true
-                    }
-                }
                 _ => true
             };
 
@@ -494,8 +476,8 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
         if let Some(inner_reduction) = elements.get(&i) {
             let v = v.to_static_value_mut();
             let remove = match v {
-                Some(StaticValueMut::Map(m)) => {
-                    if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
+                Some(StaticValueMut::Map(m))
+                    if (!inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty()) => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
                             expression,
@@ -504,12 +486,8 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
                         remove_from_map(execution_context, expression, m, inner_reduction);
                         false
                     }
-                    else {
-                        true
-                    }
-                }
-                Some(StaticValueMut::Array(a)) => {
-                    if !inner_reduction.indices.is_empty() {
+                Some(StaticValueMut::Array(a))
+                    if !inner_reduction.indices.is_empty() => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
                             expression,
@@ -518,10 +496,6 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
                         remove_from_array(execution_context, expression, a, inner_reduction);
                         false
                     }
-                    else {
-                        true
-                    }
-                }
                 _ => true
             };
 
@@ -557,8 +531,8 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
         if let Some(inner_reduction) = reduction.keys.get(&MapReductionKey::Key(k)) {
             let v = v.to_static_value_mut();
             match v {
-                Some(StaticValueMut::Map(m)) => {
-                    if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
+                Some(StaticValueMut::Map(m))
+                    if (!inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty()) => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
                             expression,
@@ -566,9 +540,8 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
                         );
                         keep_in_map(execution_context, expression, m, inner_reduction);
                     }
-                }
-                Some(StaticValueMut::Array(a)) => {
-                    if !inner_reduction.indices.is_empty() {
+                Some(StaticValueMut::Array(a))
+                    if !inner_reduction.indices.is_empty() => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
                             expression,
@@ -576,7 +549,6 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
                         );
                         keep_in_array(execution_context, expression, a, inner_reduction);
                     }
-                }
                 _ => { }
             }
 
@@ -627,8 +599,8 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
         if let Some(inner_reduction) = elements.get(&i) {
             let v = v.to_static_value_mut();
             match v {
-                Some(StaticValueMut::Map(m)) => {
-                    if !inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty() {
+                Some(StaticValueMut::Map(m))
+                    if (!inner_reduction.key_patterns.is_empty() || !inner_reduction.keys.is_empty()) => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
                             expression,
@@ -636,9 +608,8 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
                         );
                         keep_in_map(execution_context, expression, m, inner_reduction);
                     }
-                }
-                Some(StaticValueMut::Array(a)) => {
-                    if !inner_reduction.indices.is_empty() {
+                Some(StaticValueMut::Array(a))
+                    if !inner_reduction.indices.is_empty() => {
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Verbose,
                             expression,
@@ -646,7 +617,6 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
                         );
                         keep_in_array(execution_context, expression, a, inner_reduction);
                     }
-                }
                 _ => {}
             }
 

@@ -64,6 +64,23 @@ macro_rules! record_batch {
     };
 
     // Field definition patterns
+
+    // TimestampNs: accepts i64 values, produces Timestamp(Nanosecond, None)
+    (@field_def $name:expr, TimestampNs, [$($values:expr),*]) => {
+        arrow_schema::Field::new(
+            $name,
+            arrow_schema::DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+            true,
+        )
+    };
+    (@field_def $name:expr, TimestampNs, $values:expr) => {
+        arrow_schema::Field::new(
+            $name,
+            arrow_schema::DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+            true,
+        )
+    };
+
     (@field_def $name:expr, $type:ident, [$($values:expr),*]) => {
         arrow_schema::Field::new($name, arrow_schema::DataType::$type, true)
     };
@@ -126,6 +143,9 @@ macro_rules! record_batch {
     };
 
     // Create array implementations for inline literals
+    (@create_array TimestampNs, [$($values:expr),*]) => {
+        arrow::array::TimestampNanosecondArray::from(vec![$($values),*])
+    };
     (@create_array Boolean, [$($values:expr),*]) => {
         arrow::array::BooleanArray::from(vec![$($values),*])
     };
@@ -167,6 +187,9 @@ macro_rules! record_batch {
     };
 
     // Create array implementations for expressions (variables)
+    (@create_array_from_expr TimestampNs, $values:expr) => {
+        arrow::array::TimestampNanosecondArray::from($values)
+    };
     (@create_array_from_expr Boolean, $values:expr) => {
         arrow::array::BooleanArray::from($values)
     };

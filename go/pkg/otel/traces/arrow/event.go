@@ -33,11 +33,11 @@ var (
 	// EventSchema is the Arrow schema representing events.
 	// Related record.
 	EventSchema = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.DeltaEncoding), Nullable: true},
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding), Nullable: true},
 		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
-		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Nullable: true},
+		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
-		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Nullable: true},
+		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 	}, nil)
 )
 

@@ -150,6 +150,18 @@ impl MetricsRecordBatchBuilder {
         }
     }
 
+    /// Returns the number of metric rows appended to the builder.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.id.len()
+    }
+
+    /// Returns `true` if no metric rows have been appended.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Construct an OTAP Metrics RecordBatch from the builders.
     pub fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
         let mut fields = Vec::with_capacity(10);
@@ -495,6 +507,18 @@ impl ExemplarsRecordBatchBuilder {
                 16,
             ),
         }
+    }
+
+    /// Returns the number of exemplar rows appended so far.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.id.len()
+    }
+
+    /// Returns `true` if no exemplar rows have been appended.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.id.len() == 0
     }
 
     /// Append a value to the `id` array.

@@ -20,6 +20,13 @@
 //!   in use; `0.5` on an 8-core machine corresponds to 4 fully loaded cores.
 //!   Aligned with the OTel semantic convention `process.cpu.utilization`.
 //!
+//! - `memory_pressure_state` (`Gauge<u64>`, `{state}`):
+//!   Process-wide memory limiter state encoded as `0=normal`, `1=soft`, `2=hard`.
+//!
+//! - `process_memory_usage_bytes`, `process_memory_soft_limit_bytes`,
+//!   `process_memory_hard_limit_bytes` (`Gauge<u64>`, `{By}`):
+//!   Process-wide memory limiter sample and effective limits.
+//!
 //!   We emit utilization directly (rather than a cumulative `cpu_time` counter)
 //!   so that users can read the metric as-is without requiring PromQL `rate()`
 //!   or similar query-time derivations.
@@ -27,6 +34,7 @@
 //!   TODO: Also emit a cumulative `cpu_time` counter (like the Go Collector's
 //!   `process_cpu_seconds_total`) for users who prefer query-time computation.
 
+use crate::memory_limiter::MemoryPressureState;
 use cpu_time::ProcessTime;
 use otap_df_telemetry::instrument::{Gauge, ObserveUpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
@@ -51,6 +59,22 @@ pub struct EngineMetrics {
     /// The `cpu.mode` attribute is not set; this reports combined user + system time.
     #[metric(unit = "{1}")]
     pub cpu_utilization: Gauge<f64>,
+
+    /// Process-wide memory limiter state encoded as `0=normal`, `1=soft`, `2=hard`.
+    #[metric(unit = "{state}")]
+    pub memory_pressure_state: Gauge<u64>,
+
+    /// Most recent process-wide memory limiter sample, in bytes.
+    #[metric(unit = "{By}")]
+    pub process_memory_usage_bytes: Gauge<u64>,
+
+    /// Effective process-wide memory limiter soft limit, in bytes.
+    #[metric(unit = "{By}")]
+    pub process_memory_soft_limit_bytes: Gauge<u64>,
+
+    /// Effective process-wide memory limiter hard limit, in bytes.
+    #[metric(unit = "{By}")]
+    pub process_memory_hard_limit_bytes: Gauge<u64>,
 }
 
 /// Monitors and reports engine-wide metrics.
@@ -68,6 +92,8 @@ pub struct EngineMetricsMonitor {
     cpu_start: ProcessTime,
     /// Total number of logical CPU cores available on the system.
     num_cores: usize,
+    /// Shared process-wide memory limiter state.
+    memory_pressure_state: MemoryPressureState,
 }
 
 impl EngineMetricsMonitor {
@@ -80,6 +106,7 @@ impl EngineMetricsMonitor {
         registry: TelemetryRegistryHandle,
         entity_key: EntityKey,
         reporter: MetricsReporter,
+        memory_pressure_state: MemoryPressureState,
     ) -> Self {
         let metrics = registry.register_metric_set_for_entity::<EngineMetrics>(entity_key);
         let num_cores = std::thread::available_parallelism()
@@ -92,6 +119,7 @@ impl EngineMetricsMonitor {
             wall_start: Instant::now(),
             cpu_start: ProcessTime::now(),
             num_cores,
+            memory_pressure_state,
         }
     }
 
@@ -112,6 +140,18 @@ impl EngineMetricsMonitor {
         } else {
             self.metrics.cpu_utilization.set(0.0);
         }
+        self.metrics
+            .memory_pressure_state
+            .set(self.memory_pressure_state.level() as u64);
+        self.metrics
+            .process_memory_usage_bytes
+            .set(self.memory_pressure_state.usage_bytes());
+        self.metrics
+            .process_memory_soft_limit_bytes
+            .set(self.memory_pressure_state.soft_limit_bytes());
+        self.metrics
+            .process_memory_hard_limit_bytes
+            .set(self.memory_pressure_state.hard_limit_bytes());
         self.wall_start = now_wall;
         self.cpu_start = now_cpu;
     }
@@ -153,7 +193,12 @@ mod tests {
         let entity_key = controller.register_engine_entity();
         let (_rx, reporter) = MetricsReporter::create_new_and_receiver(16);
 
-        let mut monitor = EngineMetricsMonitor::new(registry, entity_key, reporter);
+        let mut monitor = EngineMetricsMonitor::new(
+            registry,
+            entity_key,
+            reporter,
+            controller.memory_pressure_state(),
+        );
         monitor.update();
 
         assert!(
@@ -169,7 +214,12 @@ mod tests {
         let entity_key = controller.register_engine_entity();
         let (_rx, reporter) = MetricsReporter::create_new_and_receiver(16);
 
-        let mut monitor = EngineMetricsMonitor::new(registry, entity_key, reporter);
+        let mut monitor = EngineMetricsMonitor::new(
+            registry,
+            entity_key,
+            reporter,
+            controller.memory_pressure_state(),
+        );
         monitor.update();
         assert!(monitor.report().is_ok());
     }
@@ -181,7 +231,12 @@ mod tests {
         let entity_key = controller.register_engine_entity();
         let (_rx, reporter) = MetricsReporter::create_new_and_receiver(16);
 
-        let mut monitor = EngineMetricsMonitor::new(registry, entity_key, reporter);
+        let mut monitor = EngineMetricsMonitor::new(
+            registry,
+            entity_key,
+            reporter,
+            controller.memory_pressure_state(),
+        );
 
         // Do a small busy-spin so there is measurable CPU time.
         let start = Instant::now();
@@ -195,5 +250,34 @@ mod tests {
             (0.0..=1.0).contains(&util),
             "cpu_utilization should be in [0, 1], got {util}"
         );
+    }
+
+    #[test]
+    fn engine_metrics_expose_process_memory_limiter_usage_and_limits() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let state = controller.memory_pressure_state();
+        state.configure(crate::memory_limiter::MemoryPressureBehaviorConfig {
+            retry_after_secs: 1,
+            fail_readiness_on_hard: true,
+            mode: otap_df_config::policy::MemoryLimiterMode::Enforce,
+        });
+        state.set_sample_for_tests(
+            crate::memory_limiter::MemoryPressureLevel::Soft,
+            95,
+            90,
+            100,
+        );
+
+        let entity_key = controller.register_engine_entity();
+        let (_rx, reporter) = MetricsReporter::create_new_and_receiver(16);
+        let mut monitor = EngineMetricsMonitor::new(registry, entity_key, reporter, state);
+
+        monitor.update();
+
+        assert_eq!(monitor.metrics.memory_pressure_state.get(), 1);
+        assert_eq!(monitor.metrics.process_memory_usage_bytes.get(), 95);
+        assert_eq!(monitor.metrics.process_memory_soft_limit_bytes.get(), 90);
+        assert_eq!(monitor.metrics.process_memory_hard_limit_bytes.get(), 100);
     }
 }

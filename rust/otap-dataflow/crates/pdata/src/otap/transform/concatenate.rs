@@ -81,8 +81,8 @@ pub fn concatenate<const N: usize>(
     }
 
     if items.len() == 1 {
-        for i in 0..N {
-            result[i] = items[0][i].take();
+        for (i, item) in result.iter_mut().enumerate().take(N) {
+            *item = items[0][i].take();
         }
         return Ok(result);
     }

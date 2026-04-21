@@ -107,6 +107,11 @@ pub trait ArrayAppendNulls {
     fn append_nulls(&mut self, n: usize);
 }
 
+/// Returns the number of elements in the builder.
+pub trait ArrayLen {
+    fn len(&self) -> usize;
+}
+
 /// this trait can be implemented by types that can receive a value to append as a type of str.
 ///
 /// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
@@ -625,6 +630,23 @@ where
             default_check = Self::is_default_value(&self.default_value, &value),
             retry = { self.append_slice_n(value, n) }
         )
+    }
+}
+
+impl<T, TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<T, TArgs, TN, TD8, TD16>
+where
+    T: Clone + PartialEq,
+    TN: ArrayLen,
+    TD8: ArrayLen,
+    TD16: ArrayLen,
+{
+    /// Returns the number of elements appended to the builder.
+    pub fn len(&self) -> usize {
+        match &self.inner {
+            InnerBuilder::Uninitialized(prefix) => prefix.len(),
+            InnerBuilder::Native(builder) => builder.len(),
+            InnerBuilder::Dictionary(builder) => builder.len(),
+        }
     }
 }
 

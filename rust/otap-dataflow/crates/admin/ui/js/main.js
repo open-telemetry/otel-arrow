@@ -69,6 +69,7 @@
     getPipelineInterconnect,
     getTransitivelyConnectedPipelineKeys,
   } from "./inter-pipeline-topology.js";
+  import { createLogsController } from "./logs-controller.js";
 
   // Query params tune metrics query behavior.
   const urlParams = new URLSearchParams(window.location.search);
@@ -4212,6 +4213,14 @@
     error: "not checked yet",
   });
   updatePipelineSelectionDisplay();
+
+  // Initialise the live log-stream panel.  The controller wires up its own
+  // DOM event listeners and manages the WebSocket lifecycle independently of
+  // the metrics polling loop.
+  const logsSection = document.getElementById("logs-section");
+  if (logsSection) {
+    createLogsController({ containerEl: logsSection });
+  }
 
   void fetchAndUpdate();
   void pollHealthEndpoints();

@@ -41,6 +41,10 @@ impl OtelDataflowSpec {
             );
         }
 
+        if let Err(e) = self.engine.telemetry.validate() {
+            errors.push(e);
+        }
+
         if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
             if let Some(policies) = &observability_pipeline.policies {
                 errors.extend(
@@ -77,6 +81,33 @@ impl OtelDataflowSpec {
             }
             if let Err(e) = pipeline_group.validate(pipeline_group_id) {
                 errors.push(e);
+            }
+            if pipeline_group
+                .policies
+                .as_ref()
+                .and_then(|policies| policies.resources.as_ref())
+                .and_then(|resources| resources.memory_limiter.as_ref())
+                .is_some()
+            {
+                errors.push(Error::InvalidUserConfig {
+                    error: format!(
+                        "groups.{pipeline_group_id}.policies.resources.memory_limiter is not supported; configure the process-wide limiter only at top-level policies.resources.memory_limiter"
+                    ),
+                });
+            }
+            for (pipeline_id, pipeline) in &pipeline_group.pipelines {
+                if pipeline
+                    .policies()
+                    .and_then(|policies| policies.resources.as_ref())
+                    .and_then(|resources| resources.memory_limiter.as_ref())
+                    .is_some()
+                {
+                    errors.push(Error::InvalidUserConfig {
+                        error: format!(
+                            "groups.{pipeline_group_id}.pipelines.{pipeline_id}.policies.resources.memory_limiter is not supported; configure the process-wide limiter only at top-level policies.resources.memory_limiter"
+                        ),
+                    });
+                }
             }
         }
 

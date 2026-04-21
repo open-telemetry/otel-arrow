@@ -8,8 +8,6 @@ use serde::Deserialize;
 use std::io;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
-
-#[cfg(feature = "experimental-tls")]
 use {
     crate::tls_utils::read_file_with_limit_async, otap_df_config::tls::TlsClientConfig,
     otap_df_telemetry::otel_error, reqwest::Certificate, reqwest::Identity,
@@ -51,8 +49,6 @@ pub struct HttpClientSettings {
     pub timeout: Option<Duration>,
 
     /// Client-side TLS/mTLS configuration.
-    /// Requires the `experimental-tls` feature to be enabled.
-    #[cfg(feature = "experimental-tls")]
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
 }
@@ -86,7 +82,6 @@ impl HttpClientSettings {
             client_builder = client_builder.timeout(timeout)
         }
 
-        #[cfg(feature = "experimental-tls")]
         if let Some(tls) = &self.tls {
             let mut certs = vec![];
 
@@ -215,7 +210,6 @@ impl Default for HttpClientSettings {
             tcp_keepalive: default_tcp_keepalive(),
             tcp_keepalive_interval: None,
             timeout: None,
-            #[cfg(feature = "experimental-tls")]
             tls: None,
         }
     }

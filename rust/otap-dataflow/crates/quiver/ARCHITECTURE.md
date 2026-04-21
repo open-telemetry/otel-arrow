@@ -975,23 +975,70 @@ sequenceDiagram
 
 #### Dictionary Handling
 
-- Each `(slot, schema)` stream preserves dictionary encoding exactly as received.
-  Quiver uses Arrow IPC's `DictionaryHandling::Resend` mode, where each batch
-  includes its full dictionary. This ensures **schema fidelity**: readers receive
-  the exact same dictionary key types (e.g., `UInt8` vs `UInt16`) that writers sent.
-- **Design rationale**: Dictionary unification (merging vocabularies across batches)
-  could widen key types when cardinality exceeds the original type's capacity.
-  For example, if batches arrive with `DictionaryArray<UInt8>` but the unified
-  vocabulary exceeds 255 values, unification would produce `DictionaryArray<UInt16>`.
-  This breaks round-trip schema guarantees, which is unacceptable for a persistence
-  layer whose job is faithful reproduction.
-- **Trade-offs**:
-  - *Pro*: Exact schema preservation - readers get back what writers sent
-  - *Pro*: Each batch is self-contained and independently readable
-  - *Con*: Larger file sizes due to duplicate dictionary values, which also
-    increases memory consumption when segments are memory-mapped for reading
-- This design decision may be revisited if future performance measurements
-  indicate that the size/memory overhead is a significant concern.
+When a `(slot, schema)` stream accumulates multiple `RecordBatch`es that contain
+dictionary-encoded columns, Quiver **unifies** the per-batch dictionaries before
+writing the Arrow IPC file.  Without unification, Arrow's `FileWriter` rejects
+batches whose dictionary values differ from the first batch's dictionary
+("dictionary replacement"), causing segment finalization to fail silently and
+resulting in data loss.
+
+**Unification strategy:**
+
+1. For each dictionary-encoded column (including dictionary fields nested
+   inside `Struct` columns), the values arrays from every batch in the
+   stream are concatenated into a single *unified* values array.
+2. Each batch's dictionary keys are offset so they index into the unified array
+   at the correct position.
+3. If the total number of dictionary values exceeds the original key type's
+   capacity (e.g., more than 256 values for `UInt8` keys), the key type is
+   widened (e.g., `UInt8` -> `UInt16`).
+4. For `Struct` columns, each dictionary child is unified independently while
+   non-dictionary children pass through unchanged. The struct is then rebuilt
+   with the unified children. This covers OTAP schemas where fields like
+   `resource.schema_url`, `scope.name`, `scope.version`, `body.str`, and
+   `status.status_message` are dictionary-encoded inside struct columns.
+
+If key type widening would exceed the maximum supported key width, the
+dictionary encoding is stripped and the column is stored as the native value
+type (e.g., plain `Utf8` instead of `Dict(UInt16, Utf8)`).  This ensures
+segment finalization succeeds regardless of dictionary cardinality.
+
+The maximum key width is currently hardcoded to `UInt16` to match the OTAP
+reader stack (`pdata::arrays`), which only supports `UInt8` and `UInt16`
+dictionary keys.  A future enhancement will make this configurable via
+`QuiverConfig` so non-OTAP embeddings can set a different limit.
+
+**Trade-offs:**
+
+- *Pro*: Guarantees segment finalization succeeds regardless of dictionary
+  content across batches -- prevents silent data loss.
+- *Pro*: The unified dictionary is written once in the IPC file (not repeated
+  per batch), since Arrow's `DictionaryTracker` detects that all batches
+  share the same dictionary and skips redundant writes.
+- *Con*: Key type widening changes the schema seen by readers when cardinality
+  exceeds the original key type's capacity. In practice this is rare since
+  segments typically finalize before accumulating enough batches to overflow
+  `UInt16` (65,535 values).
+- *Con*: When cardinality exceeds `UInt16` capacity, dictionary encoding is
+  dropped entirely for that column, increasing storage size. This is an
+  extreme edge case that indicates the segment should be finalized sooner
+  (reduce `segment.target_size` or `segment.max_open_duration`).
+
+**Supported nesting patterns:**
+
+| Column type | Dictionary unification | Status |
+| --- | --- | --- |
+| Top-level `Dictionary(K, V)` | Yes | Fully supported |
+| `Struct` -> `Dictionary(K, V)` | Yes (one level) | Fully supported; covers all OTAP schemas |
+| `List` / `LargeList` -> `Dictionary` | No | Not needed by OTAP; will error on IPC write |
+| `Map` -> `Dictionary` | No | Not needed by OTAP; will error on IPC write |
+| `Struct` -> `Struct` -> `Dictionary` | No | Not present in current OTAP schemas |
+| `Union` -> `Dictionary` | No | Not used by OTAP |
+
+OTAP schemas use only the first two patterns. If future schemas introduce
+dictionary-encoded fields inside `List`, `Map`, or `Union`
+columns, the unification logic in `StreamAccumulator` must be extended to
+handle them.
 
 #### DataFusion Integration
 

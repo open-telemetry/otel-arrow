@@ -4,15 +4,15 @@
 use super::{DstRng, SimClock, dst_seeds};
 use crate::Interests;
 use crate::control::NodeControlMsg;
-use crate::message::{ExporterMessageChannel, Message, ProcessorMessageChannel, Receiver};
+use crate::message::{ExporterInbox, Message, ProcessorInbox, Receiver};
 use crate::testing::dst::common::setup_dst_runtime;
 use otap_df_channel::mpsc;
 use std::time::Duration;
 
-// Seeded message-channel sweep covering the three behaviors that matter for the
+// Seeded inbox sweep covering the three behaviors that matter for the
 // refactor: bounded-fair control vs pdata delivery, processor draining once
 // shutdown is latched, and exporter forced-drain when admission never reopens.
-async fn run_message_channel_seed(seed: u64) {
+async fn run_inbox_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();
     let (rt, local_tasks) = setup_dst_runtime();
@@ -23,7 +23,7 @@ async fn run_message_channel_seed(seed: u64) {
         // Fairness phase.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(128);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(128);
-        let mut channel = ProcessorMessageChannel::new(
+        let mut channel = ProcessorInbox::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             1,
@@ -72,7 +72,7 @@ async fn run_message_channel_seed(seed: u64) {
         // Draining phase with explicit deadline expiry.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(128);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(128);
-        let mut channel = ProcessorMessageChannel::new(
+        let mut channel = ProcessorInbox::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             2,
@@ -124,7 +124,7 @@ async fn run_message_channel_seed(seed: u64) {
         // Exporter draining while admission stays closed.
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(16);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(16);
-        let mut channel = ExporterMessageChannel::new(
+        let mut channel = ExporterInbox::new(
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(control_rx)),
             Receiver::Local(crate::local::message::LocalReceiver::mpsc(pdata_rx)),
             3,
@@ -163,12 +163,12 @@ async fn run_message_channel_seed(seed: u64) {
     }));
 }
 
-// Sweep seeded message-channel interleavings that combine bounded-fair control
+// Sweep seeded inbox interleavings that combine bounded-fair control
 // vs pdata delivery, processor shutdown draining with admission reopen, and the
 // exporter-specific forced-drain behavior once Shutdown is latched.
 #[test]
-fn dst_message_channel_seeded() {
+fn dst_inbox_seeded() {
     for seed in dst_seeds(&[3, 19, 41], 8) {
-        futures::executor::block_on(run_message_channel_seed(seed));
+        futures::executor::block_on(run_inbox_seed(seed));
     }
 }

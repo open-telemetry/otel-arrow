@@ -117,8 +117,6 @@ pub enum MessageType {
 ///
 /// Construct via [`TlsConfig::tls_only`] or [`TlsConfig::mtls`].
 ///
-/// **Note:** Requires the `experimental-tls` feature to be enabled on `otap-df-otap`,
-/// otherwise the rendered pipeline config will fail to deserialize.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
     pub(crate) ca_cert_path: PathBuf,

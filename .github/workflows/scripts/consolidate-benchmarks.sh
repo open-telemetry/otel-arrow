@@ -12,6 +12,12 @@ fi
 INPUT_DIR="$1"
 OUTPUT_FILE="$2"
 
+# If input directory doesn't exist or has no JSON files, skip gracefully
+if [ ! -d "${INPUT_DIR}" ] || ! find "${INPUT_DIR}" -name "*.json" -type f | grep -q .; then
+    echo "No JSON files found in ${INPUT_DIR}, skipping consolidation"
+    exit 0
+fi
+
 echo "Consolidating benchmark JSON files from ${INPUT_DIR}..."
 find "${INPUT_DIR}" -name "*.json" -type f | while read file; do
   echo "Processing: $file"

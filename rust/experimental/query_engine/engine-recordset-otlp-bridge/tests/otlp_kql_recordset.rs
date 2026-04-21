@@ -564,6 +564,8 @@ fn test_substring_function() {
 
     run_test("substring(attributes['greeting'], 6)", "world");
     run_test("substring(attributes['greeting'], 0, 5)", "hello");
+    run_test("substring(attributes['greeting'], 1, 4)", "ello");
+    run_test("substring(attributes['greeting'], 0, 50)", "hello world");
 }
 
 #[test]

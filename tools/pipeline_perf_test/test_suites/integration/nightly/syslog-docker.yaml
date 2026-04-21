@@ -45,7 +45,7 @@ components:
       docker_component:
         allocated_cores: 1  # Matches core-id-range: 3-3
       prometheus:
-        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
   backend-service:
     deployment:
       docker:
@@ -66,7 +66,7 @@ components:
       docker_component:
         allocated_cores: 1  # Matches core-id-range: 1-1
       prometheus:
-        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
   - name: SYSLOG-3164-ATTR-OTAP

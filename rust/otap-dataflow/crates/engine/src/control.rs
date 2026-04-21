@@ -7,6 +7,7 @@
 
 use crate::clock;
 use crate::error::{Error, TypedError};
+use crate::memory_limiter::MemoryPressureChanged;
 use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -74,6 +75,26 @@ impl From<Context8u8> for f64 {
 /// callers. For example: retry count, sequence and generation
 /// numbers, deadline, num_items, etc.
 pub type CallData = SmallVec<[Context8u8; 3]>;
+
+/// Opaque key used to identify a processor-local scheduled wakeup.
+///
+/// Slots are scoped to a single processor instance. They do not need to be
+/// globally unique across the pipeline, so processors can define local
+/// constants such as `WakeupSlot(0)` for their own internal timers.
+///
+/// Re-scheduling the same slot replaces the previous wakeup for that slot.
+/// The widened `u128` payload lets processors encode compact structured local
+/// identifiers directly when that is more natural than allocating slot numbers.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WakeupSlot(pub u128);
+
+/// Monotonic wakeup revision assigned by the scheduler each time a slot is set.
+///
+/// Re-scheduling an existing slot gives it a new revision. Processors can use
+/// the revision carried back in [`NodeControlMsg::Wakeup`] to distinguish a
+/// current wakeup from a stale delivery for the same slot.
+pub type WakeupRevision = u64;
 
 /// Engine-managed call data envelope. Wraps the CallData with an envelope
 /// containing timestamp. Lives on the forward path (in context stack frames).
@@ -143,6 +164,20 @@ impl<PData> AckMsg<PData> {
     }
 }
 
+/// The NACK message cause.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NackCause {
+    /// Legacy/default cause when a caller does not classify the nack further.
+    #[default]
+    Unspecified,
+    /// The selected route was full when the node tried to admit the message.
+    RouteFull,
+    /// The selected route was closed when the node tried to admit the message.
+    RouteClosed,
+    /// The node had to refuse locally parked work because shutdown started.
+    NodeShutdown,
+}
+
 /// The NACK message.
 #[derive(Debug, Clone)]
 pub struct NackMsg<PData> {
@@ -157,25 +192,48 @@ pub struct NackMsg<PData> {
 
     /// Permanent status.
     pub permanent: bool,
+
+    /// Machine-readable reason classification.
+    pub cause: NackCause,
 }
 
 impl<PData> NackMsg<PData> {
     /// Creates a new non-permanent NACK.
     pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
-        Self::new_internal(reason, refused, false)
+        Self::new_internal(reason, refused, false, NackCause::Unspecified)
+    }
+
+    /// Creates a new non-permanent NACK with an explicit cause.
+    pub fn new_with_cause<T: Into<String>>(reason: T, refused: PData, cause: NackCause) -> Self {
+        Self::new_internal(reason, refused, false, cause)
     }
 
     /// Creates a new permanent NACK.
     pub fn new_permanent<T: Into<String>>(reason: T, refused: PData) -> Self {
-        Self::new_internal(reason, refused, true)
+        Self::new_internal(reason, refused, true, NackCause::Unspecified)
     }
 
-    fn new_internal<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
+    /// Creates a new permanent NACK with an explicit cause.
+    pub fn new_permanent_with_cause<T: Into<String>>(
+        reason: T,
+        refused: PData,
+        cause: NackCause,
+    ) -> Self {
+        Self::new_internal(reason, refused, true, cause)
+    }
+
+    fn new_internal<T: Into<String>>(
+        reason: T,
+        refused: PData,
+        permanent: bool,
+        cause: NackCause,
+    ) -> Self {
         Self {
             reason: reason.into(),
             refused: Box::new(refused),
             unwind: UnwindData::default(),
             permanent,
+            cause,
         }
     }
 }
@@ -222,6 +280,26 @@ pub enum NodeControlMsg<PData> {
         metrics_reporter: MetricsReporter,
     },
 
+    /// A processor-local wakeup scheduled by the processor effect handler.
+    ///
+    /// This is delivered back through the processor inbox as normal control
+    /// traffic. The slot identifies which logical wakeup fired; processors are
+    /// expected to interpret the slot according to their own local namespace.
+    /// The revision changes every time the slot is (re-)scheduled and allows
+    /// processors to ignore stale wakeups for a reused slot.
+    ///
+    /// Wakeups are best-effort runtime signals rather than durable work items:
+    /// once processor shutdown is latched, pending wakeups are dropped and no
+    /// further wakeups are accepted.
+    Wakeup {
+        /// Scheduled wakeup slot.
+        slot: WakeupSlot,
+        /// Scheduled due time currently associated with this slot.
+        when: Instant,
+        /// Scheduler-assigned revision for this slot schedule.
+        revision: WakeupRevision,
+    },
+
     /// Delayed data returning to the node which delayed it.
     DelayedData {
         /// When resumed
@@ -229,6 +307,12 @@ pub enum NodeControlMsg<PData> {
 
         /// The data.
         data: Box<PData>,
+    },
+
+    /// Announces a process-wide memory pressure transition to receiver-local admission state.
+    MemoryPressureChanged {
+        /// Latest process-wide pressure transition snapshot.
+        update: MemoryPressureChanged,
     },
 
     /// Requests that a receiver stop admitting new external work while keeping
@@ -658,6 +742,69 @@ where
     }
 }
 
+// ── Extension Control Messages ──────────────────────────────────────────────
+
+/// Control messages sent to extensions.
+///
+/// This is a PData-free subset of [`NodeControlMsg`] — extensions never process
+/// pipeline data, so they have no `Ack`, `Nack`, or `DelayedData` variants.
+#[derive(Debug, Clone)]
+pub enum ExtensionControlMsg {
+    /// Notifies the extension of a configuration change.
+    Config {
+        /// The new configuration as a JSON value.
+        config: serde_json::Value,
+    },
+
+    /// Asks the extension to collect/flush its local telemetry metrics.
+    CollectTelemetry {
+        /// Metrics reporter used to collect telemetry metrics.
+        metrics_reporter: MetricsReporter,
+    },
+
+    /// Requests a graceful shutdown.
+    Shutdown {
+        /// Deadline for shutdown.
+        deadline: Instant,
+        /// Human-readable reason for the shutdown.
+        reason: String,
+    },
+}
+
+impl ExtensionControlMsg {
+    /// Returns `true` if this control message is a shutdown request.
+    #[must_use]
+    pub const fn is_shutdown(&self) -> bool {
+        matches!(self, ExtensionControlMsg::Shutdown { .. })
+    }
+}
+
+/// A control sender for a single extension.
+///
+/// Stored separately from [`ControlSenders`] because extensions use
+/// [`ExtensionControlMsg`] (PData-free) rather than [`NodeControlMsg<PData>`].
+pub struct ExtensionControlSender {
+    /// Unique identifier of the extension.
+    #[allow(dead_code)] // Used by runtime pipeline in a follow-up PR.
+    pub(crate) name: otap_df_config::ExtensionId,
+    /// The control message sender for the extension.
+    pub(crate) sender: Sender<ExtensionControlMsg>,
+}
+
+impl ExtensionControlSender {
+    /// Sends a control message to the extension.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SendError`] if the channel is closed.
+    pub async fn send(
+        &self,
+        msg: ExtensionControlMsg,
+    ) -> Result<(), SendError<ExtensionControlMsg>> {
+        self.sender.send(msg).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,5 +813,13 @@ mod tests {
     fn test_permanent_status() {
         assert!(!NackMsg::new("just bad news", ()).permanent);
         assert!(NackMsg::new_permanent("very bad news", ()).permanent);
+        assert_eq!(
+            NackMsg::new("just bad news", ()).cause,
+            NackCause::Unspecified
+        );
+        assert_eq!(
+            NackMsg::new_permanent("very bad news", ()).cause,
+            NackCause::Unspecified
+        );
     }
 }

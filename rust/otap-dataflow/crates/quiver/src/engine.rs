@@ -1070,6 +1070,7 @@ impl QuiverEngine {
             .write_segment(&segment_path, segment)
             .await
             .map_err(|e| {
+                self.metrics.record_flush_failure();
                 otel_error!(
                     "quiver.segment.flush",
                     segment = seq.raw(),
@@ -1078,6 +1079,42 @@ impl QuiverEngine {
                     error_type = "io",
                     message = "data may only be recoverable via WAL replay",
                 );
+                // Attempt immediate cleanup of the partially-written file.
+                // On failure (e.g., file still locked on Windows), the file will be
+                // cleaned up via the periodic retry mechanism in maintain().
+                let cleanup_path = segment_path.clone();
+                let cleanup_seq = seq;
+                match fs::remove_file(&cleanup_path) {
+                    Ok(()) => {
+                        otel_debug!(
+                            "quiver.segment.cleanup",
+                            segment = cleanup_seq.raw(),
+                            path = %cleanup_path.display(),
+                            message = "successfully removed stale partial segment file",
+                        );
+                    }
+                    Err(rm_err) if rm_err.kind() == std::io::ErrorKind::NotFound => {
+                        // File was already removed (e.g., concurrent cleanup).
+                        otel_debug!(
+                            "quiver.segment.cleanup",
+                            segment = cleanup_seq.raw(),
+                            message = "file already removed",
+                        );
+                    }
+                    Err(rm_err) => {
+                        // File removal failed (e.g., still locked). Schedule deferred cleanup
+                        // via segment_store's pending delete retry mechanism.
+                        otel_warn!(
+                            "quiver.segment.cleanup",
+                            segment = cleanup_seq.raw(),
+                            path = %cleanup_path.display(),
+                            error = %rm_err,
+                            message = "deferred cleanup - will retry via maintain()",
+                        );
+                        self.segment_store
+                            .defer_orphaned_segment_cleanup(cleanup_seq);
+                    }
+                }
                 e
             })?;
 

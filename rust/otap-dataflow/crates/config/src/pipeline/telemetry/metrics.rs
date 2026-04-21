@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::pipeline::telemetry::metrics::views::ViewConfig;
 
 /// OpenTelemetry Metrics configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 pub struct MetricsConfig {
     /// The list of metrics readers to configure.
     #[serde(default)]
@@ -29,6 +29,21 @@ impl MetricsConfig {
     pub const fn has_readers(&self) -> bool {
         !self.readers.is_empty()
     }
+
+    /// Validates every configured metric reader's exporter configuration.
+    pub fn validate(&self) -> Result<(), crate::error::Error> {
+        let mut errors = Vec::new();
+        for reader in &self.readers {
+            if let Err(e) = reader.validate() {
+                errors.push(e);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::error::Error::InvalidConfiguration { errors })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -41,7 +56,7 @@ mod tests {
             readers:
               - periodic:
                   exporter:
-                    console:
+                    type: console
                   interval: "10s"
             "#;
 
@@ -50,7 +65,8 @@ mod tests {
         assert_eq!(config.readers.len(), 1);
 
         if let readers::MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
-            if readers::periodic::MetricsPeriodicExporterConfig::Console != periodic_config.exporter
+            if readers::periodic::MetricsPeriodicExporterType::Console
+                != periodic_config.exporter.exporter_type
             {
                 panic!("Expected console exporter");
             }

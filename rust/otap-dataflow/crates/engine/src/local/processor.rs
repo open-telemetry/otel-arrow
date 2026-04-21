@@ -33,7 +33,9 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::Interests;
-use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::control::WakeupRevision;
+use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupSlot};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
@@ -42,6 +44,8 @@ use crate::message::{Message, Sender};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
+use crate::processor::ProcessorRuntimeRequirements;
+use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -68,7 +72,13 @@ pub trait Processor<PData> {
     /// - Transform the message and return a new message
     /// - Filter the message by returning None
     /// - Split the message into multiple messages by returning a vector
-    /// - Handle control messages (e.g., Config, TimerTick, Shutdown)
+    /// - Handle control messages (e.g., Config, TimerTick, Wakeup, Shutdown)
+    ///
+    /// Processor-local wakeups are scheduled through
+    /// [`EffectHandler::set_wakeup`]. They are delivered back to the processor
+    /// as `Message::Control(NodeControlMsg::Wakeup { .. })` through the normal
+    /// inbox path and participate in the same control-vs-pdata fairness rules
+    /// as other control traffic.
     ///
     /// # Parameters
     ///
@@ -96,6 +106,15 @@ pub trait Processor<PData> {
     /// messages (acks/nacks) until the processor signals it is ready again. Defaults to `true`.
     fn accept_pdata(&self) -> bool {
         true
+    }
+
+    /// Returns optional runtime services that this processor needs from the engine.
+    ///
+    /// This is the single source of truth for runtime wiring. For example,
+    /// `local_wakeups: Some(...)` both enables processor-local wakeups and
+    /// declares the live slot count the engine must provision.
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements::none()
     }
 }
 
@@ -144,6 +163,12 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
         self.router.connected_ports()
+    }
+
+    /// Returns the selected default output port name, if one exists.
+    #[must_use]
+    pub fn default_port(&self) -> Option<PortName> {
+        self.router.default_port()
     }
 
     /// Returns the precomputed node interests.
@@ -257,25 +282,36 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the runtime control manager for context unwinding.
-    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_ack(ack).await
-    }
-
-    /// Send a Nack to the runtime control manager for context unwinding.
-    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_nack(nack).await
-    }
-
     /// Delay data.
     pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.delay_data(when, data).await
+    }
+
+    /// Set or replace a processor-local wakeup.
+    pub fn set_wakeup(
+        &self,
+        slot: WakeupSlot,
+        when: Instant,
+    ) -> Result<WakeupSetOutcome, WakeupError> {
+        self.core.set_wakeup(slot, when)
+    }
+
+    /// Cancel a previously scheduled processor-local wakeup.
+    #[must_use]
+    pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
+        self.core.cancel_wakeup(slot)
+    }
+
+    /// Pop the next wakeup from the local scheduler, regardless of whether
+    /// it is due. Returns `None` when no wakeup is scheduled or when local
+    /// wakeups are not enabled.
+    ///
+    /// This is intended for testing, where the inbox loop is not running and
+    /// wakeups need to be manually delivered.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn pop_wakeup(&self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
+        self.core.pop_wakeup()
     }
 
     /// Reports metrics collected by the processor.
@@ -314,19 +350,32 @@ impl<PData> EffectHandler<PData> {
     // More methods will be added in the future as needed.
 }
 
+#[async_trait(?Send)]
+impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for EffectHandler<PData> {
+    async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+        self.core.route_ack(ack).await
+    }
+
+    async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+        self.core.route_nack(nack).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(missing_docs)]
     use super::*;
+    use crate::_private::AckNackRouting;
     use crate::completion_emission_metrics::make_completion_emission_metrics;
     use crate::context::ControllerContext;
     use crate::control::{
-        AckMsg, Frame, NackMsg, PipelineCompletionMsg, RouteData, pipeline_completion_msg_channel,
+        AckMsg, Frame, NackMsg, PipelineCompletionMsg, RouteData, WakeupSlot,
+        pipeline_completion_msg_channel,
     };
     use crate::entity_context::NodeTelemetryHandle;
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
-    use crate::{Interests, Unwindable};
+    use crate::{Interests, Unwindable, WakeupError};
     use otap_df_channel::error::SendError;
     use otap_df_channel::mpsc;
     use otap_df_config::{MetricLevel, node::NodeKind};
@@ -458,6 +507,25 @@ mod tests {
         );
     }
 
+    /// Scenario: a processor effect handler has not been wired with the
+    /// processor-local wakeup runtime capability and attempts to schedule a
+    /// wakeup anyway.
+    /// Guarantees: the call fails with `WakeupError::Unsupported` instead of
+    /// panicking, so non-opting processors do not require the wakeup runtime
+    /// machinery to exist.
+    #[test]
+    fn effect_handler_set_wakeup_without_runtime_support_returns_unsupported() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+
+        assert_eq!(
+            eh.set_wakeup(WakeupSlot(0), Instant::now()),
+            Err(WakeupError::Unsupported)
+        );
+        assert!(!eh.cancel_wakeup(WakeupSlot(0)));
+    }
+
     #[tokio::test]
     async fn effect_handler_send_message_ambiguous_without_default() {
         let (a_tx, a_rx) = channel::<u64>(10);
@@ -523,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_handler_try_send_message_channel_full() {
+    fn effect_handler_try_send_message_inbox_full() {
         // Create a channel with capacity 1
         let (tx, _rx) = channel::<u64>(1);
         let mut senders = HashMap::new();

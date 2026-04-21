@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, BooleanBuilder};
+use arrow::array::{ArrayBuilder as _, ArrayRef, BooleanBuilder};
 
 /// `AdaptiveBooleanArray` builder an adaptive array builder that can be either all null, in which case
 /// the finish function won't construct an array (will return None), otherwise it will create the array.
@@ -69,6 +69,23 @@ impl AdaptiveBooleanArrayBuilder {
             Some(builder) => builder.append_nulls(n),
             None => self.nulls_prefix += n,
         };
+    }
+
+    /// Returns the number of elements appended to the builder.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        match &self.inner {
+            Some(builder) => builder.len(),
+            None => self.nulls_prefix,
+        }
+    }
+
+    /// Returns `true` if no elements have been appended.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn finish(&mut self) -> Option<ArrayRef> {
