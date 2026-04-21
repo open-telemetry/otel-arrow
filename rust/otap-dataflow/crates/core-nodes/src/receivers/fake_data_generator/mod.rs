@@ -124,7 +124,7 @@ impl FakeGeneratorReceiver {
             otel_info!("Produced", run_produced);
             run_produced = 0;
 
-            let Some(mut current_run) = producer.next_run() else {
+            let Ok(Some(mut current_run)) = producer.next_run() else {
                 return wait_for_terminal(ctrl_msg_recv, handler, &mut self.metrics).await;
             };
 
@@ -174,7 +174,7 @@ impl FakeGeneratorReceiver {
             producer.record_production(run_produced);
             run_produced = 0;
 
-            let Some(mut current_run) = producer.next_run() else {
+            let Ok(Some(mut current_run)) = producer.next_run() else {
                 return wait_for_terminal(ctrl_msg_recv, handler, &mut self.metrics).await;
             };
 
