@@ -602,10 +602,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(
-        any(target_os = "windows", target_os = "macos"),
-        ignore = "Skipping on Windows and macOS due to flakiness"
-    )]
     async fn build_endpoint_with_tls_errors_when_ca_file_missing() {
         crate::crypto::ensure_crypto_provider();
         let settings = GrpcClientSettings {
@@ -619,9 +615,12 @@ mod tests {
         };
 
         let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        let err_msg = err.to_string().to_lowercase();
         assert!(
-            err.to_string().to_lowercase().contains("no such")
-                || err.to_string().to_lowercase().contains("not found")
+            err_msg.contains("no such")
+                || err_msg.contains("not found")
+                || err_msg.contains("cannot find"),
+            "unexpected error message: {err_msg}"
         );
     }
 
