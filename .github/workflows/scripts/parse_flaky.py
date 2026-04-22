@@ -10,6 +10,7 @@ Enhanced reporting includes:
 - OS/platform correlation from artifact names
 - New-vs-recurring detection by comparing with the previous issue body
 """
+import json
 import os
 import re
 import subprocess
@@ -17,6 +18,11 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
+
+ISSUE_TITLE = "Flaky Test Report (automated)"
+
+# Maximum number of job links to show per flaky test in the report table
+MAX_JOB_LINKS = 5
 
 # OS labels we expect to find in artifact directory names
 # e.g. junit-xml-required-ubuntu-latest-1 -> "ubuntu-latest"
@@ -38,27 +44,54 @@ def extract_os_from_path(xml_file):
 
 
 def parse_junit_files(artifacts_dir):
-    """Parse all JUnit XML files and collect test results."""
+    """Parse all JUnit XML files and collect test results.
+
+    Also loads ``metadata.json`` from each artifact directory (when
+    present) and returns it as a second value.  Artifacts uploaded
+    before the metadata step was added simply won't have the file.
+    """
     test_results = defaultdict(lambda: {
         "flaky_direct": 0,   # nextest flakyFailure count
         "fail_messages": [],  # failure message texts (deduplicated later)
         # Per-OS tracking: os_name -> set of run_ids
         "pass_by_os": defaultdict(set),
         "fail_by_os": defaultdict(set),
+        # Track (run_id, artifact_name) for flaky/failed tests so we can
+        # link to the specific CI job later.
+        "fail_artifacts": [],  # list of (run_id, artifact_name)
     })
+    # (run_id, artifact_name) -> metadata dict from metadata.json
+    artifact_metadata = {}
 
     artifacts_path = Path(artifacts_dir)
     if not artifacts_path.exists():
         print("No artifacts directory found", file=sys.stderr)
-        return test_results
+        return test_results, artifact_metadata
 
     for xml_file in artifacts_path.rglob("*.xml"):
-        # Extract run ID from path (junit-artifacts/run-<id>/...)
+        # Extract run ID and artifact name from path
+        # (junit-artifacts/run-<id>/<artifact-name>/junit.xml)
         run_id = "unknown"
+        artifact_name = "unknown"
         for part in xml_file.parts:
             if part.startswith("run-"):
                 run_id = part.removeprefix("run-")
-                break
+            elif part.startswith("junit-xml-"):
+                artifact_name = part
+
+        # Load metadata.json from the same directory, if present.
+        meta_key = (run_id, artifact_name)
+        if meta_key not in artifact_metadata:
+            meta_file = xml_file.parent / "metadata.json"
+            if meta_file.exists():
+                try:
+                    with open(meta_file) as f:
+                        artifact_metadata[meta_key] = json.load(f)
+                except (json.JSONDecodeError, OSError) as e:
+                    print(
+                        f"Warning: Could not read {meta_file}: {e}",
+                        file=sys.stderr,
+                    )
 
         os_name = extract_os_from_path(xml_file)
 
@@ -90,12 +123,27 @@ def parse_junit_files(artifacts_dir):
                 if flaky_elements:
                     result["flaky_direct"] += len(flaky_elements)
                     result["pass_by_os"][os_name].add(run_id)
-                    # Capture the failure message from flaky retries
+                    # Capture the failure message from flaky retries.
+                    # nextest may store the message in the "message" attr,
+                    # as direct element text, or inside <system-out> (e.g.
+                    # for timeouts).
                     for fe in flaky_elements:
-                        msg = fe.get("message", "") or (fe.text or "").strip()
+                        msg = (
+                            fe.get("message", "")
+                            or (fe.text or "").strip()
+                            or (
+                                (fe.findtext("system-out") or "").strip()
+                            )
+                        )
+                        if not msg:
+                            # Last resort: use the type attribute
+                            msg = fe.get("type", "")
                         if msg:
                             result["fail_messages"].append(msg)
                     result["fail_by_os"][os_name].add(run_id)
+                    result["fail_artifacts"].append(
+                        (run_id, artifact_name)
+                    )
                     continue
 
                 # Check for failure/error
@@ -103,6 +151,9 @@ def parse_junit_files(artifacts_dir):
                 error = testcase.find("error")
                 if failure is not None or error is not None:
                     result["fail_by_os"][os_name].add(run_id)
+                    result["fail_artifacts"].append(
+                        (run_id, artifact_name)
+                    )
                     # Capture failure message
                     elem = failure if failure is not None else error
                     msg = elem.get("message", "") or (elem.text or "").strip()
@@ -111,7 +162,7 @@ def parse_junit_files(artifacts_dir):
                 else:
                     result["pass_by_os"][os_name].add(run_id)
 
-    return test_results
+    return test_results, artifact_metadata
 
 
 def identify_flaky_tests(test_results):
@@ -173,22 +224,105 @@ def identify_flaky_tests(test_results):
                 "pass_count": len(all_pass_runs),
                 "fail_count": len(all_fail_runs),
                 "flaky_direct": results["flaky_direct"],
-                "fail_run_ids": sorted(all_fail_runs),
-                "flaky_run_ids": (
-                    sorted(all_pass_runs | all_fail_runs)
-                    if results["flaky_direct"] > 0 else []
-                ),
                 "fail_messages": truncated_msgs,
                 "affected_os": affected_os,
                 "all_os": all_os,
+                # Deduplicated (run_id, artifact_name) pairs for job linking
+                "fail_artifacts": list(
+                    dict.fromkeys(results["fail_artifacts"])
+                ),
             })
 
     flaky_tests.sort(key=lambda t: (-t["flaky_direct"], -t["fail_count"]))
     return flaky_tests
 
 
+def _find_job_url(job_url_map, run_id, meta):
+    """Find a job URL by checking that all metadata values appear in the name.
+
+    This avoids depending on the exact display-name format that GitHub
+    Actions generates for matrix jobs.
+    """
+    components = [str(v) for v in meta.values()]
+    for (rid, job_name), url in job_url_map.items():
+        if rid != run_id:
+            continue
+        if all(c in job_name for c in components):
+            return url
+    return None
+
+
+def lookup_job_urls(flaky_tests, repo_slug, artifact_metadata):
+    """For each flaky test, resolve fail_artifacts to job HTML URLs.
+
+    Matches jobs by checking that all metadata field values (job key,
+    os, partition, folder) appear somewhere in the GitHub API job name.
+    Artifacts from older runs that lack metadata fall back to a plain
+    run-level link.
+
+    Makes one API call per unique run_id that contains flaky tests.
+    Populates a "fail_job_links" list of (label, url) on each entry.
+    """
+    # Collect unique run IDs that need job lookups (only those with metadata)
+    run_ids = set()
+    for t in flaky_tests:
+        for run_id, artifact_name in t["fail_artifacts"]:
+            if (run_id, artifact_name) in artifact_metadata:
+                run_ids.add(run_id)
+
+    # Fetch job listings per run (one API call each)
+    # Maps (run_id, job_name) -> job_html_url
+    job_url_map = {}
+    for run_id in sorted(run_ids):
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "api",
+                    f"repos/{repo_slug}/actions/runs/{run_id}/jobs",
+                    "--paginate",
+                    "--jq", '.jobs[] | "\\(.name)\t\\(.html_url)"',
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            for line in result.stdout.strip().splitlines():
+                if "\t" in line:
+                    name, url = line.split("\t", 1)
+                    job_url_map[(run_id, name)] = url
+        except Exception as e:
+            print(
+                f"Warning: Could not fetch jobs for run {run_id}: {e}",
+                file=sys.stderr,
+            )
+
+    # Resolve each flaky test's artifacts to job URLs
+    for t in flaky_tests:
+        links = []
+        seen_run_ids = set()
+        for run_id, artifact_name in t["fail_artifacts"][:MAX_JOB_LINKS]:
+            meta = artifact_metadata.get((run_id, artifact_name))
+            if not meta:
+                # No metadata — fall back to a run-level link (once per run)
+                if run_id not in seen_run_ids and run_id != "unknown":
+                    seen_run_ids.add(run_id)
+                    links.append((
+                        f"run #{run_id[-4:]}",
+                        f"https://github.com/{repo_slug}/actions/runs/{run_id}",
+                    ))
+                continue
+            url = _find_job_url(job_url_map, run_id, meta)
+            if url:
+                label = artifact_name.removeprefix("junit-xml-")
+                links.append((label, url))
+        t["fail_job_links"] = links
+
+
 def get_previous_flaky_names(issue_label, issue_title):
-    """Fetch the set of test names from the existing tracking issue, if any."""
+    """Fetch the set of test names from the existing tracking issue, if any.
+
+    Returns ``None`` when no previous issue exists (first run) so that
+    callers can distinguish "no prior report" from "prior report had
+    zero flaky tests".
+    """
     try:
         result = subprocess.run(
             [
@@ -204,7 +338,7 @@ def get_previous_flaky_names(issue_label, issue_title):
         )
         body = result.stdout.strip()
         if not body:
-            return set()
+            return None
         # Extract test names from table rows: | `test_name` | ... |
         return set(re.findall(r"\|\s*`([^`]+)`\s*\|", body))
     except Exception as e:
@@ -212,7 +346,7 @@ def get_previous_flaky_names(issue_label, issue_title):
             f"Warning: Could not fetch previous issue: {e}",
             file=sys.stderr,
         )
-        return set()
+        return None
 
 
 def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
@@ -235,12 +369,17 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         )
         return "\n".join(lines)
 
-    # Count new tests
+    # Count new tests.
+    # previous_names is None on first run (no prior issue), in which case
+    # every test is "new".  An empty set means the prior report existed but
+    # had no flaky tests.
     current_names = {t["name"] for t in flaky_tests}
-    new_names = current_names - previous_names if previous_names else set()
-    resolved_names = (
-        previous_names - current_names if previous_names else set()
-    )
+    if previous_names is None:
+        new_names = current_names
+        resolved_names = set()
+    else:
+        new_names = current_names - previous_names
+        resolved_names = previous_names - current_names
 
     lines.append(f"**{len(flaky_tests)} flaky test(s) detected.**")
     if new_names:
@@ -257,7 +396,7 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
     # Summary table
     lines.append(
         "| Status | Test | Platform | Detection"
-        " | Passes | Failures | Failed Runs |"
+        " | Passes | Failures | Failed Jobs |"
     )
     lines.append(
         "|--------|------|----------|-----------|--------|----------|-------------|"
@@ -266,8 +405,8 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
     for t in flaky_tests:
         name = t["name"]
         display_name = name
-        if len(display_name) > 80:
-            display_name = "..." + display_name[-77:]
+        if len(display_name) > 120:
+            display_name = "..." + display_name[-117:]
 
         # New-vs-recurring badge
         status = ":new:" if name in new_names else ""
@@ -281,16 +420,14 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         else:
             platform = "n/a"
 
-        # Build links to the failed/flaky CI runs
-        run_ids = t["fail_run_ids"] or t["flaky_run_ids"]
-        if run_ids:
+        # Build links to the specific CI jobs where flakiness was detected
+        job_links = t.get("fail_job_links", [])
+        if job_links:
             run_links = ", ".join(
-                f"[#{rid[-4:]}]({repo_url}/actions/runs/{rid})"
-                if rid != "unknown" else rid
-                for rid in run_ids[:5]
+                f"[{label}]({url})" for label, url in job_links[:5]
             )
-            if len(run_ids) > 5:
-                run_links += f" (+{len(run_ids) - 5} more)"
+            if len(job_links) > MAX_JOB_LINKS:
+                run_links += f" (+{len(job_links) - MAX_JOB_LINKS} more)"
         else:
             run_links = "n/a"
 
@@ -311,8 +448,8 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         lines.append("")
         for t in tests_with_msgs:
             name = t["name"]
-            if len(name) > 80:
-                name = "..." + name[-77:]
+            if len(name) > 120:
+                name = "..." + name[-117:]
             lines.append(f"**`{name}`**")
             for msg in t["fail_messages"]:
                 lines.append("```")
@@ -331,8 +468,8 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         lines.append("")
         for name in sorted(resolved_names):
             display_name = name
-            if len(display_name) > 80:
-                display_name = "..." + display_name[-77:]
+            if len(display_name) > 120:
+                display_name = "..." + display_name[-117:]
             lines.append(f"- ~`{display_name}`~")
         lines.append("")
         lines.append("</details>")
@@ -370,12 +507,15 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
 if __name__ == "__main__":
     lookback = int(os.environ.get("LOOKBACK_RUNS", "20"))
     repo_url = os.environ.get("GITHUB_REPO_URL", "")
+    # e.g. "open-telemetry/otel-arrow"
+    repo_slug = os.environ.get("GITHUB_REPOSITORY", "")
     issue_label = os.environ.get("FLAKY_ISSUE_LABEL", "flaky-test")
-    issue_title = "Flaky Test Report (automated)"
 
-    test_results = parse_junit_files("junit-artifacts")
+    test_results, artifact_metadata = parse_junit_files("junit-artifacts")
     flaky_tests = identify_flaky_tests(test_results)
-    previous_names = get_previous_flaky_names(issue_label, issue_title)
+    if flaky_tests and repo_slug:
+        lookup_job_urls(flaky_tests, repo_slug, artifact_metadata)
+    previous_names = get_previous_flaky_names(issue_label, ISSUE_TITLE)
     body = format_issue_body(flaky_tests, lookback, repo_url, previous_names)
 
     # Write outputs
