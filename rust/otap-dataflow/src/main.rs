@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         dhat_start();
     }
-    
+
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
     otap_df_otap::crypto::install_crypto_provider()

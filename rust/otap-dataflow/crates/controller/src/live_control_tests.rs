@@ -11,6 +11,7 @@ use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
 use otap_df_engine::control::{
     RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
 };
+use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::wiring_contract::WiringContract;
@@ -298,6 +299,61 @@ fn register_runtime_instance(
         state.active_instances += 1;
     }
     rx
+}
+
+fn register_runtime_instance_with_sender(
+    runtime: &ControllerRuntime<()>,
+    pipeline_key: DeployedPipelineKey,
+    control_sender: Arc<dyn PipelineAdminSender>,
+    lifecycle: RuntimeInstanceLifecycle,
+) {
+    let is_active = matches!(&lifecycle, RuntimeInstanceLifecycle::Active);
+    let mut state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    _ = state.runtime_instances.insert(
+        pipeline_key,
+        RuntimeInstanceRecord {
+            control_sender: Some(control_sender),
+            lifecycle,
+        },
+    );
+    if is_active {
+        state.active_instances += 1;
+    }
+}
+
+struct RecordingPipelineAdminSender {
+    calls: Arc<Mutex<Vec<String>>>,
+    failure: Option<String>,
+}
+
+impl PipelineAdminSender for RecordingPipelineAdminSender {
+    fn try_send_shutdown(&self, _deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(reason);
+        if let Some(failure) = &self.failure {
+            Err(EngineError::RuntimeMsgError {
+                error: failure.clone(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn recording_admin_sender(
+    failure: Option<&str>,
+) -> (Arc<dyn PipelineAdminSender>, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let sender = Arc::new(RecordingPipelineAdminSender {
+        calls: Arc::clone(&calls),
+        failure: failure.map(ToOwned::to_owned),
+    });
+    (sender, calls)
 }
 
 fn launched_runtime_instance(
@@ -1549,6 +1605,131 @@ groups:
         );
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Scenario: global shutdown dispatch encounters a send failure for one
+/// active runtime instance while other active instances still need the signal.
+/// Guarantees: shutdown dispatch is best effort across the whole snapshot:
+/// every active sender is attempted, successful sends relinquish their retained
+/// control sender, repeated calls do not re-signal instances that already
+/// accepted shutdown, and failures are reported only after the full pass.
+#[test]
+fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let key0 = deployed_key("g1", "p1", 0, 0);
+    let key1 = deployed_key("g1", "p1", 1, 0);
+    let key2 = deployed_key("g1", "p1", 2, 0);
+    let (sender0, calls0) = recording_admin_sender(None);
+    let (sender1, calls1) = recording_admin_sender(Some("simulated send failure"));
+    let (sender2, calls2) = recording_admin_sender(None);
+
+    register_runtime_instance_with_sender(
+        &runtime,
+        key0.clone(),
+        sender0,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        key1.clone(),
+        sender1,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        key2.clone(),
+        sender2,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    let err = runtime
+        .request_shutdown_all(5)
+        .expect_err("shutdown-all should report the failed sender after dispatching all sends");
+
+    assert_eq!(
+        *calls0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
+    assert_eq!(
+        *calls1
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
+    assert_eq!(
+        *calls2
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
+
+    let ControlPlaneError::Internal { message } = err else {
+        panic!("unexpected shutdown-all error: {err:?}");
+    };
+    assert!(message.contains("g1:p1 core=1 generation=0"));
+    assert!(message.contains("simulated send failure"));
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_none(),
+        "successful shutdown send should release key0 control sender"
+    );
+    assert!(
+        state
+            .runtime_instances
+            .get(&key1)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_some(),
+        "failed shutdown send should retain key1 control sender"
+    );
+    assert!(
+        state
+            .runtime_instances
+            .get(&key2)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_none(),
+        "successful shutdown send should release key2 control sender"
+    );
+    drop(state);
+
+    // The first pass released the control sender for successful instances, so
+    // a retry should only reattempt the instance whose shutdown send failed.
+    let err = runtime
+        .request_shutdown_all(5)
+        .expect_err("shutdown-all retry should still report the failed sender");
+
+    let ControlPlaneError::Internal { message } = err else {
+        panic!("unexpected shutdown-all retry error: {err:?}");
+    };
+    assert!(message.contains("g1:p1 core=1 generation=0"));
+    assert!(message.contains("simulated send failure"));
+    assert_eq!(
+        *calls0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
+    assert_eq!(
+        *calls1
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned(), "global shutdown".to_owned()]
+    );
+    assert_eq!(
+        *calls2
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
 }
 
 /// Scenario: all targeted runtime instances exit cleanly after a pipeline
