@@ -227,7 +227,7 @@ cargo run -- -c configs/engine-conf/topic_multitenant_isolation.yaml
 In another terminal:
 
 ```bash
-BASE=http://127.0.0.1:8085
+BASE=http://127.0.0.1:8085/api/v1
 GROUP=topic_multitenant_isolation
 PIPE=tenant_c_pipeline
 ```
