@@ -19,6 +19,7 @@ use otap_df_config::ExtensionId;
 use std::any::{Any, TypeId};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 /// Error type alias for capability operations.
@@ -133,27 +134,289 @@ pub(crate) fn downcast_produced<C: super::ExtensionCapability>(
         })
 }
 
+/// A [`SharedCapabilityFactory`] implementing the **ClonePerConsumer**
+/// instance policy: a prototype extension value `E` is stored at
+/// registration time, and every consumer receives a fresh
+/// `Box<dyn C::Shared>` containing an independent clone of `E`.
+///
+/// Consumers do **not** share state — each holds its own copy.
+/// (If a capability needs shared mutable state across consumers, the
+/// `E` should internally hold an `Arc`/`Mutex`; `Clone` on `E` then
+/// clones the handle, not the state.)
+///
+/// Symmetric in name with [`ClonePerConsumerLocalFactory`]: the two
+/// encode the same registration-time policy (one prototype is stored;
+/// each consumer gets a clone of it) on the two ownership shapes
+/// (`Rc` local, `Box` shared).
+///
+/// The `to_shared` fn pointer is the per-`(C, E)` bridge that coerces
+/// an owned `E` into a `Box<dyn C::Shared>`; typically
+/// `|e| Box::new(e)` when `E: C::Shared`. It captures the coercion at
+/// construction so `produce_any` needs no runtime downcast.
+#[doc(hidden)]
+pub struct ClonePerConsumerSharedFactory<C: super::ExtensionCapability, E: Clone + Send + 'static> {
+    extension: E,
+    to_shared: fn(E) -> Box<C::Shared>,
+}
+
+impl<C: super::ExtensionCapability, E: Clone + Send + 'static> ClonePerConsumerSharedFactory<C, E> {
+    /// Construct a ClonePerConsumer shared factory. `to_shared` is the
+    /// per-`(C, E)` bridge that boxes an owned `E` as `Box<dyn C::Shared>`;
+    /// typically `|e| Box::new(e)` when `E: C::Shared`.
+    #[must_use]
+    pub fn new(extension: E, to_shared: fn(E) -> Box<C::Shared>) -> Self {
+        Self {
+            extension,
+            to_shared,
+        }
+    }
+}
+
+impl<C: super::ExtensionCapability, E: Clone + Send + 'static> SharedCapabilityFactory
+    for ClonePerConsumerSharedFactory<C, E>
+{
+    fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
+        Box::new(ClonePerConsumerSharedFactory::<C, E> {
+            extension: self.extension.clone(),
+            to_shared: self.to_shared,
+        })
+    }
+    fn produce_any(&self) -> Box<dyn Any + Send> {
+        // Double-box convention: the inner `Box<C::Shared>` is a fat
+        // pointer (Sized) and can ride inside `Box<dyn Any + Send>`.
+        let shared: Box<C::Shared> = (self.to_shared)(self.extension.clone());
+        Box::new(shared)
+    }
+    fn adapt_as_local_any(&self) -> Rc<dyn Any> {
+        let shared: Box<C::Shared> = (self.to_shared)(self.extension.clone());
+        let rc_local = C::wrap_shared_as_local(shared);
+        Rc::new(rc_local)
+    }
+}
+
+/// A [`SharedCapabilityFactory`] implementing the **FreshPerConsumer**
+/// instance policy: a closure `F` is stored at registration time, and
+/// every consumer receives a freshly-constructed `Box<dyn C::Shared>`
+/// by invoking the closure.
+///
+/// Counterpart to [`ClonePerConsumerSharedFactory`]: where the Clone
+/// variant clones a prototype per consumer, this variant constructs a
+/// new instance per consumer. Useful when the extension has no
+/// meaningful `Clone` (or cloning would be semantically wrong — e.g.,
+/// buffers, file handles) but can be built on demand from captured
+/// configuration.
+///
+/// `F: Clone` is required so [`clone_box`](Self::clone_box) can hand
+/// per-node factories their own copy of the closure. Typical closures
+/// capture `Clone` configuration (`Arc<Config>`, `String`, etc.) and
+/// are naturally `Clone`.
+#[doc(hidden)]
+pub struct FreshPerConsumerSharedFactory<C: super::ExtensionCapability, F>
+where
+    F: Fn() -> Box<C::Shared> + Send + Clone + 'static,
+{
+    produce: F,
+    _phantom: PhantomData<fn() -> C>,
+}
+
+impl<C: super::ExtensionCapability, F> FreshPerConsumerSharedFactory<C, F>
+where
+    F: Fn() -> Box<C::Shared> + Send + Clone + 'static,
+{
+    /// Construct a FreshPerConsumer shared factory from a closure that
+    /// produces a fresh `Box<dyn C::Shared>` on each call.
+    #[must_use]
+    pub fn new(produce: F) -> Self {
+        Self {
+            produce,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<C: super::ExtensionCapability, F> SharedCapabilityFactory
+    for FreshPerConsumerSharedFactory<C, F>
+where
+    F: Fn() -> Box<C::Shared> + Send + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
+        Box::new(FreshPerConsumerSharedFactory::<C, F> {
+            produce: self.produce.clone(),
+            _phantom: PhantomData,
+        })
+    }
+    fn produce_any(&self) -> Box<dyn Any + Send> {
+        let shared: Box<C::Shared> = (self.produce)();
+        Box::new(shared)
+    }
+    fn adapt_as_local_any(&self) -> Rc<dyn Any> {
+        let shared: Box<C::Shared> = (self.produce)();
+        let rc_local = C::wrap_shared_as_local(shared);
+        Rc::new(rc_local)
+    }
+}
+
+// ── Local-capability factory trait ───────────────────────────────────────────
+
+/// Object-safe factory for the local variant of a capability.
+///
+/// The local-side mirror of [`SharedCapabilityFactory`]. One concrete
+/// impl exists per `(capability, extension)` registration. The impl
+/// encodes the **instance policy** — how the registry supplies
+/// instances when consumers call [`Capabilities::require_local`]:
+///
+/// - [`ClonePerConsumerLocalFactory`] — all consumers receive an
+///   `Rc::clone` of a single cached instance (**ClonePerConsumer**
+///   policy; "clone" here is `Rc::clone`, so consumers observe a
+///   shared underlying object, mirroring the shared-side policy of
+///   handing out a clone per consumer). This is the only policy
+///   implemented today.
+/// - Future policies (e.g. fresh-per-consumer via a closure) will
+///   appear as additional impls of this trait; the registry, consumer
+///   API, and `resolve_bindings` will not change.
+///
+/// The trait is object-safe: entries store `Box<dyn
+/// LocalCapabilityFactory>` so multiple policies can coexist in one
+/// registry. Not `Send`: local factories hold `Rc`s and must never
+/// cross thread boundaries.
+///
+/// [`Capabilities::require_local`]: Capabilities::require_local
+#[doc(hidden)]
+pub trait LocalCapabilityFactory {
+    /// Duplicate this factory. Each resolved per-node entry owns its
+    /// own `Box<dyn LocalCapabilityFactory>` produced via this method.
+    /// Policies that cache an underlying `Rc` share it across clones
+    /// so every per-node clone points at the same instance.
+    fn clone_box(&self) -> Box<dyn LocalCapabilityFactory>;
+
+    /// Produce an `Rc<dyn local::Trait>` for a consumer, type-erased
+    /// as `Rc<dyn Any>`. [`Capabilities::require_local`] downcasts to
+    /// `Rc<C::Local>` to recover the concrete trait. Whether this
+    /// returns a cached clone or a freshly-built instance is a
+    /// policy-level choice (see the trait docs).
+    fn produce_any(&self) -> Rc<dyn Any>;
+}
+
+/// A [`LocalCapabilityFactory`] implementing the **ClonePerConsumer**
+/// instance policy: every consumer receives an `Rc::clone` of a single
+/// stored `Rc<dyn local::Trait>`.
+///
+/// Note on semantics: because cloning here is `Rc::clone` (not a deep
+/// data clone), consumers share the **same** underlying trait object —
+/// any interior mutability (`RefCell`, `Cell`, …) is visible across
+/// consumers. This matches the behavior of the pre-factory local
+/// registration and is symmetrical in *name* with the shared-side
+/// ClonePerConsumer policy, which hands out independently-cloned
+/// `Box<dyn shared::Trait>` instances. If fully-independent local
+/// instances are ever needed, a future `FreshPerConsumerLocalFactory`
+/// will cover that.
+///
+/// The `instance` field stores an `Rc<dyn Any>` whose inner type is
+/// `Rc<dyn local::Trait>`. The double-`Rc` is the local-side analogue
+/// of [`SharedCapabilityFactory`]'s double-`Box` convention: the outer
+/// `Rc` is the type-erased container; the inner `Rc<dyn Trait>` is
+/// what `require_local` downcasts to and clones out.
+#[doc(hidden)]
+pub struct ClonePerConsumerLocalFactory {
+    instance: Rc<dyn Any>,
+}
+
+impl ClonePerConsumerLocalFactory {
+    /// Wrap a type-erased `Rc<dyn Any>` (whose inner value must be
+    /// `Rc<dyn local::Trait>`) as a ClonePerConsumer local factory.
+    #[must_use]
+    pub fn new(instance: Rc<dyn Any>) -> Self {
+        Self { instance }
+    }
+}
+
+impl LocalCapabilityFactory for ClonePerConsumerLocalFactory {
+    fn clone_box(&self) -> Box<dyn LocalCapabilityFactory> {
+        Box::new(ClonePerConsumerLocalFactory {
+            instance: Rc::clone(&self.instance),
+        })
+    }
+    fn produce_any(&self) -> Rc<dyn Any> {
+        Rc::clone(&self.instance)
+    }
+}
+
+/// A [`LocalCapabilityFactory`] implementing the **FreshPerConsumer**
+/// instance policy: a closure `F` is stored at registration time, and
+/// every consumer receives a freshly-constructed `Rc<dyn Any>` (whose
+/// inner type must be `Rc<dyn local::Trait>`) by invoking the closure.
+///
+/// Counterpart to [`ClonePerConsumerLocalFactory`]: where the Clone
+/// variant shares one cached `Rc` across all consumers, this variant
+/// constructs a new instance per consumer. Consumers observe
+/// **independent** underlying trait objects — interior mutability is
+/// not shared.
+///
+/// `F: Clone` is required so [`clone_box`](Self::clone_box) can hand
+/// per-node factories their own copy of the closure.
+///
+/// The closure is responsible for producing the double-`Rc` shape
+/// `Rc<dyn Any>` containing `Rc<dyn local::Trait>` — the same
+/// convention as the stored form of
+/// [`ClonePerConsumerLocalFactory::instance`]. The extension-builder
+/// layer handles this wrapping when it constructs the factory.
+#[doc(hidden)]
+pub struct FreshPerConsumerLocalFactory<F>
+where
+    F: Fn() -> Rc<dyn Any> + Clone + 'static,
+{
+    produce: F,
+}
+
+impl<F> FreshPerConsumerLocalFactory<F>
+where
+    F: Fn() -> Rc<dyn Any> + Clone + 'static,
+{
+    /// Construct a FreshPerConsumer local factory from a closure that
+    /// produces `Rc<dyn Any>` wrapping `Rc<dyn local::Trait>` on each
+    /// call.
+    #[must_use]
+    pub fn new(produce: F) -> Self {
+        Self { produce }
+    }
+}
+
+impl<F> LocalCapabilityFactory for FreshPerConsumerLocalFactory<F>
+where
+    F: Fn() -> Rc<dyn Any> + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn LocalCapabilityFactory> {
+        Box::new(FreshPerConsumerLocalFactory {
+            produce: self.produce.clone(),
+        })
+    }
+    fn produce_any(&self) -> Rc<dyn Any> {
+        (self.produce)()
+    }
+}
+
 // ── Type-erased entries ──────────────────────────────────────────────────────
 
 /// A type-erased local (!Send) capability entry.
 ///
-/// Wraps a natively-registered `Rc<dyn local::Trait>`. All nodes bound to
-/// the same `(capability, extension)` pair share this instance via
-/// `Rc`-cloning. Consumers downcast via [`Capabilities::require_local`].
+/// Holds a [`LocalCapabilityFactory`] whose concrete type encodes the
+/// instance policy for this `(capability, extension)` registration.
+/// Today the only impl is [`ClonePerConsumerLocalFactory`]; future
+/// policies will plug in as additional impls without changing this
+/// struct.
 ///
-/// Extensions that only register a shared variant are handled directly
-/// by [`resolve_bindings`] via the `SharedAsLocal` adapter — there is no
-/// separate “fallback” local entry stored in the registry.
+/// Extensions that only register a shared variant are handled by
+/// [`resolve_bindings`]: it invokes the shared factory's
+/// [`adapt_as_local_any`](SharedCapabilityFactory::adapt_as_local_any)
+/// and wraps the result in a [`ClonePerConsumerLocalFactory`] so the
+/// `SharedAsLocal` path flows through the same `LocalCapabilityFactory`
+/// pipeline as a native local registration.
 #[doc(hidden)]
 pub struct LocalCapabilityEntry {
     /// The extension that provided this capability.
     pub(crate) extension_id: ExtensionId,
-    /// Type-erased `Rc<dyn local::Trait>`.
-    /// Stored as `Rc<dyn Any>` so the entry can be shared between the
-    /// registry and per-node resolved entries. The inner value is an
-    /// `Rc<dyn local::Trait>` — consumers downcast via
-    /// `downcast_ref::<Rc<dyn Trait>>().clone()`.
-    pub(crate) trait_object: Rc<dyn Any>,
+    /// Factory supplying local trait objects for this `(cap, ext)` pair.
+    pub(crate) factory: Box<dyn LocalCapabilityFactory>,
 }
 
 /// A type-erased shared (Send) capability entry.
@@ -315,10 +578,10 @@ impl std::fmt::Debug for CapabilityRegistry {
 
 /// A resolved local capability entry for a specific node.
 pub(crate) struct ResolvedLocalEntry {
-    /// Type-erased `Rc<dyn local::Trait>` — either an `Rc`-clone of the
-    /// registry's native entry or a freshly-built `SharedAsLocal` adapter
-    /// wrapping this node's own clone of the shared extension instance.
-    pub(crate) trait_object: Rc<dyn Any>,
+    /// Per-node local factory, produced by cloning the registry
+    /// entry's factory. The concrete impl encodes the instance policy
+    /// (today always [`ClonePerConsumerLocalFactory`]).
+    pub(crate) factory: Box<dyn LocalCapabilityFactory>,
     /// Consumption flag for the underlying extension variant.
     ///
     /// - For native local bindings: the cell lives under the tracker's
@@ -396,8 +659,8 @@ impl Capabilities {
                 },
             ))
         })?;
-        let trait_object = entry
-            .trait_object
+        let rc_any = entry.factory.produce_any();
+        let trait_object = rc_any
             .downcast_ref::<Rc<C::Local>>()
             .cloned()
             .ok_or_else(|| Error::InternalError {
@@ -719,18 +982,25 @@ pub(crate) fn resolve_bindings(
             let _ = local_entries.insert(
                 cap_type_id,
                 ResolvedLocalEntry {
-                    trait_object: Rc::clone(&local_entry.trait_object),
+                    factory: local_entry.factory.clone_box(),
                     consumed,
                 },
             );
         } else if let Some(shared_entry) = shared_entry {
-            // SharedAsLocal fallback: invoke the factory's
-            // `adapt_as_local_any` to produce a fresh shared instance
-            // and wrap it as a local trait object. Each node gets a
-            // fresh adapter. Shared registrations are always adaptable
-            // to local — the factory's impl is the single source of
-            // truth and contains no downcast or panic path.
-            let trait_object = shared_entry.factory.adapt_as_local_any();
+            // SharedAsLocal fallback: invoke the shared factory's
+            // `adapt_as_local_any` to mint a fresh local trait object,
+            // then wrap that `Rc<dyn Any>` in a
+            // `ClonePerConsumerLocalFactory`
+            // so the fallback flows through the same
+            // `LocalCapabilityFactory` path as a native local
+            // registration. Each node gets a fresh adapter
+            // (shared-across-components within the node once cached).
+            // Shared registrations are always adaptable to local — the
+            // shared factory's impl is the single source of truth and
+            // contains no downcast or panic path.
+            let rc_any = shared_entry.factory.adapt_as_local_any();
+            let local_factory: Box<dyn LocalCapabilityFactory> =
+                Box::new(ClonePerConsumerLocalFactory::new(rc_any));
 
             // The extension only provided a shared variant — route the
             // adapter consumer's cell under the shared bucket. The
@@ -749,7 +1019,7 @@ pub(crate) fn resolve_bindings(
             let _ = local_entries.insert(
                 cap_type_id,
                 ResolvedLocalEntry {
-                    trait_object,
+                    factory: local_factory,
                     consumed,
                 },
             );
@@ -857,34 +1127,19 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    // Reusable test factory: per-`(cap, ext)` producer that clones a
-    // `&'static str` value and produces fresh `Box<dyn TestCapShared>`
-    // instances. Hand-rolls `SharedCapabilityFactory` directly because
-    // there is no proc macro to generate it for test-only capabilities.
-    // Normal capabilities will have this synthesized from their
-    // extension type by the capability macro.
-    #[derive(Clone)]
-    struct TestFactory {
-        val: &'static str,
+    // Bridge fn: turns an owned `SharedImpl` into a `Box<dyn TestCapShared>`.
+    // This is the per-`(cap, ext)` coercion that macro-generated
+    // registration code will emit for real capabilities; tests use it
+    // directly to construct `ClonePerConsumerSharedFactory<TestCap, SharedImpl>`.
+    fn shared_impl_as_box(s: SharedImpl) -> Box<dyn TestCapShared> {
+        Box::new(s)
     }
-    impl SharedCapabilityFactory for TestFactory {
-        fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
-            Box::new(self.clone())
-        }
-        fn produce_any(&self) -> Box<dyn Any + Send> {
-            // Double-box convention: Box<Box<dyn Shared>> type-erased
-            // as Box<dyn Any + Send>. The inner `as Box<dyn TestCapShared>`
-            // coercion is the load-bearing part and must match
-            // `TestCap::Shared`.
-            let shared: Box<dyn TestCapShared> = Box::new(SharedImpl(self.val));
-            Box::new(shared)
-        }
-        fn adapt_as_local_any(&self) -> Rc<dyn Any> {
-            let shared: Box<dyn TestCapShared> = Box::new(SharedImpl(self.val));
-            let rc_local =
-                <TestCap as super::super::ExtensionCapability>::wrap_shared_as_local(shared);
-            Rc::new(rc_local)
-        }
+
+    fn test_factory(val: &'static str) -> ClonePerConsumerSharedFactory<TestCap, SharedImpl> {
+        ClonePerConsumerSharedFactory::<TestCap, SharedImpl>::new(
+            SharedImpl(val),
+            shared_impl_as_box,
+        )
     }
 
     fn register_shared(registry: &mut CapabilityRegistry, ext_id: &'static str, val: &'static str) {
@@ -894,7 +1149,7 @@ mod tests {
                 TypeId::of::<TestCap>(),
                 SharedCapabilityEntry {
                     extension_id: ext_id,
-                    factory: Box::new(TestFactory { val }),
+                    factory: Box::new(test_factory(val)),
                 },
             )
             .unwrap();
@@ -903,12 +1158,13 @@ mod tests {
     fn register_local(registry: &mut CapabilityRegistry, ext_id: &'static str, val: &'static str) {
         let ext_id: ExtensionId = ext_id.into();
         let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl(val));
+        let instance: Rc<dyn Any> = Rc::new(rc_local);
         registry
             .register_local(
                 TypeId::of::<TestCap>(),
                 LocalCapabilityEntry {
                     extension_id: ext_id,
-                    trait_object: Rc::new(rc_local),
+                    factory: Box::new(ClonePerConsumerLocalFactory::new(instance)),
                 },
             )
             .unwrap();
@@ -1332,12 +1588,13 @@ mod tests {
         register_local(&mut reg, "ext-a", "v1");
 
         let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl("v2"));
+        let instance: Rc<dyn Any> = Rc::new(rc_local);
         let err = reg
             .register_local(
                 TypeId::of::<TestCap>(),
                 LocalCapabilityEntry {
                     extension_id: "ext-a".into(),
-                    trait_object: Rc::new(rc_local),
+                    factory: Box::new(ClonePerConsumerLocalFactory::new(instance)),
                 },
             )
             .unwrap_err();
@@ -1356,12 +1613,167 @@ mod tests {
                 TypeId::of::<TestCap>(),
                 SharedCapabilityEntry {
                     extension_id: "ext-a".into(),
-                    factory: Box::new(TestFactory { val: "v2" }),
+                    factory: Box::new(test_factory("v2")),
                 },
             )
             .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("duplicate"), "error: {msg}");
         assert!(msg.contains("ext-a"), "error: {msg}");
+    }
+
+    // ── FreshPerConsumer factory tests ───────────────────────────────────
+
+    /// Each call to `produce_any` on a fresh-factory mints a new
+    /// instance: the counter captured by the closure increments,
+    /// proving independent construction.
+    #[test]
+    fn test_fresh_shared_factory_produces_independent_instances() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_c = Arc::clone(&counter);
+        let fac = FreshPerConsumerSharedFactory::<TestCap, _>::new(move || {
+            let n = counter_c.fetch_add(1, Ordering::SeqCst);
+            // Leak a &'static str via Box is overkill; just use a fixed value —
+            // the assertion is on call count, not per-call payload distinctness.
+            let _ = n;
+            Box::new(SharedImpl("fresh")) as Box<dyn TestCapShared>
+        });
+
+        let _ = fac.produce_any();
+        let _ = fac.produce_any();
+        let _ = fac.produce_any();
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    /// `clone_box` must duplicate the factory so per-node resolved
+    /// entries can each mint their own instances.
+    #[test]
+    fn test_fresh_shared_factory_clone_box_preserves_closure() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_c = Arc::clone(&counter);
+        let fac = FreshPerConsumerSharedFactory::<TestCap, _>::new(move || {
+            let _ = counter_c.fetch_add(1, Ordering::SeqCst);
+            Box::new(SharedImpl("fresh")) as Box<dyn TestCapShared>
+        });
+
+        let cloned = fac.clone_box();
+        let _ = fac.produce_any();
+        let _ = cloned.produce_any();
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    /// `adapt_as_local_any` for a fresh shared factory must invoke the
+    /// closure and route through `wrap_shared_as_local`, yielding a
+    /// downcastable `Rc<dyn TestCapLocal>`.
+    #[test]
+    fn test_fresh_shared_factory_adapt_as_local() {
+        let fac = FreshPerConsumerSharedFactory::<TestCap, _>::new(|| {
+            Box::new(SharedImpl("fresh-via-local")) as Box<dyn TestCapShared>
+        });
+        let any_rc = fac.adapt_as_local_any();
+        let rc_local = any_rc.downcast::<Rc<dyn TestCapLocal>>().unwrap();
+        assert_eq!(rc_local.value(), "fresh-via-local");
+    }
+
+    /// Each call to `produce_any` on a fresh local factory yields a
+    /// *different* underlying `Rc<dyn TestCapLocal>` — verified by
+    /// comparing raw pointers of the downcast trait objects.
+    #[test]
+    fn test_fresh_local_factory_produces_independent_instances() {
+        let fac = FreshPerConsumerLocalFactory::new(|| {
+            let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl("fresh"));
+            Rc::new(rc_local) as Rc<dyn Any>
+        });
+
+        let a = fac.produce_any();
+        let b = fac.produce_any();
+        let a_inner = a.downcast::<Rc<dyn TestCapLocal>>().unwrap();
+        let b_inner = b.downcast::<Rc<dyn TestCapLocal>>().unwrap();
+        assert!(!Rc::ptr_eq(&a_inner, &b_inner));
+        assert_eq!(a_inner.value(), "fresh");
+        assert_eq!(b_inner.value(), "fresh");
+    }
+
+    /// `clone_box` on a fresh local factory duplicates the closure;
+    /// both the original and the clone still produce independent
+    /// instances on each call.
+    #[test]
+    fn test_fresh_local_factory_clone_box() {
+        let fac = FreshPerConsumerLocalFactory::new(|| {
+            let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl("fresh-clone"));
+            Rc::new(rc_local) as Rc<dyn Any>
+        });
+
+        let cloned = fac.clone_box();
+        let a = fac.produce_any();
+        let b = cloned.produce_any();
+        let a_inner = a.downcast::<Rc<dyn TestCapLocal>>().unwrap();
+        let b_inner = b.downcast::<Rc<dyn TestCapLocal>>().unwrap();
+        assert!(!Rc::ptr_eq(&a_inner, &b_inner));
+    }
+
+    /// A fresh shared factory plugs into `SharedCapabilityEntry` and
+    /// flows through `resolve_bindings` / `require_shared` the same
+    /// way a clone factory does.
+    #[test]
+    fn test_fresh_shared_factory_via_registry() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register_shared(
+            TypeId::of::<TestCap>(),
+            SharedCapabilityEntry {
+                extension_id: "ext-a".into(),
+                factory: Box::new(FreshPerConsumerSharedFactory::<TestCap, _>::new(|| {
+                    Box::new(SharedImpl("fresh-reg")) as Box<dyn TestCapShared>
+                })),
+            },
+        )
+        .unwrap();
+
+        let mut tracker = ConsumedTracker::new();
+        let caps = resolve_bindings(
+            &bindings("test_cap", "ext-a"),
+            &reg,
+            &known_exts(&["ext-a"]),
+            &mut tracker,
+        )
+        .unwrap();
+        let s = caps.require_shared::<TestCap>().unwrap();
+        assert_eq!(s.value(), "fresh-reg");
+    }
+
+    /// A fresh local factory plugs into `LocalCapabilityEntry` and
+    /// flows through `resolve_bindings` / `require_local` the same
+    /// way a clone factory does.
+    #[test]
+    fn test_fresh_local_factory_via_registry() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register_local(
+            TypeId::of::<TestCap>(),
+            LocalCapabilityEntry {
+                extension_id: "ext-a".into(),
+                factory: Box::new(FreshPerConsumerLocalFactory::new(|| {
+                    let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl("fresh-local-reg"));
+                    Rc::new(rc_local) as Rc<dyn Any>
+                })),
+            },
+        )
+        .unwrap();
+
+        let mut tracker = ConsumedTracker::new();
+        let caps = resolve_bindings(
+            &bindings("test_cap", "ext-a"),
+            &reg,
+            &known_exts(&["ext-a"]),
+            &mut tracker,
+        )
+        .unwrap();
+        let l = caps.require_local::<TestCap>().unwrap();
+        assert_eq!(l.value(), "fresh-local-reg");
     }
 }

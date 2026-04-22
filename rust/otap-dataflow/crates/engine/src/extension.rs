@@ -207,17 +207,7 @@ impl EffectHandler {
     }
 }
 
-// ── Active / Passive wrappers ────────────────────────────────────────────────
-
-/// Wraps an extension type to signal it has an active event loop.
-pub struct Active<E>(pub E);
-
-/// Wraps an extension type to signal it is passive (no lifecycle).
-///
-/// The wrapped value is consumed by `decompose()` and only its
-/// `TypeId` is retained. The value itself will be stored when the capability
-/// system is added.
-pub struct Passive<E>(pub E);
+// ── Decomposed (type-erased) provider outputs ────────────────────────────────
 
 /// Decomposed result of a shared extension provider.
 #[doc(hidden)]
@@ -225,6 +215,13 @@ pub struct SharedDecomposed {
     pub(crate) extension: Option<Box<dyn shared_ext::Extension>>,
     /// Used by the same-type guard and the capability system.
     pub(crate) type_id: TypeId,
+    // TODO(extension-system): store the instance/factory source here so the
+    // future capability-wiring step can register ClonePerConsumer /
+    // FreshPerConsumer capability factories. Today the instance is used
+    // only for the lifecycle event loop (Active) and is otherwise dropped;
+    // the factory closure provided via `.factory(...)` is also dropped.
+    // The only information retained beyond lifecycle is `type_id` for the
+    // same-type guard.
 }
 
 /// Decomposed result of a local extension provider.
@@ -233,66 +230,233 @@ pub struct LocalDecomposed {
     pub(crate) extension: Option<std::rc::Rc<dyn local_ext::Extension>>,
     /// Used by the same-type guard and the capability system.
     pub(crate) type_id: TypeId,
+    // TODO(extension-system): see note on `SharedDecomposed`.
 }
 
-/// Sealed trait for shared extension providers.
-pub trait SharedProvider: sealed_provider::SealedShared {
-    /// Decompose into type-erased components.
-    fn decompose(self) -> SharedDecomposed;
+// ── Typestate builder stages ─────────────────────────────────────────────────
+//
+// The extension-registration API uses a typestate chain on
+// [`ExtensionBundleBuilder`] that **seals lifecycle and instance
+// policy per bundle**:
+//
+// ```ignore
+// // Active extension (implicitly instance-based; factory is Passive-only).
+// builder
+//     .active()
+//     .shared(MyShared::new(cfg))
+//     .local(Rc::new(MyLocal::new(cfg)))
+//     .build()?;
+//
+// // Passive extension, clone-per-consumer policy.
+// builder
+//     .passive()
+//     .cloned()
+//     .shared(MyShared::new(cfg))
+//     .build()?;
+//
+// // Passive extension, fresh-per-consumer policy.
+// builder
+//     .passive()
+//     .factory()
+//     .shared(|| MyShared::new(cfg.clone()))
+//     .local(|| Rc::new(MyLocal::new(cfg.clone())))
+//     .build()?;
+// ```
+//
+// **Axes** (chosen once per bundle, in order):
+//
+// | Axis            | Methods                                    |
+// |-----------------|--------------------------------------------|
+// | Lifecycle       | `.active()` / `.passive()`                 |
+// | Instance policy | *(implicit Cloned for Active)* `.cloned()` / `.factory()` *(Passive only)* |
+// | Side            | `.shared(...)` / `.local(...)` *(repeatable, register once each)* |
+//
+// **Why the lifecycle and policy are sealed per bundle.** "This
+// extension has an event loop" or "this capability hands out fresh
+// instances" is a property of the extension, not of which trait-object
+// shape (shared vs local) the consumer happens to request. Letting the
+// two sides diverge would mean consumers observe different
+// instance-sharing semantics depending on whether they call
+// `require_local` vs `require_shared` on the same extension — a
+// debugging hazard with no known legitimate use case. Forcing a single
+// strategy across both sides makes the extension's behavior
+// predictable and eliminates a combinatorial footgun.
+//
+// **Active + Factory is unrepresentable.** Active extensions have a
+// single engine-driven event loop; minting fresh instances per
+// consumer doesn't compose with that. The `.active()` stage provides
+// no `.factory()` method — the invalid combination is a compile-time
+// error.
+
+/// Lifecycle-selected: Active (engine drives an event loop).
+///
+/// Instance policy is implicitly Cloned — factory is Passive-only.
+/// Call [`shared()`](Self::shared) and/or [`local()`](Self::local)
+/// (each at most once), then [`build()`](Self::build).
+#[doc(hidden)]
+pub struct ActiveStage {
+    parent: ExtensionBundleBuilder,
 }
 
-/// Sealed trait for local extension providers.
-pub trait LocalProvider: sealed_provider::SealedLocal {
-    /// Decompose into type-erased components.
-    fn decompose(self) -> LocalDecomposed;
-}
-
-mod sealed_provider {
-    pub trait SealedShared {}
-    pub trait SealedLocal {}
-}
-
-// Clone is required by the capability system for `Box<dyn SharedCapabilityFactory>`.
-impl<E: shared_ext::Extension + Clone + Send + 'static> sealed_provider::SealedShared
-    for Active<E>
-{
-}
-impl<E: shared_ext::Extension + Clone + Send + 'static> SharedProvider for Active<E> {
-    fn decompose(self) -> SharedDecomposed {
-        SharedDecomposed {
-            extension: Some(Box::new(self.0)),
+impl ActiveStage {
+    /// Register the shared (Send) variant.
+    #[must_use]
+    pub fn shared<E>(mut self, extension: E) -> Self
+    where
+        E: shared_ext::Extension + Clone + Send + 'static,
+    {
+        self.parent.shared = Some(SharedDecomposed {
+            extension: Some(Box::new(extension)),
             type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Register the local (!Send) variant.
+    #[must_use]
+    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> Self
+    where
+        E: local_ext::Extension + 'static,
+    {
+        self.parent.local = Some(LocalDecomposed {
+            extension: Some(extension),
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+/// Lifecycle-selected: Passive (no event loop, capabilities only).
+///
+/// Select the instance policy with [`cloned()`](Self::cloned) or
+/// [`factory()`](Self::factory) before registering sides.
+#[doc(hidden)]
+pub struct PassiveStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveStage {
+    /// Select the **clone-per-consumer** instance policy: each consumer
+    /// receives an independent clone of the stored prototype.
+    #[must_use]
+    pub fn cloned(self) -> PassiveClonedStage {
+        PassiveClonedStage {
+            parent: self.parent,
+        }
+    }
+
+    /// Select the **fresh-per-consumer** instance policy: each consumer
+    /// receives a freshly-constructed instance from the stored closure.
+    #[must_use]
+    pub fn factory(self) -> PassiveFactoryStage {
+        PassiveFactoryStage {
+            parent: self.parent,
         }
     }
 }
 
-impl<E: Clone + Send + 'static> sealed_provider::SealedShared for Passive<E> {}
-impl<E: Clone + Send + 'static> SharedProvider for Passive<E> {
-    fn decompose(self) -> SharedDecomposed {
-        SharedDecomposed {
+/// Passive + Cloned (clone-per-consumer) stage.
+#[doc(hidden)]
+pub struct PassiveClonedStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveClonedStage {
+    /// Register the shared (Send) variant. The extension will be
+    /// cloned per consumer via the clone-per-consumer factory.
+    #[must_use]
+    pub fn shared<E>(mut self, _extension: E) -> Self
+    where
+        E: Clone + Send + 'static,
+    {
+        self.parent.shared = Some(SharedDecomposed {
             extension: None,
             type_id: TypeId::of::<E>(),
-        }
+        });
+        self
     }
-}
 
-impl<E: local_ext::Extension + 'static> sealed_provider::SealedLocal for Active<std::rc::Rc<E>> {}
-impl<E: local_ext::Extension + 'static> LocalProvider for Active<std::rc::Rc<E>> {
-    fn decompose(self) -> LocalDecomposed {
-        LocalDecomposed {
-            extension: Some(self.0),
-            type_id: TypeId::of::<E>(),
-        }
-    }
-}
-
-impl<E: 'static> sealed_provider::SealedLocal for Passive<std::rc::Rc<E>> {}
-impl<E: 'static> LocalProvider for Passive<std::rc::Rc<E>> {
-    fn decompose(self) -> LocalDecomposed {
-        LocalDecomposed {
+    /// Register the local (!Send) variant. Consumers receive
+    /// `Rc::clone`s of the stored instance.
+    #[must_use]
+    pub fn local<E>(mut self, _extension: std::rc::Rc<E>) -> Self
+    where
+        E: 'static,
+    {
+        self.parent.local = Some(LocalDecomposed {
             extension: None,
             type_id: TypeId::of::<E>(),
-        }
+        });
+        self
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+/// Passive + Factory (fresh-per-consumer) stage.
+#[doc(hidden)]
+pub struct PassiveFactoryStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveFactoryStage {
+    /// Register the shared (Send) variant via a factory closure.
+    /// Each consumer receives a freshly-constructed instance.
+    ///
+    /// `F: Clone` is required so per-node factories can duplicate the
+    /// closure; closures capturing `Clone` configuration (e.g.
+    /// `Arc<Config>`, `String`) satisfy this automatically.
+    #[must_use]
+    pub fn shared<E, F>(mut self, _produce: F) -> Self
+    where
+        E: Send + 'static,
+        F: Fn() -> E + Clone + Send + 'static,
+    {
+        self.parent.shared = Some(SharedDecomposed {
+            extension: None,
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Register the local (!Send) variant via a factory closure.
+    /// Each consumer receives a freshly-constructed instance.
+    #[must_use]
+    pub fn local<E, F>(mut self, _produce: F) -> Self
+    where
+        E: 'static,
+        F: Fn() -> std::rc::Rc<E> + Clone + 'static,
+    {
+        self.parent.local = Some(LocalDecomposed {
+            extension: None,
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
     }
 }
 
@@ -389,16 +553,25 @@ pub struct ExtensionBundleBuilder {
 }
 
 impl ExtensionBundleBuilder {
-    /// Add a **local** (!Send) extension variant.
-    pub fn with_local(mut self, provider: impl LocalProvider) -> Self {
-        self.local = Some(provider.decompose());
-        self
+    /// Select the **Active** lifecycle for this extension bundle.
+    /// The engine will drive an event loop for whichever sides are
+    /// registered.
+    ///
+    /// Instance policy is implicitly clone-per-consumer — fresh-per-
+    /// consumer (factory) is Passive-only.
+    #[must_use]
+    pub fn active(self) -> ActiveStage {
+        ActiveStage { parent: self }
     }
 
-    /// Add a **shared** (Send) extension variant.
-    pub fn with_shared(mut self, provider: impl SharedProvider) -> Self {
-        self.shared = Some(provider.decompose());
-        self
+    /// Select the **Passive** lifecycle for this extension bundle. No
+    /// event loop is spawned; the extension exposes capabilities only.
+    ///
+    /// Continue with [`PassiveStage::instance`] (clone-per-consumer)
+    /// or [`PassiveStage::factory`] (fresh-per-consumer).
+    #[must_use]
+    pub fn passive(self) -> PassiveStage {
+        PassiveStage { parent: self }
     }
 
     /// Build the [`ExtensionBundle`].
@@ -406,15 +579,16 @@ impl ExtensionBundleBuilder {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - Neither `with_local` nor `with_shared` was called.
-    /// - Both variants use the same concrete type (dual registration requires
-    ///   distinct local and shared implementations).
+    /// - Neither `.shared(...)` nor `.local(...)` was registered via
+    ///   the lifecycle stages.
+    /// - Both variants use the same concrete type (dual registration
+    ///   requires distinct local and shared implementations).
     pub fn build(self) -> Result<ExtensionBundle, Error> {
         if let (Some(local), Some(shared)) = (&self.local, &self.shared) {
             if local.type_id == shared.type_id {
                 return Err(Error::InternalError {
                     message: "local and shared variants must use different concrete types; \
-                              use with_local() or with_shared() alone for single-variant extensions"
+                              register only one side for single-variant extensions"
                         .into(),
                 });
             }
@@ -852,7 +1026,8 @@ mod tests {
     fn test_shared_active() {
         let (n, u, c) = ext_config("sa");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_shared(Active(TestSharedExt::new(CtrlMsgCounters::new())))
+            .active()
+            .shared(TestSharedExt::new(CtrlMsgCounters::new()))
             .build()
             .unwrap();
         assert!(set.local.is_none());
@@ -865,7 +1040,9 @@ mod tests {
     fn test_shared_passive() {
         let (n, u, c) = ext_config("sp");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_shared(Passive("data".to_string()))
+            .passive()
+            .cloned()
+            .shared("data".to_string())
             .build()
             .unwrap();
         assert!(set.local.is_none());
@@ -878,9 +1055,8 @@ mod tests {
     fn test_local_active() {
         let (n, u, c) = ext_config("la");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_local(Active(std::rc::Rc::new(TestLocalExt::new(
-                CtrlMsgCounters::new(),
-            ))))
+            .active()
+            .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
             .build()
             .unwrap();
         assert!(set.shared.is_none());
@@ -893,7 +1069,9 @@ mod tests {
     fn test_local_passive() {
         let (n, u, c) = ext_config("lp");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_local(Passive(std::rc::Rc::new(42u32)))
+            .passive()
+            .cloned()
+            .local(std::rc::Rc::new(42u32))
             .build()
             .unwrap();
         assert!(set.shared.is_none());
@@ -941,8 +1119,9 @@ mod tests {
 
         let (n, u, c) = ext_config("st");
         let result = ExtensionWrapper::builder(n, u, &c)
-            .with_local(Active(std::rc::Rc::new(DualExt)))
-            .with_shared(Active(DualExt))
+            .active()
+            .local(std::rc::Rc::new(DualExt))
+            .shared(DualExt)
             .build();
         assert!(result.is_err());
     }
@@ -951,10 +1130,9 @@ mod tests {
     fn test_dual_creates_local_and_shared() {
         let (n, u, c) = ext_config("d");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_local(Active(std::rc::Rc::new(TestLocalExt::new(
-                CtrlMsgCounters::new(),
-            ))))
-            .with_shared(Active(TestSharedExt::new(CtrlMsgCounters::new())))
+            .active()
+            .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+            .shared(TestSharedExt::new(CtrlMsgCounters::new()))
             .build()
             .unwrap();
         let local = set.local.unwrap();
@@ -971,7 +1149,8 @@ mod tests {
     fn test_name_and_config_accessors() {
         let (n, u, c) = ext_config("acc");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_shared(Active(TestSharedExt::new(CtrlMsgCounters::new())))
+            .active()
+            .shared(TestSharedExt::new(CtrlMsgCounters::new()))
             .build()
             .unwrap();
         let w = set.shared.unwrap();
@@ -1003,7 +1182,8 @@ mod tests {
             let ctr = CtrlMsgCounters::new();
             let (n, u, c) = ext_config("ss");
             let w = ExtensionWrapper::builder(n, u, &c)
-                .with_shared(Active(TestSharedExt::new(ctr.clone())))
+                .active()
+                .shared(TestSharedExt::new(ctr.clone()))
                 .build()
                 .unwrap()
                 .shared
@@ -1033,7 +1213,8 @@ mod tests {
             let ctr = CtrlMsgCounters::new();
             let (n, u, c) = ext_config("ls");
             let w = ExtensionWrapper::builder(n, u, &c)
-                .with_local(Active(std::rc::Rc::new(TestLocalExt::new(ctr.clone()))))
+                .active()
+                .local(std::rc::Rc::new(TestLocalExt::new(ctr.clone())))
                 .build()
                 .unwrap()
                 .local
@@ -1180,7 +1361,9 @@ mod tests {
     fn test_passive_ctrl_metrics_noop() {
         let (n, u, c) = ext_config("pm");
         let w = ExtensionWrapper::builder(n, u, &c)
-            .with_shared(Passive("d".to_string()))
+            .passive()
+            .cloned()
+            .shared("d".to_string())
             .build()
             .unwrap()
             .shared
@@ -1198,7 +1381,8 @@ mod tests {
             let ctr = CtrlMsgCounters::new();
             let (n, u, c) = ext_config("st");
             let w = ExtensionWrapper::builder(n, u, &c)
-                .with_shared(Active(TestSharedExt::new(ctr.clone())))
+                .active()
+                .shared(TestSharedExt::new(ctr.clone()))
                 .build()
                 .unwrap()
                 .shared
@@ -1230,7 +1414,8 @@ mod tests {
     fn test_active_with_control_channel_metrics() {
         let (n, u, c) = ext_config("acm");
         let w = ExtensionWrapper::builder(n, u, &c)
-            .with_shared(Active(TestSharedExt::new(CtrlMsgCounters::new())))
+            .active()
+            .shared(TestSharedExt::new(CtrlMsgCounters::new()))
             .build()
             .unwrap()
             .shared
@@ -1247,8 +1432,10 @@ mod tests {
     fn test_dual_passive() {
         let (n, u, c) = ext_config("dp");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_local(Passive(std::rc::Rc::new(42u32)))
-            .with_shared(Passive("data".to_string()))
+            .passive()
+            .cloned()
+            .local(std::rc::Rc::new(42u32))
+            .shared("data".to_string())
             .build()
             .unwrap();
         assert!(set.local.unwrap().is_passive());
@@ -1256,25 +1443,26 @@ mod tests {
     }
 
     #[test]
-    fn test_dual_mixed_active_passive() {
-        let (n, u, c) = ext_config("dmap");
+    fn test_dual_passive_factory() {
+        let (n, u, c) = ext_config("dpf");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_local(Passive(std::rc::Rc::new(42u32)))
-            .with_shared(Active(TestSharedExt::new(CtrlMsgCounters::new())))
+            .passive()
+            .factory()
+            .local(|| std::rc::Rc::new(42u32))
+            .shared(|| "data".to_string())
             .build()
             .unwrap();
         assert!(set.local.unwrap().is_passive());
-        assert!(!set.shared.unwrap().is_passive());
+        assert!(set.shared.unwrap().is_passive());
     }
 
     #[test]
     fn test_extension_set_iter() {
         let (n, u, c) = ext_config("it");
         let set = ExtensionWrapper::builder(n, u, &c)
-            .with_local(Active(std::rc::Rc::new(TestLocalExt::new(
-                CtrlMsgCounters::new(),
-            ))))
-            .with_shared(Active(TestSharedExt::new(CtrlMsgCounters::new())))
+            .active()
+            .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+            .shared(TestSharedExt::new(CtrlMsgCounters::new()))
             .build()
             .unwrap();
         assert_eq!(set.iter().count(), 2);
