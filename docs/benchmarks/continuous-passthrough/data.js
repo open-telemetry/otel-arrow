@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776899378019,
+  "lastUpdate": 1776901789005,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "8f1ece5e4e2d7a405b2d3caacb8ab85893a694eb",
-          "message": "AzureMonitorExporter: Truncate verbose auth error logs at WARN level (#2271)\n\nAuth token failures from the Azure Identity SDK can include multi-line\nPython stack traces, making WARN logs very noisy during network outages.\nLog only the first line at WARN; full error details available at DEBUG\n\n\nBefore:\n```\nWARN  otap-df-contrib-nodes::azure_monitor_exporter.auth.get_token_failed: [attempt=4, error=Auth error (token acquisition): Multiple errors were encountered while attempting to authenticate:\nAzureCliCredential authentication failed. ERROR: The command failed with an unexpected error. Here is the traceback:\nERROR: HTTPSConnectionPool(host='login.microsoftonline.com', port=443): Max retries exceeded with url: /72f988bf-86f1-41af-91ab-2d7cd011db47/oauth2/v2.0/token (Caused by NameResolutionError(\"<urllib3.connection.HTTPSConnection object at 0x109c36870>: Failed to resolve 'login.microsoftonline.com' ([Errno 8] nodename nor servname provided, or not known)\"))\nTraceback (most recent call last):\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connection.py\", line 198, in _new_conn\n    sock = connection.create_connection(\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/util/connection.py\", line 60, in create_connection\n    for res in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM):\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socket.py\", line 978, in getaddrinfo\n    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsocket.gaierror: [Errno 8] nodename nor servname provided, or not known\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connectionpool.py\", line 787, in urlopen\n    response = self._make_request(\n               ^^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connectionpool.py\", line 488, in _make_request\n    raise new_e\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connectionpool.py\", line 464, in _make_request\n    self._validate_conn(conn)\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connectionpool.py\", line 1093, in _validate_conn\n    conn.connect()\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connection.py\", line 753, in connect\n    self.sock = sock = self._new_conn()\n                       ^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connection.py\", line 205, in _new_conn\n    raise NameResolutionError(self.host, self, e) from e\nurllib3.exceptions.NameResolutionError: <urllib3.connection.HTTPSConnection object at 0x109c36870>: Failed to resolve 'login.microsoftonline.com' ([Errno 8] nodename nor servname provided, or not known)\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/requests/adapters.py\", line 667, in send\n    resp = conn.urlopen(\n           ^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connectionpool.py\", line 871, in urlopen\n    return self.urlopen(\n           ^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/connectionpool.py\", line 841, in urlopen\n    retries = retries.increment(\n              ^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/azure-cli/2.75.0/libexec/lib/python3.12/site-packages/urllib3/util/retry.py\", line 519, in increment\n    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nurllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='login.microsoftonline.com', port=443): Max retries exceed\n```\n\nWith the PR\n```\nWARN  otap-df-contrib-nodes::azure_monitor_exporter.auth.get_token_failed: [attempt=1, error=Auth error (token acquisition): Multiple errors were encountered while attempting to authenticate:] entity/node.attrs: node.id=azure-monitor-exporter node.urn=urn:microsoft:exporter:azure_monitor node.type=exporter pipeline.id=main pipeline.group.id=default core.id=0 numa.node.id=0 process.instance.id=AGON4MPJ5R5FHNICG3RLKJMGBY host.id= container.id=\n2026-03-11T18:38:59.555Z  DEBUG otap-df-contrib-nodes::azure_monitor_exporter.auth.get_token_failed.details: [attempt=1, error=Auth error (token acquisition): Multiple errors were encountered while attempting to authenticate:\n```\n(if debug is enabled, the full details as before is available as\nseparate debug level event)",
-          "timestamp": "2026-03-11T19:06:27Z",
-          "tree_id": "2f0247c265d027d09bd3bb08385b27324714ff1e",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/8f1ece5e4e2d7a405b2d3caacb8ab85893a694eb"
-        },
-        "date": 1773266619200,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.7579054236412048,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 97.09167016636059,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.61890004180536,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 56.61640625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 57.96484375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 470615.86581334413,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 474182.68899128836,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001853,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10984756.625256162,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10923316.530491734,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 16978142.24030389,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ebf2403b5810741def8e0725e17e3fafbefc2458",
+          "message": "test: enhance flaky test reporting by adding JUnit artifact metadata and improving job link resolution (#2722)\n\n# Change Summary\n\nFix misc. issues in the flaky test reporting:\n\n- Add links to the failed jobs to ease investigations (relies on a new\n`metadata.json` file included in test output)\n- Fix an issue where the :new: icon was missing from new flaky test\nresults\n- Fix truncation of test names in output\n\n## What issue does this PR close?\n\nn/a\n\n## How are these changes tested?\n\nValidated flaky test report output with local runs. Will monitor Flaky\nTest report post PR completion.\n\n## Are there any user-facing changes?\n\nNo. Test infra only.",
+          "timestamp": "2026-04-22T18:36:38Z",
+          "tree_id": "3fcf1e63c528169db56aee69033d704dbd2276cd",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ebf2403b5810741def8e0725e17e3fafbefc2458"
+        },
+        "date": 1776901788420,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.3920433521270752,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.01031097936723,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.32971238080471,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 27.828385416666666,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 28.83984375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 648609.3349334016,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 651152.1647735604,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002442,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16985170.31397602,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 16992997.33870363,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
