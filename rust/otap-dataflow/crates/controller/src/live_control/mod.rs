@@ -276,18 +276,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_key: &PipelineKey,
         now: Instant,
     ) {
-        loop {
-            let Some((rollout_id, queue_len)) =
-                state.terminal_rollouts.get(pipeline_key).and_then(|queue| {
-                    queue
-                        .front()
-                        .cloned()
-                        .map(|rollout_id| (rollout_id, queue.len()))
-                })
-            else {
-                break;
-            };
-
+        while let Some((rollout_id, queue_len)) =
+            state.terminal_rollouts.get(pipeline_key).and_then(|queue| {
+                queue
+                    .front()
+                    .cloned()
+                    .map(|rollout_id| (rollout_id, queue.len()))
+            })
+        {
             let should_evict = queue_len > TERMINAL_ROLLOUT_RETENTION_LIMIT
                 || state
                     .rollouts
@@ -345,20 +341,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_key: &PipelineKey,
         now: Instant,
     ) {
-        loop {
-            let Some((shutdown_id, queue_len)) = state
-                .terminal_shutdowns
-                .get(pipeline_key)
-                .and_then(|queue| {
-                    queue
-                        .front()
-                        .cloned()
-                        .map(|shutdown_id| (shutdown_id, queue.len()))
-                })
-            else {
-                break;
-            };
-
+        while let Some((shutdown_id, queue_len)) = state
+            .terminal_shutdowns
+            .get(pipeline_key)
+            .and_then(|queue| {
+                queue
+                    .front()
+                    .cloned()
+                    .map(|shutdown_id| (shutdown_id, queue.len()))
+            })
+        {
             let should_evict = queue_len > TERMINAL_SHUTDOWN_RETENTION_LIMIT
                 || state
                     .shutdowns
