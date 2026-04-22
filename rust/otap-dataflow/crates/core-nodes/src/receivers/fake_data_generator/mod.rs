@@ -28,7 +28,7 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -140,9 +140,10 @@ impl FakeGeneratorReceiver {
                     _ = run_ticker.tick() => {
                         if current_run.len() > 0 {
                             otel_warn!(
-                                "Data generator is falling behind and didn't finish the current run",
+                                "Data generator is falling behind and didn't finish the current run. For highest
+                                possible throughput, use production_mode: open",
                                 remaining=current_run.len(),
-                            )
+                            );
                         }
                         break;
                     }
@@ -201,9 +202,8 @@ impl FakeGeneratorReceiver {
                     }
 
                     _ = run_ticker.tick() => {
-                        otel_warn!(
-                            "Data generator is falling behind and didn't finish the current run. For highest
-                            possible throughput, use production_mode: open",
+                        otel_debug!(
+                            "Data generator is falling behind and didn't finish the current run.",
                             remaining=current_run.len(),
                         );
 

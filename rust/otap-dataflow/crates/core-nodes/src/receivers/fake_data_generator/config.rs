@@ -363,51 +363,6 @@ impl TrafficConfig {
         self.signals_per_second
     }
 
-    /// get the config describing how big the metric signal is
-    #[must_use]
-    pub fn calculate_signal_count(&self) -> (usize, usize, usize) {
-        if let Some(rate_limit) = self.signals_per_second {
-            // ToDo: Handle case where the total signal count don't add up the signals being sent per second
-            let total_weight: f32 =
-                (self.trace_weight + self.metric_weight + self.log_weight) as f32;
-
-            let metric_percent: f32 = self.metric_weight as f32 / total_weight;
-            let trace_percent: f32 = self.trace_weight as f32 / total_weight;
-            let log_percent: f32 = self.log_weight as f32 / total_weight;
-
-            let metric_count: usize = (metric_percent * rate_limit as f32) as usize;
-            let trace_count: usize = (trace_percent * rate_limit as f32) as usize;
-            let log_count: usize = (log_percent * rate_limit as f32) as usize;
-
-            let _remaining_count = rate_limit - (metric_count + trace_count + log_count);
-            // ToDo: Update signal count using by distributing the remaining count
-            // if remaining_count > 0 {
-            //     // we need to add to the remaining signal counts here to the counts
-
-            // }
-
-            (metric_count, trace_count, log_count)
-        } else {
-            // if no rate limit is set, use max_batch_size distributed by weights
-            let total_weight: f32 =
-                (self.trace_weight + self.metric_weight + self.log_weight) as f32;
-
-            if total_weight == 0.0 {
-                return (0, 0, 0);
-            }
-
-            let metric_percent: f32 = self.metric_weight as f32 / total_weight;
-            let trace_percent: f32 = self.trace_weight as f32 / total_weight;
-            let log_percent: f32 = self.log_weight as f32 / total_weight;
-
-            let metric_count: usize = (metric_percent * self.max_batch_size as f32) as usize;
-            let trace_count: usize = (trace_percent * self.max_batch_size as f32) as usize;
-            let log_count: usize = (log_percent * self.max_batch_size as f32) as usize;
-
-            (metric_count, trace_count, log_count)
-        }
-    }
-
     /// returns the max amounts of signals that should be sent
     #[must_use]
     pub const fn get_max_signal_count(&self) -> Option<u64> {
