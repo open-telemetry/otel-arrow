@@ -92,7 +92,8 @@ use crate::otlp::{OtlpProtoBytes, ProtoBuffer, ProtoBytesEncoder};
 use crate::views::otlp::bytes::logs::RawLogsData;
 use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
-use otap_df_config::{SignalFormat, SignalType};
+use crate::{TryFromWithOptions, TryIntoWithOptions};
+use otap_df_config::{ConversionOptions, SignalFormat, SignalType};
 
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
@@ -359,41 +360,47 @@ impl TryFrom<OtapPayload> for OtapArrowRecords {
     }
 }
 
-impl TryFrom<OtapPayload> for OtlpProtoBytes {
+impl TryFromWithOptions<OtapPayload> for OtlpProtoBytes {
     type Error = Error;
 
-    fn try_from(value: OtapPayload) -> Result<Self, Self::Error> {
+    fn try_from_with_options(
+        value: OtapPayload,
+        opts: ConversionOptions,
+    ) -> Result<Self, Self::Error> {
         match value {
-            OtapPayload::OtapArrowRecords(value) => value.try_into(),
+            OtapPayload::OtapArrowRecords(value) => value.try_into_with_options(opts),
             OtapPayload::OtlpBytes(value) => Ok(value),
         }
     }
 }
 
-impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
+impl TryFromWithOptions<OtapArrowRecords> for OtlpProtoBytes {
     type Error = Error;
 
-    fn try_from(mut value: OtapArrowRecords) -> Result<Self, Self::Error> {
+    fn try_from_with_options(
+        mut value: OtapArrowRecords,
+        opts: ConversionOptions,
+    ) -> Result<Self, Self::Error> {
         match value {
             OtapArrowRecords::Logs(_) => {
                 // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
                 // and the buffer, a these structures can be used between requests
                 let mut logs_encoder = LogsProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::new();
+                let mut buffer = ProtoBuffer::with_limit(opts.otlp_size_limit());
 
                 logs_encoder.encode(&mut value, &mut buffer)?;
                 Ok(Self::ExportLogsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Metrics(_) => {
                 let mut metrics_encoder = MetricsProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::new();
+                let mut buffer = ProtoBuffer::with_limit(opts.otlp_size_limit());
                 metrics_encoder.encode(&mut value, &mut buffer)?;
 
                 Ok(Self::ExportMetricsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Traces(_) => {
                 let mut traces_encoder = TracesProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::new();
+                let mut buffer = ProtoBuffer::with_limit(opts.otlp_size_limit());
                 traces_encoder.encode(&mut value, &mut buffer)?;
                 Ok(Self::ExportTracesRequest(buffer.into_bytes()))
             }

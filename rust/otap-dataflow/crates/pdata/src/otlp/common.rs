@@ -347,48 +347,20 @@ pub struct ProtoBufferInline<const INLINE: usize> {
 /// Heap-backed protobuf encoding buffer.
 pub type ProtoBuffer = ProtoBufferInline<0>;
 
-impl<const INLINE: usize> Default for ProtoBufferInline<INLINE> {
-    fn default() -> Self {
-        Self {
-            buffer: SmallVec::new_const(),
-            dropped: 0,
-            limit: LOG_LIMIT3,
-        }
-    }
+const fn tag_width_limit(tagw: usize) -> usize {
+    1 << (7 * tagw)
 }
 
-/// This is a hard limit imposed by the 4-byte placeholder (256MiB)
-pub const LOG_LIMIT4: usize = 1 << (4 * 7);
-
-/// Limit that yields a 3-byte-max placeholder (2MiB)
-pub const LOG_LIMIT3: usize = 1 << (3 * 7);
+const MAX_TAG_WIDTH: usize = 4;
 
 impl<const INLINE: usize> ProtoBufferInline<INLINE> {
-    /// Construct a new buffer with the default limit.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Construct a new buffer with max(LOG_LIMIT4, capacity).
-    #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
-        let limit = LOG_LIMIT4.max(capacity);
-        Self {
-            buffer: SmallVec::with_capacity(limit),
-            dropped: 0,
-            limit,
-        }
-    }
-
     /// Construct a bounded buffer that will not grow beyond `limit` bytes.
     #[must_use]
     pub fn with_limit(limit: usize) -> Self {
-        let limit = LOG_LIMIT4.max(limit);
         Self {
             buffer: SmallVec::new_const(),
+            limit: tag_width_limit(MAX_TAG_WIDTH).max(limit),
             dropped: 0,
-            limit,
         }
     }
 
@@ -397,8 +369,8 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     pub const fn with_inline() -> Self {
         Self {
             buffer: SmallVec::new_const(),
-            dropped: 0,
             limit: INLINE,
+            dropped: 0,
         }
     }
 

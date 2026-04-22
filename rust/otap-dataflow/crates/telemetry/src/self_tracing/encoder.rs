@@ -8,6 +8,7 @@ use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
 use bytes::Bytes;
+use otap_df_config::conversion::DEFAULT_OTLP_SIZE_LIMIT;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBufferInline};
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
@@ -343,7 +344,7 @@ where
 /// Encode an SDK Resource to bytes for later reuse.
 #[must_use]
 pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> Bytes {
-    let mut buf = ProtoBuffer::with_capacity(256);
+    let mut buf = ProtoBuffer::with_limit(DEFAULT_OTLP_SIZE_LIMIT);
     encode_resource(&mut buf, resource.iter(), resource.schema_url());
     buf.into_bytes()
 }
@@ -431,7 +432,7 @@ impl ScopeToBytesMap {
         });
         visited
             .map(|attrs| {
-                let mut buf = ProtoBuffer::with_capacity(128);
+                let mut buf = ProtoBuffer::with_limit(DEFAULT_OTLP_SIZE_LIMIT);
                 for (attr_key, attr_value) in attrs {
                     encode_scope_attribute(&mut buf, attr_key, &attr_value);
                 }
@@ -681,7 +682,7 @@ mod tests {
 
         let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
 
-        let mut buf = ProtoBuffer::with_capacity(512);
+        let mut buf = ProtoBuffer::with_limit(10000);
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
@@ -785,7 +786,7 @@ mod tests {
         let log_event = LogEvent { time, record };
 
         let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
-        let mut buf = ProtoBuffer::with_capacity(512);
+        let mut buf = ProtoBuffer::with_limit(512);
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();

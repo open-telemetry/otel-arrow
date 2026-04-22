@@ -15,6 +15,7 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
+use otap_df_config::ConversionOptions;
 use prost::Message;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -45,7 +46,6 @@ impl StreamConsumer {
 }
 
 /// Consumer consumes OTAP `BatchArrowRecords` and can convert them into OTLP messages.
-#[derive(Default)]
 pub struct Consumer {
     stream_consumers: HashMap<String, StreamConsumer>,
     logs_proto_encoder: LogsProtoBytesEncoder,
@@ -55,6 +55,17 @@ pub struct Consumer {
 }
 
 impl Consumer {
+    /// Construct a consumer with conversion options.
+    pub fn with_options(opts: ConversionOptions) -> Self {
+        Self {
+            stream_consumers: HashMap::default(),
+            logs_proto_encoder: LogsProtoBytesEncoder::default(),
+            metrics_proto_encoder: MetricsProtoBytesEncoder::default(),
+            traces_proto_encoder: TracesProtoBytesEncoder::default(),
+            proto_buffer: ProtoBuffer::with_limit(opts.otlp_size_limit()),
+        }
+    }
+
     /// consume and deserialize record batches
     pub fn consume_bar(&mut self, bar: &mut BatchArrowRecords) -> Result<Vec<RecordMessage>> {
         let mut records = Vec::with_capacity(bar.arrow_payloads.len());
