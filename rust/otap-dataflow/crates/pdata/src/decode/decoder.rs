@@ -56,13 +56,14 @@ pub struct Consumer {
 
 impl Consumer {
     /// Construct a consumer with conversion options.
+    #[must_use]
     pub fn with_options(opts: ConversionOptions) -> Self {
         Self {
             stream_consumers: HashMap::default(),
             logs_proto_encoder: LogsProtoBytesEncoder::default(),
             metrics_proto_encoder: MetricsProtoBytesEncoder::default(),
             traces_proto_encoder: TracesProtoBytesEncoder::default(),
-            proto_buffer: ProtoBuffer::with_limit(opts.otlp_size_limit()),
+            proto_buffer: ProtoBuffer::new().with_limit(opts.otlp_size_limit()),
         }
     }
 

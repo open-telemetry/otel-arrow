@@ -33,7 +33,7 @@ use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{SignalFormat, SignalType};
+use otap_df_config::{ConversionOptions, SignalFormat, SignalType};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
@@ -50,8 +50,9 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
-    otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, TryIntoWithOptions,
+    error::Error as PDataError, otap::batching::make_item_batches,
+    otlp::batching::make_bytes_batches,
 };
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
@@ -747,7 +748,12 @@ impl BatchProcessor {
                 } else if let Some(mut otlp_format) = self.otlp_format() {
                     otlp_format
                         .for_signal(signal)
-                        .accept_payload(effect, ctx, otap.try_into()?, items)
+                        .accept_payload(
+                            effect,
+                            ctx,
+                            otap.try_into_with_options(ConversionOptions::options_todo())?,
+                            items,
+                        )
                         .await?
                 } else {
                     return Err(Self::no_active_format_error());
@@ -1757,7 +1763,11 @@ mod tests {
             self.outputs
                 .get(i)
                 .map(|d| {
-                    let payload: OtlpProtoBytes = d.clone().payload().try_into().expect("ok");
+                    let payload: OtlpProtoBytes = d
+                        .clone()
+                        .payload()
+                        .try_into_with_options(ConversionOptions::options_todo())
+                        .expect("ok");
                     payload.try_into().expect("ok")
                 })
                 .expect("ok")

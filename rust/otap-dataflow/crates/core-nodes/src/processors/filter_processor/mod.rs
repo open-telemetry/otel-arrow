@@ -205,6 +205,7 @@ mod tests {
     use crate::processors::filter_processor::{
         FILTER_PROCESSOR_URN, FilterProcessor, config::Config,
     };
+    use otap_df_config::ConversionOptions;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -214,6 +215,7 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
@@ -667,7 +669,7 @@ mod tests {
                 let received_logs_data = &msgs[0];
                 let (_, payload) = received_logs_data.clone().into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload
-                    .try_into()
+                    .try_into_with_options(ConversionOptions::options_todo())
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
@@ -703,7 +705,7 @@ mod tests {
                 let received_traces_data = &msgs[0];
                 let (_, payload) = received_traces_data.clone().into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload
-                    .try_into()
+                    .try_into_with_options(ConversionOptions::options_todo())
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_traces_data = match otlp_bytes {
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {

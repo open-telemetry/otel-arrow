@@ -17,6 +17,7 @@ use crate::{
         collector::logs::v1::ExportLogsServiceRequest,
     },
 };
+use otap_df_config::ConversionOptions;
 
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 
@@ -96,7 +97,7 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 .map_err(|_| ())
             }
 
-            let mut consumer = Consumer::default();
+            let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
@@ -195,7 +196,7 @@ impl ArrowLogsService for OTAPLogsAdapter {
 
         #[allow(clippy::let_underscore_future)]
         let _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
+            let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
             while let Ok(Some(mut batch)) = input_stream.message().await {
                 let status_result = match consumer.consume_logs_batches(&mut batch) {
                     Ok(otlp_logs) => {
@@ -317,7 +318,7 @@ impl ArrowTracesService for OTAPTracesAdapter {
 
         #[allow(clippy::let_underscore_future)]
         let _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
+            let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
             while let Ok(Some(mut batch)) = input_stream.message().await {
                 let status_result = match consumer.consume_traces_batches(&mut batch) {
                     Ok(otlp_traces) => {

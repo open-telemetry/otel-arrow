@@ -217,6 +217,7 @@ pub mod test {
     use std::collections::HashMap;
 
     use arrow::array::UInt16Array;
+    use otap_df_config::ConversionOptions;
     use otap_df_pdata::Consumer;
     use otap_df_pdata::otap::{
         Metrics, OtapArrowRecords, Traces, from_record_messages, testing::complete_batch,
@@ -240,7 +241,7 @@ pub mod test {
             num_rows: 2,
             ..Default::default()
         });
-        let mut consumer = Consumer::default();
+        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
         let mut otap_batch1: OtapParquetRecords =
             OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap()).into();
@@ -282,7 +283,7 @@ pub mod test {
             num_rows: 2,
             ..Default::default()
         });
-        let mut consumer = Consumer::default();
+        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
         let mut otap_batch2: OtapParquetRecords =
             OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap()).into();
@@ -327,7 +328,7 @@ pub mod test {
             num_rows: 10,
             ..Default::default()
         });
-        let mut consumer = Consumer::default();
+        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
         let mut otap_batch: OtapParquetRecords =
             OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap()).into();
@@ -360,7 +361,7 @@ pub mod test {
             ids_decoded: false,
             ..Default::default()
         });
-        let mut consumer = Consumer::default();
+        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
         let record_messages = consumer.consume_bar(&mut log_batch).unwrap();
         let mut otap_records =
             OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap());

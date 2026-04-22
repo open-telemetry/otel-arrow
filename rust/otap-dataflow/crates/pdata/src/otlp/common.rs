@@ -25,6 +25,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Fields};
 
 use bytes::Bytes;
+use otap_df_config::conversion::DEFAULT_OTLP_SIZE_LIMIT;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt;
@@ -353,15 +354,40 @@ const fn tag_width_limit(tagw: usize) -> usize {
 
 const MAX_TAG_WIDTH: usize = 4;
 
+const MAX_OTLP_SIZE_LIMIT: usize = tag_width_limit(MAX_TAG_WIDTH);
+
+impl<const INLINE: usize> Default for ProtoBufferInline<INLINE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const INLINE: usize> ProtoBufferInline<INLINE> {
-    /// Construct a bounded buffer that will not grow beyond `limit` bytes.
+    /// Construct a new buffer with the default limit.
     #[must_use]
-    pub fn with_limit(limit: usize) -> Self {
+    pub fn new() -> Self {
         Self {
+            limit: DEFAULT_OTLP_SIZE_LIMIT,
+            dropped: 0,
             buffer: SmallVec::new_const(),
-            limit: tag_width_limit(MAX_TAG_WIDTH).max(limit),
+        }
+    }
+
+    /// Construct an unbounded buffer with starting allocation of `capacity` bytes.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffer: SmallVec::with_capacity(MAX_OTLP_SIZE_LIMIT.min(capacity)),
+            limit: MAX_OTLP_SIZE_LIMIT,
             dropped: 0,
         }
+    }
+
+    /// Construct a bounded buffer that will not grow beyond `limit` bytes.
+    #[must_use]
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = MAX_OTLP_SIZE_LIMIT.min(limit);
+        self
     }
 
     /// Construct a buffer bounded to exactly `INLINE` bytes, avoiding allocation.

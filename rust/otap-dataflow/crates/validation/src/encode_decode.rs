@@ -3,6 +3,7 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
+use otap_df_config::ConversionOptions;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
@@ -53,7 +54,7 @@ impl Default for OtelProtoSimulator {
     fn default() -> Self {
         Self {
             producer: Producer::new(),
-            consumer: Consumer::default(),
+            consumer: Consumer::with_options(ConversionOptions::options_todo()),
         }
     }
 }

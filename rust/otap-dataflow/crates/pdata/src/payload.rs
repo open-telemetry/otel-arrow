@@ -386,21 +386,21 @@ impl TryFromWithOptions<OtapArrowRecords> for OtlpProtoBytes {
                 // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
                 // and the buffer, a these structures can be used between requests
                 let mut logs_encoder = LogsProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::with_limit(opts.otlp_size_limit());
+                let mut buffer = ProtoBuffer::new().with_limit(opts.otlp_size_limit());
 
                 logs_encoder.encode(&mut value, &mut buffer)?;
                 Ok(Self::ExportLogsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Metrics(_) => {
                 let mut metrics_encoder = MetricsProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::with_limit(opts.otlp_size_limit());
+                let mut buffer = ProtoBuffer::new().with_limit(opts.otlp_size_limit());
                 metrics_encoder.encode(&mut value, &mut buffer)?;
 
                 Ok(Self::ExportMetricsRequest(buffer.into_bytes()))
             }
             OtapArrowRecords::Traces(_) => {
                 let mut traces_encoder = TracesProtoBytesEncoder::new();
-                let mut buffer = ProtoBuffer::with_limit(opts.otlp_size_limit());
+                let mut buffer = ProtoBuffer::new().with_limit(opts.otlp_size_limit());
                 traces_encoder.encode(&mut value, &mut buffer)?;
                 Ok(Self::ExportTracesRequest(buffer.into_bytes()))
             }
@@ -440,6 +440,7 @@ mod test {
     use super::*;
     use crate::testing::fixtures::logs_with_full_resource_and_scope;
     use crate::{
+        TryIntoWithOptions,
         otap::OtapArrowRecords,
         proto::opentelemetry::{
             collector::{
@@ -480,11 +481,15 @@ mod test {
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
         let pdata: OtapPayload = otap_batch.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata
+            .try_into_with_options(ConversionOptions::options_todo())
+            .unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
         let pdata: OtapPayload = otlp_bytes.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata
+            .try_into_with_options(ConversionOptions::options_todo())
+            .unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
         let pdata: OtapPayload = otlp_bytes.into();
 
@@ -506,7 +511,9 @@ mod test {
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
         let pdata: OtapPayload = otap_batch.clone().into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata
+            .try_into_with_options(ConversionOptions::options_todo())
+            .unwrap();
         let bytes = match &otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => bytes.clone(),
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -532,7 +539,9 @@ mod test {
         assert!(matches!(otap_batch, OtapArrowRecords::Traces(_)));
         let pdata: OtapPayload = otap_batch.clone().into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata
+            .try_into_with_options(ConversionOptions::options_todo())
+            .unwrap();
         let bytes = match &otlp_bytes {
             OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.clone(),
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -558,7 +567,9 @@ mod test {
         assert!(matches!(otap_batch, OtapArrowRecords::Metrics(_)));
         let pdata: OtapPayload = otap_batch.clone().into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata
+            .try_into_with_options(ConversionOptions::options_todo())
+            .unwrap();
         let bytes = match &otlp_bytes {
             OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes.clone(),
             _ => panic!("unexpected otlp bytes pdata variant"),

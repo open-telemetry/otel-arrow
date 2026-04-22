@@ -7,6 +7,7 @@
 use crate::ValidationInstructions;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::ConversionOptions;
 use otap_df_config::NodeId as NodeName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -22,6 +23,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::TryFromWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
@@ -205,9 +207,12 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     let time_elapsed = time.elapsed();
                     let (context, payload) = pdata.into_parts();
                     let source_node = context.source_node();
-                    let msg = OtlpProtoBytes::try_from(payload)
-                        .ok()
-                        .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
+                    let msg = OtlpProtoBytes::try_from_with_options(
+                        payload,
+                        ConversionOptions::options_todo(),
+                    )
+                    .ok()
+                    .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
 
                     if let Some(msg) = msg {
                         if let Some(node_index) = source_node {

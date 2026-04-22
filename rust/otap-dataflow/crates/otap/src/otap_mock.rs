@@ -16,6 +16,7 @@ use arrow::{
     array::{RecordBatch, UInt16Array},
     datatypes::{DataType, Field, Schema},
 };
+use otap_df_config::ConversionOptions;
 use otap_df_pdata::{
     Consumer,
     otap::{
@@ -90,7 +91,7 @@ impl ArrowLogsService for ArrowLogsServiceMock {
 
         // write to the channel
         _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
+            let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
@@ -140,7 +141,7 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
 
         // write to the channel
         _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
+            let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
@@ -189,7 +190,7 @@ impl ArrowTracesService for ArrowTracesServiceMock {
 
         // write to the channel
         _ = tokio::spawn(async move {
-            let mut consume = Consumer::default();
+            let mut consume = Consumer::with_options(ConversionOptions::options_todo());
 
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {

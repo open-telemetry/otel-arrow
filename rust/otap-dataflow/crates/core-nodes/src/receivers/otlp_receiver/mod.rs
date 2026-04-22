@@ -844,6 +844,7 @@ mod tests {
     use super::*;
 
     use otap_df_channel::error::RecvError;
+    use otap_df_config::ConversionOptions;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::MessageSourceSharedEffectHandlerExtension;
@@ -867,6 +868,7 @@ mod tests {
     use otap_df_otap::otlp_http::RpcStatus;
     use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -1786,7 +1788,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_options(ConversionOptions::options_todo())
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -1812,7 +1814,7 @@ mod tests {
                 let metrics_proto: OtlpProtoBytes = metrics_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_options(ConversionOptions::options_todo())
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     metrics_proto,
@@ -1841,7 +1843,7 @@ mod tests {
                 let trace_proto: OtlpProtoBytes = trace_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_options(ConversionOptions::options_todo())
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     trace_proto,
@@ -1979,7 +1981,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_options(ConversionOptions::options_todo())
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -2072,7 +2074,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_options(ConversionOptions::options_todo())
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 

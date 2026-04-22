@@ -14,6 +14,7 @@ use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode}
 use self::sampling::Sampler;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::ConversionOptions;
 use otap_df_config::PortName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -29,12 +30,12 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
     metrics::v1::{MetricsData, metric::Data},
     trace::v1::TracesData,
 };
+use otap_df_pdata::{OtlpProtoBytes, TryIntoWithOptions};
 use otap_df_telemetry::metrics::MetricSet;
 use prost::Message as _;
 use serde_json::Value;
@@ -336,7 +337,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 }
 
                 let (_context, payload) = pdata.into_parts();
-                let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
+                let otlp_bytes: OtlpProtoBytes =
+                    payload.try_into_with_options(ConversionOptions::options_todo())?;
 
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {

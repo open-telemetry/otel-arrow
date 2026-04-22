@@ -192,7 +192,7 @@ impl InternalTelemetryReceiver {
         resource_bytes: &Bytes,
         scope_cache: &mut ScopeToBytesMap,
     ) -> Result<(), Error> {
-        let mut buf = ProtoBuffer::with_capacity(512);
+        let mut buf = ProtoBuffer::new();
 
         encode_export_logs_request(&mut buf, &log_event, resource_bytes, scope_cache);
 

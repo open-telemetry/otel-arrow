@@ -480,6 +480,7 @@ mod test {
     use arrow::compute::concat_batches;
     use futures::StreamExt;
     use object_store::local::LocalFileSystem;
+    use otap_df_config::ConversionOptions;
     use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
     use otap_df_pdata::{Consumer, proto::opentelemetry::arrow::v1::BatchArrowRecords};
     use parquet::arrow::ParquetRecordBatchStreamBuilder;
@@ -492,7 +493,7 @@ mod test {
     use crate::exporters::parquet_exporter::records::OtapParquetRecords;
 
     fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapParquetRecords {
-        let mut consumer = Consumer::default();
+        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
         let record_messages = consumer.consume_bar(&mut bar).unwrap();
         let otap: OtapArrowRecords =
             OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap());
