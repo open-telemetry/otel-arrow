@@ -202,7 +202,7 @@ impl FakeGeneratorReceiver {
                         continue 'start;
                     }
 
-                    else => {
+                    _ = std::future::ready(()) => {
 
                         let Some(payload) = current_run.next() else {
                             break;
