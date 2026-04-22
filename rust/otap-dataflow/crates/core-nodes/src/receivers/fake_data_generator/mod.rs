@@ -212,7 +212,9 @@ impl FakeGeneratorReceiver {
                         run_produced += count;
                     }
                 }
+            }
 
+            loop {
                 // The second phase starts once we exhaust a traffic run. At this point
                 // we only process control messages while we wait for a tick at which point
                 // we start the next run.

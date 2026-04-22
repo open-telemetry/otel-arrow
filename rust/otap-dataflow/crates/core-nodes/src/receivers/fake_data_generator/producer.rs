@@ -481,7 +481,6 @@ impl StaticGenerator {
             true => None,
             false => {
                 let slot = self.rotation[self.idx % self.rotation.len()];
-                // self.idx += 1;
                 Some(&self.entries[slot].attrs)
             }
         }
@@ -490,8 +489,6 @@ impl StaticGenerator {
 
 impl SignalGenerator for StaticGenerator {
     fn generate_logs(&mut self, count: usize) -> GenerateResult {
-        self.idx += 1;
-
         let attrs = self.attrs_for_batch();
         let payload = static_signal::static_otlp_logs_with_config(
             count,
@@ -502,12 +499,11 @@ impl SignalGenerator for StaticGenerator {
         );
         let payload = OtlpProtoMessage::Logs(payload);
 
+        self.idx += 1;
         Ok(payload.try_into()?)
     }
 
     fn generate_metrics(&mut self, count: usize) -> GenerateResult {
-        self.idx += 1;
-
         let attrs = self.attrs_for_batch();
         let payload = static_signal::static_otlp_metrics_with_config(
             count,
@@ -517,15 +513,16 @@ impl SignalGenerator for StaticGenerator {
         );
         let payload = OtlpProtoMessage::Metrics(payload);
 
+        self.idx += 1;
         Ok(payload.try_into()?)
     }
 
     fn generate_traces(&mut self, count: usize) -> GenerateResult {
-        self.idx += 1;
         let attrs = self.attrs_for_batch();
         let payload = static_signal::static_otlp_traces(count, attrs);
         let payload = OtlpProtoMessage::Traces(payload);
 
+        self.idx += 1;
         Ok(payload.try_into()?)
     }
 }
