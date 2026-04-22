@@ -57,6 +57,7 @@
 //! error.
 
 use super::{ExtensionBundle, ExtensionLifecycle, ExtensionWrapper};
+use super::wrapper::{LocalInstanceFactory, SharedInstanceFactory};
 use crate::config::ExtensionConfig;
 use crate::error::Error;
 use crate::local::extension as local_ext;
@@ -68,7 +69,7 @@ use otap_df_channel::mpsc;
 use otap_df_config::ExtensionId;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_telemetry::otel_debug;
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 // ── Decomposed (type-erased) provider outputs ────────────────────────────────
@@ -77,24 +78,23 @@ use std::sync::Arc;
 #[doc(hidden)]
 pub struct SharedDecomposed {
     pub(crate) extension: Option<Box<dyn shared_ext::Extension>>,
+    /// Factory that mints instances of the extension's concrete type
+    /// for capability consumers. The engine downcasts back to `E` via
+    /// generated registration glue.
+    pub(crate) instance_factory: SharedInstanceFactory,
     /// Used by the same-type guard and the capability system.
     pub(crate) type_id: TypeId,
-    // TODO(extension-system): store the instance/factory source here so the
-    // future capability-wiring step can register ClonePerConsumer /
-    // FreshPerConsumer capability factories. Today the instance is used
-    // only for the lifecycle event loop (Active) and is otherwise dropped;
-    // the factory closure provided via `.factory(...)` is also dropped.
-    // The only information retained beyond lifecycle is `type_id` for the
-    // same-type guard.
 }
 
 /// Decomposed result of a local extension provider.
 #[doc(hidden)]
 pub struct LocalDecomposed {
     pub(crate) extension: Option<std::rc::Rc<dyn local_ext::Extension>>,
+    /// Factory that mints instances of the extension's concrete type
+    /// for capability consumers.
+    pub(crate) instance_factory: LocalInstanceFactory,
     /// Used by the same-type guard and the capability system.
     pub(crate) type_id: TypeId,
-    // TODO(extension-system): see note on `SharedDecomposed`.
 }
 
 // ── Typestate builder stages ─────────────────────────────────────────────────
@@ -116,8 +116,12 @@ impl ActiveStage {
     where
         E: shared_ext::Extension + Clone + Send + 'static,
     {
+        let for_factory = extension.clone();
         self.parent.shared = Some(SharedDecomposed {
             extension: Some(Box::new(extension)),
+            instance_factory: SharedInstanceFactory::new(move || {
+                Box::new(for_factory.clone()) as Box<dyn Any + Send>
+            }),
             type_id: TypeId::of::<E>(),
         });
         self
@@ -129,8 +133,12 @@ impl ActiveStage {
     where
         E: local_ext::Extension + 'static,
     {
+        let for_factory = std::rc::Rc::clone(&extension);
         self.parent.local = Some(LocalDecomposed {
             extension: Some(extension),
+            instance_factory: LocalInstanceFactory::new(move || {
+                std::rc::Rc::clone(&for_factory) as std::rc::Rc<dyn Any>
+            }),
             type_id: TypeId::of::<E>(),
         });
         self
@@ -185,12 +193,15 @@ impl PassiveClonedStage {
     /// Register the shared (Send) variant. The extension will be
     /// cloned per consumer via the clone-per-consumer factory.
     #[must_use]
-    pub fn shared<E>(mut self, _extension: E) -> Self
+    pub fn shared<E>(mut self, extension: E) -> Self
     where
         E: Clone + Send + 'static,
     {
         self.parent.shared = Some(SharedDecomposed {
             extension: None,
+            instance_factory: SharedInstanceFactory::new(move || {
+                Box::new(extension.clone()) as Box<dyn Any + Send>
+            }),
             type_id: TypeId::of::<E>(),
         });
         self
@@ -199,12 +210,15 @@ impl PassiveClonedStage {
     /// Register the local (!Send) variant. Consumers receive
     /// `Rc::clone`s of the stored instance.
     #[must_use]
-    pub fn local<E>(mut self, _extension: std::rc::Rc<E>) -> Self
+    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> Self
     where
         E: 'static,
     {
         self.parent.local = Some(LocalDecomposed {
             extension: None,
+            instance_factory: LocalInstanceFactory::new(move || {
+                std::rc::Rc::clone(&extension) as std::rc::Rc<dyn Any>
+            }),
             type_id: TypeId::of::<E>(),
         });
         self
@@ -234,13 +248,16 @@ impl PassiveFactoryStage {
     /// closure; closures capturing `Clone` configuration (e.g.
     /// `Arc<Config>`, `String`) satisfy this automatically.
     #[must_use]
-    pub fn shared<E, F>(mut self, _produce: F) -> Self
+    pub fn shared<E, F>(mut self, produce: F) -> Self
     where
         E: Send + 'static,
         F: Fn() -> E + Clone + Send + 'static,
     {
         self.parent.shared = Some(SharedDecomposed {
             extension: None,
+            instance_factory: SharedInstanceFactory::new(move || {
+                Box::new(produce()) as Box<dyn Any + Send>
+            }),
             type_id: TypeId::of::<E>(),
         });
         self
@@ -249,13 +266,16 @@ impl PassiveFactoryStage {
     /// Register the local (!Send) variant via a factory closure.
     /// Each consumer receives a freshly-constructed instance.
     #[must_use]
-    pub fn local<E, F>(mut self, _produce: F) -> Self
+    pub fn local<E, F>(mut self, produce: F) -> Self
     where
         E: 'static,
         F: Fn() -> std::rc::Rc<E> + Clone + 'static,
     {
         self.parent.local = Some(LocalDecomposed {
             extension: None,
+            instance_factory: LocalInstanceFactory::new(move || {
+                produce() as std::rc::Rc<dyn Any>
+            }),
             type_id: TypeId::of::<E>(),
         });
         self
@@ -363,6 +383,7 @@ impl ExtensionBundleBuilder {
                 runtime_config: self.runtime_config.clone(),
                 telemetry: None,
                 lifecycle,
+                instance_factory: l.instance_factory,
             }
         });
 
@@ -384,6 +405,7 @@ impl ExtensionBundleBuilder {
                 runtime_config: self.runtime_config.clone(),
                 telemetry: None,
                 lifecycle,
+                instance_factory: s.instance_factory,
             }
         });
 

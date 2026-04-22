@@ -30,6 +30,7 @@ use otap_df_config::ExtensionId;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_telemetry::otel_debug;
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -225,6 +226,71 @@ pub enum ExtensionLifecycle<E, R> {
     Passive,
 }
 
+// ── InstanceFactory ──────────────────────────────────────────────────────────
+
+/// Produces instances of a shared extension's concrete type for capability
+/// consumers.
+///
+/// The wrapper is type-erased over the extension's concrete type `E`. When
+/// the engine wires a consumer's capability binding, the generated
+/// registration glue (see `extension_capabilities!`) downcasts the returned
+/// `Box<dyn Any + Send>` back to `E` and wraps it in the requested
+/// capability trait object.
+///
+/// The instance policy chosen at the builder (`.cloned(...)` vs
+/// `.factory(...)`) is baked into the stored closure:
+/// - **ClonePerConsumer** — the closure captures a prototype `E: Clone`
+///   and returns `e.clone()` on each call.
+/// - **FreshPerConsumer** — the closure captures the user-supplied
+///   `Fn() -> E` and invokes it on each call.
+pub struct SharedInstanceFactory {
+    produce: Box<dyn Fn() -> Box<dyn Any + Send> + Send>,
+}
+
+impl SharedInstanceFactory {
+    /// Construct a factory from a closure producing type-erased instances.
+    #[must_use]
+    pub fn new<F>(produce: F) -> Self
+    where
+        F: Fn() -> Box<dyn Any + Send> + Send + 'static,
+    {
+        SharedInstanceFactory {
+            produce: Box::new(produce),
+        }
+    }
+
+    /// Produce a fresh instance as `Box<dyn Any + Send>`.
+    #[must_use]
+    pub fn produce(&self) -> Box<dyn Any + Send> {
+        (self.produce)()
+    }
+}
+
+/// Produces instances of a local (!Send) extension's concrete type for
+/// capability consumers. See [`SharedInstanceFactory`] for background.
+pub struct LocalInstanceFactory {
+    produce: Box<dyn Fn() -> std::rc::Rc<dyn Any>>,
+}
+
+impl LocalInstanceFactory {
+    /// Construct a factory from a closure producing type-erased instances.
+    #[must_use]
+    pub fn new<F>(produce: F) -> Self
+    where
+        F: Fn() -> std::rc::Rc<dyn Any> + 'static,
+    {
+        LocalInstanceFactory {
+            produce: Box::new(produce),
+        }
+    }
+
+    /// Produce an instance as `Rc<dyn Any>`.
+    #[must_use]
+    pub fn produce(&self) -> std::rc::Rc<dyn Any> {
+        (self.produce)()
+    }
+}
+
 // ── ExtensionWrapper ────────────────────────────────────────────────────────
 
 /// Wrapper for a single extension variant in the pipeline engine.
@@ -253,6 +319,11 @@ pub enum ExtensionWrapper {
             std::rc::Rc<dyn local_ext::Extension>,
             LocalReceiver<ExtensionControlMsg>,
         >,
+        /// Mints instances of the extension's concrete type for
+        /// capability consumers. The engine's generated capability
+        /// registration glue downcasts back to `E` and wraps in the
+        /// requested trait object.
+        instance_factory: LocalInstanceFactory,
     },
     /// A shared (Send) extension variant.
     Shared {
@@ -267,6 +338,9 @@ pub enum ExtensionWrapper {
         /// The lifecycle state (active with channels, or passive).
         lifecycle:
             ExtensionLifecycle<Box<dyn shared_ext::Extension>, SharedReceiver<ExtensionControlMsg>>,
+        /// Mints instances of the extension's concrete type for
+        /// capability consumers.
+        instance_factory: SharedInstanceFactory,
     },
 }
 
@@ -336,6 +410,7 @@ impl ExtensionWrapper {
                 runtime_config,
                 telemetry,
                 lifecycle,
+                instance_factory,
             } => {
                 let lifecycle = match lifecycle {
                     ExtensionLifecycle::Passive => ExtensionLifecycle::Passive,
@@ -371,6 +446,7 @@ impl ExtensionWrapper {
                     runtime_config,
                     telemetry,
                     lifecycle,
+                    instance_factory,
                 }
             }
             ExtensionWrapper::Shared {
@@ -379,6 +455,7 @@ impl ExtensionWrapper {
                 runtime_config,
                 telemetry,
                 lifecycle,
+                instance_factory,
             } => {
                 let lifecycle = match lifecycle {
                     ExtensionLifecycle::Passive => ExtensionLifecycle::Passive,
@@ -414,6 +491,7 @@ impl ExtensionWrapper {
                     runtime_config,
                     telemetry,
                     lifecycle,
+                    instance_factory,
                 }
             }
         }
