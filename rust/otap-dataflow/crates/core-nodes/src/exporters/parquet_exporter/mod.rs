@@ -54,6 +54,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use std::io::ErrorKind;
@@ -284,7 +285,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     }
 
                     let mut otap_batch: OtapArrowRecords =
-                        payload.try_into().inspect_err(|_| {
+                        payload.try_into_with_default().inspect_err(|_| {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics.inc_failed(signal_type);
                             }
@@ -448,7 +449,6 @@ mod test {
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
-    use otap_df_config::ConversionOptions;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::control::{
@@ -470,6 +470,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
     use otap_df_pdata::schema::consts;
+    use otap_df_pdata::{TryFromWithOptions, TryIntoWithOptions};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
@@ -480,7 +481,7 @@ mod test {
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
-                let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
+                let mut consumer = Consumer::default();
                 let otap_batch = consumer
                     .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                         SimpleDataGenOptions {
@@ -569,7 +570,7 @@ mod test {
                         })
                     }
                     let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3).payload();
-                    let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
+                    let mut otap_batch = OtapArrowRecords::try_from_with_default(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
                     let old_column = attrs_batch.remove_column(
@@ -645,7 +646,7 @@ mod test {
                             value: Some(AnyValue::new_string("terry")),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     let batch2: OtapArrowRecords =
@@ -654,7 +655,7 @@ mod test {
                             value: Some(AnyValue::new_int(418)),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     // double check that these contain schemas that are not the same ...
@@ -970,7 +971,7 @@ mod test {
             // scope attrs. Since we know the log attrs table has been written, we can guess the
             // writer has buffered files ..
 
-            let logs_data = Consumer::with_options(ConversionOptions::options_todo())
+            let logs_data = Consumer::default()
                 .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
                         // a pretty big batch
@@ -987,7 +988,7 @@ mod test {
                 .await
                 .unwrap();
 
-            let logs_data = Consumer::with_options(ConversionOptions::options_todo())
+            let logs_data = Consumer::default()
                 .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
                         num_rows: 1,
@@ -1147,7 +1148,7 @@ mod test {
             // have the parquet writer queue a batch to be written
             let num_rows = 5;
 
-            let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
+            let mut consumer = Consumer::default();
             let otap_batch = consumer
                 .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
@@ -1328,7 +1329,7 @@ mod test {
 
         let num_rows = 100;
 
-        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
+        let mut consumer = Consumer::default();
         let otap_batch = consumer
             .consume_bar(&mut fixtures::create_simple_trace_arrow_record_batches(
                 SimpleDataGenOptions {
@@ -1398,7 +1399,7 @@ mod test {
         );
 
         let num_rows = 100;
-        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
+        let mut consumer = Consumer::default();
         let otap_batch = consumer
             .consume_bar(&mut fixtures::create_simple_metrics_arrow_record_batches(
                 SimpleDataGenOptions {
@@ -1535,7 +1536,7 @@ mod test {
             reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) {
             // Send minimal pdata to increment pdata metrics (consumed)
-            let logs = Consumer::with_options(ConversionOptions::options_todo())
+            let logs = Consumer::default()
                 .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
                         num_rows: 1,
@@ -1635,7 +1636,7 @@ mod test {
         );
 
         let num_rows = 100;
-        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
+        let mut consumer = Consumer::default();
         let otap_batch = consumer
             .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                 SimpleDataGenOptions {

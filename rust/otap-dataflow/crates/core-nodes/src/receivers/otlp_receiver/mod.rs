@@ -844,7 +844,6 @@ mod tests {
     use super::*;
 
     use otap_df_channel::error::RecvError;
-    use otap_df_config::ConversionOptions;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy,
@@ -1791,7 +1790,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into_with_options(ConversionOptions::options_todo())
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -1817,7 +1816,7 @@ mod tests {
                 let metrics_proto: OtlpProtoBytes = metrics_pdata
                     .clone()
                     .payload()
-                    .try_into_with_options(ConversionOptions::options_todo())
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     metrics_proto,
@@ -1846,7 +1845,7 @@ mod tests {
                 let trace_proto: OtlpProtoBytes = trace_pdata
                     .clone()
                     .payload()
-                    .try_into_with_options(ConversionOptions::options_todo())
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     trace_proto,
@@ -1984,7 +1983,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into_with_options(ConversionOptions::options_todo())
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -2077,7 +2076,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into_with_options(ConversionOptions::options_todo())
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 

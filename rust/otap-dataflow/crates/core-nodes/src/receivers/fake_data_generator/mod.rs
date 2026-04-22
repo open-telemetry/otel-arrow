@@ -1055,7 +1055,6 @@ mod tests {
     use super::*;
 
     use crate::receivers::fake_data_generator::config::{Config, TrafficConfig};
-    use otap_df_config::ConversionOptions;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::transport_headers::ValueKind;
     use otap_df_engine::context::ControllerContext;
@@ -1093,7 +1092,7 @@ mod tests {
     fn pdata_to_otlp_message(value: OtapPdata) -> OtlpProtoMessage {
         let otlp_bytes: OtlpProtoBytes = value
             .payload()
-            .try_into_with_options(ConversionOptions::options_todo())
+            .try_into_with_default()
             .expect("can convert signal to otlp bytes");
         match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {

@@ -66,7 +66,6 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::ConversionOptions;
 use otap_df_config::PortName;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -534,10 +533,7 @@ impl ContentRouter {
                     SignalType::Logs => self.resolve_arrow_logs_route(arrow_records),
                     // Metrics/Traces Arrow views not yet available — convert to OTLP.
                     // TODO: Use OtapMetricsView/OtapTracesView when available.
-                    _ => match OtlpProtoBytes::try_from_with_options(
-                        arrow_records.clone(),
-                        ConversionOptions::options_todo(),
-                    ) {
+                    _ => match OtlpProtoBytes::try_from_with_default(arrow_records.clone()) {
                         Ok(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
                             let data = RawMetricsData::new(bytes.as_ref());
                             self.resolve_metrics_route(&data)

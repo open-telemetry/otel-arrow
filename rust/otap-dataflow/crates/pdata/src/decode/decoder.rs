@@ -54,16 +54,19 @@ pub struct Consumer {
     proto_buffer: ProtoBuffer,
 }
 
+impl Default for Consumer {
+    fn default() -> Self {
+        Self::with_options(ConversionOptions::default())
+    }
+}
+
 impl Consumer {
     /// Construct a consumer with conversion options.
     #[must_use]
     pub fn with_options(opts: ConversionOptions) -> Self {
         Self {
-            stream_consumers: HashMap::default(),
-            logs_proto_encoder: LogsProtoBytesEncoder::default(),
-            metrics_proto_encoder: MetricsProtoBytesEncoder::default(),
-            traces_proto_encoder: TracesProtoBytesEncoder::default(),
-            proto_buffer: ProtoBuffer::new().with_limit(opts.otlp_size_limit()),
+            proto_buffer: ProtoBuffer::new_with_options(opts),
+            ..Default::default()
         }
     }
 

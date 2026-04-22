@@ -346,7 +346,6 @@ mod test {
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::schema::{FieldExt, consts};
     use crate::testing::round_trip::to_otap_logs;
-    use otap_df_config::ConversionOptions;
 
     use super::*;
     use std::sync::Arc;
@@ -358,7 +357,7 @@ mod test {
     #[test]
     fn test_round_trip_batch_arrow_records() {
         let mut producer = Producer::new();
-        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
+        let mut consumer = Consumer::default();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("flags", DataType::UInt32, false),
@@ -478,8 +477,8 @@ mod test {
         }
 
         // two consumers reading batches independently
-        let mut consumer1 = Consumer::with_options(ConversionOptions::options_todo());
-        let mut consumer2 = Consumer::with_options(ConversionOptions::options_todo());
+        let mut consumer1 = Consumer::default();
+        let mut consumer2 = Consumer::default();
 
         for i in 0..4 {
             let bytes = &encoded_bars[i];
@@ -535,7 +534,7 @@ mod test {
         let mut producer = Producer::new();
         let mut bar = producer.produce_bar(&mut input).unwrap();
 
-        let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
+        let mut consumer = Consumer::default();
         let result = OtapArrowRecords::Logs(
             from_record_messages(consumer.consume_bar(&mut bar).unwrap()).unwrap(),
         );

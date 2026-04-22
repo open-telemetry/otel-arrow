@@ -33,7 +33,7 @@ use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{ConversionOptions, SignalFormat, SignalType};
+use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
@@ -748,12 +748,7 @@ impl BatchProcessor {
                 } else if let Some(mut otlp_format) = self.otlp_format() {
                     otlp_format
                         .for_signal(signal)
-                        .accept_payload(
-                            effect,
-                            ctx,
-                            otap.try_into_with_options(ConversionOptions::options_todo())?,
-                            items,
-                        )
+                        .accept_payload(effect, ctx, otap.try_into_with_default()?, items)
                         .await?
                 } else {
                     return Err(Self::no_active_format_error());
@@ -768,7 +763,7 @@ impl BatchProcessor {
                 } else if let Some(mut otap_format) = self.otap_format() {
                     otap_format
                         .for_signal(signal)
-                        .accept_payload(effect, ctx, otlp.try_into()?, items)
+                        .accept_payload(effect, ctx, otlp.try_into_with_default()?, items)
                         .await?
                 } else {
                     return Err(Self::no_active_format_error());
@@ -1763,11 +1758,8 @@ mod tests {
             self.outputs
                 .get(i)
                 .map(|d| {
-                    let payload: OtlpProtoBytes = d
-                        .clone()
-                        .payload()
-                        .try_into_with_options(ConversionOptions::options_todo())
-                        .expect("ok");
+                    let payload: OtlpProtoBytes =
+                        d.clone().payload().try_into_with_default().expect("ok");
                     payload.try_into().expect("ok")
                 })
                 .expect("ok")
@@ -1775,7 +1767,7 @@ mod tests {
     }
 
     fn otap_pdata_to_message(data: &OtapPdata) -> OtlpProtoMessage {
-        let rec: OtapArrowRecords = data.clone().payload().try_into().unwrap();
+        let rec: OtapArrowRecords = data.clone().payload().try_into_with_default().unwrap();
         otap_to_otlp(&rec)
     }
 

@@ -23,9 +23,9 @@ use arrow::array::{
     StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Fields};
+use otap_df_config::ConversionOptions;
 
 use bytes::Bytes;
-use otap_df_config::conversion::DEFAULT_OTLP_SIZE_LIMIT;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt;
@@ -354,23 +354,24 @@ const fn tag_width_limit(tagw: usize) -> usize {
 
 const MAX_TAG_WIDTH: usize = 4;
 
-const MAX_OTLP_SIZE_LIMIT: usize = tag_width_limit(MAX_TAG_WIDTH);
+/// The maximum supported protocol buffer size limit (1 << 28) = 256MiB.
+pub const MAX_OTLP_SIZE_LIMIT: usize = tag_width_limit(MAX_TAG_WIDTH);
 
 impl<const INLINE: usize> Default for ProtoBufferInline<INLINE> {
     fn default() -> Self {
-        Self::new()
+        Self {
+            limit: MAX_OTLP_SIZE_LIMIT,
+            dropped: 0,
+            buffer: SmallVec::new_const(),
+        }
     }
 }
 
 impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     /// Construct a new buffer with the default limit.
     #[must_use]
-    pub fn new() -> Self {
-        Self {
-            limit: DEFAULT_OTLP_SIZE_LIMIT,
-            dropped: 0,
-            buffer: SmallVec::new_const(),
-        }
+    pub fn new_with_options(opts: ConversionOptions) -> Self {
+        Self::default().with_options(opts)
     }
 
     /// Construct an unbounded buffer with starting allocation of `capacity` bytes.
@@ -385,8 +386,10 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
 
     /// Construct a bounded buffer that will not grow beyond `limit` bytes.
     #[must_use]
-    pub fn with_limit(mut self, limit: usize) -> Self {
-        self.limit = MAX_OTLP_SIZE_LIMIT.min(limit);
+    pub fn with_options(mut self, opts: ConversionOptions) -> Self {
+        if let Some(limit) = opts.otlp_size_limit {
+            self.limit = MAX_OTLP_SIZE_LIMIT.min(limit.get());
+        }
         self
     }
 
@@ -1450,7 +1453,7 @@ mod test {
         use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
 
         fn check<const N: usize>() {
-            let mut buf = ProtoBuffer::new();
+            let mut buf = ProtoBuffer::default();
             encode_len_placeholder::<N, _>(&mut buf);
             assert_eq!(buf.len(), N);
             for i in 0..N - 1 {
@@ -1477,7 +1480,7 @@ mod test {
                 if len > max_len {
                     continue;
                 }
-                let mut buf = ProtoBuffer::new();
+                let mut buf = ProtoBuffer::default();
                 let start = buf.len();
                 encode_len_placeholder::<N, _>(&mut buf);
                 patch_len_placeholder::<N, _>(&mut buf, len, start);
@@ -1503,7 +1506,7 @@ mod test {
 
         // Encode a simple string field using the _large and _small variants,
         // then verify the _small output is 2 bytes shorter.
-        let mut buf_large = ProtoBuffer::new();
+        let mut buf_large = ProtoBuffer::default();
         proto_encode_len_delimited_large!(
             1,
             {
@@ -1512,7 +1515,7 @@ mod test {
             &mut buf_large
         );
 
-        let mut buf_small = ProtoBuffer::new();
+        let mut buf_small = ProtoBuffer::default();
         proto_encode_len_delimited_small!(
             1,
             {

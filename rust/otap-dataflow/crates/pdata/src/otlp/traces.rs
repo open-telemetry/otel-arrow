@@ -778,7 +778,7 @@ mod test {
             .set(ArrowPayloadType::SpanLinkAttrs, attr_32_rb.clone())
             .unwrap();
 
-        let mut result_buf = ProtoBuffer::new();
+        let mut result_buf = ProtoBuffer::default();
         let mut encoder = TracesProtoBytesEncoder::new();
         encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
 

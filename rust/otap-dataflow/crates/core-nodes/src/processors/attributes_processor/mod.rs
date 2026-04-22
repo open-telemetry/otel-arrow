@@ -48,6 +48,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::transform::apply_attribute_transform;
 use otap_df_pdata::otap::{
     OtapArrowRecords,
@@ -359,7 +360,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 let signal = pdata.signal_type();
                 let (context, payload) = pdata.into_parts();
 
-                let mut records: OtapArrowRecords = payload.try_into()?;
+                let mut records: OtapArrowRecords = payload.try_into_with_default()?;
 
                 // Update domain counters (count once per message when domains are enabled)
                 if self.has_resource_domain {
@@ -566,7 +567,6 @@ mod payload_sets {
 mod tests {
     use super::*;
     use bytes::BytesMut;
-    use otap_df_config::ConversionOptions;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
@@ -685,9 +685,8 @@ mod tests {
                 let first = out.into_iter().next().expect("one output").payload();
 
                 // Convert output to OTLP bytes for easy assertions
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -767,7 +766,7 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into_with_options(ConversionOptions::options_todo()).expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -854,9 +853,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -949,9 +947,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1023,9 +1020,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1113,9 +1109,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportMetricsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1204,9 +1199,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportMetricsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1278,9 +1272,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1350,7 +1343,7 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into_with_options(ConversionOptions::options_todo()).expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1418,7 +1411,7 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into_with_options(ConversionOptions::options_todo()).expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1489,9 +1482,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1575,9 +1567,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1646,9 +1637,8 @@ mod tests {
 
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1724,9 +1714,8 @@ mod tests {
 
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1806,9 +1795,8 @@ mod tests {
 
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1945,9 +1933,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -2014,9 +2001,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -2102,9 +2088,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first
-                    .try_into_with_options(ConversionOptions::options_todo())
-                    .expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),

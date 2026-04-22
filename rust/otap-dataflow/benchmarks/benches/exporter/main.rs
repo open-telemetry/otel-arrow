@@ -58,7 +58,6 @@ use tonic::transport::Server;
 
 use tonic::{Request, Response, Status};
 
-use otap_df_config::ConversionOptions;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{
@@ -381,7 +380,7 @@ fn bench_exporter(c: &mut Criterion) {
                 row_size,
             );
 
-            let mut consumer = Consumer::with_options(ConversionOptions::options_todo());
+            let mut consumer = Consumer::default();
             let trace_records = OtapArrowRecords::Traces(
                 from_record_messages(
                     consumer

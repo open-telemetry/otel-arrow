@@ -14,7 +14,6 @@ use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode}
 use self::sampling::Sampler;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::ConversionOptions;
 use otap_df_config::PortName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -337,8 +336,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 }
 
                 let (_context, payload) = pdata.into_parts();
-                let otlp_bytes: OtlpProtoBytes =
-                    payload.try_into_with_options(ConversionOptions::options_todo())?;
+                let otlp_bytes: OtlpProtoBytes = payload.try_into_with_default()?;
 
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {

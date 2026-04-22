@@ -159,9 +159,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
 
-        let mut logs_proto_buffer = ProtoBuffer::new();
-        let mut metrics_proto_buffer = ProtoBuffer::new();
-        let mut traces_proto_buffer = ProtoBuffer::new();
+        let mut logs_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut metrics_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut traces_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
 
         let mut grpc_clients = GrpcClientPool::new(max_in_flight, channel, compression);
         grpc_clients.prepopulate_clients();

@@ -26,6 +26,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
@@ -129,7 +130,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 // convert to arrow records
                 let (context, payload) = pdata.into_parts();
 
-                let mut arrow_records: OtapArrowRecords = payload.try_into()?;
+                let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
                 let (filtered_arrow_records, signals_consumed, signals_filtered): (
@@ -205,7 +206,6 @@ mod tests {
     use crate::processors::filter_processor::{
         FILTER_PROCESSOR_URN, FilterProcessor, config::Config,
     };
-    use otap_df_config::ConversionOptions;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -669,7 +669,7 @@ mod tests {
                 let received_logs_data = &msgs[0];
                 let (_, payload) = received_logs_data.clone().into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload
-                    .try_into_with_options(ConversionOptions::options_todo())
+                    .try_into_with_default()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
@@ -705,7 +705,7 @@ mod tests {
                 let received_traces_data = &msgs[0];
                 let (_, payload) = received_traces_data.clone().into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload
-                    .try_into_with_options(ConversionOptions::options_todo())
+                    .try_into_with_default()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_traces_data = match otlp_bytes {
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
