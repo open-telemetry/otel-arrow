@@ -9,14 +9,14 @@ use crate::receivers::fake_data_generator::config::Config;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
-use otap_df_channel::error::RecvError;
+use otap_df_channel::error::{RecvError, SendError};
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::CallData;
-use otap_df_engine::error::{Error, ReceiverErrorKind};
+use otap_df_engine::error::{Error, ReceiverErrorKind, TypedError};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -149,12 +149,20 @@ impl FakeGeneratorReceiver {
                     }
 
                     _ = batch_ticker.tick() => {
+
                         let Some(payload) = current_run.next() else {
                             continue;
                         };
 
-                        let count = self.handle_payload(handler, payload, &transport_headers)?;
-                        run_produced += count;
+                        let channel_result = self.handle_payload(handler, payload, &transport_headers)?;
+                        match channel_result {
+                            Ok(count) => {
+                                run_produced += count;
+                            }
+                            Err(e) => {
+                                otel_warn!("Failed to push in smooth mode, skipping tick", err=?e);
+                            }
+                        }
                     }
                 }
             }
@@ -180,8 +188,8 @@ impl FakeGeneratorReceiver {
 
             // First phase is the open export phase where we pump data as fast as
             // possible one chunk at a time while checking for control messages
-            // in between. If we hit backpressure then we just skip that chunk of data
-            // until we get through the entire iterator.
+            // in between.
+            let mut next_pdata: Option<OtapPdata> = None;
             loop {
                 // In the first select statement, we try to drain the entire run
                 tokio::select! {
@@ -203,13 +211,28 @@ impl FakeGeneratorReceiver {
                     }
 
                     _ = std::future::ready(()) => {
+                        let channel_result = match next_pdata.take() {
+                            Some(pdata) => {
+                                self.export_pdata(handler, pdata)?
+                            }
+                            None => {
+                                let Some(payload) = current_run.next() else {
+                                    break;
+                                };
 
-                        let Some(payload) = current_run.next() else {
-                            break;
+                               self.handle_payload(handler, payload, &transport_headers)?
+                            }
                         };
 
-                        let count = self.handle_payload(handler, payload, &transport_headers)?;
-                        run_produced += count;
+                        match channel_result {
+                            Ok(count) => {
+                                run_produced += count;
+                            }
+                            Err(pdata) => {
+                                next_pdata = Some(pdata);
+                                tokio::task::yield_now().await;
+                            }
+                        }
                     }
                 }
             }
@@ -235,12 +258,13 @@ impl FakeGeneratorReceiver {
         }
     }
 
+    // There are two failure modes here
     fn handle_payload(
         &mut self,
         handler: &local::EffectHandler<OtapPdata>,
         payload: Result<OtapPayload, GenerateError>,
         transport_headers: &Option<TransportHeaders>,
-    ) -> Result<u64, Error> {
+    ) -> Result<Result<u64, OtapPdata>, Error> {
         let payload = match payload {
             Ok(payload) => payload,
             Err(e) => {
@@ -265,6 +289,14 @@ impl FakeGeneratorReceiver {
             );
         }
 
+        self.export_pdata(handler, pdata)
+    }
+
+    fn export_pdata(
+        &mut self,
+        handler: &local::EffectHandler<OtapPdata>,
+        pdata: OtapPdata,
+    ) -> Result<Result<u64, OtapPdata>, Error> {
         let signal = pdata.signal_type();
         let count = pdata.num_items() as u64;
         match handler.try_send_message_with_source_node(pdata) {
@@ -274,11 +306,19 @@ impl FakeGeneratorReceiver {
                     otap_df_config::SignalType::Metrics => self.metrics.metrics_produced.add(count),
                     otap_df_config::SignalType::Logs => self.metrics.logs_produced.add(count),
                 };
-                Ok(count)
+                Ok(Ok(count))
             }
             Err(e) => {
-                otel_warn!("Failed to send pdata", error=?e);
-                Ok(0)
+                let TypedError::ChannelSendError(SendError::Full(pdata)) = e else {
+                    return Err(Error::ReceiverError {
+                        receiver: handler.receiver_id(),
+                        kind: ReceiverErrorKind::Other,
+                        error: format!("Failed to generate data: {}", e),
+                        source_detail: String::new(),
+                    });
+                };
+
+                Ok(Err(pdata))
             }
         }
     }
