@@ -133,7 +133,7 @@ impl RawLoggingLayer {
     pub fn dispatch_event(&self, event: &Event<'_>) {
         let time = SystemTime::now();
         let record = LogRecord::new(event, (self.context_fn)());
-        self.writer.print_log(time, &record.as_view(), |w| {
+        self.writer.print_log_record(time, &record.as_view(), |w| {
             w.format_entity_suffix_without_registry(&record.context);
         });
     }
@@ -186,8 +186,12 @@ impl ConsoleWriter {
     /// The `scope_formatter` callback is invoked after the log body/attributes,
     /// before the newline. This allows callers to append scope information
     /// (e.g., entity context from a registry) atomically within the same write.
-    pub fn print_log<F>(&self, time: SystemTime, view: &BorrowedLogRecord<'_>, scope_formatter: F)
-    where
+    pub fn print_log_record<F>(
+        &self,
+        time: SystemTime,
+        view: &BorrowedLogRecord<'_>,
+        scope_formatter: F,
+    ) where
         F: FnOnce(&mut StyledBufWriter<'_>),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];

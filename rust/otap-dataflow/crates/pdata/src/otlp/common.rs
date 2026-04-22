@@ -392,9 +392,9 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
         }
     }
 
-    /// Construct a bounded buffer that will not grow beyond `limit` bytes.
+    /// Modify the ProtoBuffer with options.
     #[must_use]
-    pub fn with_options(mut self, opts: ConversionOptions) -> Self {
+    fn with_options(mut self, opts: ConversionOptions) -> Self {
         if let Some(limit) = opts.otlp_size_limit {
             self.limit = MAX_OTLP_SIZE_LIMIT.min(limit.get());
         }

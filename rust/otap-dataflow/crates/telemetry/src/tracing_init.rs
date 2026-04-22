@@ -187,7 +187,7 @@ where
         let context = (self.context_fn)();
         let record = LogRecord::new(event, context);
         if let Some(writer) = self.writer {
-            writer.print_log(time, &record.as_view(), |w| {
+            writer.print_log_record(time, &record.as_view(), |w| {
                 w.format_entity_suffix_without_registry(&record.context);
             });
         }
