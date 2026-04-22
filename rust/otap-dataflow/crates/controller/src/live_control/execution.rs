@@ -251,13 +251,27 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 "starting",
                 None,
             );
-            let deployed_key = self
-                .launch_regular_pipeline_instance(
-                    &plan.resolved_pipeline,
-                    *core_id,
-                    plan.target_generation,
-                )
-                .map_err(|err| RolloutExecutionError::Failed(err.to_string()))?;
+            let deployed_key = match self.launch_regular_pipeline_instance(
+                &plan.resolved_pipeline,
+                *core_id,
+                plan.target_generation,
+            ) {
+                Ok(deployed_key) => deployed_key,
+                Err(err) => {
+                    let reason = err.to_string();
+                    self.update_rollout_core_state(
+                        &plan.pipeline_key,
+                        &plan.rollout.rollout_id,
+                        *core_id,
+                        "failed",
+                        Some(reason.clone()),
+                    );
+                    // Create rollouts have no previous generation to restore, so a launch
+                    // failure must tear down any candidate instances that were already started.
+                    let _ = self.shutdown_instances(&launched, plan.drain_timeout_secs);
+                    return Err(RolloutExecutionError::Failed(reason));
+                }
+            };
             launched.push(deployed_key);
         }
 
