@@ -121,7 +121,6 @@ impl FakeGeneratorReceiver {
 
         loop {
             producer.record_production(run_produced);
-            otel_info!("Produced", run_produced);
             run_produced = 0;
 
             let Ok(Some(mut current_run)) = producer.next_run() else {
@@ -203,7 +202,8 @@ impl FakeGeneratorReceiver {
 
                     _ = run_ticker.tick() => {
                         otel_warn!(
-                            "Data generator is falling behind and didn't finish the current run",
+                            "Data generator is falling behind and didn't finish the current run. For highest
+                            possible throughput, use production_mode: open",
                             remaining=current_run.len(),
                         );
 
@@ -450,7 +450,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
 
         let run_len = producer.run_len();
         let batch_duration_millis = 1000u64.div_euclid(run_len as u64);
-        let run_ticker = interval(Duration::from_secs(1));
+
+        // We consume one tick here because it's always immediately ready and would
+        // make us think we're lagging;
+        let mut run_ticker = interval(Duration::from_secs(1));
+        _ = run_ticker.tick().await;
 
         match self.config.get_traffic_config().production_mode {
             config::ProductionMode::Smooth => {

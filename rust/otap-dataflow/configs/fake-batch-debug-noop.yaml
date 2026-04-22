@@ -17,7 +17,6 @@ groups:
             type: receiver:traffic_generator
             config:
               traffic_config:
-                production_mode: open
                 max_batch_size: 10
                 signals_per_second: 1000
                 log_weight: 100
