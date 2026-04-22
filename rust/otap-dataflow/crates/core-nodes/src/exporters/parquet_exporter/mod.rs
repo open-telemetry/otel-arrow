@@ -909,9 +909,10 @@ mod test {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let base_dir_url = base_dir.replace('\\', "/");
         let exporter = ParquetExporter::new(config::Config {
             storage: object_store::StorageType::File {
-                base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+                base_uri: format!("testdelayed:///{base_dir_url}?delay=500ms"),
             },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
@@ -930,7 +931,7 @@ mod test {
         let exporter_config = ExporterConfig::new("test_parquet_exporter");
         let (rt, _) = setup_test_runtime();
         let control_sender = exporter.control_sender();
-        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(2);
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
