@@ -1,8 +1,16 @@
+//! Background rollout and shutdown execution.
+//!
+//! The planning module records accepted operations and spawns workers; this
+//! module contains the worker bodies. Each worker updates per-core progress,
+//! drives runtime instance launch/shutdown, commits successful generations, and
+//! performs best-effort rollback when a multi-step rollout fails.
+
 use super::*;
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
     ControllerRuntime<PData>
 {
+    /// Emits the internal telemetry event for a rollout/shutdown worker panic.
     pub(super) fn report_controller_worker_panic(
         &self,
         pipeline_key: &PipelineKey,
@@ -49,6 +57,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self.finish_rollout(pipeline_key, rollout_id);
     }
 
+    /// Forces shutdown terminal cleanup when the detached shutdown worker panics.
     pub(super) fn handle_shutdown_worker_panic(
         &self,
         pipeline_key: &PipelineKey,
@@ -65,6 +74,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self.report_controller_worker_panic(pipeline_key, "shutdown", shutdown_id, &report);
     }
 
+    /// Runs one accepted rollout plan and records its terminal state.
     pub(super) fn run_rollout(self: Arc<Self>, plan: CandidateRolloutPlan) {
         self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Running;

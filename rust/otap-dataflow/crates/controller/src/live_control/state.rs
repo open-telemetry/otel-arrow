@@ -1,7 +1,16 @@
+//! Shared state types for the live-control runtime.
+//!
+//! This module intentionally contains mostly data and small conversion helpers.
+//! Planning, execution, and runtime-instance management all mutate these
+//! records through `ControllerRuntime` while holding the runtime mutex.
+
 use super::*;
 
+/// Maximum terminal rollout records retained per logical pipeline.
 pub(super) const TERMINAL_ROLLOUT_RETENTION_LIMIT: usize = 32;
+/// Maximum terminal shutdown records retained per logical pipeline.
 pub(super) const TERMINAL_SHUTDOWN_RETENTION_LIMIT: usize = 32;
+/// Maximum age for terminal rollout/shutdown records kept in memory.
 pub(super) const TERMINAL_OPERATION_RETENTION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
@@ -15,6 +24,11 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
 }
 
 #[derive(Debug, Clone)]
+/// Structured panic capture with public and diagnostic renderings.
+///
+/// Rollout/shutdown workers and runtime thread watchers use this type to keep
+/// operator-visible failure messages concise while preserving thread context
+/// and a forced backtrace for internal telemetry.
 pub(crate) struct PanicReport {
     pub(super) kind: &'static str,
     pub(super) payload_message: String,
@@ -25,6 +39,7 @@ pub(crate) struct PanicReport {
 }
 
 impl PanicReport {
+    /// Captures a panic payload plus best-effort worker/thread context.
     pub(crate) fn capture(
         kind: &'static str,
         panic: Box<dyn Any + Send>,
@@ -42,10 +57,12 @@ impl PanicReport {
         }
     }
 
+    /// Returns the short message stored in public rollout/shutdown status.
     pub(super) fn summary_message(&self) -> String {
         format!("{} panicked: {}", self.kind, self.payload_message)
     }
 
+    /// Returns the diagnostic message used as internal error source detail.
     pub(super) fn detail_message(&self) -> String {
         let mut context = Vec::new();
         if let Some(thread_name) = &self.thread_name {
@@ -68,6 +85,7 @@ impl PanicReport {
         detail
     }
 
+    /// Converts the panic report into the observed-state error payload.
     pub(super) fn error_summary(&self) -> ErrorSummary {
         ErrorSummary::Pipeline {
             error_kind: "panic".into(),
@@ -78,6 +96,7 @@ impl PanicReport {
 }
 
 #[derive(Debug, Clone)]
+/// Error recorded when a deployed runtime instance exits unsuccessfully.
 pub(crate) struct RuntimeInstanceError {
     pub(super) error_kind: String,
     pub(super) message: String,
@@ -85,6 +104,7 @@ pub(crate) struct RuntimeInstanceError {
 }
 
 impl RuntimeInstanceError {
+    /// Builds a plain runtime error without panic diagnostics.
     pub(crate) fn runtime(message: String) -> Self {
         Self {
             error_kind: "runtime".into(),
@@ -93,6 +113,7 @@ impl RuntimeInstanceError {
         }
     }
 
+    /// Builds a runtime error from structured panic diagnostics.
     pub(crate) fn from_panic(report: PanicReport) -> Self {
         Self {
             error_kind: "panic".into(),
@@ -101,6 +122,7 @@ impl RuntimeInstanceError {
         }
     }
 
+    /// Converts the runtime error into the observed-state error payload.
     pub(super) fn error_summary(&self) -> ErrorSummary {
         ErrorSummary::Pipeline {
             error_kind: self.error_kind.clone(),
@@ -111,6 +133,7 @@ impl RuntimeInstanceError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Execution strategy selected for a rollout request.
 pub(super) enum RolloutAction {
     Create,
     NoOp,
@@ -130,6 +153,7 @@ impl RolloutAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Internal lifecycle for one rollout operation.
 pub(super) enum RolloutLifecycleState {
     Pending,
     Running,
@@ -168,6 +192,7 @@ impl RolloutLifecycleState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Internal lifecycle for one pipeline shutdown operation.
 pub(super) enum ShutdownLifecycleState {
     Pending,
     Running,
@@ -191,6 +216,7 @@ impl ShutdownLifecycleState {
 }
 
 #[derive(Debug, Clone)]
+/// Per-core progress row within a rollout operation.
 pub(super) struct RolloutCoreProgress {
     pub(super) core_id: usize,
     pub(super) previous_generation: Option<u64>,
@@ -201,6 +227,7 @@ pub(super) struct RolloutCoreProgress {
 }
 
 #[derive(Debug, Clone)]
+/// In-memory rollout record retained for active and recent terminal lookups.
 pub(super) struct RolloutRecord {
     pub(super) rollout_id: String,
     pub(super) pipeline_group_id: PipelineGroupId,
@@ -298,6 +325,7 @@ impl RolloutRecord {
 }
 
 #[derive(Debug, Clone)]
+/// Per-instance progress row within a shutdown operation.
 pub(super) struct ShutdownCoreProgress {
     pub(super) core_id: usize,
     pub(super) deployment_generation: u64,
@@ -307,6 +335,7 @@ pub(super) struct ShutdownCoreProgress {
 }
 
 #[derive(Debug, Clone)]
+/// In-memory shutdown record retained for active and recent terminal lookups.
 pub(super) struct ShutdownRecord {
     pub(super) shutdown_id: String,
     pub(super) pipeline_group_id: PipelineGroupId,
@@ -366,6 +395,7 @@ impl ShutdownRecord {
     }
 }
 
+/// Controller-owned record for one deployed runtime instance.
 pub(super) struct RuntimeInstanceRecord {
     // The controller drops this sender once shutdown is requested so the
     // pipeline control loop can observe channel closure after node tasks exit.
@@ -374,83 +404,139 @@ pub(super) struct RuntimeInstanceRecord {
 }
 
 #[derive(Debug, Clone)]
+/// Runtime-instance liveness as understood by the controller.
 pub(super) enum RuntimeInstanceLifecycle {
+    /// The pipeline thread is still expected to be running.
     Active,
+    /// The pipeline thread reported a terminal exit.
     Exited(RuntimeInstanceExit),
 }
 
 #[derive(Debug, Clone)]
+/// Terminal result reported by a deployed pipeline runtime thread.
 pub(crate) enum RuntimeInstanceExit {
+    /// The runtime exited normally after drain/shutdown.
     Success,
+    /// The runtime exited due to a pipeline error or panic.
     Error(RuntimeInstanceError),
 }
 
 #[derive(Debug, Clone)]
+/// Committed logical pipeline config plus the active deployment generation.
 pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
     pub(super) active_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Topic runtime properties that cannot be mutated by live rollout.
 pub(super) struct TopicRuntimeProfile {
     pub(super) backend: TopicBackendKind,
     pub(super) policies: otap_df_config::topic::TopicPolicies,
     pub(super) selected_mode: InferredTopicMode,
 }
 
+/// Complete mutable state protected by `ControllerRuntime::state`.
+///
+/// Keep this type as plain data: methods that enforce lifecycle invariants
+/// should live on `ControllerRuntime` so mutations can update observed state
+/// and wake condition variables consistently.
 pub(super) struct ControllerRuntimeState {
+    /// Latest accepted full engine config, including committed live changes.
     pub(super) live_config: OtelDataflowSpec,
+    /// Committed logical pipelines keyed by group/pipeline id.
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
+    /// Deployed runtime instances keyed by group/pipeline/core/generation.
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
     // A pipeline thread can finish before register_launched_instance() publishes it as Active.
     // We park that exit here and reconcile it during registration instead of leaving stale
     // liveness behind.
     pub(super) pending_instance_exits: HashMap<DeployedPipelineKey, RuntimeInstanceExit>,
+    /// Rollout snapshots retained for active and recent terminal lookups.
     pub(super) rollouts: HashMap<String, RolloutRecord>,
+    /// Active rollout id per logical pipeline; presence causes operation conflict.
     pub(super) active_rollouts: HashMap<PipelineKey, String>,
+    /// FIFO terminal rollout ids per logical pipeline for cap/TTL eviction.
     pub(super) terminal_rollouts: HashMap<PipelineKey, VecDeque<String>>,
+    /// Shutdown snapshots retained for active and recent terminal lookups.
     pub(super) shutdowns: HashMap<String, ShutdownRecord>,
+    /// Active shutdown id per logical pipeline; presence causes operation conflict.
     pub(super) active_shutdowns: HashMap<PipelineKey, String>,
+    /// FIFO terminal shutdown ids per logical pipeline for cap/TTL eviction.
     pub(super) terminal_shutdowns: HashMap<PipelineKey, VecDeque<String>>,
+    /// Next deployment generation to assign for each logical pipeline.
     pub(super) generation_counters: HashMap<PipelineKey, u64>,
+    /// Count of runtime instances still considered active by the controller.
     pub(super) active_instances: usize,
+    /// Monotonic rollout id suffix.
     pub(super) next_rollout_id: u64,
+    /// Monotonic shutdown id suffix.
     pub(super) next_shutdown_id: u64,
+    /// Monotonic logical runtime-thread id used for diagnostics.
     pub(super) next_thread_id: usize,
+    /// First runtime failure surfaced to global controller shutdown handling.
     pub(super) first_error: Option<String>,
 }
 
 #[derive(Debug)]
+/// Fully validated rollout plan ready for background execution.
+///
+/// The planner precomputes generation ids, target core sets, resize deltas,
+/// operation records, and timeouts so the worker can execute without
+/// reinterpreting the admin request.
 pub(super) struct CandidateRolloutPlan {
+    /// Logical pipeline targeted by the rollout.
     pub(super) pipeline_key: PipelineKey,
     pub(super) pipeline_group_id: PipelineGroupId,
     pub(super) pipeline_id: PipelineId,
+    /// Execution strategy selected by request classification.
     pub(super) action: RolloutAction,
+    /// Resolved target pipeline config after applying the request.
     pub(super) resolved_pipeline: ResolvedPipelineConfig,
+    /// Current committed record, absent for create rollouts.
     pub(super) current_record: Option<LogicalPipelineRecord>,
+    /// Core allocation from the committed record.
     pub(super) current_assigned_cores: Vec<usize>,
+    /// Core allocation requested by the candidate config.
     pub(super) target_assigned_cores: Vec<usize>,
+    /// Cores present in both current and target assignments.
     pub(super) common_assigned_cores: Vec<usize>,
+    /// Cores present only in the target assignment.
     pub(super) added_assigned_cores: Vec<usize>,
+    /// Cores present only in the current assignment.
     pub(super) removed_assigned_cores: Vec<usize>,
+    /// Cores to launch for resize-only rollouts.
     pub(super) resize_start_cores: Vec<usize>,
+    /// Cores to drain for resize-only rollouts.
     pub(super) resize_stop_cores: Vec<usize>,
+    /// Deployment generation assigned to the target runtime instances.
     pub(super) target_generation: u64,
+    /// Initial rollout status record to insert before spawning a worker.
     pub(super) rollout: RolloutRecord,
+    /// Per-step readiness timeout in seconds.
     pub(super) step_timeout_secs: u64,
+    /// Drain timeout in seconds for old instances.
     pub(super) drain_timeout_secs: u64,
 }
 
 #[derive(Debug)]
+/// Fully validated shutdown plan ready for background execution.
 pub(super) struct CandidateShutdownPlan {
+    /// Logical pipeline targeted by the shutdown.
     pub(super) pipeline_key: PipelineKey,
+    /// Initial shutdown status record to insert before spawning a worker.
     pub(super) shutdown: ShutdownRecord,
+    /// Active deployed instances that must exit for shutdown success.
     pub(super) target_instances: Vec<DeployedPipelineKey>,
+    /// Per-instance shutdown timeout in seconds.
     pub(super) timeout_secs: u64,
 }
 
+/// Snapshot of active cores for the current committed generation.
 pub(super) struct ActiveRuntimeCoreState {
+    /// Active cores still running the committed generation.
     pub(super) current_generation_cores: Vec<usize>,
+    /// Whether another active generation exists for the same logical pipeline.
     pub(super) has_foreign_active_generations: bool,
 }
 
@@ -467,7 +553,10 @@ pub(super) fn is_expired(completed_at: Option<Instant>, now: Instant) -> bool {
 }
 
 #[derive(Debug)]
+/// Rollout worker failure category used to distinguish rollback failures.
 pub(super) enum RolloutExecutionError {
+    /// The rollout failed before or outside rollback handling.
     Failed(String),
+    /// Rollback was attempted but did not restore the previous runtime shape.
     RollbackFailed(String),
 }

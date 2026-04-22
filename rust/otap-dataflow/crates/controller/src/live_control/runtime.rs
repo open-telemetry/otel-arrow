@@ -1,3 +1,10 @@
+//! Runtime-instance launch, shutdown, and exit reporting.
+//!
+//! This module owns the boundary between controller state and actual pipeline
+//! threads. It registers launched instances, reconciles early exits, sends
+//! shutdown control messages, waits for readiness/exit transitions, and exposes
+//! global runtime shutdown/error helpers used by controller teardown.
+
 use super::*;
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>

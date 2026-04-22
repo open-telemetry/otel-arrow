@@ -1,3 +1,10 @@
+//! Request planning, operation recording, and worker spawning.
+//!
+//! Planning converts admin requests into explicit candidate plans while holding
+//! no long-running runtime resources. It also owns operation-record insertion
+//! and status snapshot materialization because those steps are tightly coupled
+//! to conflict detection and bounded history retention.
+
 use super::*;
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
@@ -563,6 +570,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self.prune_pipeline_runtime_and_history(pipeline_key);
     }
 
+    /// Returns the latest rollout snapshot, evicting expired history first.
     pub(super) fn rollout_status_snapshot(&self, rollout_id: &str) -> Option<RolloutStatus> {
         let mut state = self
             .state
@@ -786,6 +794,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         state.shutdowns.get(shutdown_id).map(ShutdownRecord::status)
     }
 
+    /// Returns committed pipeline details plus any active rollout summary.
     pub(super) fn pipeline_details_snapshot(
         &self,
         pipeline_key: &PipelineKey,
