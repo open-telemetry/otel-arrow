@@ -47,6 +47,9 @@ Live control separates three related concepts:
 
 - A logical pipeline is identified by `(pipeline_group_id, pipeline_id)` and
   points at the committed resolved pipeline plus its active generation.
+- A pipeline group is the config hierarchy that contains related pipelines,
+  group-local topics, and group-level policies. Current live-control operations
+  target one logical pipeline inside that group.
 - A deployed runtime instance is identified by `(pipeline_group_id,
   pipeline_id, core_id, deployment_generation)` and tracks whether that thread
   is still active or has exited.
@@ -70,6 +73,11 @@ all active instances.
 - The controller is the authority for when old generations can be retired.
   Observed-state compaction is invoked only after active rollout/shutdown work
   no longer needs generation-specific entries.
+- The current consistency scope is one logical pipeline. Planning validates a
+  candidate against a cloned full config snapshot, but commit patches only that
+  pipeline into the latest live config. This intentionally does not provide
+  whole-config serializability across concurrent operations on different
+  logical pipelines.
 - Terminal rollout and shutdown records are retained in memory with both a
   per-logical-pipeline cap and a TTL. This keeps recent admin lookups useful
   without unbounded history growth.
@@ -94,5 +102,8 @@ all active instances.
 - Full group shutdown is orchestrated above this module by issuing
   per-pipeline/global control-plane calls; this module tracks per-pipeline
   live-control state.
+- Future group-level reconfiguration can widen the active-operation conflict
+  scope from logical pipeline to pipeline group without changing the existing
+  per-pipeline endpoint shape.
 - Rollbacks are best effort. If rollback itself fails, the operation records
   `rollback_failed` and preserves diagnostics for operators.

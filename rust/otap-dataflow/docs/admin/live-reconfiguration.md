@@ -54,6 +54,27 @@ traffic flip across the whole pipeline.
 - There is no dedicated scale endpoint. Scale-only changes use the same `PUT`
   endpoint as topology changes.
 
+## Consistency Model
+
+The current API serializes live operations per logical pipeline, identified by
+`(pipeline_group_id, pipeline_id)`. A rollout or shutdown conflicts with another
+active operation for the same logical pipeline, while operations for different
+logical pipelines may run concurrently.
+
+Rollout planning validates a candidate by patching one pipeline into the
+controller's current in-memory `OtelDataflowSpec` snapshot and running full
+engine validation on that candidate snapshot. That validation does not make the
+operation a whole-config transaction: another logical pipeline can commit before
+this rollout commits, and commit applies only the accepted pipeline back into
+the latest live config.
+
+The API intentionally leaves room to widen the consistency scope later. If
+group-level invariants become mutable, the controller can serialize
+config-mutating operations per pipeline group and return `409 Conflict` for
+concurrent operations in that group without changing the existing pipeline
+endpoint or response schema. Engine-level reconfiguration can be added as a
+separate operation surface if full-engine transactions become necessary.
+
 ## How It Works
 
 1. The client submits a candidate pipeline config to
@@ -169,8 +190,10 @@ Status codes:
 - `202 Accepted`: request accepted and `wait=false`
 - `200 OK`: `wait=true` and the rollout finished successfully
 - `404 Not Found`: pipeline group does not exist
-- `409 Conflict`: another rollout or shutdown is already active for the same
-  logical pipeline, or a waited rollout finished in failure
+- `409 Conflict`: another incompatible live operation is active in the
+  controller's current consistency scope, or a waited rollout finished in
+  failure. In the current version of the API, that scope is one logical
+  pipeline.
 - `422 Unprocessable Entity`: validation failure or unsupported runtime
   mutation
 - `504 Gateway Timeout`: `wait=true` exceeded the overall wait timeout
@@ -207,7 +230,7 @@ overlapping old/new generations stay distinguishable during a rolling cutover.
 - `POST /groups/shutdown`
 
 These are separate from reconfiguration, but they use the same resident
-controller and the same logical-pipeline locking rules.
+controller and the same live-operation consistency scope.
 Terminal shutdown ids are retained only within a bounded in-memory window, so
 older ids may return `404 Not Found` after eviction.
 
@@ -356,9 +379,12 @@ pattern.
 
 ## Operational Notes
 
-- Different logical pipelines may roll concurrently.
+- Different logical pipelines may roll concurrently in the current
+  implementation.
 - A single logical pipeline allows only one active rollout or shutdown at a
   time.
+- Future group-level consistency can widen the conflict scope so concurrent
+  operations in the same group return `409 Conflict`.
 - `GET /groups/{group}/pipelines/{id}` always returns the committed
   live config, not an uncommitted candidate.
 - `GET /groups/{group}/pipelines/{id}/status` is the best endpoint
