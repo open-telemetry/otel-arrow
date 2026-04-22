@@ -930,7 +930,7 @@ mod test {
         let exporter_config = ExporterConfig::new("test_parquet_exporter");
         let (rt, _) = setup_test_runtime();
         let control_sender = exporter.control_sender();
-        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(2);
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
