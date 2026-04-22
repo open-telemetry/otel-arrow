@@ -66,13 +66,11 @@ pub(crate) fn resolve_bindings(
         // Step 2: Known capability type
         let known_cap = known_caps.get(cap_name_str).ok_or_else(|| {
             let known_names: Vec<&str> = known_caps.keys().copied().collect();
-            Error::ConfigError(Box::new(
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!(
-                        "unknown capability '{cap_name_str}'. Known capabilities: {known_names:?}",
-                    ),
-                },
-            ))
+            Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "unknown capability '{cap_name_str}'. Known capabilities: {known_names:?}",
+                ),
+            }))
         })?;
 
         let cap_type_id = (known_cap.type_id)();
@@ -83,9 +81,7 @@ pub(crate) fn resolve_bindings(
         if !has_native_local && !has_shared {
             return Err(Error::ConfigError(Box::new(
                 otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!(
-                        "capability '{cap_name_str}': no loaded extension provides it",
-                    ),
+                    error: format!("capability '{cap_name_str}': no loaded extension provides it",),
                 },
             )));
         }

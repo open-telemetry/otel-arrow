@@ -56,8 +56,8 @@
 //! no `.fresh()` method — the invalid combination is a compile-time
 //! error.
 
-use super::{ExtensionBundle, ExtensionLifecycle, ExtensionWrapper};
 use super::wrapper::{LocalInstanceFactory, SharedInstanceFactory};
+use super::{ExtensionBundle, ExtensionLifecycle, ExtensionWrapper};
 use crate::config::ExtensionConfig;
 use crate::error::Error;
 use crate::local::extension as local_ext;
@@ -273,9 +273,7 @@ impl PassiveFreshStage {
     {
         self.parent.local = Some(LocalDecomposed {
             extension: None,
-            instance_factory: LocalInstanceFactory::new(move || {
-                produce() as std::rc::Rc<dyn Any>
-            }),
+            instance_factory: LocalInstanceFactory::new(move || produce() as std::rc::Rc<dyn Any>),
             type_id: TypeId::of::<E>(),
         });
         self

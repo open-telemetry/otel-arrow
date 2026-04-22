@@ -120,9 +120,7 @@ impl CapabilityRegistry {
     /// `has_native_local(id) || has_shared(id)`.
     #[must_use]
     pub(crate) fn has_native_local(&self, capability_id: &TypeId) -> bool {
-        self.local
-            .get(capability_id)
-            .is_some_and(|m| !m.is_empty())
+        self.local.get(capability_id).is_some_and(|m| !m.is_empty())
     }
 
     /// Returns `true` if any extension provides a shared entry for this capability.

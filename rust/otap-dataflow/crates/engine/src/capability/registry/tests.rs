@@ -84,9 +84,8 @@ impl TestCap {
         };
         let adapt_as_local: fn(Box<dyn Any + Send>) -> Rc<dyn Any> = |erased| {
             let shared: Box<Box<dyn TestCapShared>> = erased.downcast().expect("envelope");
-            let rc_local = <TestCap as super::super::ExtensionCapability>::wrap_shared_as_local(
-                *shared,
-            );
+            let rc_local =
+                <TestCap as super::super::ExtensionCapability>::wrap_shared_as_local(*shared);
             Rc::new(rc_local) as Rc<dyn Any>
         };
         SharedCapabilityEntry::new(extension_id, produce, adapt_as_local)
@@ -653,7 +652,9 @@ fn test_end_to_end_shared_only_via_bundle() {
     )
     .expect("resolve");
 
-    let shared = resolved.require_shared::<TestCap>().expect("require_shared");
+    let shared = resolved
+        .require_shared::<TestCap>()
+        .expect("require_shared");
     assert_eq!(shared.value(), "token-123");
 
     // Fallback: SharedAsLocal adapter flows through the same bundle.

@@ -58,14 +58,12 @@ impl Capabilities {
     ) -> Result<Rc<C::Local>, Error> {
         let id = TypeId::of::<C>();
         let entry = self.local.get(&id).ok_or_else(|| {
-            Error::ConfigError(Box::new(
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!(
-                        "required local capability '{}' not bound for this node",
-                        C::name(),
-                    ),
-                },
-            ))
+            Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "required local capability '{}' not bound for this node",
+                    C::name(),
+                ),
+            }))
         })?;
         let rc_any = (entry.produce)();
         let trait_object = rc_any
@@ -98,14 +96,12 @@ impl Capabilities {
     ) -> Result<Box<C::Shared>, Error> {
         let id = TypeId::of::<C>();
         let entry = self.shared.get(&id).ok_or_else(|| {
-            Error::ConfigError(Box::new(
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!(
-                        "required shared capability '{}' not bound for this node",
-                        C::name(),
-                    ),
-                },
-            ))
+            Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "required shared capability '{}' not bound for this node",
+                    C::name(),
+                ),
+            }))
         })?;
         let trait_object = (entry.produce)()
             .downcast::<Box<C::Shared>>()
@@ -130,7 +126,9 @@ impl Capabilities {
     /// Panics on type mismatch (internal bug — the stored entry doesn't
     /// match the expected capability type).
     #[must_use]
-    pub fn optional_local<C: crate::capability::ExtensionCapability>(&self) -> Option<Rc<C::Local>> {
+    pub fn optional_local<C: crate::capability::ExtensionCapability>(
+        &self,
+    ) -> Option<Rc<C::Local>> {
         let id = TypeId::of::<C>();
         if !self.local.contains_key(&id) {
             return None;

@@ -205,27 +205,31 @@ impl ExtensionCapabilities {
 
 /// Declares which capabilities an extension provides.
 ///
+/// The left side names the extension type(s); the right side is a single
+/// capability list that applies to both sides (no per-side divergence).
 /// Three forms:
 ///
 /// ```rust,ignore
-/// // Shared-only (with automatic local fallback via SharedAsLocal)
-/// extension_capabilities!(shared: MyExt => [BearerTokenProvider, KeyValueStore])
+/// // Shared-only (local consumers served via SharedAsLocal fallback).
+/// extension_capabilities!(shared: MyExt => [BearerTokenProvider, KeyValueStore]);
 ///
-/// // Local-only
-/// extension_capabilities!(local: MyLocalExt => [KeyValueStore])
+/// // Local-only.
+/// extension_capabilities!(local: MyLocalExt => [KeyValueStore]);
 ///
-/// // Dual — different types for local and shared, same capability
+/// // Dual-type — distinct shared/local types, same capability list.
 /// extension_capabilities!(
-///     shared: MySharedKvStore => [KeyValueStore],
-///     local: MyLocalKvStore => [KeyValueStore],
-/// )
+///     (shared: MySharedKv, local: MyLocalKv) => [KeyValueStore]
+/// );
 /// ```
 ///
-/// Each capability `$cap` must have a `#[capability]`-generated
-/// `shared_entry::<E>(ext_id, factory)` (and/or `local_entry::<E>(...)`)
-/// associated fn. The macro calls these per listed capability, passing
-/// a clone of the extension's instance factory, and pushes the
-/// resulting entry into the registry.
+/// Each capability `$cap` in the list must have a `#[capability]`-generated
+/// `shared_entry::<E>` and/or `local_entry::<E>` associated fn. The macro
+/// invokes them per listed capability, passing a clone of the extension's
+/// instance factory, and inserts the result into the registry.
+///
+/// In the dual form, `S` must implement `shared::$cap` and `L` must
+/// implement `local::$cap` for every capability in the list — mismatches
+/// surface as standard trait-bound errors at the macro call site.
 #[macro_export]
 macro_rules! extension_capabilities {
     // Shared-only extension (automatic local fallback via SharedAsLocal).
@@ -262,16 +266,16 @@ macro_rules! extension_capabilities {
             },
         }
     };
-    // Dual extension — different types for shared and local.
-    (shared: $sext:ty => [$($scap:ty),+ $(,)?], local: $lext:ty => [$($lcap:ty),+ $(,)?] $(,)?) => {
+    // Dual-type extension — distinct shared/local types, same capability list.
+    ((shared: $sext:ty, local: $lext:ty) => [$($cap:ty),+ $(,)?]) => {
         $crate::capability::ExtensionCapabilities {
-            shared: &[$(<$scap as $crate::capability::ExtensionCapability>::NAME),+],
-            local: &[$(<$lcap as $crate::capability::ExtensionCapability>::NAME),+],
+            shared: &[$(<$cap as $crate::capability::ExtensionCapability>::NAME),+],
+            local: &[$(<$cap as $crate::capability::ExtensionCapability>::NAME),+],
             register_shared: |ext_id, factory, registry| {
                 $(
                     registry.register_shared(
-                        ::std::any::TypeId::of::<$scap>(),
-                        <$scap>::shared_entry::<$sext>(ext_id.clone(), factory.clone()),
+                        ::std::any::TypeId::of::<$cap>(),
+                        <$cap>::shared_entry::<$sext>(ext_id.clone(), factory.clone()),
                     )?;
                 )+
                 Ok(())
@@ -279,8 +283,8 @@ macro_rules! extension_capabilities {
             register_local: |ext_id, factory, registry| {
                 $(
                     registry.register_local(
-                        ::std::any::TypeId::of::<$lcap>(),
-                        <$lcap>::local_entry::<$lext>(ext_id.clone(), factory.clone()),
+                        ::std::any::TypeId::of::<$cap>(),
+                        <$cap>::local_entry::<$lext>(ext_id.clone(), factory.clone()),
                     )?;
                 )+
                 Ok(())
@@ -288,3 +292,6 @@ macro_rules! extension_capabilities {
         }
     };
 }
+
+#[cfg(test)]
+mod tests;

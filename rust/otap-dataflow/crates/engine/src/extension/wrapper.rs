@@ -738,4 +738,3 @@ impl crate::TelemetryWrapped for ExtensionWrapper {
         ExtensionWrapper::with_node_telemetry_guard(self, guard)
     }
 }
-
