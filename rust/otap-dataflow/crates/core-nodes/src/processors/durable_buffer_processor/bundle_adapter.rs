@@ -44,8 +44,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
-use arrow::array::{ArrayData, BinaryArray, RecordBatch};
-use arrow::buffer::Buffer;
+use arrow::array::{BinaryArray, RecordBatch};
+use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
 use quiver::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
@@ -363,24 +363,8 @@ impl OtlpBytesAdapter {
             )
         })?;
         let data_buffer = Buffer::from(data_bytes);
-        let offsets = Buffer::from_slice_ref([0i32, len]);
-
-        let array_data = match ArrayData::builder(DataType::Binary)
-            .len(1)
-            .add_buffer(offsets)
-            .add_buffer(data_buffer)
-            .build()
-        {
-            Ok(data) => data,
-            Err(e) => {
-                return Err((
-                    BundleConversionError::RecordBatchCreationError(e.to_string()),
-                    bytes,
-                ));
-            }
-        };
-
-        let binary_array = BinaryArray::from(array_data);
+        let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0i32, len]));
+        let binary_array = BinaryArray::new(offsets, data_buffer, None);
         let batch = match RecordBatch::try_new(otlp_binary_schema(), vec![Arc::new(binary_array)]) {
             Ok(batch) => batch,
             Err(e) => {
