@@ -250,6 +250,19 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     deadline,
                     reason: _,
                 }) => {
+                    // If the deadline has already passed, return immediately.
+                    // `Delay::new(Duration::ZERO)` is not guaranteed to resolve
+                    // on the first poll on all platforms (Windows timer
+                    // granularity is ~15 ms), so an explicit check avoids a
+                    // race between the timeout and the flush future.
+                    if deadline.checked_duration_since(Instant::now()).is_none() {
+                        let _ = telemetry_cancel_handle.cancel().await;
+                        return Err(Error::IoError {
+                            node: exporter_id.clone(),
+                            error: std::io::Error::from(ErrorKind::TimedOut),
+                        });
+                    }
+
                     let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
