@@ -98,14 +98,13 @@ impl FakeGeneratorReceiver {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        Ok(FakeGeneratorReceiver::new(
-            pipeline_ctx,
-            serde_json::from_value(config.clone()).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: e.to_string(),
-                }
-            })?,
-        ))
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+        config.get_traffic_config().validate()?;
+        Ok(FakeGeneratorReceiver::new(pipeline_ctx, config))
     }
 
     async fn run_smooth(

@@ -404,6 +404,20 @@ impl TrafficConfig {
     pub const fn num_data_points_per_metric(&self) -> Option<usize> {
         self.num_data_points_per_metric
     }
+
+    /// Validate semantic invariants that serde cannot express.
+    ///
+    /// Currently checks that at least one signal weight is non-zero so the
+    /// producer has something to generate.
+    pub fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+        if self.metric_weight + self.trace_weight + self.log_weight == 0 {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "at least one of metric_weight, trace_weight, or log_weight must be > 0"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 const fn default_signals_per_second() -> Option<usize> {
@@ -758,5 +772,30 @@ mod tests {
             Some(&None),
             "null value should parse as None"
         );
+    }
+
+    #[test]
+    fn validate_rejects_all_zero_weights() {
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 0, 0, 0);
+        let result = cfg.validate();
+        assert!(
+            result.is_err(),
+            "all-zero signal weights should be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_at_least_one_nonzero_weight() {
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 0, 0, 1);
+        cfg.validate().expect("one non-zero weight should pass");
+
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 1, 0, 0);
+        cfg.validate().expect("one non-zero weight should pass");
+
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 0, 1, 0);
+        cfg.validate().expect("one non-zero weight should pass");
+
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 1, 1, 1);
+        cfg.validate().expect("all non-zero weights should pass");
     }
 }
