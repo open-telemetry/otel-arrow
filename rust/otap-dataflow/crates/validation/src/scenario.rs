@@ -197,6 +197,7 @@ impl Scenario {
             .ok_or_else(|| ValidationError::Config("pipeline missing".into()))?;
         let pipeline_yaml = pipeline.to_yaml_string()?;
         let (suv_core_start, suv_core_end) = (pipeline.core_start, pipeline.core_end);
+        let suv_transport_headers_policy = pipeline.transport_headers_policy_yaml()?;
         let capture_pipeline = self.render_captures()?;
         let generator_pipeline = self.render_generators()?;
         let template = fs::read_to_string(&self.template_path).map_err(|e| {
@@ -215,6 +216,7 @@ impl Scenario {
                 generator_pipeline => generator_pipeline,
                 suv_core_start => suv_core_start,
                 suv_core_end => suv_core_end,
+                suv_transport_headers_policy => suv_transport_headers_policy,
             },
         )
     }
@@ -396,6 +398,7 @@ impl Scenario {
                     capture_label => label,
                     custom_suv_receiver => &custom_suv_receiver,
                     idle_timeout_secs => capture.idle_timeout,
+                    capture_header_keys => &capture.capture_header_keys,
                 },
             )?);
         }
@@ -442,6 +445,14 @@ impl Scenario {
                 .as_ref()
                 .map_or("localhost", |t| t.server_name.as_str());
 
+            // Only pass transport_headers when non-empty; the template checks
+            // for truthiness so an empty map would be falsy.
+            let transport_headers = if generator.transport_headers.is_empty() {
+                None
+            } else {
+                Some(&generator.transport_headers)
+            };
+
             generators_rendered.push(render_jinja(
                 &template,
                 context! {
@@ -465,6 +476,7 @@ impl Scenario {
                     mtls_enabled => mtls_enabled,
                     tls_server_name => tls_server_name,
                     custom_suv_exporter => &custom_suv_exporter,
+                    transport_headers => transport_headers,
                 },
             )?);
         }
