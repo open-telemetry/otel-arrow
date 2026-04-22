@@ -164,6 +164,12 @@ impl<PData> EffectHandler<PData> {
         self.router.connected_ports()
     }
 
+    /// Returns the selected default output port name, if one exists.
+    #[must_use]
+    pub fn default_port(&self) -> Option<PortName> {
+        self.router.default_port()
+    }
+
     /// Returns the precomputed node interests.
     #[must_use]
     pub fn node_interests(&self) -> Interests {

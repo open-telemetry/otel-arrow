@@ -265,32 +265,6 @@ impl TestConfigBuilder {
 // Test Runner Helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Run a pipeline with the given config, then shut down.
-///
-/// Handles all the boilerplate: telemetry, context, channels, shutdown thread.
-///
-/// If `shutdown_condition` is provided, it will be polled every 10ms and
-/// shutdown will be triggered as soon as the condition returns true (or when
-/// `run_duration` is reached, whichever comes first). This allows tests to
-/// complete as fast as the actual work takes, rather than waiting for a fixed
-/// duration.
-fn run_pipeline(
-    config: PipelineConfig,
-    pipeline_group_id: &PipelineGroupId,
-    pipeline_id: &PipelineId,
-    run_duration: Duration,
-    shutdown_deadline: Duration,
-) {
-    run_pipeline_with_condition(
-        config,
-        pipeline_group_id,
-        pipeline_id,
-        run_duration,
-        shutdown_deadline,
-        None::<fn() -> bool>,
-    );
-}
-
 /// Run a pipeline with an optional early shutdown condition.
 ///
 /// Asserts that no segment finalization failures occurred during the run.
@@ -700,20 +674,34 @@ fn count_signals_in_segments(
         .unwrap_or(0)
 }
 
-/// Wait for at least `min_count` signals to exist in the primary signal table across all segments.
+/// Count the total item_count across all bundle manifest entries in segment files.
 ///
-/// Returns `true` if the condition was met within `timeout`, `false` otherwise.
-fn wait_for_signals_in_segments(
-    segments_dir: &std::path::Path,
-    payload_type: ArrowPayloadType,
-    min_count: u64,
-    timeout: Duration,
-) -> bool {
-    wait_for_condition(
-        || count_signals_in_segments(segments_dir, payload_type) >= min_count,
-        timeout,
-        Duration::from_millis(10),
-    )
+/// For OTLP pass-through mode, each item corresponds to one signal (log record,
+/// span, or metric data point). This reads the segment manifest rather than Arrow
+/// streams, so it works for any storage format.
+fn count_manifest_items_in_segments(segments_dir: &std::path::Path) -> u64 {
+    if !segments_dir.exists() {
+        return 0;
+    }
+    std::fs::read_dir(segments_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+                .map(|e| {
+                    SegmentReader::open(e.path())
+                        .map(|reader| {
+                            reader
+                                .manifest()
+                                .iter()
+                                .map(|entry| entry.item_count())
+                                .sum::<u64>()
+                        })
+                        .unwrap_or(0)
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1114,19 +1102,9 @@ fn test_durable_buffer_recovery_after_outage() {
 
     // Run 1: Downstream failing (all NACKs) - data persists to Quiver
     //
-    // Key timing considerations for reliable segment persistence:
-    // - max_segment_open_duration: 50ms (from TestConfigBuilder default)
-    // - poll_interval: 20ms (timer tick that triggers flush)
-    // - signals_per_second: 500 (generates all 25 signals in ~50ms)
-    //
-    // The pipeline needs enough time for:
-    // 1. Data generation (~50ms for 25 signals at 500/sec)
-    // 2. At least one timer tick to trigger segment flush (poll_interval: 20ms)
-    // 3. max_segment_open_duration to elapse so flush actually finalizes (50ms)
-    // 4. Graceful shutdown to complete flush and engine shutdown
-    //
-    // Run for 300ms to ensure multiple flush opportunities, with a generous
-    // shutdown deadline to ensure the engine properly finalizes segments.
+    // Instead of a fixed timeout (which is flaky on slow CI), we use a
+    // condition-based shutdown that waits until all signals are actually
+    // persisted to segment files before triggering shutdown.
     let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(run1_signals))
         .max_batch_size(5)
@@ -1140,31 +1118,25 @@ fn test_durable_buffer_recovery_after_outage() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    run_pipeline(
+    let segments_dir = buffer_path.join("core_0").join("segments");
+    let segments_dir_for_condition = segments_dir.clone();
+    run_pipeline_with_condition(
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_millis(300), // Allow time for segment flush cycles
-        Duration::from_secs(1),     // Generous shutdown deadline for segment finalization
+        Duration::from_secs(10), // generous max timeout for CI
+        Duration::from_secs(1),  // Generous shutdown deadline for segment finalization
+        Some(move || {
+            count_signals_in_segments(&segments_dir_for_condition, ArrowPayloadType::Logs)
+                >= run1_signals
+        }),
     );
 
     // Verify data was persisted to segment files (not just the WAL).
     //
     // We verify by counting actual signal rows in the LOGS table.
     // Each row = 1 log signal, so we should see exactly 25 signals persisted.
-    let segments_dir = buffer_path.join("core_0").join("segments");
-    let signals_exist = wait_for_signals_in_segments(
-        &segments_dir,
-        ArrowPayloadType::Logs,
-        run1_signals,
-        Duration::from_secs(2),
-    );
     let actual_signals = count_signals_in_segments(&segments_dir, ArrowPayloadType::Logs);
-    assert!(
-        signals_exist,
-        "Run 1 should have persisted {} signals, found {}",
-        run1_signals, actual_signals
-    );
     assert_eq!(
         actual_signals, run1_signals,
         "Run 1 should have persisted exactly {} signals, found {}",
@@ -1754,16 +1726,22 @@ fn test_durable_buffer_otlp_item_count_metrics() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    run_pipeline(
+    // Use a condition-based shutdown that waits until all signals are persisted
+    // to segment files, rather than a fixed timeout that can be too short on slow CI.
+    let segments_dir = buffer_path.join("core_0").join("segments");
+    let segments_dir_for_condition = segments_dir.clone();
+    run_pipeline_with_condition(
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(2), // Give time for WAL → segment rotation
+        Duration::from_secs(10), // generous max timeout for CI
         Duration::from_secs(1),
+        Some(move || {
+            count_manifest_items_in_segments(&segments_dir_for_condition) >= phase1_signals
+        }),
     );
 
     // ── Between phases: verify per-signal item_count in segment manifests ────
-    let segments_dir = buffer_path.join("core_0").join("segments");
     assert!(
         segments_dir.exists(),
         "Segments directory should exist after Phase 1"
