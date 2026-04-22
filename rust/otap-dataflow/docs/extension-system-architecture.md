@@ -245,16 +245,18 @@ engine/src/
     builder.rs              -> Typestate builder: ActiveStage,
                               PassiveStage, PassiveClonedStage,
                               PassiveFreshStage
-    wrapper.rs              -> ExtensionWrapper variants, instance
-                              factories (SharedInstanceFactory /
-                              LocalInstanceFactory), ControlChannel,
-                              EffectHandler
+    wrapper.rs              -> ExtensionWrapper variants,
+                              ControlChannel, EffectHandler
     tests.rs                -> extension-level tests
 
   capability/
     mod.rs                  -> ExtensionCapability sealed trait,
                               KnownCapability, extension_capabilities!
                               declarative macro, KNOWN_CAPABILITIES
+    factory.rs              -> SharedInstanceFactory /
+                              LocalInstanceFactory (cloneable
+                              type-erased produce closures encoding
+                              instance policy)
     tests.rs                -> extension_capabilities! macro tests
     registry/
       mod.rs                -> public re-exports
@@ -280,6 +282,12 @@ engine/src/
     capability.rs           -> re-exports (populated per-capability)
     exporter.rs, receiver.rs, processor.rs  (unchanged)
 ```
+
+The module dependency is one-way: `extension/` depends on
+`capability/`, not the reverse. The instance factories live in
+`capability/factory.rs` because they're consumed by the capability
+registry's registration fn pointers; `extension/builder.rs` and
+`extension/wrapper.rs` import them from there.
 
 Concrete capabilities (e.g. `bearer_token_provider`,
 `key_value_store`) land alongside their first consumer in
