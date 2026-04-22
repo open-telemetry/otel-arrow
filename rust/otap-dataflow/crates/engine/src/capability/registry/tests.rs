@@ -748,7 +748,7 @@ fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
 
     let bundle = ExtensionWrapper::builder(name.clone(), user_config, &runtime_config)
         .passive()
-        .factory()
+        .fresh()
         .shared::<FreshImpl, _>(move || {
             let _ = counter_for_closure.fetch_add(1, Ordering::SeqCst);
             FreshImpl(Arc::clone(&counter_for_closure), "fresh")

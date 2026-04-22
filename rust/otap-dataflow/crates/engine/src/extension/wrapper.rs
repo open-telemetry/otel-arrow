@@ -238,10 +238,10 @@ pub enum ExtensionLifecycle<E, R> {
 /// capability trait object.
 ///
 /// The instance policy chosen at the builder (`.cloned(...)` vs
-/// `.factory(...)`) is baked into the stored closure:
-/// - **ClonePerConsumer** — the closure captures a prototype `E: Clone`
+/// `.fresh(...)`) is baked into the stored closure:
+/// - **Cloned** — the closure captures a prototype `E: Clone`
 ///   and returns `e.clone()` on each call.
-/// - **FreshPerConsumer** — the closure captures the user-supplied
+/// - **Fresh** — the closure captures the user-supplied
 ///   `Fn() -> E` and invokes it on each call.
 ///
 /// `SharedInstanceFactory` is [`Clone`]: one extension may provide

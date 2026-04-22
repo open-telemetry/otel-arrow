@@ -142,8 +142,9 @@ impl Default for CapabilityRegistry {
 
 impl std::fmt::Debug for CapabilityRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The entry values are type-erased (`dyn Any` / `dyn SharedCapabilityFactory`)
-        // and can't be printed. Summarize the shape instead.
+        // The entry values hold type-erased produce closures
+        // (`dyn SharedProduce` / `dyn LocalProduce`) and can't be
+        // printed. Summarize the shape instead.
         f.debug_struct("CapabilityRegistry")
             .field("local_capabilities", &self.local.len())
             .field("shared_capabilities", &self.shared.len())
