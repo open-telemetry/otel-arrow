@@ -343,7 +343,7 @@ where
 /// Encode an SDK Resource to bytes for later reuse.
 #[must_use]
 pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> Bytes {
-    let mut buf = ProtoBuffer::default();
+    let mut buf = ProtoBuffer::with_capacity(256);
     encode_resource(&mut buf, resource.iter(), resource.schema_url());
     buf.into_bytes()
 }
@@ -431,7 +431,7 @@ impl ScopeToBytesMap {
         });
         visited
             .map(|attrs| {
-                let mut buf = ProtoBuffer::default();
+                let mut buf = ProtoBuffer::with_capacity(128);
                 for (attr_key, attr_value) in attrs {
                     encode_scope_attribute(&mut buf, attr_key, &attr_value);
                 }
@@ -681,7 +681,7 @@ mod tests {
 
         let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
 
-        let mut buf = ProtoBuffer::default();
+        let mut buf = ProtoBuffer::new();
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
@@ -785,7 +785,7 @@ mod tests {
         let log_event = LogEvent { time, record };
 
         let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
-        let mut buf = ProtoBuffer::default();
+        let mut buf = ProtoBuffer::new();
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();

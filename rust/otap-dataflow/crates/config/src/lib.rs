@@ -19,6 +19,7 @@ use std::hash::Hash;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
+/// Conversion routine options.
 pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.

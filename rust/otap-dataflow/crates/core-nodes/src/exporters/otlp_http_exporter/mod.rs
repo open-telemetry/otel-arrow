@@ -245,7 +245,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::default();
+        let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
 
         loop {
             // Opportunistically drain completions before we park on a recv.

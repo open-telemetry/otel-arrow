@@ -329,7 +329,7 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
 }
 
 /// Suffix appended to truncated strings.
-pub const TRUNCATION_SUFFIX: &[u8] = "…".as_bytes();
+pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 
 /// Buffer for encoding protobuf bytes with optional inline storage.
 ///
@@ -368,6 +368,14 @@ impl<const INLINE: usize> Default for ProtoBufferInline<INLINE> {
 }
 
 impl<const INLINE: usize> ProtoBufferInline<INLINE> {
+    /// This is an alias for default().
+    ///
+    /// TODO: Replace this with Default::default or place behind #[cfg(test)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Construct a new buffer with the default limit.
     #[must_use]
     pub fn new_with_options(opts: ConversionOptions) -> Self {
@@ -410,18 +418,6 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
         self.limit
     }
 
-    /// Append a single byte if it fits, otherwise increment dropped.
-    #[inline]
-    fn try_push(&mut self, byte: u8) -> bool {
-        if self.buffer.len() < self.limit {
-            self.buffer.push(byte);
-            true
-        } else {
-            self.dropped += 1;
-            false
-        }
-    }
-
     /// Append a slice if it fits entirely, otherwise increment dropped.
     #[inline]
     fn try_extend(&mut self, slice: &[u8]) -> bool {
@@ -429,7 +425,7 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
             self.buffer.extend_from_slice(slice);
             true
         } else {
-            self.dropped += 1;
+            self.dropped = self.dropped.saturating_add(1);
             false
         }
     }
@@ -449,7 +445,7 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     /// Save the current buffer position for potential rollback.
     #[must_use]
     #[inline]
-    pub fn checkpoint(&self) -> Checkpoint {
+    fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             pos: self.buffer.len(),
             dropped: self.dropped,
@@ -458,7 +454,7 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
 
     /// Roll the buffer back to a previously saved checkpoint.
     #[inline]
-    pub fn rollback(&mut self, cp: Checkpoint) {
+    fn rollback(&mut self, cp: Checkpoint) {
         self.buffer.truncate(cp.pos);
         self.dropped = cp.dropped;
     }
@@ -513,7 +509,7 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     #[inline]
     pub fn encode_varint(&mut self, value: u64) {
         if value < 0x80 {
-            let _ = self.try_push(value as u8);
+            let _ = self.try_extend(&[value as u8]);
             return;
         }
         if value < 0x4000 {
@@ -789,7 +785,12 @@ macro_rules! proto_encode_len_delimited_large {
 pub fn encode_len_placeholder<const N: usize, const INLINE: usize>(
     buf: &mut ProtoBufferInline<INLINE>,
 ) {
-    const { assert!(N >= 1 && N <= 4, "placeholder must be 1-4 bytes") }
+    const {
+        assert!(
+            N >= 1 && N <= MAX_TAG_WIDTH,
+            "placeholder must be 1-4 bytes"
+        )
+    }
     buf.extend_from_slice(&make_len_placeholder::<N>());
 }
 
@@ -1453,7 +1454,7 @@ mod test {
         use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
 
         fn check<const N: usize>() {
-            let mut buf = ProtoBuffer::default();
+            let mut buf = ProtoBuffer::new();
             encode_len_placeholder::<N, _>(&mut buf);
             assert_eq!(buf.len(), N);
             for i in 0..N - 1 {
@@ -1480,7 +1481,7 @@ mod test {
                 if len > max_len {
                     continue;
                 }
-                let mut buf = ProtoBuffer::default();
+                let mut buf = ProtoBuffer::new();
                 let start = buf.len();
                 encode_len_placeholder::<N, _>(&mut buf);
                 patch_len_placeholder::<N, _>(&mut buf, len, start);
@@ -1506,7 +1507,7 @@ mod test {
 
         // Encode a simple string field using the _large and _small variants,
         // then verify the _small output is 2 bytes shorter.
-        let mut buf_large = ProtoBuffer::default();
+        let mut buf_large = ProtoBuffer::new();
         proto_encode_len_delimited_large!(
             1,
             {
@@ -1515,7 +1516,7 @@ mod test {
             &mut buf_large
         );
 
-        let mut buf_small = ProtoBuffer::default();
+        let mut buf_small = ProtoBuffer::new();
         proto_encode_len_delimited_small!(
             1,
             {

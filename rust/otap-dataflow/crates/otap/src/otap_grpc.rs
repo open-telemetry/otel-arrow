@@ -11,7 +11,6 @@
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 
 use crate::pdata::{Context, OtapPdata};
-use otap_df_config::ConversionOptions;
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
     memory_limiter::SharedReceiverAdmissionState, shared::receiver as shared,
@@ -170,7 +169,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         // write to the channel
         // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
         _ = tokio::spawn(async move {
-            let mut consumer = Consumer::with_options(ConversionOptions::default());
+            let mut consumer = Consumer::default();
 
             // Process messages until stream ends or error occurs
             loop {
@@ -232,7 +231,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
 
         // write to the channel
         _ = tokio::spawn(async move {
-            let mut consumer = Consumer::with_options(ConversionOptions::default());
+            let mut consumer = Consumer::default();
 
             // Process messages until stream ends or error occurs
             loop {
@@ -294,7 +293,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 
         // write to the channel
         _ = tokio::spawn(async move {
-            let mut consumer = Consumer::with_options(ConversionOptions::default());
+            let mut consumer = Consumer::default();
 
             // Process messages until stream ends or error occurs
             loop {
