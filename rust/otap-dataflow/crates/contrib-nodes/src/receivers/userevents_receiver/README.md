@@ -9,10 +9,11 @@ This receiver ingests Linux
 through `perf_event_open` and converts them into OTAP logs for downstream
 processing.
 
-> **Note:** The current decoder supports the Common Schema OTLP logs format.
-> That mapping is an initial built-in format rather than a vendor-specific
-> receiver contract; the receiver is intended to remain vendor-neutral and to
-> allow users to bring their own schema mappings in the future.
+> **Note:** The current decoder supports the Microsoft Common Schema OTLP logs
+> format. That mapping is an initial built-in format rather than a
+> vendor-specific receiver contract; the receiver is intended to remain
+> vendor-neutral and to allow users to bring their own schema mappings in the
+> future.
 
 It follows the OTAP Dataflow thread-per-core model:
 
@@ -103,7 +104,9 @@ For an 8-core host, coverage looks like this:
 
 If a CPU has no corresponding pipeline, writes on that CPU are not collected by
 this receiver deployment. They are not seen and then discarded; no receiver is
-attached to that CPU's ring.
+attached to that CPU's ring. The engine does not emit a metric for these
+missing records because they are never observed by the receiver; they are lost
+silently.
 
 | Configuration                    | Writer pinned? | Result                                                     |
 |----------------------------------|----------------|------------------------------------------------------------|
@@ -113,9 +116,10 @@ attached to that CPU's ring.
 | `--core-id-range 0-3`            | Pinned to 0..3 | Reliable within the range                                  |
 | `--num-cores 0` (all host CPUs)  | No             | Complete host-wide coverage                                |
 
-For production, prefer full coverage (`--num-cores 0`) unless you intentionally
-want to sample only a subset of CPUs; for development/testing, a pinned writer
-on a single-core engine keeps the moving parts minimal.
+For production, choose the engine's `--num-cores` / `--core-id-range` settings
+carefully. Prefer full coverage (`--num-cores 0`) unless you intentionally want
+to sample only a subset of CPUs; for development/testing, a pinned writer on a
+single-core engine keeps the moving parts minimal.
 
 ## NUMA Locality
 
@@ -192,7 +196,8 @@ kernel tracing feature. Windows support would require a separate ETW receiver.
 Current implementation supports:
 
 - single-tracepoint and multi-tracepoint configuration
-- `common_schema_otel_logs` as the only supported decode format
+- `common_schema_otel_logs`, which decodes Microsoft Common Schema OTLP logs,
+  as the only supported decode format
 
 ## Configuration
 
@@ -211,7 +216,7 @@ nodes:
       format:
         type: common_schema_otel_logs
       session:
-        per_cpu_buffer_size: 1048576
+        per_cpu_buffer_size: 1048576  # bytes
         late_registration:
           enabled: true
           poll_interval_ms: 100
@@ -243,7 +248,7 @@ nodes:
           format:
             type: common_schema_otel_logs
       session:
-        per_cpu_buffer_size: 1048576
+        per_cpu_buffer_size: 1048576  # bytes
 ```
 
 Exactly one of `tracepoint` or `subscriptions` must be configured.
@@ -281,7 +286,7 @@ user_events:<provider>_L<level>K<keyword>
 ```
 
 The `_L<level>K<keyword>` suffix follows EventHeader tracepoint naming. The
-receiver uses `level` only as a fallback when PartB does not provide
+receiver uses `level` only as a fallback when the payload does not provide
 `severityNumber`:
 
 | EventHeader level | Fallback severity |
@@ -298,8 +303,9 @@ If the suffix is absent or malformed, Common Schema payloads with no
 
 ### `common_schema_otel_logs`
 
-Intended for payloads produced by
-[`opentelemetry-user-events-logs`](https://github.com/open-telemetry/opentelemetry-rust-contrib/tree/main/opentelemetry-user-events-logs).
+Intended for EventHeader payloads that encode Microsoft Common Schema logs.
+[`opentelemetry-user-events-logs`](https://github.com/open-telemetry/opentelemetry-rust-contrib/tree/main/opentelemetry-user-events-logs)
+is an example/reference implementation that produces events in this format.
 
 Current behavior:
 
@@ -308,6 +314,8 @@ Current behavior:
   `eventId` from Common Schema PartB
 - maps PartA fields including timestamp and trace/span context into typed
   OTLP log fields when present
+- maps PartA `ext_cloud_role` and `ext_cloud_roleInstance` to
+  `service.name` and `service.instance.id` attributes
 - flattens eligible PartC scalar attributes into emitted log attributes
 - falls back to preserving the payload as base64-encoded data when Common
   Schema decoding fails
@@ -362,16 +370,14 @@ transport/diagnostic fields such as tracepoint name, provider name,
 EventHeader level/keyword, CPU, PID/TID, sample id, payload size, body
 encoding, or decode mode. These describe the receiver itself rather than the
 application payload; surfacing them as OTLP log attributes would pollute
-downstream backends (e.g. Geneva turns each attribute into a dynamic backend
-column).
+downstream backends with receiver implementation details.
 
 Similarly, no `cs.*` inspection attributes are emitted (e.g.
-`cs.__csver__`, `cs.part_b._typeName`, `cs.part_b.name`). These would
-otherwise surface as `cs_*` backend columns in Geneva; PartB.name is
-already represented by the typed `event_name` column. The base64
-fallback path remains available internally when Common Schema decoding
-fails, but no `linux.userevents.body_encoding` marker is exposed to
-consumers.
+`cs.__csver__`, `cs.part_b._typeName`, `cs.part_b.name`). These are schema
+inspection details rather than application attributes; PartB.name is already
+represented by the typed `event_name` column. The base64 fallback path remains
+available internally when Common Schema decoding fails, but no
+`linux.userevents.body_encoding` marker is exposed to consumers.
 
 ## Receiver Internals
 
@@ -431,8 +437,11 @@ Notes:
 ### Backpressure
 
 `user_events` perf rings cannot be backpressured like a socket. For that
-reason, the receiver defaults to dropping when downstream is full instead of
-blocking the perf drain loop.
+reason, the receiver does not block the perf drain loop when downstream is
+full; it drops already-drained batches and reports them as
+`dropped_downstream_full`. Separately, if the kernel/perf ring overruns before
+the receiver drains it, that loss is reported by the perf path and counted as
+`lost_perf_samples`.
 
 ### Memory Pressure
 

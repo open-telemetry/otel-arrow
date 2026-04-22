@@ -19,6 +19,8 @@ use super::session::RawUsereventsRecord;
 const ATTR_TRACE_ID: &str = "trace.id";
 const ATTR_SPAN_ID: &str = "span.id";
 const ATTR_EVENT_ID: &str = "eventId";
+const ATTR_SERVICE_NAME: &str = "service.name";
+const ATTR_SERVICE_INSTANCE_ID: &str = "service.instance.id";
 
 // FieldEncoding raw values (from eventheader_types, avoids a new dep)
 #[cfg(test)]
@@ -165,6 +167,18 @@ impl DecodedUsereventsRecord {
             if let Some(sid_str) = cs.span_id_text {
                 attributes.push((Cow::Borrowed(ATTR_SPAN_ID), DecodedAttrValue::Str(sid_str)));
             }
+            if let Some(service_name) = cs.service_name {
+                attributes.push((
+                    Cow::Borrowed(ATTR_SERVICE_NAME),
+                    DecodedAttrValue::Str(service_name),
+                ));
+            }
+            if let Some(service_instance_id) = cs.service_instance_id {
+                attributes.push((
+                    Cow::Borrowed(ATTR_SERVICE_INSTANCE_ID),
+                    DecodedAttrValue::Str(service_instance_id),
+                ));
+            }
             // G2: PartC attrs keep their source typed value (int/double/bool/str).
             for (k, v) in cs.part_c_attrs {
                 attributes.push((Cow::Owned(k), v));
@@ -266,6 +280,8 @@ struct CsDecodedLog {
     severity_text: Option<String>,
     part_b_name: Option<String>,
     event_id: Option<i64>,
+    service_name: Option<String>,
+    service_instance_id: Option<String>,
     part_c_attrs: Vec<(String, DecodedAttrValue)>,
 }
 
@@ -407,8 +423,10 @@ fn walk_part_a(
                     }
                 } else if name == b"ext_dt_traceFlags" {
                     cs.trace_flags = item_as_u32(&item);
-                } else if matches!(name, b"ext_cloud_role" | b"ext_cloud_roleInstance") {
-                    let _ = item_as_string(&item);
+                } else if name == b"ext_cloud_role" {
+                    cs.service_name = item_as_string(&item).filter(|s| !s.is_empty());
+                } else if name == b"ext_cloud_roleInstance" {
+                    cs.service_instance_id = item_as_string(&item).filter(|s| !s.is_empty());
                 }
             }
             EventHeaderEnumeratorState::Error => return false,
@@ -1204,6 +1222,46 @@ mod tests {
                 .attributes
                 .iter()
                 .any(|(k, v)| k == ATTR_SPAN_ID && v == span_hex)
+        );
+    }
+
+    #[test]
+    fn cs_decode_part_a_cloud_role_fields_become_service_attrs() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_DEFAULT);
+        add_u32_data(&mut data, 0x400);
+
+        add_struct_meta(&mut meta, "PartA", 3);
+        add_string_field_meta(&mut meta, "time");
+        add_string_data(&mut data, "2024-01-01T00:00:00Z");
+        add_string_field_meta(&mut meta, "ext_cloud_role");
+        add_string_data(&mut data, "checkout-service");
+        add_string_field_meta(&mut meta, "ext_cloud_roleInstance");
+        add_string_data(&mut data, "instance-42");
+
+        add_struct_meta(&mut meta, "PartB", 2);
+        add_string_field_meta(&mut meta, "_typeName");
+        add_string_data(&mut data, "Log");
+        add_string_field_meta(&mut meta, "body");
+        add_string_data(&mut data, "content");
+
+        let tracepoint = "user_events:myprovider_L4K1".to_owned();
+        let payload = build_full_payload(4, "HeaderName", &meta, &data);
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1_000_000);
+
+        assert!(!cs_failed);
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(k, v)| k == ATTR_SERVICE_NAME && v == "checkout-service")
+        );
+        assert!(
+            decoded
+                .attributes
+                .iter()
+                .any(|(k, v)| k == ATTR_SERVICE_INSTANCE_ID && v == "instance-42")
         );
     }
 
