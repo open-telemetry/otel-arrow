@@ -1542,7 +1542,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "Range start for a slice expression cannot be a negative value".into(),
+                "Range start for a slice expression cannot be a negative value, encountered '-1' value".into(),
             ),
         );
 
@@ -1557,7 +1557,7 @@ mod tests {
             ),
             ExpressionError::TypeMismatch(
                 QueryLocation::new_fake(),
-                "Range start for a slice expression should be an integer type".into(),
+                "Range start for a slice expression should be an integer type, encountered 'Boolean' type".into(),
             ),
         );
 
@@ -1572,7 +1572,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "Range length for a slice expression cannot be a negative value".into(),
+                "Range length for a slice expression cannot be a negative value, encountered '-1' value".into(),
             ),
         );
 
@@ -1587,7 +1587,7 @@ mod tests {
             ),
             ExpressionError::TypeMismatch(
                 QueryLocation::new_fake(),
-                "Range length for a slice expression should be an integer type".into(),
+                "Range length for a slice expression should be an integer type, encountered 'Boolean' type".into(),
             ),
         );
     }
@@ -1727,7 +1727,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "String slice index starts at '5' but target ends at index '4'".into(),
+                "String slice index starts at '5' but target has a length of '5'".into(),
             ),
         );
     }
@@ -1903,7 +1903,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "Array slice index starts at '5' but target ends at index '4'".into(),
+                "Array slice index starts at '5' but target has a length of '5'".into(),
             ),
         );
     }

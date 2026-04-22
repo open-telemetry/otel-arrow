@@ -58,7 +58,7 @@ pub enum Error {
     PayloadTooLarge,
 
     /// Rate limited (429).
-    #[error("Rate limited")]
+    #[error("Rate limited: {body}")]
     RateLimited {
         /// The response body.
         body: String,
@@ -67,7 +67,7 @@ pub enum Error {
     },
 
     /// Server error (5xx).
-    #[error("Server error ({status})")]
+    #[error("Server error ({status}): {body}")]
     ServerError {
         /// The HTTP status code.
         status: StatusCode,
@@ -397,7 +397,7 @@ mod tests {
             body: "too many requests".to_string(),
             retry_after: Some(std::time::Duration::from_secs(30)),
         };
-        assert_eq!(error.to_string(), "Rate limited");
+        assert_eq!(error.to_string(), "Rate limited: too many requests");
         assert_eq!(
             error.retry_after(),
             Some(std::time::Duration::from_secs(30))
@@ -413,7 +413,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "Server error (500 Internal Server Error)"
+            "Server error (500 Internal Server Error): internal error"
         );
     }
 
