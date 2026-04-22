@@ -73,7 +73,7 @@ pub(crate) struct RuntimeControlMetrics {
     /// full node-control inboxes instead of blocking the runtime.
     ///
     /// Level: `basic`.
-    #[metric(name = "pending_sends.buffered", unit = "{message}")]
+    #[metric(name = "control_pending_sends.buffered", unit = "{message}")]
     pub pending_sends_buffered: Gauge<u64>,
     /// Number of ordinary per-node timers currently registered.
     ///
@@ -250,7 +250,7 @@ pub(crate) struct PipelineCompletionMetrics {
     /// blocking, but it also indicates unwind traffic is under pressure.
     ///
     /// Level: `basic`.
-    #[metric(name = "pending_sends.buffered", unit = "{message}")]
+    #[metric(name = "completion_pending_sends.buffered", unit = "{message}")]
     pub pending_sends_buffered: Gauge<u64>,
     /// Count of `DeliverAck` messages received by the completion dispatcher.
     ///
