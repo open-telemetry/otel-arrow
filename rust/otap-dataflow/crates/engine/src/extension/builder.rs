@@ -1,0 +1,423 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Typestate builder for [`ExtensionBundle`].
+//!
+//! The extension-registration API uses a typestate chain on
+//! [`ExtensionBundleBuilder`] that **seals lifecycle and instance
+//! policy per bundle**:
+//!
+//! ```ignore
+//! // Active extension (implicitly instance-based; factory is Passive-only).
+//! builder
+//!     .active()
+//!     .shared(MyShared::new(cfg))
+//!     .local(Rc::new(MyLocal::new(cfg)))
+//!     .build()?;
+//!
+//! // Passive extension, clone-per-consumer policy.
+//! builder
+//!     .passive()
+//!     .cloned()
+//!     .shared(MyShared::new(cfg))
+//!     .build()?;
+//!
+//! // Passive extension, fresh-per-consumer policy.
+//! builder
+//!     .passive()
+//!     .factory()
+//!     .shared(|| MyShared::new(cfg.clone()))
+//!     .local(|| Rc::new(MyLocal::new(cfg.clone())))
+//!     .build()?;
+//! ```
+//!
+//! **Axes** (chosen once per bundle, in order):
+//!
+//! | Axis            | Methods                                                                    |
+//! |-----------------|----------------------------------------------------------------------------|
+//! | Lifecycle       | `.active()` / `.passive()`                                                 |
+//! | Instance policy | *(implicit Cloned for Active)* `.cloned()` / `.factory()` *(Passive only)* |
+//! | Side            | `.shared(...)` / `.local(...)` *(repeatable, register once each)*          |
+//!
+//! **Why the lifecycle and policy are sealed per bundle.** "This
+//! extension has an event loop" or "this capability hands out fresh
+//! instances" is a property of the extension, not of which trait-object
+//! shape (shared vs local) the consumer happens to request. Letting the
+//! two sides diverge would mean consumers observe different
+//! instance-sharing semantics depending on whether they call
+//! `require_local` vs `require_shared` on the same extension — a
+//! debugging hazard with no known legitimate use case. Forcing a single
+//! strategy across both sides makes the extension's behavior
+//! predictable and eliminates a combinatorial footgun.
+//!
+//! **Active + Factory is unrepresentable.** Active extensions have a
+//! single engine-driven event loop; minting fresh instances per
+//! consumer doesn't compose with that. The `.active()` stage provides
+//! no `.factory()` method — the invalid combination is a compile-time
+//! error.
+
+use super::{ExtensionBundle, ExtensionLifecycle, ExtensionWrapper};
+use crate::config::ExtensionConfig;
+use crate::error::Error;
+use crate::local::extension as local_ext;
+use crate::local::message::{LocalReceiver, LocalSender};
+use crate::message::Sender;
+use crate::shared::extension as shared_ext;
+use crate::shared::message::{SharedReceiver, SharedSender};
+use otap_df_channel::mpsc;
+use otap_df_config::ExtensionId;
+use otap_df_config::extension::ExtensionUserConfig;
+use otap_df_telemetry::otel_debug;
+use std::any::TypeId;
+use std::sync::Arc;
+
+// ── Decomposed (type-erased) provider outputs ────────────────────────────────
+
+/// Decomposed result of a shared extension provider.
+#[doc(hidden)]
+pub struct SharedDecomposed {
+    pub(crate) extension: Option<Box<dyn shared_ext::Extension>>,
+    /// Used by the same-type guard and the capability system.
+    pub(crate) type_id: TypeId,
+    // TODO(extension-system): store the instance/factory source here so the
+    // future capability-wiring step can register ClonePerConsumer /
+    // FreshPerConsumer capability factories. Today the instance is used
+    // only for the lifecycle event loop (Active) and is otherwise dropped;
+    // the factory closure provided via `.factory(...)` is also dropped.
+    // The only information retained beyond lifecycle is `type_id` for the
+    // same-type guard.
+}
+
+/// Decomposed result of a local extension provider.
+#[doc(hidden)]
+pub struct LocalDecomposed {
+    pub(crate) extension: Option<std::rc::Rc<dyn local_ext::Extension>>,
+    /// Used by the same-type guard and the capability system.
+    pub(crate) type_id: TypeId,
+    // TODO(extension-system): see note on `SharedDecomposed`.
+}
+
+// ── Typestate builder stages ─────────────────────────────────────────────────
+
+/// Lifecycle-selected: Active (engine drives an event loop).
+///
+/// Instance policy is implicitly Cloned — factory is Passive-only.
+/// Call [`shared()`](Self::shared) and/or [`local()`](Self::local)
+/// (each at most once), then [`build()`](Self::build).
+#[doc(hidden)]
+pub struct ActiveStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl ActiveStage {
+    /// Register the shared (Send) variant.
+    #[must_use]
+    pub fn shared<E>(mut self, extension: E) -> Self
+    where
+        E: shared_ext::Extension + Clone + Send + 'static,
+    {
+        self.parent.shared = Some(SharedDecomposed {
+            extension: Some(Box::new(extension)),
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Register the local (!Send) variant.
+    #[must_use]
+    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> Self
+    where
+        E: local_ext::Extension + 'static,
+    {
+        self.parent.local = Some(LocalDecomposed {
+            extension: Some(extension),
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+/// Lifecycle-selected: Passive (no event loop, capabilities only).
+///
+/// Select the instance policy with [`cloned()`](Self::cloned) or
+/// [`factory()`](Self::factory) before registering sides.
+#[doc(hidden)]
+pub struct PassiveStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveStage {
+    /// Select the **clone-per-consumer** instance policy: each consumer
+    /// receives an independent clone of the stored prototype.
+    #[must_use]
+    pub fn cloned(self) -> PassiveClonedStage {
+        PassiveClonedStage {
+            parent: self.parent,
+        }
+    }
+
+    /// Select the **fresh-per-consumer** instance policy: each consumer
+    /// receives a freshly-constructed instance from the stored closure.
+    #[must_use]
+    pub fn factory(self) -> PassiveFactoryStage {
+        PassiveFactoryStage {
+            parent: self.parent,
+        }
+    }
+}
+
+/// Passive + Cloned (clone-per-consumer) stage.
+#[doc(hidden)]
+pub struct PassiveClonedStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveClonedStage {
+    /// Register the shared (Send) variant. The extension will be
+    /// cloned per consumer via the clone-per-consumer factory.
+    #[must_use]
+    pub fn shared<E>(mut self, _extension: E) -> Self
+    where
+        E: Clone + Send + 'static,
+    {
+        self.parent.shared = Some(SharedDecomposed {
+            extension: None,
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Register the local (!Send) variant. Consumers receive
+    /// `Rc::clone`s of the stored instance.
+    #[must_use]
+    pub fn local<E>(mut self, _extension: std::rc::Rc<E>) -> Self
+    where
+        E: 'static,
+    {
+        self.parent.local = Some(LocalDecomposed {
+            extension: None,
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+/// Passive + Factory (fresh-per-consumer) stage.
+#[doc(hidden)]
+pub struct PassiveFactoryStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveFactoryStage {
+    /// Register the shared (Send) variant via a factory closure.
+    /// Each consumer receives a freshly-constructed instance.
+    ///
+    /// `F: Clone` is required so per-node factories can duplicate the
+    /// closure; closures capturing `Clone` configuration (e.g.
+    /// `Arc<Config>`, `String`) satisfy this automatically.
+    #[must_use]
+    pub fn shared<E, F>(mut self, _produce: F) -> Self
+    where
+        E: Send + 'static,
+        F: Fn() -> E + Clone + Send + 'static,
+    {
+        self.parent.shared = Some(SharedDecomposed {
+            extension: None,
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Register the local (!Send) variant via a factory closure.
+    /// Each consumer receives a freshly-constructed instance.
+    #[must_use]
+    pub fn local<E, F>(mut self, _produce: F) -> Self
+    where
+        E: 'static,
+        F: Fn() -> std::rc::Rc<E> + Clone + 'static,
+    {
+        self.parent.local = Some(LocalDecomposed {
+            extension: None,
+            type_id: TypeId::of::<E>(),
+        });
+        self
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+// ── Builder ──────────────────────────────────────────────────────────────────
+
+/// Builder for [`ExtensionBundle`].
+///
+/// At least one variant (local or shared) must be added before calling `build()`.
+/// Both variants can be provided for dual-mode extensions.
+pub struct ExtensionBundleBuilder {
+    pub(super) name: ExtensionId,
+    pub(super) user_config: Arc<ExtensionUserConfig>,
+    pub(super) runtime_config: ExtensionConfig,
+    shared: Option<SharedDecomposed>,
+    local: Option<LocalDecomposed>,
+}
+
+impl ExtensionBundleBuilder {
+    /// Construct a new [`ExtensionBundleBuilder`]. Called by
+    /// [`ExtensionWrapper::builder`].
+    pub(super) fn new(
+        name: ExtensionId,
+        user_config: Arc<ExtensionUserConfig>,
+        runtime_config: ExtensionConfig,
+    ) -> Self {
+        Self {
+            name,
+            user_config,
+            runtime_config,
+            shared: None,
+            local: None,
+        }
+    }
+
+    /// Select the **Active** lifecycle for this extension bundle.
+    /// The engine will drive an event loop for whichever sides are
+    /// registered.
+    ///
+    /// Instance policy is implicitly clone-per-consumer — fresh-per-
+    /// consumer (factory) is Passive-only.
+    #[must_use]
+    pub fn active(self) -> ActiveStage {
+        ActiveStage { parent: self }
+    }
+
+    /// Select the **Passive** lifecycle for this extension bundle. No
+    /// event loop is spawned; the extension exposes capabilities only.
+    ///
+    /// Continue with [`PassiveStage::cloned`] (clone-per-consumer)
+    /// or [`PassiveStage::factory`] (fresh-per-consumer).
+    #[must_use]
+    pub fn passive(self) -> PassiveStage {
+        PassiveStage { parent: self }
+    }
+
+    /// Build the [`ExtensionBundle`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Neither `.shared(...)` nor `.local(...)` was registered via
+    ///   the lifecycle stages.
+    /// - Both variants use the same concrete type (dual registration
+    ///   requires distinct local and shared implementations).
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        if let (Some(local), Some(shared)) = (&self.local, &self.shared) {
+            if local.type_id == shared.type_id {
+                return Err(Error::InternalError {
+                    message: "local and shared variants must use different concrete types; \
+                              register only one side for single-variant extensions"
+                        .into(),
+                });
+            }
+        }
+
+        let cap = self.runtime_config.control_channel.capacity;
+
+        let local = self.local.map(|l| {
+            let lifecycle = match l.extension {
+                Some(ext) => {
+                    let (tx, rx) = mpsc::Channel::new(cap);
+                    ExtensionLifecycle::Active {
+                        extension: ext,
+                        control_sender: Sender::Local(LocalSender::mpsc(tx)),
+                        control_receiver: LocalReceiver::mpsc(rx),
+                    }
+                }
+                None => ExtensionLifecycle::Passive,
+            };
+            ExtensionWrapper::Local {
+                name: self.name.clone(),
+                user_config: self.user_config.clone(),
+                runtime_config: self.runtime_config.clone(),
+                telemetry: None,
+                lifecycle,
+            }
+        });
+
+        let shared = self.shared.map(|s| {
+            let lifecycle = match s.extension {
+                Some(ext) => {
+                    let (tx, rx) = tokio::sync::mpsc::channel(cap);
+                    ExtensionLifecycle::Active {
+                        extension: ext,
+                        control_sender: Sender::Shared(SharedSender::mpsc(tx)),
+                        control_receiver: SharedReceiver::mpsc(rx),
+                    }
+                }
+                None => ExtensionLifecycle::Passive,
+            };
+            ExtensionWrapper::Shared {
+                name: self.name.clone(),
+                user_config: self.user_config.clone(),
+                runtime_config: self.runtime_config.clone(),
+                telemetry: None,
+                lifecycle,
+            }
+        });
+
+        if local.is_none() && shared.is_none() {
+            return Err(Error::InternalError {
+                message: "ExtensionBundle must have at least one variant (local or shared)".into(),
+            });
+        }
+
+        for w in local.iter().chain(shared.iter()) {
+            let name = w.name();
+            otel_debug!(
+                "extension.builder.build",
+                name = name.as_ref(),
+                variant = match w {
+                    ExtensionWrapper::Local { .. } => "local",
+                    ExtensionWrapper::Shared { .. } => "shared",
+                },
+                lifecycle = if w.is_passive() { "passive" } else { "active" },
+            );
+        }
+
+        Ok(ExtensionBundle::from_parts(local, shared))
+    }
+}
+
+impl ExtensionWrapper {
+    /// Start building an [`ExtensionBundle`].
+    #[must_use]
+    pub fn builder(
+        name: ExtensionId,
+        user_config: Arc<ExtensionUserConfig>,
+        config: &ExtensionConfig,
+    ) -> ExtensionBundleBuilder {
+        ExtensionBundleBuilder::new(name, user_config, config.clone())
+    }
+}
