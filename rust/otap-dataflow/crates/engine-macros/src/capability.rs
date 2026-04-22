@@ -324,6 +324,91 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
         /// [`Capabilities::require_shared`](crate::capability::registry::Capabilities::require_shared).
         #vis struct #trait_name;
 
+        // Macro-generated bridges between an extension's
+        // `SharedInstanceFactory` / `LocalInstanceFactory` and the
+        // capability registry. The `extension_capabilities!` macro calls
+        // these with a clone of the instance factory per capability.
+        //
+        // The `where E: shared::#trait_name` / `E: local::#trait_name`
+        // bound is the compile-time assertion: an extension that lists a
+        // capability it doesn't implement fails to compile at the
+        // `extension_capabilities!` call site with a clear "trait not
+        // satisfied" message pointing at `E`.
+        impl #trait_name {
+            /// Build a registry entry bridging an extension's
+            /// `SharedInstanceFactory` to this capability's shared trait
+            /// object.
+            ///
+            /// The returned entry's produce closure calls the stored
+            /// instance factory, downcasts the erased
+            /// `Box<dyn Any + Send>` to `Box<E>`, and coerces to
+            /// `Box<dyn shared::#trait_name>` — under the double-box
+            /// envelope the registry expects.
+            #[allow(non_snake_case, clippy::missing_errors_doc)]
+            #vis fn shared_entry<E>(
+                extension_id: ::otap_df_config::ExtensionId,
+                factory: crate::extension::SharedInstanceFactory,
+            ) -> crate::capability::registry::SharedCapabilityEntry
+            where
+                E: shared::#trait_name + 'static,
+            {
+                let produce = move || -> ::std::boxed::Box<dyn ::std::any::Any + Send> {
+                    let erased = factory.produce();
+                    let concrete: ::std::boxed::Box<E> = erased
+                        .downcast()
+                        .expect("instance_factory produced wrong type for capability");
+                    let shared: ::std::boxed::Box<dyn shared::#trait_name> = concrete;
+                    ::std::boxed::Box::new(shared) as ::std::boxed::Box<dyn ::std::any::Any + Send>
+                };
+
+                let adapt_as_local: fn(
+                    ::std::boxed::Box<dyn ::std::any::Any + Send>,
+                ) -> ::std::rc::Rc<dyn ::std::any::Any> = |erased| {
+                    let shared: ::std::boxed::Box<::std::boxed::Box<dyn shared::#trait_name>> =
+                        erased
+                            .downcast()
+                            .expect("shared_entry produce closure returned wrong envelope");
+                    let rc_local = <#trait_name as crate::capability::ExtensionCapability>::
+                        wrap_shared_as_local(*shared);
+                    ::std::rc::Rc::new(rc_local) as ::std::rc::Rc<dyn ::std::any::Any>
+                };
+
+                crate::capability::registry::SharedCapabilityEntry::new(
+                    extension_id,
+                    produce,
+                    adapt_as_local,
+                )
+            }
+
+            /// Build a registry entry bridging an extension's
+            /// `LocalInstanceFactory` to this capability's local trait
+            /// object.
+            ///
+            /// The entry's produce closure calls the stored instance
+            /// factory, downcasts the erased `Rc<dyn Any>` to `Rc<E>`,
+            /// coerces to `Rc<dyn local::#trait_name>`, and re-erases
+            /// under the double-`Rc` envelope expected by the registry.
+            #[allow(non_snake_case, clippy::missing_errors_doc)]
+            #vis fn local_entry<E>(
+                extension_id: ::otap_df_config::ExtensionId,
+                factory: crate::extension::LocalInstanceFactory,
+            ) -> crate::capability::registry::LocalCapabilityEntry
+            where
+                E: local::#trait_name + 'static,
+            {
+                let produce = move || -> ::std::rc::Rc<dyn ::std::any::Any> {
+                    let erased = factory.produce();
+                    let concrete: ::std::rc::Rc<E> = erased
+                        .downcast()
+                        .expect("instance_factory produced wrong type for capability");
+                    let local: ::std::rc::Rc<dyn local::#trait_name> = concrete;
+                    ::std::rc::Rc::new(local) as ::std::rc::Rc<dyn ::std::any::Any>
+                };
+
+                crate::capability::registry::LocalCapabilityEntry::new(extension_id, produce)
+            }
+        }
+
         // Seals `ExtensionCapability` so only `#[capability]`-generated
         // types can implement it (prevents external impls / misuse).
         impl crate::capability::CapabilitySealed for #trait_name {}

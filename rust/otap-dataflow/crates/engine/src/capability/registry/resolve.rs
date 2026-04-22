@@ -6,8 +6,8 @@
 //! [`Capabilities`] for consumption.
 
 use super::{
-    Capabilities, CapabilityRegistry, ClonePerConsumerLocalFactory, ConsumedTracker, Error,
-    LocalCapabilityFactory, ResolvedLocalEntry, ResolvedSharedEntry,
+    Capabilities, CapabilityRegistry, ConsumedTracker, Error, LocalProduce, ResolvedLocalEntry,
+    ResolvedSharedEntry,
 };
 use otap_df_config::ExtensionId;
 use std::any::TypeId;
@@ -120,34 +120,31 @@ pub(crate) fn resolve_bindings(
             let _ = local_entries.insert(
                 cap_type_id,
                 ResolvedLocalEntry {
-                    factory: local_entry.factory.clone_box(),
+                    produce: local_entry.produce.clone_box(),
                     consumed,
                 },
             );
         } else if let Some(shared_entry) = shared_entry {
-            // SharedAsLocal fallback: invoke the shared factory's
-            // `adapt_as_local_any` to mint a fresh local trait object,
-            // then wrap that `Rc<dyn Any>` in a
-            // `ClonePerConsumerLocalFactory`
-            // so the fallback flows through the same
-            // `LocalCapabilityFactory` path as a native local
-            // registration. Each node gets a fresh adapter
-            // (shared-across-components within the node once cached).
-            // Shared registrations are always adaptable to local — the
-            // shared factory's impl is the single source of truth and
-            // contains no downcast or panic path.
-            let rc_any = shared_entry.factory.adapt_as_local_any();
-            let local_factory: Box<dyn LocalCapabilityFactory> =
-                Box::new(ClonePerConsumerLocalFactory::new(rc_any));
+            // SharedAsLocal fallback: mint a fresh shared instance and
+            // route it through the shared entry's `adapt_as_local` fn
+            // pointer to get a type-erased `Rc<dyn Any>` wrapping the
+            // local trait object. Wrap that `Rc` in a cloning closure
+            // so the resolved entry exposes the same `LocalProduce`
+            // shape as a native local registration — every
+            // `require_local` call on this node returns an
+            // `Rc::clone` of the same adapter.
+            let rc_any = (shared_entry.adapt_as_local)((shared_entry.produce)());
+            let cloned = rc_any.clone();
+            let local_produce: Box<dyn LocalProduce> =
+                Box::new(move || std::rc::Rc::clone(&cloned));
 
-            // The extension only provided a shared variant — route the
-            // adapter consumer's cell under the shared bucket. The
-            // follow-up `// Resolve shared entry` block below also calls
-            // `ensure_shared_consumer_slot` for this `(cap, ext)` pair;
-            // that method is get-or-insert, so both users share the same
-            // `Rc<Cell<bool>>` and either one flipping marks the shared
-            // variant consumed. No phantom entry is created in
-            // `tracker.local`.
+            // The extension only provided a shared variant — route
+            // the adapter consumer's cell under the shared bucket.
+            // The `// Resolve shared entry` block below also calls
+            // `ensure_shared_consumer_slot` for this `(cap, ext)`
+            // pair; that method is get-or-insert, so both users
+            // share the same `Rc<Cell<bool>>`. No phantom entry is
+            // recorded in `tracker.local`.
             let consumed = tracker.ensure_shared_consumer_slot(
                 cap_type_id,
                 known_cap.name,
@@ -157,7 +154,7 @@ pub(crate) fn resolve_bindings(
             let _ = local_entries.insert(
                 cap_type_id,
                 ResolvedLocalEntry {
-                    factory: local_factory,
+                    produce: local_produce,
                     consumed,
                 },
             );
@@ -178,7 +175,7 @@ pub(crate) fn resolve_bindings(
             let _ = shared_entries.insert(
                 cap_type_id,
                 ResolvedSharedEntry {
-                    factory: shared_entry.factory.clone_box(),
+                    produce: shared_entry.produce.clone_box(),
                     consumed,
                 },
             );

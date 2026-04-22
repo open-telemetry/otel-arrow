@@ -59,6 +59,58 @@ static _TEST_CAP: super::super::KnownCapability = super::super::KnownCapability 
     type_id: || TypeId::of::<TestCap>(),
 };
 
+// ── `#[capability]`-style helpers on TestCap ────────────────────────────────
+//
+// The `#[capability]` proc macro emits these on real capabilities. The
+// extension-side `extension_capabilities!(shared: E => [TestCap])` macro
+// expansion calls them to bridge an `ExtensionId` + instance factory
+// into a registry entry. Hand-rolled here so the `TestCap` in this
+// test module can stand in for a macro-generated capability.
+impl TestCap {
+    fn shared_entry<E>(
+        extension_id: ExtensionId,
+        factory: crate::extension::SharedInstanceFactory,
+    ) -> SharedCapabilityEntry
+    where
+        E: TestCapShared + 'static,
+    {
+        let produce = move || -> Box<dyn Any + Send> {
+            let erased = factory.produce();
+            let concrete: Box<E> = erased
+                .downcast()
+                .expect("instance_factory produced wrong type");
+            let shared: Box<dyn TestCapShared> = concrete;
+            Box::new(shared) as Box<dyn Any + Send>
+        };
+        let adapt_as_local: fn(Box<dyn Any + Send>) -> Rc<dyn Any> = |erased| {
+            let shared: Box<Box<dyn TestCapShared>> = erased.downcast().expect("envelope");
+            let rc_local = <TestCap as super::super::ExtensionCapability>::wrap_shared_as_local(
+                *shared,
+            );
+            Rc::new(rc_local) as Rc<dyn Any>
+        };
+        SharedCapabilityEntry::new(extension_id, produce, adapt_as_local)
+    }
+
+    fn local_entry<E>(
+        extension_id: ExtensionId,
+        factory: crate::extension::LocalInstanceFactory,
+    ) -> LocalCapabilityEntry
+    where
+        E: TestCapLocal + 'static,
+    {
+        let produce = move || -> Rc<dyn Any> {
+            let erased = factory.produce();
+            let concrete: Rc<E> = erased
+                .downcast()
+                .expect("instance_factory produced wrong type");
+            let local: Rc<dyn TestCapLocal> = concrete;
+            Rc::new(local) as Rc<dyn Any>
+        };
+        LocalCapabilityEntry::new(extension_id, produce)
+    }
+}
+
 // ── Test implementations ─────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -78,16 +130,19 @@ impl TestCapLocal for LocalImpl {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-// Bridge fn: turns an owned `SharedImpl` into a `Box<dyn TestCapShared>`.
-// This is the per-`(cap, ext)` coercion that macro-generated
-// registration code will emit for real capabilities; tests use it
-// directly to construct `ClonePerConsumerSharedFactory<TestCap, SharedImpl>`.
-fn shared_impl_as_box(s: SharedImpl) -> Box<dyn TestCapShared> {
-    Box::new(s)
+// Build a SharedInstanceFactory that always produces a fresh
+// `Box<SharedImpl>` with the given value. Mimics the builder's
+// clone-per-consumer output.
+fn shared_instance_factory(val: &'static str) -> crate::extension::SharedInstanceFactory {
+    crate::extension::SharedInstanceFactory::new(move || {
+        Box::new(SharedImpl(val)) as Box<dyn Any + Send>
+    })
 }
 
-fn test_factory(val: &'static str) -> ClonePerConsumerSharedFactory<TestCap, SharedImpl> {
-    ClonePerConsumerSharedFactory::<TestCap, SharedImpl>::new(SharedImpl(val), shared_impl_as_box)
+// Build a LocalInstanceFactory producing a shared `Rc<LocalImpl>`.
+fn local_instance_factory(val: &'static str) -> crate::extension::LocalInstanceFactory {
+    let shared: Rc<LocalImpl> = Rc::new(LocalImpl(val));
+    crate::extension::LocalInstanceFactory::new(move || Rc::clone(&shared) as Rc<dyn Any>)
 }
 
 fn register_shared(registry: &mut CapabilityRegistry, ext_id: &'static str, val: &'static str) {
@@ -95,25 +150,17 @@ fn register_shared(registry: &mut CapabilityRegistry, ext_id: &'static str, val:
     registry
         .register_shared(
             TypeId::of::<TestCap>(),
-            SharedCapabilityEntry {
-                extension_id: ext_id,
-                factory: Box::new(test_factory(val)),
-            },
+            TestCap::shared_entry::<SharedImpl>(ext_id, shared_instance_factory(val)),
         )
         .unwrap();
 }
 
 fn register_local(registry: &mut CapabilityRegistry, ext_id: &'static str, val: &'static str) {
     let ext_id: ExtensionId = ext_id.into();
-    let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl(val));
-    let instance: Rc<dyn Any> = Rc::new(rc_local);
     registry
         .register_local(
             TypeId::of::<TestCap>(),
-            LocalCapabilityEntry {
-                extension_id: ext_id,
-                factory: Box::new(ClonePerConsumerLocalFactory::new(instance)),
-            },
+            TestCap::local_entry::<LocalImpl>(ext_id, local_instance_factory(val)),
         )
         .unwrap();
 }
@@ -339,6 +386,8 @@ fn test_extension_capabilities_shared_only() {
     let ec = super::super::ExtensionCapabilities {
         shared: &["bearer_token_provider"],
         local: &[],
+        register_shared: super::super::ExtensionCapabilities::none().register_shared,
+        register_local: super::super::ExtensionCapabilities::none().register_local,
     };
     assert_eq!(ec.shared, &["bearer_token_provider"]);
     assert!(ec.local.is_empty());
@@ -466,47 +515,28 @@ fn test_consumed_tracking_persists_across_nodes_shared() {
 /// pre-built once and shared across nodes.
 #[test]
 fn test_shared_as_local_builds_fresh_adapter_per_node() {
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    static CLONE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    // Register a shared impl whose factory bumps a counter every
-    // time the extension is cloned.
-    CLONE_COUNT.store(0, Ordering::SeqCst);
+    // The shared instance factory bumps a counter every time it
+    // mints a new `SharedImpl`.
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_for_closure = Arc::clone(&counter);
+    let factory = crate::extension::SharedInstanceFactory::new(move || {
+        let _ = counter_for_closure.fetch_add(1, Ordering::SeqCst);
+        Box::new(SharedImpl("val")) as Box<dyn Any + Send>
+    });
+
     let mut reg = CapabilityRegistry::new();
-    let ext_id: ExtensionId = "ext-a".into();
-
-    #[derive(Clone)]
-    struct CountingFactory;
-    impl SharedCapabilityFactory for CountingFactory {
-        fn clone_box(&self) -> Box<dyn SharedCapabilityFactory> {
-            Box::new(self.clone())
-        }
-        fn produce_any(&self) -> Box<dyn Any + Send> {
-            let _ = CLONE_COUNT.fetch_add(1, Ordering::SeqCst);
-            let shared: Box<dyn TestCapShared> = Box::new(SharedImpl("val"));
-            Box::new(shared)
-        }
-        fn adapt_as_local_any(&self) -> Rc<dyn Any> {
-            let _ = CLONE_COUNT.fetch_add(1, Ordering::SeqCst);
-            let shared: Box<dyn TestCapShared> = Box::new(SharedImpl("val"));
-            let rc_local =
-                <TestCap as super::super::ExtensionCapability>::wrap_shared_as_local(shared);
-            Rc::new(rc_local)
-        }
-    }
-
     reg.register_shared(
         TypeId::of::<TestCap>(),
-        SharedCapabilityEntry {
-            extension_id: ext_id,
-            factory: Box::new(CountingFactory),
-        },
+        TestCap::shared_entry::<SharedImpl>("ext-a".into(), factory),
     )
     .unwrap();
 
     // The adapter must not run at registration time — work is deferred
     // to resolve_bindings so each node gets a fresh shared clone.
-    assert_eq!(CLONE_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
 
     // Two nodes bind the capability; each should get its own clone.
     let mut tracker = ConsumedTracker::new();
@@ -525,7 +555,7 @@ fn test_shared_as_local_builds_fresh_adapter_per_node() {
     )
     .unwrap();
 
-    assert_eq!(CLONE_COUNT.load(Ordering::SeqCst), 2);
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 
 /// Duplicate registrations indicate a programmer bug — the registry
@@ -535,15 +565,10 @@ fn test_register_local_rejects_duplicate() {
     let mut reg = CapabilityRegistry::new();
     register_local(&mut reg, "ext-a", "v1");
 
-    let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl("v2"));
-    let instance: Rc<dyn Any> = Rc::new(rc_local);
     let err = reg
         .register_local(
             TypeId::of::<TestCap>(),
-            LocalCapabilityEntry {
-                extension_id: "ext-a".into(),
-                factory: Box::new(ClonePerConsumerLocalFactory::new(instance)),
-            },
+            TestCap::local_entry::<LocalImpl>("ext-a".into(), local_instance_factory("v2")),
         )
         .unwrap_err();
     let msg = format!("{err}");
@@ -559,10 +584,7 @@ fn test_register_shared_rejects_duplicate() {
     let err = reg
         .register_shared(
             TypeId::of::<TestCap>(),
-            SharedCapabilityEntry {
-                extension_id: "ext-a".into(),
-                factory: Box::new(test_factory("v2")),
-            },
+            TestCap::shared_entry::<SharedImpl>("ext-a".into(), shared_instance_factory("v2")),
         )
         .unwrap_err();
     let msg = format!("{err}");
@@ -570,157 +592,207 @@ fn test_register_shared_rejects_duplicate() {
     assert!(msg.contains("ext-a"), "error: {msg}");
 }
 
-// ── FreshPerConsumer factory tests ───────────────────────────────────
+// ── End-to-end: builder → bundle → register_into → resolve → require ────────
+//
+// Proves the full wiring from the typestate builder (which owns the
+// `SharedInstanceFactory`), through `ExtensionBundle::register_into`
+// (which calls the `ExtensionCapabilities` fn pointers), through the
+// `#[capability]`-style `shared_entry::<E>` helper (which wraps
+// `factory.produce()` in a downcast + coercion closure), through
+// `CapabilityRegistry` + `resolve_bindings`, out to `require_shared`.
 
-/// Each call to `produce_any` on a fresh-factory mints a new
-/// instance: the counter captured by the closure increments,
-/// proving independent construction.
 #[test]
-fn test_fresh_shared_factory_produces_independent_instances() {
+fn test_end_to_end_shared_only_via_bundle() {
+    use crate::capability::ExtensionCapabilities;
+    use crate::config::ExtensionConfig;
+    use crate::extension::ExtensionWrapper;
+    use otap_df_config::extension::ExtensionUserConfig;
+    use std::sync::Arc;
+
+    // 1. Build a passive-cloned shared bundle around SharedImpl.
+    let name: ExtensionId = "azure-auth".into();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        "urn:test:azure".into(),
+        serde_json::Value::Null,
+    ));
+    let runtime_config = ExtensionConfig::new("azure-auth");
+    let bundle = ExtensionWrapper::builder(name.clone(), user_config, &runtime_config)
+        .passive()
+        .cloned()
+        .shared(SharedImpl("token-123"))
+        .build()
+        .expect("bundle builds");
+
+    // 2. Build the ExtensionCapabilities descriptor the way the
+    //    extension_capabilities! macro would.
+    let caps = ExtensionCapabilities {
+        shared: &["test_cap"],
+        local: &[],
+        register_shared: |ext_id, factory, registry| {
+            registry.register_shared(
+                TypeId::of::<TestCap>(),
+                TestCap::shared_entry::<SharedImpl>(ext_id, factory),
+            )
+        },
+        register_local: ExtensionCapabilities::none().register_local,
+    };
+
+    // 3. Drain bundle → registry via register_into.
+    let mut registry = CapabilityRegistry::new();
+    bundle
+        .register_into(&caps, &mut registry)
+        .expect("register_into");
+
+    // 4. Resolve a fake node's bindings and consume the shared cap.
+    let mut tracker = ConsumedTracker::new();
+    let resolved = resolve_bindings(
+        &bindings("test_cap", "azure-auth"),
+        &registry,
+        &known_exts(&["azure-auth"]),
+        &mut tracker,
+    )
+    .expect("resolve");
+
+    let shared = resolved.require_shared::<TestCap>().expect("require_shared");
+    assert_eq!(shared.value(), "token-123");
+
+    // Fallback: SharedAsLocal adapter flows through the same bundle.
+    let local = resolved.require_local::<TestCap>().expect("require_local");
+    assert_eq!(local.value(), "token-123");
+}
+
+#[test]
+fn test_end_to_end_local_only_via_bundle() {
+    use crate::capability::ExtensionCapabilities;
+    use crate::config::ExtensionConfig;
+    use crate::extension::ExtensionWrapper;
+    use otap_df_config::extension::ExtensionUserConfig;
+    use std::sync::Arc;
+
+    let name: ExtensionId = "kv".into();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        "urn:test:kv".into(),
+        serde_json::Value::Null,
+    ));
+    let runtime_config = ExtensionConfig::new("kv");
+    let bundle = ExtensionWrapper::builder(name.clone(), user_config, &runtime_config)
+        .passive()
+        .cloned()
+        .local(Rc::new(LocalImpl("kv-value")))
+        .build()
+        .expect("bundle builds");
+
+    let caps = ExtensionCapabilities {
+        shared: &[],
+        local: &["test_cap"],
+        register_shared: ExtensionCapabilities::none().register_shared,
+        register_local: |ext_id, factory, registry| {
+            registry.register_local(
+                TypeId::of::<TestCap>(),
+                TestCap::local_entry::<LocalImpl>(ext_id, factory),
+            )
+        },
+    };
+
+    let mut registry = CapabilityRegistry::new();
+    bundle
+        .register_into(&caps, &mut registry)
+        .expect("register_into");
+
+    let mut tracker = ConsumedTracker::new();
+    let resolved = resolve_bindings(
+        &bindings("test_cap", "kv"),
+        &registry,
+        &known_exts(&["kv"]),
+        &mut tracker,
+    )
+    .expect("resolve");
+
+    let local = resolved.require_local::<TestCap>().expect("require_local");
+    assert_eq!(local.value(), "kv-value");
+}
+
+#[test]
+fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
+    // With the fresh (factory) policy, the instance factory invokes the
+    // user's closure on each produce(); each consumer should observe
+    // its own instance. Shared+Clone consumers observe
+    // clone-of-prototype semantics — also independent here since
+    // SharedImpl has no interior mutability.
+    use crate::capability::ExtensionCapabilities;
+    use crate::config::ExtensionConfig;
+    use crate::extension::ExtensionWrapper;
+    use otap_df_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let counter = Arc::new(AtomicUsize::new(0));
-    let counter_c = Arc::clone(&counter);
-    let fac = FreshPerConsumerSharedFactory::<TestCap, _>::new(move || {
-        let n = counter_c.fetch_add(1, Ordering::SeqCst);
-        // Leak a &'static str via Box is overkill; just use a fixed value —
-        // the assertion is on call count, not per-call payload distinctness.
-        let _ = n;
-        Box::new(SharedImpl("fresh")) as Box<dyn TestCapShared>
-    });
+    let name: ExtensionId = "counter".into();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        "urn:test:counter".into(),
+        serde_json::Value::Null,
+    ));
+    let runtime_config = ExtensionConfig::new("counter");
 
-    let _ = fac.produce_any();
-    let _ = fac.produce_any();
-    let _ = fac.produce_any();
-    assert_eq!(counter.load(Ordering::SeqCst), 3);
-}
-
-/// `clone_box` must duplicate the factory so per-node resolved
-/// entries can each mint their own instances.
-#[test]
-fn test_fresh_shared_factory_clone_box_preserves_closure() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    // FreshImpl: each `start()` increments a shared counter so we can
+    // confirm the factory ran per-consumer.
+    #[derive(Clone)]
+    struct FreshImpl(Arc<AtomicUsize>, &'static str);
+    impl TestCapShared for FreshImpl {
+        fn value(&self) -> &str {
+            self.1
+        }
+    }
 
     let counter = Arc::new(AtomicUsize::new(0));
-    let counter_c = Arc::clone(&counter);
-    let fac = FreshPerConsumerSharedFactory::<TestCap, _>::new(move || {
-        let _ = counter_c.fetch_add(1, Ordering::SeqCst);
-        Box::new(SharedImpl("fresh")) as Box<dyn TestCapShared>
-    });
+    let counter_for_closure = Arc::clone(&counter);
 
-    let cloned = fac.clone_box();
-    let _ = fac.produce_any();
-    let _ = cloned.produce_any();
-    assert_eq!(counter.load(Ordering::SeqCst), 2);
-}
+    let bundle = ExtensionWrapper::builder(name.clone(), user_config, &runtime_config)
+        .passive()
+        .factory()
+        .shared::<FreshImpl, _>(move || {
+            let _ = counter_for_closure.fetch_add(1, Ordering::SeqCst);
+            FreshImpl(Arc::clone(&counter_for_closure), "fresh")
+        })
+        .build()
+        .expect("bundle builds");
 
-/// `adapt_as_local_any` for a fresh shared factory must invoke the
-/// closure and route through `wrap_shared_as_local`, yielding a
-/// downcastable `Rc<dyn TestCapLocal>`.
-#[test]
-fn test_fresh_shared_factory_adapt_as_local() {
-    let fac = FreshPerConsumerSharedFactory::<TestCap, _>::new(|| {
-        Box::new(SharedImpl("fresh-via-local")) as Box<dyn TestCapShared>
-    });
-    let any_rc = fac.adapt_as_local_any();
-    let rc_local = any_rc.downcast::<Rc<dyn TestCapLocal>>().unwrap();
-    assert_eq!(rc_local.value(), "fresh-via-local");
-}
-
-/// Each call to `produce_any` on a fresh local factory yields a
-/// *different* underlying `Rc<dyn TestCapLocal>` — verified by
-/// comparing raw pointers of the downcast trait objects.
-#[test]
-fn test_fresh_local_factory_produces_independent_instances() {
-    let fac = FreshPerConsumerLocalFactory::new(|| {
-        let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl("fresh"));
-        Rc::new(rc_local) as Rc<dyn Any>
-    });
-
-    let a = fac.produce_any();
-    let b = fac.produce_any();
-    let a_inner = a.downcast::<Rc<dyn TestCapLocal>>().unwrap();
-    let b_inner = b.downcast::<Rc<dyn TestCapLocal>>().unwrap();
-    assert!(!Rc::ptr_eq(&a_inner, &b_inner));
-    assert_eq!(a_inner.value(), "fresh");
-    assert_eq!(b_inner.value(), "fresh");
-}
-
-/// `clone_box` on a fresh local factory duplicates the closure;
-/// both the original and the clone still produce independent
-/// instances on each call.
-#[test]
-fn test_fresh_local_factory_clone_box() {
-    let fac = FreshPerConsumerLocalFactory::new(|| {
-        let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl("fresh-clone"));
-        Rc::new(rc_local) as Rc<dyn Any>
-    });
-
-    let cloned = fac.clone_box();
-    let a = fac.produce_any();
-    let b = cloned.produce_any();
-    let a_inner = a.downcast::<Rc<dyn TestCapLocal>>().unwrap();
-    let b_inner = b.downcast::<Rc<dyn TestCapLocal>>().unwrap();
-    assert!(!Rc::ptr_eq(&a_inner, &b_inner));
-}
-
-/// A fresh shared factory plugs into `SharedCapabilityEntry` and
-/// flows through `resolve_bindings` / `require_shared` the same
-/// way a clone factory does.
-#[test]
-fn test_fresh_shared_factory_via_registry() {
-    let mut reg = CapabilityRegistry::new();
-    reg.register_shared(
-        TypeId::of::<TestCap>(),
-        SharedCapabilityEntry {
-            extension_id: "ext-a".into(),
-            factory: Box::new(FreshPerConsumerSharedFactory::<TestCap, _>::new(|| {
-                Box::new(SharedImpl("fresh-reg")) as Box<dyn TestCapShared>
-            })),
+    let caps = ExtensionCapabilities {
+        shared: &["test_cap"],
+        local: &[],
+        register_shared: |ext_id, factory, registry| {
+            registry.register_shared(
+                TypeId::of::<TestCap>(),
+                TestCap::shared_entry::<FreshImpl>(ext_id, factory),
+            )
         },
-    )
-    .unwrap();
+        register_local: ExtensionCapabilities::none().register_local,
+    };
+
+    let mut registry = CapabilityRegistry::new();
+    bundle
+        .register_into(&caps, &mut registry)
+        .expect("register_into");
 
     let mut tracker = ConsumedTracker::new();
-    let caps = resolve_bindings(
-        &bindings("test_cap", "ext-a"),
-        &reg,
-        &known_exts(&["ext-a"]),
+    let resolved = resolve_bindings(
+        &bindings("test_cap", "counter"),
+        &registry,
+        &known_exts(&["counter"]),
         &mut tracker,
     )
-    .unwrap();
-    let s = caps.require_shared::<TestCap>().unwrap();
-    assert_eq!(s.value(), "fresh-reg");
-}
+    .expect("resolve");
 
-/// A fresh local factory plugs into `LocalCapabilityEntry` and
-/// flows through `resolve_bindings` / `require_local` the same
-/// way a clone factory does.
-#[test]
-fn test_fresh_local_factory_via_registry() {
-    let mut reg = CapabilityRegistry::new();
-    reg.register_local(
-        TypeId::of::<TestCap>(),
-        LocalCapabilityEntry {
-            extension_id: "ext-a".into(),
-            factory: Box::new(FreshPerConsumerLocalFactory::new(|| {
-                let rc_local: Rc<dyn TestCapLocal> = Rc::new(LocalImpl("fresh-local-reg"));
-                Rc::new(rc_local) as Rc<dyn Any>
-            })),
-        },
-    )
-    .unwrap();
-
-    let mut tracker = ConsumedTracker::new();
-    let caps = resolve_bindings(
-        &bindings("test_cap", "ext-a"),
-        &reg,
-        &known_exts(&["ext-a"]),
-        &mut tracker,
-    )
-    .unwrap();
-    let l = caps.require_local::<TestCap>().unwrap();
-    assert_eq!(l.value(), "fresh-local-reg");
+    // Two require_shared calls on the same resolved Capabilities — each
+    // should invoke the factory closure once (fresh policy). Plus one
+    // invocation during resolve_bindings() which eagerly mints a shared
+    // instance to populate the SharedAsLocal fallback slot. Total: 3.
+    let s1 = resolved.require_shared::<TestCap>().unwrap();
+    let s2 = resolved.require_shared::<TestCap>().unwrap();
+    assert_eq!(s1.value(), "fresh");
+    assert_eq!(s2.value(), "fresh");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        3,
+        "fresh factory should have been invoked 3x (1 resolve-time fallback + 2 require_shared)"
+    );
 }

@@ -65,10 +65,10 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// split into two distinct capabilities rather than expressed as an
     /// adapter refusal.
     ///
-    /// Called from each capability factory's
-    /// [`SharedCapabilityFactory::adapt_as_local_any`] when a
-    /// shared-only extension is consumed via `require_local` / the
-    /// `SharedAsLocal` fallback path in `resolve_bindings`.
+    /// Called from each capability entry's
+    /// `adapt_as_local` fn pointer when a shared-only extension is
+    /// consumed via `require_local` / the `SharedAsLocal` fallback
+    /// path in `resolve_bindings`.
     ///
     /// # Per-node freshness
     ///
@@ -89,7 +89,6 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// `Rc::new(YourAdapter(shared))`.
     ///
     /// [`Capabilities::require_shared`]: registry::Capabilities::require_shared
-    /// [`SharedCapabilityFactory::adapt_as_local_any`]: registry::SharedCapabilityFactory::adapt_as_local_any
     fn wrap_shared_as_local(shared: Box<Self::Shared>) -> std::rc::Rc<Self::Local>;
 }
 
@@ -145,11 +144,33 @@ pub static KNOWN_CAPABILITIES: [KnownCapability] = [..];
 /// - `resolve_bindings()`: knowing which registry slots to populate.
 ///
 /// Constructed via the `extension_capabilities!` macro.
+///
+/// The `register_shared` / `register_local` fn pointers are the bridge
+/// between the extension's type-erased instance factories and the
+/// capability registry. The engine invokes them at bundle-registration
+/// time, passing the extension's `ExtensionId` plus a clone of the
+/// appropriate `*InstanceFactory`. The fn pointer internally builds one
+/// [`SharedCapabilityEntry`](registry::SharedCapabilityEntry) per
+/// listed capability and inserts it into the registry.
 pub struct ExtensionCapabilities {
     /// Capability names provided by the **shared** variant.
     pub shared: &'static [&'static str],
     /// Capability names provided by the **local** variant.
     pub local: &'static [&'static str],
+    /// Register all shared-variant capabilities into the registry.
+    /// No-op when `shared` is empty.
+    pub register_shared: fn(
+        ext_id: otap_df_config::ExtensionId,
+        factory: crate::extension::SharedInstanceFactory,
+        registry: &mut registry::CapabilityRegistry,
+    ) -> Result<(), registry::Error>,
+    /// Register all local-variant capabilities into the registry.
+    /// No-op when `local` is empty.
+    pub register_local: fn(
+        ext_id: otap_df_config::ExtensionId,
+        factory: crate::extension::LocalInstanceFactory,
+        registry: &mut registry::CapabilityRegistry,
+    ) -> Result<(), registry::Error>,
 }
 
 impl ExtensionCapabilities {
@@ -160,7 +181,25 @@ impl ExtensionCapabilities {
         ExtensionCapabilities {
             shared: &[],
             local: &[],
+            register_shared: Self::noop_register_shared,
+            register_local: Self::noop_register_local,
         }
+    }
+
+    fn noop_register_shared(
+        _ext_id: otap_df_config::ExtensionId,
+        _factory: crate::extension::SharedInstanceFactory,
+        _registry: &mut registry::CapabilityRegistry,
+    ) -> Result<(), registry::Error> {
+        Ok(())
+    }
+
+    fn noop_register_local(
+        _ext_id: otap_df_config::ExtensionId,
+        _factory: crate::extension::LocalInstanceFactory,
+        _registry: &mut registry::CapabilityRegistry,
+    ) -> Result<(), registry::Error> {
+        Ok(())
     }
 }
 
@@ -182,15 +221,11 @@ impl ExtensionCapabilities {
 /// )
 /// ```
 ///
-/// The extension type (`$ext`) is matched by the macro but currently discarded.
-//
-// TODO(extension-system): `$ext` (and `$sext` / `$lext`) will carry the
-// extension instance type used by generated registration closures on
-// `ExtensionCapabilities` — a compile-time `assert_*_impl::<$ext>()` check
-// that every listed capability is actually implemented, and a runtime
-// downcast target inside `register_shared` / `register_local` fn pointers
-// that the engine invokes during the build phase with the extension
-// erased as `&dyn Any` / `Rc<dyn Any>`.
+/// Each capability `$cap` must have a `#[capability]`-generated
+/// `shared_entry::<E>(ext_id, factory)` (and/or `local_entry::<E>(...)`)
+/// associated fn. The macro calls these per listed capability, passing
+/// a clone of the extension's instance factory, and pushes the
+/// resulting entry into the registry.
 #[macro_export]
 macro_rules! extension_capabilities {
     // Shared-only extension (automatic local fallback via SharedAsLocal).
@@ -198,6 +233,16 @@ macro_rules! extension_capabilities {
         $crate::capability::ExtensionCapabilities {
             shared: &[$(<$cap as $crate::capability::ExtensionCapability>::NAME),+],
             local: &[],
+            register_shared: |ext_id, factory, registry| {
+                $(
+                    registry.register_shared(
+                        ::std::any::TypeId::of::<$cap>(),
+                        <$cap>::shared_entry::<$ext>(ext_id.clone(), factory.clone()),
+                    )?;
+                )+
+                Ok(())
+            },
+            register_local: $crate::capability::ExtensionCapabilities::none().register_local,
         }
     };
     // Local-only extension.
@@ -205,6 +250,16 @@ macro_rules! extension_capabilities {
         $crate::capability::ExtensionCapabilities {
             shared: &[],
             local: &[$(<$cap as $crate::capability::ExtensionCapability>::NAME),+],
+            register_shared: $crate::capability::ExtensionCapabilities::none().register_shared,
+            register_local: |ext_id, factory, registry| {
+                $(
+                    registry.register_local(
+                        ::std::any::TypeId::of::<$cap>(),
+                        <$cap>::local_entry::<$ext>(ext_id.clone(), factory.clone()),
+                    )?;
+                )+
+                Ok(())
+            },
         }
     };
     // Dual extension — different types for shared and local.
@@ -212,6 +267,24 @@ macro_rules! extension_capabilities {
         $crate::capability::ExtensionCapabilities {
             shared: &[$(<$scap as $crate::capability::ExtensionCapability>::NAME),+],
             local: &[$(<$lcap as $crate::capability::ExtensionCapability>::NAME),+],
+            register_shared: |ext_id, factory, registry| {
+                $(
+                    registry.register_shared(
+                        ::std::any::TypeId::of::<$scap>(),
+                        <$scap>::shared_entry::<$sext>(ext_id.clone(), factory.clone()),
+                    )?;
+                )+
+                Ok(())
+            },
+            register_local: |ext_id, factory, registry| {
+                $(
+                    registry.register_local(
+                        ::std::any::TypeId::of::<$lcap>(),
+                        <$lcap>::local_entry::<$lext>(ext_id.clone(), factory.clone()),
+                    )?;
+                )+
+                Ok(())
+            },
         }
     };
 }

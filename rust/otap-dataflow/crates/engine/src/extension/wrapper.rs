@@ -243,8 +243,31 @@ pub enum ExtensionLifecycle<E, R> {
 ///   and returns `e.clone()` on each call.
 /// - **FreshPerConsumer** — the closure captures the user-supplied
 ///   `Fn() -> E` and invokes it on each call.
+///
+/// `SharedInstanceFactory` is [`Clone`]: one extension may provide
+/// multiple capabilities, and each capability registration needs its
+/// own copy of the factory for its produce closure.
 pub struct SharedInstanceFactory {
-    produce: Box<dyn Fn() -> Box<dyn Any + Send> + Send>,
+    produce: Box<dyn SharedFnClone>,
+}
+
+/// Object-safe `Fn + Clone` helper for [`SharedInstanceFactory`].
+///
+/// `Box<dyn Fn>` is not `Clone`, so we thread cloning through an
+/// object-safe `clone_box` method. The blanket impl below covers any
+/// closure that is `Fn + Send + Clone + 'static`.
+#[doc(hidden)]
+pub trait SharedFnClone: Fn() -> Box<dyn Any + Send> + Send {
+    fn clone_box(&self) -> Box<dyn SharedFnClone>;
+}
+
+impl<F> SharedFnClone for F
+where
+    F: Fn() -> Box<dyn Any + Send> + Send + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn SharedFnClone> {
+        Box::new(self.clone())
+    }
 }
 
 impl SharedInstanceFactory {
@@ -252,7 +275,7 @@ impl SharedInstanceFactory {
     #[must_use]
     pub fn new<F>(produce: F) -> Self
     where
-        F: Fn() -> Box<dyn Any + Send> + Send + 'static,
+        F: Fn() -> Box<dyn Any + Send> + Send + Clone + 'static,
     {
         SharedInstanceFactory {
             produce: Box::new(produce),
@@ -266,10 +289,36 @@ impl SharedInstanceFactory {
     }
 }
 
+impl Clone for SharedInstanceFactory {
+    fn clone(&self) -> Self {
+        SharedInstanceFactory {
+            produce: self.produce.clone_box(),
+        }
+    }
+}
+
 /// Produces instances of a local (!Send) extension's concrete type for
 /// capability consumers. See [`SharedInstanceFactory`] for background.
+///
+/// `LocalInstanceFactory` is [`Clone`] for the same reason as its
+/// shared counterpart.
 pub struct LocalInstanceFactory {
-    produce: Box<dyn Fn() -> std::rc::Rc<dyn Any>>,
+    produce: Box<dyn LocalFnClone>,
+}
+
+/// Object-safe `Fn + Clone` helper for [`LocalInstanceFactory`].
+#[doc(hidden)]
+pub trait LocalFnClone: Fn() -> std::rc::Rc<dyn Any> {
+    fn clone_box(&self) -> Box<dyn LocalFnClone>;
+}
+
+impl<F> LocalFnClone for F
+where
+    F: Fn() -> std::rc::Rc<dyn Any> + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn LocalFnClone> {
+        Box::new(self.clone())
+    }
 }
 
 impl LocalInstanceFactory {
@@ -277,7 +326,7 @@ impl LocalInstanceFactory {
     #[must_use]
     pub fn new<F>(produce: F) -> Self
     where
-        F: Fn() -> std::rc::Rc<dyn Any> + 'static,
+        F: Fn() -> std::rc::Rc<dyn Any> + Clone + 'static,
     {
         LocalInstanceFactory {
             produce: Box::new(produce),
@@ -288,6 +337,14 @@ impl LocalInstanceFactory {
     #[must_use]
     pub fn produce(&self) -> std::rc::Rc<dyn Any> {
         (self.produce)()
+    }
+}
+
+impl Clone for LocalInstanceFactory {
+    fn clone(&self) -> Self {
+        LocalInstanceFactory {
+            produce: self.produce.clone_box(),
+        }
     }
 }
 
@@ -386,6 +443,28 @@ impl ExtensionWrapper {
             ExtensionWrapper::Shared { lifecycle, .. } => {
                 matches!(lifecycle, ExtensionLifecycle::Passive)
             }
+        }
+    }
+
+    /// Returns the shared instance factory, if this is a shared variant.
+    #[must_use]
+    pub fn shared_instance_factory(&self) -> Option<&SharedInstanceFactory> {
+        match self {
+            ExtensionWrapper::Shared {
+                instance_factory, ..
+            } => Some(instance_factory),
+            _ => None,
+        }
+    }
+
+    /// Returns the local instance factory, if this is a local variant.
+    #[must_use]
+    pub fn local_instance_factory(&self) -> Option<&LocalInstanceFactory> {
+        match self {
+            ExtensionWrapper::Local {
+                instance_factory, ..
+            } => Some(instance_factory),
+            _ => None,
         }
     }
 
@@ -609,6 +688,35 @@ impl ExtensionBundle {
     /// Returns an iterator over the extension wrappers in this set.
     pub fn iter(&self) -> impl Iterator<Item = &ExtensionWrapper> {
         self.local.iter().chain(self.shared.iter())
+    }
+
+    /// Register this bundle's capabilities into the given registry.
+    ///
+    /// Calls the `register_shared` / `register_local` fn pointers on
+    /// `capabilities` (produced by the `extension_capabilities!` macro)
+    /// with a clone of the wrapper's corresponding instance factory.
+    /// The fn pointers fan out one registry entry per listed capability.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error returned by the capability registry
+    /// (e.g. duplicate `(capability, extension)` registration).
+    pub fn register_into(
+        &self,
+        capabilities: &crate::capability::ExtensionCapabilities,
+        registry: &mut crate::capability::registry::CapabilityRegistry,
+    ) -> Result<(), crate::capability::registry::Error> {
+        if let Some(shared) = self.shared.as_ref()
+            && let Some(factory) = shared.shared_instance_factory()
+        {
+            (capabilities.register_shared)(shared.name(), factory.clone(), registry)?;
+        }
+        if let Some(local) = self.local.as_ref()
+            && let Some(factory) = local.local_instance_factory()
+        {
+            (capabilities.register_local)(local.name(), factory.clone(), registry)?;
+        }
+        Ok(())
     }
 }
 

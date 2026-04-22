@@ -4,7 +4,7 @@
 //! [`Capabilities`] — the per-node consumer API for resolved capability
 //! bindings, with `require_*` and `optional_*` accessors.
 
-use super::{Error, ResolvedLocalEntry, ResolvedSharedEntry, downcast_produced};
+use super::{Error, ResolvedLocalEntry, ResolvedSharedEntry};
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -67,7 +67,7 @@ impl Capabilities {
                 },
             ))
         })?;
-        let rc_any = entry.factory.produce_any();
+        let rc_any = (entry.produce)();
         let trait_object = rc_any
             .downcast_ref::<Rc<C::Local>>()
             .cloned()
@@ -107,7 +107,15 @@ impl Capabilities {
                 },
             ))
         })?;
-        let trait_object = downcast_produced::<C>(&*entry.factory)?;
+        let trait_object = (entry.produce)()
+            .downcast::<Box<C::Shared>>()
+            .map(|b| *b)
+            .map_err(|_| Error::InternalError {
+                message: format!(
+                    "capability '{}': shared entry type mismatch (internal error)",
+                    C::name(),
+                ),
+            })?;
         entry.consumed.set(true);
         Ok(trait_object)
     }

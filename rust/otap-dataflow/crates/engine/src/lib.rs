@@ -252,6 +252,8 @@ impl Clone for ExtensionFactory {
             capabilities: capability::ExtensionCapabilities {
                 shared: self.capabilities.shared,
                 local: self.capabilities.local,
+                register_shared: self.capabilities.register_shared,
+                register_local: self.capabilities.register_local,
             },
             create: self.create,
             validate_config: self.validate_config,
