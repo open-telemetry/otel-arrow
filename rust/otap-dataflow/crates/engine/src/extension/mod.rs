@@ -27,5 +27,5 @@ pub use builder::{
 };
 pub use wrapper::{
     ControlChannel, ControlReceiver, EffectHandler, ExtensionBundle, ExtensionLifecycle,
-    ExtensionWrapper, LocalInstanceFactory, SharedInstanceFactory,
+    ExtensionWrapper,
 };

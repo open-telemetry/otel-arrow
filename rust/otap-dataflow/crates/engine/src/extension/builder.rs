@@ -56,8 +56,8 @@
 //! no `.fresh()` method — the invalid combination is a compile-time
 //! error.
 
-use super::wrapper::{LocalInstanceFactory, SharedInstanceFactory};
 use super::{ExtensionBundle, ExtensionLifecycle, ExtensionWrapper};
+use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
 use crate::config::ExtensionConfig;
 use crate::error::Error;
 use crate::local::extension as local_ext;

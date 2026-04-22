@@ -69,7 +69,7 @@ static _TEST_CAP: super::super::KnownCapability = super::super::KnownCapability 
 impl TestCap {
     fn shared_entry<E>(
         extension_id: ExtensionId,
-        factory: crate::extension::SharedInstanceFactory,
+        factory: crate::capability::SharedInstanceFactory,
     ) -> SharedCapabilityEntry
     where
         E: TestCapShared + 'static,
@@ -93,7 +93,7 @@ impl TestCap {
 
     fn local_entry<E>(
         extension_id: ExtensionId,
-        factory: crate::extension::LocalInstanceFactory,
+        factory: crate::capability::LocalInstanceFactory,
     ) -> LocalCapabilityEntry
     where
         E: TestCapLocal + 'static,
@@ -132,16 +132,16 @@ impl TestCapLocal for LocalImpl {
 // Build a SharedInstanceFactory that always produces a fresh
 // `Box<SharedImpl>` with the given value. Mimics the builder's
 // clone-per-consumer output.
-fn shared_instance_factory(val: &'static str) -> crate::extension::SharedInstanceFactory {
-    crate::extension::SharedInstanceFactory::new(move || {
+fn shared_instance_factory(val: &'static str) -> crate::capability::SharedInstanceFactory {
+    crate::capability::SharedInstanceFactory::new(move || {
         Box::new(SharedImpl(val)) as Box<dyn Any + Send>
     })
 }
 
 // Build a LocalInstanceFactory producing a shared `Rc<LocalImpl>`.
-fn local_instance_factory(val: &'static str) -> crate::extension::LocalInstanceFactory {
+fn local_instance_factory(val: &'static str) -> crate::capability::LocalInstanceFactory {
     let shared: Rc<LocalImpl> = Rc::new(LocalImpl(val));
-    crate::extension::LocalInstanceFactory::new(move || Rc::clone(&shared) as Rc<dyn Any>)
+    crate::capability::LocalInstanceFactory::new(move || Rc::clone(&shared) as Rc<dyn Any>)
 }
 
 fn register_shared(registry: &mut CapabilityRegistry, ext_id: &'static str, val: &'static str) {
@@ -521,7 +521,7 @@ fn test_shared_as_local_builds_fresh_adapter_per_node() {
     // mints a new `SharedImpl`.
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_for_closure = Arc::clone(&counter);
-    let factory = crate::extension::SharedInstanceFactory::new(move || {
+    let factory = crate::capability::SharedInstanceFactory::new(move || {
         let _ = counter_for_closure.fetch_add(1, Ordering::SeqCst);
         Box::new(SharedImpl("val")) as Box<dyn Any + Send>
     });

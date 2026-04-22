@@ -347,7 +347,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             #[allow(non_snake_case, clippy::missing_errors_doc)]
             #vis fn shared_entry<E>(
                 extension_id: ::otap_df_config::ExtensionId,
-                factory: crate::extension::SharedInstanceFactory,
+                factory: crate::capability::SharedInstanceFactory,
             ) -> crate::capability::registry::SharedCapabilityEntry
             where
                 E: shared::#trait_name + 'static,
@@ -391,7 +391,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             #[allow(non_snake_case, clippy::missing_errors_doc)]
             #vis fn local_entry<E>(
                 extension_id: ::otap_df_config::ExtensionId,
-                factory: crate::extension::LocalInstanceFactory,
+                factory: crate::capability::LocalInstanceFactory,
             ) -> crate::capability::registry::LocalCapabilityEntry
             where
                 E: local::#trait_name + 'static,

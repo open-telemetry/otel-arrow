@@ -15,7 +15,7 @@ use super::registry::{
     resolve_bindings,
 };
 use super::{ExtensionCapability, KNOWN_CAPABILITIES, KnownCapability};
-use crate::extension::{LocalInstanceFactory, SharedInstanceFactory};
+use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
 use otap_df_config::{CapabilityId, ExtensionId};
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};

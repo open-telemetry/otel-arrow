@@ -12,7 +12,10 @@
 //! re-exported from [`local::capability`](crate::local::capability) and
 //! [`shared::capability`](crate::shared::capability).
 
+pub mod factory;
 pub mod registry;
+
+pub use factory::{LocalInstanceFactory, SharedInstanceFactory};
 
 // ── Sealed ExtensionCapability trait ─────────────────────────────────────────
 
@@ -161,14 +164,14 @@ pub struct ExtensionCapabilities {
     /// No-op when `shared` is empty.
     pub register_shared: fn(
         ext_id: otap_df_config::ExtensionId,
-        factory: crate::extension::SharedInstanceFactory,
+        factory: SharedInstanceFactory,
         registry: &mut registry::CapabilityRegistry,
     ) -> Result<(), registry::Error>,
     /// Register all local-variant capabilities into the registry.
     /// No-op when `local` is empty.
     pub register_local: fn(
         ext_id: otap_df_config::ExtensionId,
-        factory: crate::extension::LocalInstanceFactory,
+        factory: LocalInstanceFactory,
         registry: &mut registry::CapabilityRegistry,
     ) -> Result<(), registry::Error>,
 }
@@ -188,7 +191,7 @@ impl ExtensionCapabilities {
 
     fn noop_register_shared(
         _ext_id: otap_df_config::ExtensionId,
-        _factory: crate::extension::SharedInstanceFactory,
+        _factory: SharedInstanceFactory,
         _registry: &mut registry::CapabilityRegistry,
     ) -> Result<(), registry::Error> {
         Ok(())
@@ -196,7 +199,7 @@ impl ExtensionCapabilities {
 
     fn noop_register_local(
         _ext_id: otap_df_config::ExtensionId,
-        _factory: crate::extension::LocalInstanceFactory,
+        _factory: LocalInstanceFactory,
         _registry: &mut registry::CapabilityRegistry,
     ) -> Result<(), registry::Error> {
         Ok(())
