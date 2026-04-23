@@ -412,6 +412,21 @@ fn wait_for_shutdown_message(receiver: &mut RuntimeCtrlMsgReceiver<()>) -> Runti
     }
 }
 
+fn complete_instance_exit_on_shutdown(
+    runtime: Arc<ControllerRuntime<()>>,
+    mut receiver: RuntimeCtrlMsgReceiver<()>,
+    deployed_key: DeployedPipelineKey,
+    expected_reason: &'static str,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        assert!(matches!(
+            wait_for_shutdown_message(&mut receiver),
+            RuntimeControlMsg::Shutdown { reason, .. } if reason == expected_reason
+        ));
+        runtime.note_instance_exit(deployed_key, RuntimeInstanceExit::Success);
+    })
+}
+
 fn terminal_rollout_record(
     pipeline_group_id: &str,
     pipeline_id: &str,
@@ -1382,6 +1397,202 @@ connections:
         candidate_rx.try_recv().is_err(),
         "committed target generation must not receive panic-cleanup shutdown"
     );
+}
+
+/// Scenario: a resize rollback must clean up cores that were already started
+/// before a later step fails.
+/// Guarantees: rollback sends shutdown to those started cores instead of
+/// leaving them running after the rollout fails.
+#[test]
+fn rollback_resize_rollout_cleans_up_started_cores() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _existing =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("resize rollout plan should be accepted");
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollout should register");
+
+    let started_key = deployed_key("g1", "p1", 1, plan.target_generation);
+    let started_rx = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        1,
+        plan.target_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let exit_thread = complete_instance_exit_on_shutdown(
+        Arc::clone(&runtime),
+        started_rx,
+        started_key.clone(),
+        "rollback cleanup",
+    );
+
+    let result = runtime.rollback_resize_rollout(&plan, &[1], &[], "boom".to_owned());
+
+    assert!(matches!(
+        result,
+        Err(RolloutExecutionError::Failed(reason)) if reason == "boom"
+    ));
+    exit_thread
+        .join()
+        .expect("resize rollback shutdown helper should join cleanly");
+    assert!(matches!(
+        runtime.instance_exit(&started_key),
+        Some(RuntimeInstanceExit::Success)
+    ));
+}
+
+/// Scenario: a replace rollback must clean up added candidate cores that were
+/// already serving the target generation before a later step fails.
+/// Guarantees: rollback sends shutdown to those activated added cores instead
+/// of leaving the candidate generation running.
+#[test]
+fn rollback_replace_rollout_cleans_up_activated_added_cores() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _existing =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("replace rollout plan should be accepted");
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollout should register");
+
+    let added_key = deployed_key("g1", "p1", 1, plan.target_generation);
+    let added_rx = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        1,
+        plan.target_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let exit_thread = complete_instance_exit_on_shutdown(
+        Arc::clone(&runtime),
+        added_rx,
+        added_key.clone(),
+        "rollback cleanup",
+    );
+
+    let result = runtime.rollback_replace_rollout(&plan, &[], &[1], &[], "boom".to_owned());
+
+    assert!(matches!(
+        result,
+        Err(RolloutExecutionError::Failed(reason)) if reason == "boom"
+    ));
+    exit_thread
+        .join()
+        .expect("replace rollback shutdown helper should join cleanly");
+    assert!(matches!(
+        runtime.instance_exit(&added_key),
+        Some(RuntimeInstanceExit::Success)
+    ));
 }
 
 /// Scenario: a shutdown request targets a group id that does not exist in

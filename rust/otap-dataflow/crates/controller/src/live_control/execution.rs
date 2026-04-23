@@ -383,13 +383,29 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 None,
             );
 
-            let new_key = self
-                .launch_regular_pipeline_instance(
-                    &plan.resolved_pipeline,
-                    *core_id,
-                    active_generation,
-                )
-                .map_err(|err| RolloutExecutionError::Failed(err.to_string()))?;
+            let new_key = match self.launch_regular_pipeline_instance(
+                &plan.resolved_pipeline,
+                *core_id,
+                active_generation,
+            ) {
+                Ok(new_key) => new_key,
+                Err(err) => {
+                    let reason = err.to_string();
+                    self.update_rollout_core_state(
+                        &plan.pipeline_key,
+                        &plan.rollout.rollout_id,
+                        *core_id,
+                        "failed",
+                        Some(reason.clone()),
+                    );
+                    return self.rollback_resize_rollout(
+                        plan,
+                        &started_cores,
+                        &retired_cores,
+                        reason,
+                    );
+                }
+            };
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             if let Err(reason) = self.wait_for_pipeline_ready(&new_key, ready_deadline) {
                 let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
@@ -480,13 +496,30 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 None,
             );
 
-            let new_key = self
-                .launch_regular_pipeline_instance(
-                    &plan.resolved_pipeline,
-                    *core_id,
-                    plan.target_generation,
-                )
-                .map_err(|err| RolloutExecutionError::Failed(err.to_string()))?;
+            let new_key = match self.launch_regular_pipeline_instance(
+                &plan.resolved_pipeline,
+                *core_id,
+                plan.target_generation,
+            ) {
+                Ok(new_key) => new_key,
+                Err(err) => {
+                    let reason = err.to_string();
+                    self.update_rollout_core_state(
+                        &plan.pipeline_key,
+                        &plan.rollout.rollout_id,
+                        *core_id,
+                        "failed",
+                        Some(reason.clone()),
+                    );
+                    return self.rollback_replace_rollout(
+                        plan,
+                        &switched_common_cores,
+                        &activated_added_cores,
+                        &retired_removed_cores,
+                        reason,
+                    );
+                }
+            };
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             if let Err(reason) = self.wait_for_pipeline_ready(&new_key, ready_deadline) {
                 let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
@@ -523,13 +556,30 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 None,
             );
 
-            let new_key = self
-                .launch_regular_pipeline_instance(
-                    &plan.resolved_pipeline,
-                    *core_id,
-                    plan.target_generation,
-                )
-                .map_err(|err| RolloutExecutionError::Failed(err.to_string()))?;
+            let new_key = match self.launch_regular_pipeline_instance(
+                &plan.resolved_pipeline,
+                *core_id,
+                plan.target_generation,
+            ) {
+                Ok(new_key) => new_key,
+                Err(err) => {
+                    let reason = err.to_string();
+                    self.update_rollout_core_state(
+                        &plan.pipeline_key,
+                        &plan.rollout.rollout_id,
+                        *core_id,
+                        "failed",
+                        Some(reason.clone()),
+                    );
+                    return self.rollback_replace_rollout(
+                        plan,
+                        &switched_common_cores,
+                        &activated_added_cores,
+                        &retired_removed_cores,
+                        reason,
+                    );
+                }
+            };
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             if let Err(reason) = self.wait_for_pipeline_ready(&new_key, ready_deadline) {
                 let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
