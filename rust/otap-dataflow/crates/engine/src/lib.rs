@@ -52,7 +52,7 @@ use std::{
 };
 
 // TODO: remove `dead_code` once the capability system is wired into the
-// pipeline build..
+// pipeline build.
 #[allow(dead_code)]
 pub mod capability;
 #[doc(hidden)]
