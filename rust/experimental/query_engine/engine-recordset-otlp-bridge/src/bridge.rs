@@ -424,7 +424,9 @@ fn push_value(
     }
 }
 
-fn build_parser_options_for_logs_query(options: &mut BridgeOptions) -> Result<ParserOptions, ParserError> {
+fn build_parser_options_for_logs_query(
+    options: &mut BridgeOptions,
+) -> Result<ParserOptions, ParserError> {
     let mut parser_options = ParserOptions::new().with_attached_data_names(&[
         "resource",
         "instrumentation_scope",
@@ -694,7 +696,8 @@ mod tests {
 
         {
             // Drop everything
-            let pipeline_id = register_pipeline_for_kql_logs_query("s | where false", None).unwrap();
+            let pipeline_id =
+                register_pipeline_for_kql_logs_query("s | where false", None).unwrap();
 
             let (_, dropped) =
                 process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
