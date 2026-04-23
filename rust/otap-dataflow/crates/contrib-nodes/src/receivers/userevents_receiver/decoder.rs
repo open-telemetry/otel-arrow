@@ -251,13 +251,15 @@ pub(super) fn severity_fallback_from_tracepoint(tracepoint: &str) -> Option<(i32
 
 /// Decoded Common Schema OTel Logs record extracted from EventHeader binary payload.
 ///
-/// TODO(perf): This intermediate owned decode struct is kept because decode can
-/// fail after partial progress, while the current Arrow/OTAP builders are
-/// append-only and do not support rollback. It is not just a convenience
-/// layer; it preserves atomic decode behavior.
+/// TODO(perf): This intermediate decode struct is still useful because the
+/// Common Schema fields can arrive in PartA/PartB/PartC order, while the final
+/// OTLP mapping needs a few decisions after the full payload is seen.
 ///
-/// If this path shows up hot in profiling, revisit direct-to-builder decode
-/// together with transactional append or explicit rollback support.
+/// The current hot-path cost here is mostly from materializing owned strings
+/// out of the payload. If profiling shows this matters, first look at
+/// borrowing payload-backed field slices where practical. Removing this
+/// intermediate entirely would be a larger change and would likely need
+/// rollback/checkpoint support in the final builders.
 #[derive(Debug, Default)]
 struct CsDecodedLog {
     event_name: String,
