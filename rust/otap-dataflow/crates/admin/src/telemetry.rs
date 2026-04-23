@@ -2192,7 +2192,9 @@ mod tests {
 
         assert!(output.contains("# HELP request_duration_sum_total Request duration\n"));
         assert!(output.contains("# TYPE request_duration_sum_total counter\n"));
-        assert!(output.contains("request_duration_sum_total{set=\"latency_metrics\"} 250.5 1000\n"));
+        assert!(
+            output.contains("request_duration_sum_total{set=\"latency_metrics\"} 250.5 1000\n")
+        );
 
         assert!(output.contains("# HELP request_duration_count_total Request duration\n"));
         assert!(output.contains("# TYPE request_duration_count_total counter\n"));
