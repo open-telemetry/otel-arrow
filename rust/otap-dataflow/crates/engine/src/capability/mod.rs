@@ -155,6 +155,7 @@ pub static KNOWN_CAPABILITIES: [KnownCapability] = [..];
 /// appropriate `*InstanceFactory`. The fn pointer internally builds one
 /// [`SharedCapabilityEntry`](registry::SharedCapabilityEntry) per
 /// listed capability and inserts it into the registry.
+#[derive(Clone)]
 pub struct ExtensionCapabilities {
     /// Capability names provided by the **shared** variant.
     pub shared: &'static [&'static str],
@@ -177,6 +178,25 @@ pub struct ExtensionCapabilities {
 }
 
 impl ExtensionCapabilities {
+    /// No-op `register_shared` fn pointer. Used by the
+    /// `extension_capabilities!` macro arms that don't provide a shared
+    /// variant, and by [`ExtensionCapabilities::none`].
+    #[doc(hidden)]
+    pub const NOOP_REGISTER_SHARED: fn(
+        otap_df_config::ExtensionId,
+        SharedInstanceFactory,
+        &mut registry::CapabilityRegistry,
+    ) -> Result<(), registry::Error> = |_, _, _| Ok(());
+
+    /// No-op `register_local` fn pointer. Counterpart of
+    /// [`NOOP_REGISTER_SHARED`](Self::NOOP_REGISTER_SHARED).
+    #[doc(hidden)]
+    pub const NOOP_REGISTER_LOCAL: fn(
+        otap_df_config::ExtensionId,
+        LocalInstanceFactory,
+        &mut registry::CapabilityRegistry,
+    ) -> Result<(), registry::Error> = |_, _, _| Ok(());
+
     /// No capabilities — used by extensions that only have a lifecycle
     /// (active) but don't expose any capabilities to nodes.
     #[must_use]
@@ -184,25 +204,9 @@ impl ExtensionCapabilities {
         ExtensionCapabilities {
             shared: &[],
             local: &[],
-            register_shared: Self::noop_register_shared,
-            register_local: Self::noop_register_local,
+            register_shared: Self::NOOP_REGISTER_SHARED,
+            register_local: Self::NOOP_REGISTER_LOCAL,
         }
-    }
-
-    fn noop_register_shared(
-        _ext_id: otap_df_config::ExtensionId,
-        _factory: SharedInstanceFactory,
-        _registry: &mut registry::CapabilityRegistry,
-    ) -> Result<(), registry::Error> {
-        Ok(())
-    }
-
-    fn noop_register_local(
-        _ext_id: otap_df_config::ExtensionId,
-        _factory: LocalInstanceFactory,
-        _registry: &mut registry::CapabilityRegistry,
-    ) -> Result<(), registry::Error> {
-        Ok(())
     }
 }
 
@@ -249,7 +253,7 @@ macro_rules! extension_capabilities {
                 )+
                 Ok(())
             },
-            register_local: $crate::capability::ExtensionCapabilities::none().register_local,
+            register_local: $crate::capability::ExtensionCapabilities::NOOP_REGISTER_LOCAL,
         }
     };
     // Local-only extension.
@@ -257,7 +261,7 @@ macro_rules! extension_capabilities {
         $crate::capability::ExtensionCapabilities {
             shared: &[],
             local: &[$(<$cap as $crate::capability::ExtensionCapability>::NAME),+],
-            register_shared: $crate::capability::ExtensionCapabilities::none().register_shared,
+            register_shared: $crate::capability::ExtensionCapabilities::NOOP_REGISTER_SHARED,
             register_local: |ext_id, factory, registry| {
                 $(
                     registry.register_local(

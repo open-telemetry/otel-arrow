@@ -12,6 +12,7 @@ use super::{
 use otap_df_config::ExtensionId;
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// Resolves a node's capability bindings against the registry.
 ///
@@ -29,9 +30,9 @@ use std::collections::{HashMap, HashSet};
 /// # Errors
 ///
 /// Returns an error on a validation failure with a descriptive message.
-/// `bindings` is iterated in unspecified order (it's a `HashMap`), so
-/// when multiple bindings are invalid the specific one reported is not
-/// stable across runs.
+/// Bindings are iterated in sorted order by capability name, so when
+/// multiple bindings are invalid the specific one reported is stable
+/// across runs.
 pub(crate) fn resolve_bindings(
     bindings: &HashMap<otap_df_config::CapabilityId, ExtensionId>,
     registry: &CapabilityRegistry,
@@ -48,7 +49,13 @@ pub(crate) fn resolve_bindings(
     let mut local_entries: HashMap<TypeId, ResolvedLocalEntry> = HashMap::new();
     let mut shared_entries: HashMap<TypeId, ResolvedSharedEntry> = HashMap::new();
 
-    for (cap_name, ext_name) in bindings {
+    // Iterate in sorted order by capability name for deterministic
+    // error messages across runs.
+    let mut sorted_bindings: Vec<(&otap_df_config::CapabilityId, &ExtensionId)> =
+        bindings.iter().collect();
+    sorted_bindings.sort_unstable_by(|(a, _), (b, _)| a.as_ref().cmp(b.as_ref()));
+
+    for (cap_name, ext_name) in sorted_bindings {
         let cap_name_str: &str = cap_name.as_ref();
         let ext_name_str: &str = ext_name.as_ref();
 
@@ -65,7 +72,8 @@ pub(crate) fn resolve_bindings(
 
         // Step 2: Known capability type
         let known_cap = known_caps.get(cap_name_str).ok_or_else(|| {
-            let known_names: Vec<&str> = known_caps.keys().copied().collect();
+            let mut known_names: Vec<&str> = known_caps.keys().copied().collect();
+            known_names.sort_unstable();
             Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "unknown capability '{cap_name_str}'. Known capabilities: {known_names:?}",
@@ -107,7 +115,7 @@ pub(crate) fn resolve_bindings(
         let native_local = local_entry;
 
         if let Some(local_entry) = native_local {
-            let consumed = tracker.ensure_local_consumer_slot(
+            let tracker_consumed = tracker.ensure_local_consumer_slot(
                 cap_type_id,
                 known_cap.name,
                 local_entry.extension_id.clone(),
@@ -117,31 +125,35 @@ pub(crate) fn resolve_bindings(
                 cap_type_id,
                 ResolvedLocalEntry {
                     produce: local_entry.produce.clone_box(),
-                    consumed,
+                    claimed: std::cell::Cell::new(false),
+                    tracker_consumed,
                 },
             );
         } else if let Some(shared_entry) = shared_entry {
-            // SharedAsLocal fallback: mint a fresh shared instance and
-            // route it through the shared entry's `adapt_as_local` fn
-            // pointer to get a type-erased `Rc<dyn Any>` wrapping the
-            // local trait object. Wrap that `Rc` in a cloning closure
-            // so the resolved entry exposes the same `LocalProduce`
-            // shape as a native local registration — every
-            // `require_local` call on this node returns an
-            // `Rc::clone` of the same adapter.
-            let rc_any = (shared_entry.adapt_as_local)((shared_entry.produce)());
-            let cloned = rc_any.clone();
-            let local_produce: Box<dyn LocalProduce> =
-                Box::new(move || std::rc::Rc::clone(&cloned));
+            // SharedAsLocal fallback: defer the shared mint to the
+            // (single, one-shot) `require_local` call. The closure
+            // captures a refcounted handle to the shared produce
+            // closure plus the capability's `adapt_as_local` fn
+            // pointer, then on invocation produces a fresh shared
+            // instance and routes it through the adapter to yield a
+            // type-erased `Rc<dyn Any>` wrapping the local trait
+            // object.
+            let adapt = shared_entry.adapt_as_local;
+            let produce_shared: Rc<Box<dyn super::entry::SharedProduce>> =
+                Rc::new(shared_entry.produce.clone_box());
+            let local_produce: Box<dyn LocalProduce> = Box::new(move || adapt((*produce_shared)()));
 
-            // The extension only provided a shared variant — route
-            // the adapter consumer's cell under the shared bucket.
-            // The `// Resolve shared entry` block below also calls
-            // `ensure_shared_consumer_slot` for this `(cap, ext)`
-            // pair; that method is get-or-insert, so both users
-            // share the same `Rc<Cell<bool>>`. No phantom entry is
-            // recorded in `tracker.local`.
-            let consumed = tracker.ensure_shared_consumer_slot(
+            // The extension only provided a shared variant — record
+            // the adapter consumer's cross-node consumption against
+            // the shared bucket. The `// Resolve shared entry` block
+            // below also calls `ensure_shared_consumer_slot` for
+            // this `(cap, ext)` pair; that method is get-or-insert,
+            // so both users share the same `Rc<Cell<bool>>` for
+            // tracker accounting. Per-node one-shot enforcement is
+            // tracked separately in each entry's `claimed` cell, so
+            // a node *can* claim both the local-via-shared and
+            // native-shared sides of a fallback binding.
+            let tracker_consumed = tracker.ensure_shared_consumer_slot(
                 cap_type_id,
                 known_cap.name,
                 shared_entry.extension_id.clone(),
@@ -151,7 +163,8 @@ pub(crate) fn resolve_bindings(
                 cap_type_id,
                 ResolvedLocalEntry {
                     produce: local_produce,
-                    consumed,
+                    claimed: std::cell::Cell::new(false),
+                    tracker_consumed,
                 },
             );
         }
@@ -162,7 +175,7 @@ pub(crate) fn resolve_bindings(
         // the same cell — get-or-insert idempotency keeps the two
         // users pointing at one slot.
         if let Some(shared_entry) = shared_entry {
-            let consumed = tracker.ensure_shared_consumer_slot(
+            let tracker_consumed = tracker.ensure_shared_consumer_slot(
                 cap_type_id,
                 known_cap.name,
                 shared_entry.extension_id.clone(),
@@ -172,7 +185,8 @@ pub(crate) fn resolve_bindings(
                 cap_type_id,
                 ResolvedSharedEntry {
                     produce: shared_entry.produce.clone_box(),
-                    consumed,
+                    claimed: std::cell::Cell::new(false),
+                    tracker_consumed,
                 },
             );
         }

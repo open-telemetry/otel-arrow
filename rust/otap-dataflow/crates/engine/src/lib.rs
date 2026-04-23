@@ -225,6 +225,7 @@ impl<PData> NamedFactory for ExporterFactory<PData> {
 ///
 /// Extension factories are NOT generic over PData — extensions never process
 /// pipeline data. This makes them fully decoupled from the data-plane type.
+#[derive(Clone)]
 pub struct ExtensionFactory {
     /// The name of the extension.
     pub name: &'static str,
@@ -243,24 +244,6 @@ pub struct ExtensionFactory {
     ) -> Result<ExtensionBundle, otap_df_config::error::Error>,
     /// Validates the node-specific config statically, without creating the component.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
-}
-
-impl Clone for ExtensionFactory {
-    fn clone(&self) -> Self {
-        ExtensionFactory {
-            name: self.name,
-            description: self.description,
-            documentation_url: self.documentation_url,
-            capabilities: capability::ExtensionCapabilities {
-                shared: self.capabilities.shared,
-                local: self.capabilities.local,
-                register_shared: self.capabilities.register_shared,
-                register_local: self.capabilities.register_local,
-            },
-            create: self.create,
-            validate_config: self.validate_config,
-        }
-    }
 }
 
 impl NamedFactory for ExtensionFactory {

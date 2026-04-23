@@ -193,21 +193,29 @@ fn test_resolve_bindings_shared_only() {
     let mut reg = CapabilityRegistry::new();
     register_shared(&mut reg, "ext-a", "shared-val");
 
+    // Use two independent resolutions because `require_shared` and
+    // the `SharedAsLocal`-backed `require_local` share the same
+    // consumed cell, and the one-shot contract only allows one claim
+    // per (cap, ext) pair per node.
     let mut tracker = ConsumedTracker::new();
-    let caps = resolve_bindings(
+    let caps_shared = resolve_bindings(
         &bindings("test_cap", "ext-a"),
         &reg,
         &known_exts(&["ext-a"]),
         &mut tracker,
     )
     .unwrap();
-
-    // require_shared works
-    let shared = caps.require_shared::<TestCap>().unwrap();
+    let shared = caps_shared.require_shared::<TestCap>().unwrap();
     assert_eq!(shared.value(), "shared-val");
 
-    // require_local works via SharedAsLocal adapter
-    let local = caps.require_local::<TestCap>().unwrap();
+    let caps_local = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+    let local = caps_local.require_local::<TestCap>().unwrap();
     assert_eq!(local.value(), "shared-val");
 }
 
@@ -369,8 +377,8 @@ fn test_unconsumed_tracking() {
 #[test]
 fn test_optional_returns_none_when_not_bound() {
     let caps = Capabilities::empty();
-    assert!(caps.optional_local::<TestCap>().is_none());
-    assert!(caps.optional_shared::<TestCap>().is_none());
+    assert!(caps.optional_local::<TestCap>().unwrap().is_none());
+    assert!(caps.optional_shared::<TestCap>().unwrap().is_none());
 }
 
 #[test]
@@ -534,26 +542,37 @@ fn test_shared_as_local_builds_fresh_adapter_per_node() {
     .unwrap();
 
     // The adapter must not run at registration time — work is deferred
-    // to resolve_bindings so each node gets a fresh shared clone.
+    // to the consumer's `require_local` call.
     assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-    // Two nodes bind the capability; each should get its own clone.
+    // Two nodes bind the capability; resolve alone does not mint
+    // (factory invocation is deferred to the one-shot `require_local`
+    // call on each node's `Capabilities`).
     let mut tracker = ConsumedTracker::new();
-    let _caps_a = resolve_bindings(
+    let caps_a = resolve_bindings(
         &bindings("test_cap", "ext-a"),
         &reg,
         &known_exts(&["ext-a"]),
         &mut tracker,
     )
     .unwrap();
-    let _caps_b = resolve_bindings(
+    let caps_b = resolve_bindings(
         &bindings("test_cap", "ext-a"),
         &reg,
         &known_exts(&["ext-a"]),
         &mut tracker,
     )
     .unwrap();
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        0,
+        "fallback must not mint at resolve time",
+    );
 
+    // Each node's `require_local` mints its own clone via the shared
+    // factory.
+    let _ = caps_a.require_local::<TestCap>().unwrap();
+    let _ = caps_b.require_local::<TestCap>().unwrap();
     assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 
@@ -589,6 +608,111 @@ fn test_register_shared_rejects_duplicate() {
     let msg = format!("{err}");
     assert!(msg.contains("duplicate"), "error: {msg}");
     assert!(msg.contains("ext-a"), "error: {msg}");
+}
+
+// ── One-shot consumption contract ───────────────────────────────────────────
+
+#[test]
+fn test_require_local_second_call_returns_already_consumed() {
+    let mut reg = CapabilityRegistry::new();
+    register_local(&mut reg, "ext-a", "val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let _ = caps.require_local::<TestCap>().unwrap();
+    let err = match caps.require_local::<TestCap>() {
+        Err(e) => e,
+        Ok(_) => panic!("expected CapabilityAlreadyConsumed"),
+    };
+    assert!(
+        matches!(err, crate::error::Error::CapabilityAlreadyConsumed { ref capability } if capability == "test_cap"),
+        "expected CapabilityAlreadyConsumed, got {err:?}"
+    );
+}
+
+#[test]
+fn test_require_shared_second_call_returns_already_consumed() {
+    let mut reg = CapabilityRegistry::new();
+    register_shared(&mut reg, "ext-a", "val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let _ = caps.require_shared::<TestCap>().unwrap();
+    let err = match caps.require_shared::<TestCap>() {
+        Err(e) => e,
+        Ok(_) => panic!("expected CapabilityAlreadyConsumed"),
+    };
+    assert!(
+        matches!(err, crate::error::Error::CapabilityAlreadyConsumed { ref capability } if capability == "test_cap"),
+        "expected CapabilityAlreadyConsumed, got {err:?}"
+    );
+}
+
+#[test]
+fn test_optional_local_second_call_returns_already_consumed() {
+    let mut reg = CapabilityRegistry::new();
+    register_local(&mut reg, "ext-a", "val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let first = caps.optional_local::<TestCap>().unwrap();
+    assert!(first.is_some());
+    let err = match caps.optional_local::<TestCap>() {
+        Err(e) => e,
+        Ok(_) => panic!("expected CapabilityAlreadyConsumed"),
+    };
+    assert!(matches!(
+        err,
+        crate::error::Error::CapabilityAlreadyConsumed { .. }
+    ));
+}
+
+#[test]
+fn test_fallback_local_and_shared_are_independently_claimable() {
+    // SharedAsLocal fallback creates two per-node resolved entries
+    // (one in `local_entries`, one in `shared_entries`) backed by the
+    // same shared registration. Each is independently one-shot, so a
+    // single node can claim both — each claim mints its own shared
+    // instance via the registered factory. The cross-node tracker
+    // still sees both as uses of the shared variant.
+    let mut reg = CapabilityRegistry::new();
+    register_shared(&mut reg, "ext-a", "val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let local = caps.require_local::<TestCap>().unwrap();
+    let shared = caps.require_shared::<TestCap>().unwrap();
+    assert_eq!(local.value(), "val");
+    assert_eq!(shared.value(), "val");
+    assert!(tracker.unconsumed_shared().is_empty());
 }
 
 // ── End-to-end: builder → bundle → register_into → resolve → require ────────
@@ -658,7 +782,17 @@ fn test_end_to_end_shared_only_via_bundle() {
     assert_eq!(shared.value(), "token-123");
 
     // Fallback: SharedAsLocal adapter flows through the same bundle.
-    let local = resolved.require_local::<TestCap>().expect("require_local");
+    // The one-shot contract on `Capabilities` means the `require_shared`
+    // above already consumed the (cap, ext) slot, so we resolve a
+    // separate node to exercise the local-via-shared path.
+    let resolved2 = resolve_bindings(
+        &bindings("test_cap", "azure-auth"),
+        &registry,
+        &known_exts(&["azure-auth"]),
+        &mut tracker,
+    )
+    .expect("resolve");
+    let local = resolved2.require_local::<TestCap>().expect("require_local");
     assert_eq!(local.value(), "token-123");
 }
 
@@ -775,7 +909,14 @@ fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
         .expect("register_into");
 
     let mut tracker = ConsumedTracker::new();
-    let resolved = resolve_bindings(
+    let resolved_a = resolve_bindings(
+        &bindings("test_cap", "counter"),
+        &registry,
+        &known_exts(&["counter"]),
+        &mut tracker,
+    )
+    .expect("resolve");
+    let resolved_b = resolve_bindings(
         &bindings("test_cap", "counter"),
         &registry,
         &known_exts(&["counter"]),
@@ -783,17 +924,18 @@ fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
     )
     .expect("resolve");
 
-    // Two require_shared calls on the same resolved Capabilities — each
-    // should invoke the factory closure once (fresh policy). Plus one
-    // invocation during resolve_bindings() which eagerly mints a shared
-    // instance to populate the SharedAsLocal fallback slot. Total: 3.
-    let s1 = resolved.require_shared::<TestCap>().unwrap();
-    let s2 = resolved.require_shared::<TestCap>().unwrap();
+    // One claim per resolved Capabilities (one-shot contract). The
+    // `fresh` policy invokes the user's factory on each `produce()`,
+    // so two consumers should observe two factory invocations and no
+    // resolve-time mint (the `SharedAsLocal` fallback is deferred to
+    // the `require_local` call, which is never made here).
+    let s1 = resolved_a.require_shared::<TestCap>().unwrap();
+    let s2 = resolved_b.require_shared::<TestCap>().unwrap();
     assert_eq!(s1.value(), "fresh");
     assert_eq!(s2.value(), "fresh");
     assert_eq!(
         counter.load(Ordering::SeqCst),
-        3,
-        "fresh factory should have been invoked 3x (1 resolve-time fallback + 2 require_shared)"
+        2,
+        "fresh factory should have been invoked exactly 2x (one per require_shared consumer)"
     );
 }

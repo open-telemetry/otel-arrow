@@ -494,6 +494,18 @@ pub enum Error {
     /// disconnected by topic policy.
     #[error("subscription closed")]
     SubscriptionClosed,
+
+    /// A capability binding was claimed more than once on the same node.
+    ///
+    /// `require_local` / `require_shared` / `optional_local` /
+    /// `optional_shared` are intended to be called **exactly once per
+    /// capability per node**, at node construction. The handle they
+    /// return should be stored and shared within the node as needed.
+    #[error("capability '{capability}' has already been claimed on this node")]
+    CapabilityAlreadyConsumed {
+        /// The capability name.
+        capability: String,
+    },
 }
 
 impl Error {
@@ -542,6 +554,7 @@ impl Error {
             Error::SubscribeBroadcastNotSupported => "SubscribeBroadcastNotSupported",
             Error::SubscribeSingleGroupViolation => "SubscribeSingleGroupViolation",
             Error::SubscriptionClosed => "SubscriptionClosed",
+            Error::CapabilityAlreadyConsumed { .. } => "CapabilityAlreadyConsumed",
         }
         .to_owned()
     }

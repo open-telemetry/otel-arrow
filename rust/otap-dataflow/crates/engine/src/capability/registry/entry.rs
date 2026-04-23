@@ -144,20 +144,28 @@ impl SharedCapabilityEntry {
 pub(crate) struct ResolvedLocalEntry {
     /// Per-node produce closure, cloned from the registry entry.
     pub(crate) produce: Box<dyn LocalProduce>,
-    /// Consumption flag for the underlying extension variant.
+    /// Per-node one-shot consumption flag for the consumer-side
+    /// "claim each binding at most once per node" contract enforced
+    /// by [`Capabilities`](super::Capabilities).
+    pub(crate) claimed: Cell<bool>,
+    /// Cross-node consumption flag for the underlying extension
+    /// variant, shared with the [`ConsumedTracker`].
     ///
     /// - For native local bindings: cell lives under the tracker's
     ///   *local* bucket for the `(capability, extension)` pair.
     /// - For `SharedAsLocal` bindings: cell lives under the tracker's
     ///   *shared* bucket — consuming the adapter is considered a use
     ///   of the shared variant.
-    pub(crate) consumed: Rc<Cell<bool>>,
+    pub(crate) tracker_consumed: Rc<Cell<bool>>,
 }
 
 /// A resolved shared capability entry for a specific node.
 pub(crate) struct ResolvedSharedEntry {
     /// Per-node produce closure, cloned from the registry entry.
     pub(crate) produce: Box<dyn SharedProduce>,
-    /// Consumption flag, shared with the `ConsumedTracker`.
-    pub(crate) consumed: Rc<Cell<bool>>,
+    /// Per-node one-shot consumption flag.
+    pub(crate) claimed: Cell<bool>,
+    /// Cross-node consumption flag, shared with the
+    /// [`ConsumedTracker`].
+    pub(crate) tracker_consumed: Rc<Cell<bool>>,
 }

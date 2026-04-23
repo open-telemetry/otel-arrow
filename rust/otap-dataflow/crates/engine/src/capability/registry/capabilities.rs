@@ -46,13 +46,30 @@ impl Capabilities {
     /// shared-only extension, the `SharedAsLocal` adapter is returned
     /// transparently — the caller always gets a local trait object.
     ///
+    /// # One-shot contract
+    ///
+    /// Each capability binding may be claimed **at most once per
+    /// node** across all four accessors (`require_local`,
+    /// `require_shared`, `optional_local`, `optional_shared`). Node
+    /// factories are expected to call this once at construction,
+    /// store the returned handle, and clone/share it within the node
+    /// as needed. A second call for the same capability — including
+    /// the implicit shared claim made by the `SharedAsLocal` fallback
+    /// — returns [`Error::CapabilityAlreadyConsumed`].
+    ///
     /// # Errors
     ///
     /// - [`Error::ConfigError`] if no extension is bound to this
     ///   capability for this node. The user must add a binding to the
     ///   node's config.
-    /// - [`Error::InternalError`] on a type-erasure downcast mismatch
-    ///   (indicates a registry bug).
+    /// - [`Error::CapabilityAlreadyConsumed`] if the capability was
+    ///   already claimed on this node.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a type-erasure downcast mismatch — this indicates a
+    /// registry bug (the `#[capability]` proc macro guarantees the
+    /// stored entry's concrete type matches `C::Local`).
     pub fn require_local<C: crate::capability::ExtensionCapability>(
         &self,
     ) -> Result<Rc<C::Local>, Error> {
@@ -65,32 +82,47 @@ impl Capabilities {
                 ),
             }))
         })?;
+        if entry.claimed.replace(true) {
+            return Err(Error::CapabilityAlreadyConsumed {
+                capability: C::name().to_owned(),
+            });
+        }
         let rc_any = (entry.produce)();
         let trait_object = rc_any
             .downcast_ref::<Rc<C::Local>>()
             .cloned()
-            .ok_or_else(|| Error::InternalError {
-                message: format!(
-                    "capability '{}': local entry type mismatch (internal error)",
+            .unwrap_or_else(|| {
+                panic!(
+                    "BUG: capability '{}': local entry type mismatch in registry",
                     C::name(),
-                ),
-            })?;
-        entry.consumed.set(true);
+                )
+            });
+        entry.tracker_consumed.set(true);
         Ok(trait_object)
     }
 
     /// Resolve a **required** shared capability.
     ///
-    /// Returns `Box<dyn C::Shared>` — a fresh clone of the extension's
-    /// shared implementation.
+    /// Returns `Box<dyn C::Shared>` — the extension's shared
+    /// implementation produced for this node.
+    ///
+    /// # One-shot contract
+    ///
+    /// See [`Self::require_local`].
     ///
     /// # Errors
     ///
     /// - [`Error::ConfigError`] if no extension is bound to this
     ///   capability for this node. The user must add a binding to the
     ///   node's config.
-    /// - [`Error::InternalError`] on a type-erasure downcast mismatch
-    ///   (indicates a registry bug).
+    /// - [`Error::CapabilityAlreadyConsumed`] if the capability was
+    ///   already claimed on this node.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a type-erasure downcast mismatch — this indicates a
+    /// registry bug (the `#[capability]` proc macro guarantees the
+    /// stored entry's concrete type matches `C::Shared`).
     pub fn require_shared<C: crate::capability::ExtensionCapability>(
         &self,
     ) -> Result<Box<C::Shared>, Error> {
@@ -103,65 +135,76 @@ impl Capabilities {
                 ),
             }))
         })?;
+        if entry.claimed.replace(true) {
+            return Err(Error::CapabilityAlreadyConsumed {
+                capability: C::name().to_owned(),
+            });
+        }
         let trait_object = (entry.produce)()
             .downcast::<Box<C::Shared>>()
             .map(|b| *b)
-            .map_err(|_| Error::InternalError {
-                message: format!(
-                    "capability '{}': shared entry type mismatch (internal error)",
+            .unwrap_or_else(|_| {
+                panic!(
+                    "BUG: capability '{}': shared entry type mismatch in registry",
                     C::name(),
-                ),
-            })?;
-        entry.consumed.set(true);
+                )
+            });
+        entry.tracker_consumed.set(true);
         Ok(trait_object)
     }
 
     /// Resolve an **optional** local capability.
     ///
-    /// Returns `Some(Rc<dyn C::Local>)` if bound, `None` if the capability
+    /// Returns `Ok(Some(_))` if bound, `Ok(None)` if the capability
     /// was not configured for this node.
+    ///
+    /// # One-shot contract
+    ///
+    /// See [`Self::require_local`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CapabilityAlreadyConsumed`] if the capability
+    /// was already claimed on this node.
     ///
     /// # Panics
     ///
-    /// Panics on type mismatch (internal bug — the stored entry doesn't
-    /// match the expected capability type).
-    #[must_use]
+    /// Panics on a type-erasure downcast mismatch (registry bug).
     pub fn optional_local<C: crate::capability::ExtensionCapability>(
         &self,
-    ) -> Option<Rc<C::Local>> {
+    ) -> Result<Option<Rc<C::Local>>, Error> {
         let id = TypeId::of::<C>();
         if !self.local.contains_key(&id) {
-            return None;
+            return Ok(None);
         }
-        Some(
-            self.require_local::<C>().expect(
-                "BUG: capability entry exists but downcast failed — type mismatch in registry",
-            ),
-        )
+        self.require_local::<C>().map(Some)
     }
 
     /// Resolve an **optional** shared capability.
     ///
-    /// Returns `Some(Box<dyn C::Shared>)` if bound, `None` if the capability
+    /// Returns `Ok(Some(_))` if bound, `Ok(None)` if the capability
     /// was not configured for this node.
+    ///
+    /// # One-shot contract
+    ///
+    /// See [`Self::require_local`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CapabilityAlreadyConsumed`] if the capability
+    /// was already claimed on this node.
     ///
     /// # Panics
     ///
-    /// Panics on type mismatch (internal bug — the stored entry doesn't
-    /// match the expected capability type).
-    #[must_use]
+    /// Panics on a type-erasure downcast mismatch (registry bug).
     pub fn optional_shared<C: crate::capability::ExtensionCapability>(
         &self,
-    ) -> Option<Box<C::Shared>> {
+    ) -> Result<Option<Box<C::Shared>>, Error> {
         let id = TypeId::of::<C>();
         if !self.shared.contains_key(&id) {
-            return None;
+            return Ok(None);
         }
-        Some(
-            self.require_shared::<C>().expect(
-                "BUG: capability entry exists but downcast failed — type mismatch in registry",
-            ),
-        )
+        self.require_shared::<C>().map(Some)
     }
 }
 
