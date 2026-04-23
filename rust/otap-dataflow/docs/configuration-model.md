@@ -152,9 +152,9 @@ Important behavior:
 - Graph topology is explicit via `connections`.
 - `kind` is inferred from node `type`.
 - For single-output nodes, you do not need `outputs` or `default_output`.
-- Parsing is strict: unknown fields are rejected (might be relaxed in the future
-  if we find good use cases for extensibility, but for now this is intentional
-  to catch typos and mistakes early).
+- Parsing is strict: unknown fields are rejected to catch typos and mistakes
+  early. Applications that embed the engine can place their own engine-level
+  configuration under `engine.custom` (see below).
 
 ## Engine Section
 
@@ -165,6 +165,7 @@ Important behavior:
 - `telemetry`
 - `observed_state`
 - `observability`
+- `custom`
 
 ### Engine Topic Settings
 
@@ -206,6 +207,23 @@ Optional observability policies are supported at:
 - `telemetry`
 
 `resources` is intentionally not supported for observability and is rejected.
+
+### Custom Embedder Configuration
+
+`engine.custom` is an optional map for applications that embed the dataflow
+engine as a library. The engine ignores this field entirely -- embedding
+binaries can read namespaced keys for their own engine-level concerns.
+
+```yaml
+engine:
+  custom:
+    remote_management:
+      server_url: "ws://mgmt.example.com/v1"
+      heartbeat_interval_secs: 10
+    custom_auth:
+      provider: "oidc"
+      token_endpoint: "https://auth.example.com/token"
+```
 
 ## Policy Hierarchy
 
