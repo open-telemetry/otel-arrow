@@ -14,6 +14,8 @@
 //! | `crypto-openssl` | `rustls-openssl` | Regulated / FIPS environments      |
 //! | `crypto-symcrypt`| `rustls-symcrypt`| Microsoft/SymCrypt-aligned backend |
 
+use cfg_if::cfg_if;
+
 /// Installs the selected rustls `CryptoProvider` as the process-wide default.
 ///
 /// The provider is chosen at compile time via feature flags.
@@ -30,10 +32,6 @@
 ///
 /// Returns `Err` if a provider was already installed (non-fatal in most cases).
 /// Returns `Ok(())` if installation succeeds or if no crypto feature is enabled.
-use cfg_if::cfg_if;
-
-/// Installs the selected rustls `CryptoProvider` as the process-wide default.
-///
 pub fn install_crypto_provider() -> Result<(), String> {
     cfg_if! {
         // If you're using rustls, you must install a rustls CryptoProvider.
