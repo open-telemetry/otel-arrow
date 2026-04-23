@@ -76,8 +76,8 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// # Per-node freshness
     ///
     /// Invoked **once per node** that binds the capability via the
-    /// fallback path, with a fresh `Box<Self::Shared>` minted by the
-    /// factory for that node. This matches the per-caller-fresh
+    /// fallback path, with a new `Box<Self::Shared>` minted by the
+    /// factory for that node. This matches the per-node instance
     /// semantics of [`Capabilities::require_shared`] — every binding
     /// gets its own instance.
     ///

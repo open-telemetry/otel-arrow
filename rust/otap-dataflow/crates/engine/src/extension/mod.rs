@@ -9,7 +9,7 @@
 //! | Submodule   | Contents                                                                 |
 //! |-------------|--------------------------------------------------------------------------|
 //! | [`wrapper`] | [`ControlChannel`], [`EffectHandler`], [`ExtensionLifecycle`], [`ExtensionWrapper`], [`ExtensionBundle`] |
-//! | [`builder`] | Typestate chain: [`ExtensionBundleBuilder`], [`ActiveStage`], [`PassiveStage`], [`PassiveClonedStage`], [`PassiveFreshStage`], plus [`SharedDecomposed`] / [`LocalDecomposed`] |
+//! | [`builder`] | Typestate chain: [`ExtensionBundleBuilder`], [`ActiveStage`], [`PassiveStage`], [`PassiveClonedStage`], [`PassiveConstructedStage`], plus [`SharedDecomposed`] / [`LocalDecomposed`] |
 //!
 //! For the local (!Send) and shared (Send) Extension traits, see
 //! [`local::extension`](crate::local::extension) and
@@ -22,8 +22,8 @@ pub mod wrapper;
 mod tests;
 
 pub use builder::{
-    ActiveStage, ExtensionBundleBuilder, LocalDecomposed, PassiveClonedStage, PassiveFreshStage,
-    PassiveStage, SharedDecomposed,
+    ActiveStage, ExtensionBundleBuilder, LocalDecomposed, PassiveClonedStage,
+    PassiveConstructedStage, PassiveStage, SharedDecomposed,
 };
 pub use wrapper::{
     ControlChannel, ControlReceiver, EffectHandler, ExtensionBundle, ExtensionLifecycle,

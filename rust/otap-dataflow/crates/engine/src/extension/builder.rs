@@ -22,10 +22,10 @@
 //!     .shared(MyShared::new(cfg))
 //!     .build()?;
 //!
-//! // Passive extension, fresh-per-consumer policy.
+//! // Passive extension, constructed-per-consumer policy.
 //! builder
 //!     .passive()
-//!     .fresh()
+//!     .constructed()
 //!     .shared(|| MyShared::new(cfg.clone()))
 //!     .local(|| Rc::new(MyLocal::new(cfg.clone())))
 //!     .build()?;
@@ -36,25 +36,26 @@
 //! | Axis            | Methods                                                                    |
 //! |-----------------|----------------------------------------------------------------------------|
 //! | Lifecycle       | `.active()` / `.passive()`                                                 |
-//! | Instance policy | *(implicit Cloned for Active)* `.cloned()` / `.fresh()` *(Passive only)* |
+//! | Instance policy | *(implicit Cloned for Active)* `.cloned()` / `.constructed()` *(Passive only)* |
 //! | Execution model | `.shared(...)` / `.local(...)` *(repeatable, register once each)*          |
 //!
 //! **Why the lifecycle and policy are sealed per bundle.** "This
-//! extension has an event loop" or "this capability hands out fresh
-//! instances" is a property of the extension, not of which trait-object
-//! shape (shared vs local) the consumer happens to request. Letting the
-//! two execution models diverge would mean consumers observe different
-//! instance-sharing semantics depending on whether they call
-//! `require_local` vs `require_shared` on the same extension — a
-//! debugging hazard with no known legitimate use case. Forcing a single
-//! strategy across both execution models makes the extension's behavior
-//! predictable and eliminates a combinatorial footgun.
+//! extension has an event loop" or "this capability hands out a new
+//! instance per consumer" is a property of the extension, not of which
+//! trait-object shape (shared vs local) the consumer happens to
+//! request. Letting the two execution models diverge would mean
+//! consumers observe different instance-sharing semantics depending on
+//! whether they call `require_local` vs `require_shared` on the same
+//! extension — a debugging hazard with no known legitimate use case.
+//! Forcing a single strategy across both execution models makes the
+//! extension's behavior predictable and eliminates a combinatorial
+//! footgun.
 //!
-//! **Active + Fresh is unrepresentable.** Active extensions have a
-//! single engine-driven event loop; minting fresh instances per
+//! **Active + Constructed is unrepresentable.** Active extensions have
+//! a single engine-driven event loop; constructing a new instance per
 //! consumer doesn't compose with that. The `.active()` stage provides
-//! no `.fresh()` method — the invalid combination is a compile-time
-//! error.
+//! no `.constructed()` method — the invalid combination is a
+//! compile-time error.
 
 use super::{ExtensionBundle, ExtensionLifecycle, ExtensionWrapper};
 use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
@@ -181,11 +182,12 @@ impl PassiveStage {
         }
     }
 
-    /// Select the **fresh-per-consumer** instance policy: each consumer
-    /// receives a freshly-constructed instance from the stored closure.
+    /// Select the **constructed-per-consumer** instance policy: each
+    /// consumer receives a newly-constructed instance from the stored
+    /// closure.
     #[must_use]
-    pub fn fresh(self) -> PassiveFreshStage {
-        PassiveFreshStage {
+    pub fn constructed(self) -> PassiveConstructedStage {
+        PassiveConstructedStage {
             parent: self.parent,
         }
     }
@@ -250,15 +252,15 @@ impl PassiveClonedStage {
     }
 }
 
-/// Passive + Fresh (fresh-per-consumer) stage.
+/// Passive + Constructed (constructed-per-consumer) stage.
 #[doc(hidden)]
-pub struct PassiveFreshStage {
+pub struct PassiveConstructedStage {
     parent: ExtensionBundleBuilder,
 }
 
-impl PassiveFreshStage {
+impl PassiveConstructedStage {
     /// Register the shared (Send) variant via a factory closure.
-    /// Each consumer receives a freshly-constructed instance.
+    /// Each consumer receives a newly-constructed instance.
     ///
     /// `F: Clone` is required so per-node factories can duplicate the
     /// closure; closures capturing `Clone` configuration (e.g.
@@ -348,8 +350,8 @@ impl ExtensionBundleBuilder {
     /// The engine will drive an event loop for whichever sides are
     /// registered.
     ///
-    /// Instance policy is implicitly clone-per-consumer — fresh-per-
-    /// consumer (factory) is Passive-only.
+    /// Instance policy is implicitly clone-per-consumer —
+    /// constructed-per-consumer (factory closure) is Passive-only.
     #[must_use]
     pub fn active(self) -> ActiveStage {
         ActiveStage { parent: self }
@@ -359,7 +361,7 @@ impl ExtensionBundleBuilder {
     /// event loop is spawned; the extension exposes capabilities only.
     ///
     /// Continue with [`PassiveStage::cloned`] (clone-per-consumer)
-    /// or [`PassiveStage::fresh`] (fresh-per-consumer).
+    /// or [`PassiveStage::constructed`] (constructed-per-consumer).
     #[must_use]
     pub fn passive(self) -> PassiveStage {
         PassiveStage { parent: self }

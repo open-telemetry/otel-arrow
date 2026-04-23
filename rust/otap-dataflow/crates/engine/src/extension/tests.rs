@@ -521,7 +521,7 @@ fn test_dual_passive_fresh() {
     let (n, u, c) = ext_config("dpf");
     let mut set = ExtensionWrapper::builder(n, u, &c)
         .passive()
-        .fresh()
+        .constructed()
         .local(|| std::rc::Rc::new(42u32))
         .shared(|| "data".to_string())
         .build()

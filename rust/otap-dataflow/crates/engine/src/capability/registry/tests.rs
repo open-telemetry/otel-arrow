@@ -129,7 +129,7 @@ impl TestCapLocal for LocalImpl {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-// Build a SharedInstanceFactory that always produces a fresh
+// Build a SharedInstanceFactory that always produces a new
 // `Box<SharedImpl>` with the given value. Mimics the builder's
 // clone-per-consumer output.
 fn shared_instance_factory(val: &'static str) -> crate::capability::SharedInstanceFactory {
@@ -517,11 +517,11 @@ fn test_consumed_tracking_persists_across_nodes_shared() {
 
 /// Regression for Option C: each node resolving a `SharedAsLocal`
 /// binding receives its own clone of the shared extension instance.
-/// This preserves per-caller-fresh semantics that a shared impl may
-/// rely on (e.g. per-caller mutable state) — the adapter is not
+/// This preserves the per-node instance semantics that a shared impl
+/// may rely on (e.g. per-caller mutable state) — the adapter is not
 /// pre-built once and shared across nodes.
 #[test]
-fn test_shared_as_local_builds_fresh_adapter_per_node() {
+fn test_shared_as_local_builds_new_adapter_per_node() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -848,10 +848,10 @@ fn test_end_to_end_local_only_via_bundle() {
 }
 
 #[test]
-fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
-    // With the fresh (factory) policy, the instance factory invokes the
-    // user's closure on each produce(); each consumer should observe
-    // its own instance. Shared+Clone consumers observe
+fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
+    // With the `.constructed()` (factory) policy, the instance factory
+    // invokes the user's closure on each produce(); each consumer
+    // should observe its own instance. Shared+Clone consumers observe
     // clone-of-prototype semantics — also independent here since
     // SharedImpl has no interior mutability.
     use crate::capability::ExtensionCapabilities;
@@ -868,11 +868,11 @@ fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
     ));
     let runtime_config = ExtensionConfig::new("counter");
 
-    // FreshImpl: each `start()` increments a shared counter so we can
-    // confirm the factory ran per-consumer.
+    // ConstructedImpl: each `start()` increments a shared counter so
+    // we can confirm the factory ran per-consumer.
     #[derive(Clone)]
-    struct FreshImpl(Arc<AtomicUsize>, &'static str);
-    impl TestCapShared for FreshImpl {
+    struct ConstructedImpl(Arc<AtomicUsize>, &'static str);
+    impl TestCapShared for ConstructedImpl {
         fn value(&self) -> &str {
             self.1
         }
@@ -883,10 +883,10 @@ fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
 
     let bundle = ExtensionWrapper::builder(name.clone(), user_config, &runtime_config)
         .passive()
-        .fresh()
-        .shared::<FreshImpl, _>(move || {
+        .constructed()
+        .shared::<ConstructedImpl, _>(move || {
             let _ = counter_for_closure.fetch_add(1, Ordering::SeqCst);
-            FreshImpl(Arc::clone(&counter_for_closure), "fresh")
+            ConstructedImpl(Arc::clone(&counter_for_closure), "constructed")
         })
         .build()
         .expect("bundle builds");
@@ -897,7 +897,7 @@ fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
         register_shared: |ext_id, factory, registry| {
             registry.register_shared(
                 TypeId::of::<TestCap>(),
-                TestCap::shared_entry::<FreshImpl>(ext_id, factory),
+                TestCap::shared_entry::<ConstructedImpl>(ext_id, factory),
             )
         },
         register_local: ExtensionCapabilities::none().register_local,
@@ -925,18 +925,19 @@ fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
     .expect("resolve");
 
     // One claim per resolved Capabilities (one-shot contract). The
-    // `fresh` policy invokes the user's factory on each `produce()`,
-    // so two consumers should observe two factory invocations and no
-    // resolve-time mint (the `SharedAsLocal` fallback is deferred to
-    // the `require_local` call, which is never made here).
+    // `.constructed()` policy invokes the user's factory on each
+    // `produce()`, so two consumers should observe two factory
+    // invocations and no resolve-time mint (the `SharedAsLocal`
+    // fallback is deferred to the `require_local` call, which is never
+    // made here).
     let s1 = resolved_a.require_shared::<TestCap>().unwrap();
     let s2 = resolved_b.require_shared::<TestCap>().unwrap();
-    assert_eq!(s1.value(), "fresh");
-    assert_eq!(s2.value(), "fresh");
+    assert_eq!(s1.value(), "constructed");
+    assert_eq!(s2.value(), "constructed");
     assert_eq!(
         counter.load(Ordering::SeqCst),
         2,
-        "fresh factory should have been invoked exactly 2x (one per require_shared consumer)"
+        "constructed factory should have been invoked exactly 2x (one per require_shared consumer)"
     );
 }
 

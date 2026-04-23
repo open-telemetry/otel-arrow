@@ -110,7 +110,7 @@ pub(crate) fn resolve_bindings(
 
         // Resolve local entry: prefer a native local registration; else,
         // if the extension registered a shared entry, invoke the
-        // capability's `SharedAsLocal` adapter to build a fresh local
+        // capability's `SharedAsLocal` adapter to build a new local
         // wrapper around this node's own clone of the shared instance.
         let native_local = local_entry;
 
@@ -139,7 +139,7 @@ pub(crate) fn resolve_bindings(
             // (single, one-shot) `require_local` call. The closure
             // captures a refcounted handle to the shared produce
             // closure plus the capability's `adapt_as_local` fn
-            // pointer, then on invocation produces a fresh shared
+            // pointer, then on invocation produces a new shared
             // instance and routes it through the adapter to yield a
             // type-erased `Rc<dyn Any>` wrapping the local trait
             // object.
