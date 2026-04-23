@@ -127,23 +127,16 @@ impl DecodedUsereventsRecord {
         let mut severity_text: Option<Cow<'static, str>>;
         let cs_failed: bool;
 
-        if let Some(mut cs) = decode_cs_otel_logs(tracepoint, &value.payload) {
-            // G1: The OTLP typed `event_name` column maps to the Bond `name`
-            // field written by the Geneva uploader. The Rust user-events
-            // exporter carries the user-visible event name in `PartB.name`
-            // (e.g. "my-event-name"), while `EH.Name` is fixed to "Log" and
-            // `PartA.name` is typically absent. Prefer PartB.name, then the
-            // CS-level override (PartA.name or EH.Name), so the Ingestion
-            // backend batches and writes per-event-name records instead of
-            // collapsing them all to a single "Log" stream.
+        if let Some(mut cs) = decode_cs_otel_logs(tracepoint, &value.payload, &mut attributes) {
+            // Prefer the payload-provided event name when present, then fall
+            // back to the record-level name.
             event_name = Some(cs.part_b_name.take().unwrap_or(cs.event_name));
             body = cs.body.unwrap_or_default();
             severity_number = cs.severity_number;
             severity_text = cs.severity_text.map(Cow::Owned);
-            // PartB.name is surfaced via the typed OTLP `event_name` column
-            // above; no separate `cs.part_b.name` attribute is emitted so the
-            // Ingestion backend does not see a redundant
-            // `cs_part_b_name` backend column.
+            // The selected event name is surfaced via the typed OTLP
+            // `event_name` field rather than duplicated as a separate
+            // attribute.
             if let Some(eid) = cs.event_id {
                 // G3: eventId is emitted as a typed Int so the Ingestion
                 // backend writes a Bond BT_INT64 column (matching mdsd's
@@ -182,9 +175,6 @@ impl DecodedUsereventsRecord {
                 ));
             }
             // G2: PartC attrs keep their source typed value (int/double/bool/str).
-            for (k, v) in cs.part_c_attrs {
-                attributes.push((Cow::Owned(k), v));
-            }
             // Fall back to EventHeader level if PartB had no severity
             if severity_number.is_none() {
                 let fallback_number = fallback_severity.map(|(number, _)| number);
@@ -261,13 +251,13 @@ pub(super) fn severity_fallback_from_tracepoint(tracepoint: &str) -> Option<(i32
 
 /// Decoded Common Schema OTel Logs record extracted from EventHeader binary payload.
 ///
-/// TODO(perf): This intermediate owned decode struct is intentionally kept for now because it
-/// preserves a clean, pure `decode_cs_otel_logs()` contract and is the direct assertion surface
-/// for the decoder unit tests. The remaining overhead from this layer is modest:
-/// - one transient `part_c_attrs` Vec buffer per successful CS decode.
+/// TODO(perf): This intermediate owned decode struct is kept because decode can
+/// fail after partial progress, while the current Arrow/OTAP builders are
+/// append-only and do not support rollback. It is not just a convenience
+/// layer; it preserves atomic decode behavior.
 ///
-/// If profiling shows this layer is materially hot, revisit whether PartC attributes can be
-/// written directly into the final attribute sink while preserving rollback on decode failure.
+/// If this path shows up hot in profiling, revisit direct-to-builder decode
+/// together with transactional append or explicit rollback support.
 #[derive(Debug, Default)]
 struct CsDecodedLog {
     event_name: String,
@@ -284,13 +274,21 @@ struct CsDecodedLog {
     event_id: Option<i64>,
     service_name: Option<String>,
     service_instance_id: Option<String>,
-    part_c_attrs: Vec<(String, DecodedAttrValue)>,
 }
 
 /// Decode a Common Schema OTel Logs EventHeader binary payload.
 /// Returns `None` if the payload cannot be parsed, `__csver__` != 0x400,
 /// or PartB is missing / `_typeName` != "Log".
-fn decode_cs_otel_logs(tracepoint: &str, payload: &[u8]) -> Option<CsDecodedLog> {
+///
+/// PartC attributes are written directly into the caller-owned `attributes`
+/// sink instead of being staged on `CsDecodedLog`. This avoids a transient
+/// per-record `Vec` on successful decode while preserving atomic decode
+/// behavior by truncating back to `attrs_start` if parsing later fails.
+fn decode_cs_otel_logs(
+    tracepoint: &str,
+    payload: &[u8],
+    attributes: &mut Vec<(Cow<'static, str>, DecodedAttrValue)>,
+) -> Option<CsDecodedLog> {
     let mut context = EventHeaderEnumeratorContext::new();
     let mut en = context
         .enumerate_with_name_and_data(
@@ -328,6 +326,7 @@ fn decode_cs_otel_logs(tracepoint: &str, payload: &[u8]) -> Option<CsDecodedLog>
     let mut part_a_done = false;
     let mut part_b_done = false;
     let mut part_c_done = false;
+    let attrs_start = attributes.len();
 
     // Walk top-level struct fields (PartA, PartC, PartB)
     while en.move_next() {
@@ -337,18 +336,24 @@ fn decode_cs_otel_logs(tracepoint: &str, payload: &[u8]) -> Option<CsDecodedLog>
                 let name = item.name_bytes();
                 if name == b"PartA" {
                     if part_a_done {
+                        attributes.truncate(attrs_start);
                         return None;
                     }
                     if !walk_part_a(&mut en, &mut cs) {
+                        attributes.truncate(attrs_start);
                         return None;
                     }
                     part_a_done = true;
                 } else if name == b"PartB" {
                     if part_b_done {
+                        attributes.truncate(attrs_start);
                         return None;
                     }
                     match walk_part_b(&mut en, &mut cs) {
-                        None => return None,
+                        None => {
+                            attributes.truncate(attrs_start);
+                            return None;
+                        }
                         Some(ok) => {
                             if ok {
                                 found_part_b = true;
@@ -358,28 +363,36 @@ fn decode_cs_otel_logs(tracepoint: &str, payload: &[u8]) -> Option<CsDecodedLog>
                     }
                 } else if name == b"PartC" {
                     if part_c_done {
+                        attributes.truncate(attrs_start);
                         return None;
                     }
-                    if !walk_part_c(&mut en, &mut cs) {
+                    if !walk_part_c(&mut en, attributes) {
+                        attributes.truncate(attrs_start);
                         return None;
                     }
                     part_c_done = true;
                 } else {
                     // Unknown top-level struct → invalid schema
+                    attributes.truncate(attrs_start);
                     return None;
                 }
             }
-            EventHeaderEnumeratorState::Error => return None,
+            EventHeaderEnumeratorState::Error => {
+                attributes.truncate(attrs_start);
+                return None;
+            }
             EventHeaderEnumeratorState::AfterLastItem => break,
             _ => {}
         }
     }
 
     if en.last_error() != EventHeaderEnumeratorError::Success {
+        attributes.truncate(attrs_start);
         return None;
     }
 
     if !found_part_b {
+        attributes.truncate(attrs_start);
         return None;
     }
     Some(cs)
@@ -486,7 +499,7 @@ fn walk_part_b(
 /// unexpected state.
 fn walk_part_c(
     en: &mut tracepoint_decode::EventHeaderEnumerator<'_, '_, '_>,
-    cs: &mut CsDecodedLog,
+    attributes: &mut Vec<(Cow<'static, str>, DecodedAttrValue)>,
 ) -> bool {
     loop {
         if !en.move_next() {
@@ -505,7 +518,7 @@ fn walk_part_c(
                     continue;
                 }
                 if let Some(val) = item_as_any_scalar_value(&item) {
-                    cs.part_c_attrs.push((name.to_owned(), val));
+                    attributes.push((Cow::Owned(name.to_owned()), val));
                 }
             }
             // Nested struct in PartC → reject (invalid schema)
@@ -714,6 +727,11 @@ mod tests {
             &FormatConfig::CommonSchemaOtelLogs,
             severity_fallback_from_tracepoint(tracepoint),
         )
+    }
+
+    fn decode_cs_for_test(tracepoint: &str, payload: &[u8]) -> Option<CsDecodedLog> {
+        let mut attributes = Vec::new();
+        decode_cs_otel_logs(tracepoint, payload, &mut attributes)
     }
 
     #[test]
@@ -947,7 +965,7 @@ mod tests {
     fn cs_decode_extracts_event_name_from_eventheader() {
         let (tracepoint, payload) =
             build_cs_log_payload_part_b_only("MyLogEvent", "hello", 9, "INFO", 4);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(cs.event_name, "MyLogEvent");
     }
 
@@ -955,7 +973,7 @@ mod tests {
     fn cs_decode_extracts_severity_from_part_b() {
         let (tracepoint, payload) =
             build_cs_log_payload_part_b_only("Log", "hello", 17, "ERROR", 2);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(cs.severity_number, Some(17));
         assert_eq!(cs.severity_text.as_deref(), Some("ERROR"));
     }
@@ -964,7 +982,7 @@ mod tests {
     fn cs_decode_extracts_body_from_part_b() {
         let (tracepoint, payload) =
             build_cs_log_payload_part_b_only("Log", "This is the log body", 9, "INFO", 4);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(cs.body.as_deref(), Some("This is the log body"));
     }
 
@@ -972,19 +990,22 @@ mod tests {
     fn cs_decode_part_c_attrs_are_flat() {
         let attrs = [("my_key", "my_value"), ("another", "42")];
         let (tracepoint, payload) = build_cs_log_payload_with_part_c("Log", "body", &attrs, 4);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1_000_000);
+        assert!(!cs_failed);
         assert!(
-            cs.part_c_attrs
+            decoded
+                .attributes
                 .iter()
                 .any(|(k, v)| k == "my_key" && v == "my_value")
         );
         assert!(
-            cs.part_c_attrs
+            decoded
+                .attributes
                 .iter()
                 .any(|(k, v)| k == "another" && v == "42")
         );
         // Keys must NOT have a "cs." prefix
-        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k.starts_with("cs.")));
+        assert!(!decoded.attributes.iter().any(|(k, _)| k.starts_with("cs.")));
     }
 
     #[test]
@@ -998,7 +1019,7 @@ mod tests {
             9,
             4,
         );
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(
             cs.trace_id,
             Some([
@@ -1016,7 +1037,7 @@ mod tests {
     fn cs_decode_part_a_time_override() {
         let (tracepoint, payload) =
             build_cs_log_payload_with_part_a("Log", "2024-06-15T12:00:00Z", "", "", "body", 9, 4);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(cs.time.as_deref(), Some("2024-06-15T12:00:00Z"));
     }
 
@@ -1032,7 +1053,7 @@ mod tests {
         add_string_data(&mut data, "Log");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     #[test]
@@ -1044,7 +1065,7 @@ mod tests {
         add_u32_data(&mut data, 0x400);
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     #[test]
@@ -1079,7 +1100,7 @@ mod tests {
         // Truncate data section
         let truncated_len = payload.len().saturating_sub(4);
         payload.truncate(truncated_len);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     // ── Finding 2: schema validation ────────────────────────────────────────────
@@ -1095,7 +1116,7 @@ mod tests {
         add_string_data(&mut data, "value");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     #[test]
@@ -1116,7 +1137,7 @@ mod tests {
         add_string_data(&mut data, "second");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     #[test]
@@ -1134,7 +1155,7 @@ mod tests {
         add_string_data(&mut data, "bar");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     #[test]
@@ -1156,7 +1177,7 @@ mod tests {
         add_string_data(&mut data, "body");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     // ── Finding 3: typed trace/span ────────────────────────────────────────────
@@ -1287,7 +1308,7 @@ mod tests {
         add_string_data(&mut data, "content");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "HeaderName", &meta, &data);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(cs.event_name, "OverriddenName");
     }
 
@@ -1391,7 +1412,7 @@ mod tests {
         add_string_data(&mut data, "Log");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     #[test]
@@ -1405,7 +1426,7 @@ mod tests {
         add_string_data(&mut data, "Log");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_some());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_some());
     }
 
     #[test]
@@ -1419,7 +1440,7 @@ mod tests {
         add_string_data(&mut data, "Log");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_some());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_some());
     }
 
     #[test]
@@ -1433,7 +1454,7 @@ mod tests {
         add_string_data(&mut data, "Span");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     #[test]
@@ -1447,7 +1468,7 @@ mod tests {
         add_string_data(&mut data, "body");
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        assert!(decode_cs_otel_logs(&tracepoint, &payload).is_none());
+        assert!(decode_cs_for_test(&tracepoint, &payload).is_none());
     }
 
     #[test]
@@ -1458,14 +1479,16 @@ mod tests {
             ("ok", "value"),
         ];
         let (tracepoint, payload) = build_cs_log_payload_with_part_c("Log", "body", &attrs, 4);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1_000_000);
+        assert!(!cs_failed);
         assert!(
-            cs.part_c_attrs
+            decoded
+                .attributes
                 .iter()
                 .any(|(k, v)| k == "ok" && v == "value")
         );
-        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k == "body"));
-        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k == "severityText"));
+        assert!(!decoded.attributes.iter().any(|(k, _)| k == "body"));
+        assert!(!decoded.attributes.iter().any(|(k, _)| k == "severityText"));
     }
 
     #[test]
@@ -1476,14 +1499,16 @@ mod tests {
             ("ok", "value"),
         ];
         let (tracepoint, payload) = build_cs_log_payload_with_part_c("Log", "body", &attrs, 4);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let (decoded, cs_failed) = decode_record(&tracepoint, payload, 1_000_000);
+        assert!(!cs_failed);
         assert!(
-            cs.part_c_attrs
+            decoded
+                .attributes
                 .iter()
                 .any(|(k, v)| k == "ok" && v == "value")
         );
-        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k == "env_time"));
-        assert!(!cs.part_c_attrs.iter().any(|(k, _)| k == "env_dt_traceId"));
+        assert!(!decoded.attributes.iter().any(|(k, _)| k == "env_time"));
+        assert!(!decoded.attributes.iter().any(|(k, _)| k == "env_dt_traceId"));
     }
 
     #[test]
@@ -1499,7 +1524,7 @@ mod tests {
         add_i64_data(&mut data, -42);
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(cs.body.as_deref(), Some("-42"));
     }
 
@@ -1516,7 +1541,7 @@ mod tests {
         add_u8_data(&mut data, 1);
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(cs.body.as_deref(), Some("true"));
     }
 
@@ -1533,7 +1558,7 @@ mod tests {
         add_f64_data(&mut data, 3.5);
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert_eq!(cs.body.as_deref(), Some("3.5"));
     }
 
@@ -1576,7 +1601,7 @@ mod tests {
         add_string_field_meta(&mut meta, "name");
         add_string_data(&mut data, "my-event-name");
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let cs_direct = decode_cs_otel_logs("user_events:myprovider_L4K1", &payload);
+        let cs_direct = decode_cs_for_test("user_events:myprovider_L4K1", &payload);
         assert!(cs_direct.is_some(), "direct CS decode should succeed");
         assert_eq!(
             cs_direct.unwrap().part_b_name.as_deref(),
@@ -1664,7 +1689,7 @@ mod tests {
         data.extend_from_slice(&[0xC3, 0x28]);
         let tracepoint = "user_events:myprovider_L4K1".to_owned();
         let payload = build_full_payload(4, "Log", &meta, &data);
-        let cs = decode_cs_otel_logs(&tracepoint, &payload).expect("decode should succeed");
+        let cs = decode_cs_for_test(&tracepoint, &payload).expect("decode should succeed");
         assert!(cs.severity_text.is_none());
     }
 }
