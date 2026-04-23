@@ -1,6 +1,19 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Live reconfiguration runtime for controller-owned pipelines.
+//!
+//! This module is the controller's internal state machine for live pipeline
+//! rollout and shutdown. It translates admin control-plane requests into
+//! concrete runtime-instance changes, tracks active and terminal operations,
+//! reconciles pipeline-thread exits with controller bookkeeping, and compacts
+//! observed state once old generations are no longer needed for coordination.
+//!
+//! The submodules intentionally split the lifecycle by concern:
+//! planning validates requests and records accepted operations, execution runs
+//! rollout/shutdown workers, runtime owns per-instance launch and exit
+//! reporting, and state contains the shared in-memory model.
+
 use super::*;
 use chrono::Utc;
 use otap_df_admin::{
@@ -36,29 +49,59 @@ use self::state::{
 };
 pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
 
+/// Shared live-control runtime used by the admin control plane and workers.
+///
+/// `ControllerRuntime` is the synchronization point for logical pipeline
+/// records, deployed runtime instances, rollout/shutdown histories, observed
+/// state updates, and topic/runtime registries. All mutable controller state is
+/// kept behind `state`; pipeline execution threads report back through a
+/// `Weak<ControllerRuntime<_>>` so they do not keep the controller alive during
+/// teardown.
 pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
+    /// Factory used to build runtime pipelines for new instances.
     pipeline_factory: &'static PipelineFactory<PData>,
+    /// Static controller context cloned into launched pipeline threads.
     controller_context: ControllerContext,
+    /// Mutable observed-state store used for compaction and status updates.
     observed_state_store: ObservedStateStore,
+    /// Read handle used by wait paths to observe readiness and phase changes.
     observed_state_handle: ObservedStateHandle,
+    /// Reporter used for lifecycle and runtime-error events.
     engine_event_reporter: ObservedEventReporter,
+    /// Metrics reporter cloned into launched runtime instances.
     metrics_reporter: MetricsReporter,
+    /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
+    /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,
+    /// Tracing setup cloned into launched runtime threads.
     engine_tracing_setup: TracingSetup,
+    /// Runtime telemetry reporting cadence.
     telemetry_reporting_interval: Duration,
+    /// Memory-pressure signal fanout shared with pipeline runtimes.
     memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
+    /// All mutable live-control state protected by a single mutex.
     state: Mutex<ControllerRuntimeState>,
+    /// Wakes global shutdown waiters when runtime instance liveness changes.
     state_changed: Condvar,
 }
 
+/// Thin adapter that exposes `ControllerRuntime` through the admin trait.
 struct ControllerControlPlane<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     runtime: Arc<ControllerRuntime<PData>>,
 }
 
+/// Result of launching one pipeline runtime thread.
+///
+/// The controller stores the `control_sender` while the instance is active and
+/// drops it after shutdown is requested so the pipeline can observe control
+/// channel closure once node tasks finish.
 pub(super) struct LaunchedPipelineThread<PData> {
+    /// Concrete deployed instance key for the launched runtime thread.
     pub(super) pipeline_key: DeployedPipelineKey,
+    /// Admin sender used by live control to send shutdown to the instance.
     pub(super) control_sender: Arc<dyn PipelineAdminSender>,
+    /// Keeps the launch result tied to the pipeline data type.
     pub(super) _marker: std::marker::PhantomData<PData>,
 }
 
@@ -233,18 +276,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_key: &PipelineKey,
         now: Instant,
     ) {
-        loop {
-            let Some((rollout_id, queue_len)) =
-                state.terminal_rollouts.get(pipeline_key).and_then(|queue| {
-                    queue
-                        .front()
-                        .cloned()
-                        .map(|rollout_id| (rollout_id, queue.len()))
-                })
-            else {
-                break;
-            };
-
+        while let Some((rollout_id, queue_len)) =
+            state.terminal_rollouts.get(pipeline_key).and_then(|queue| {
+                queue
+                    .front()
+                    .cloned()
+                    .map(|rollout_id| (rollout_id, queue.len()))
+            })
+        {
             let should_evict = queue_len > TERMINAL_ROLLOUT_RETENTION_LIMIT
                 || state
                     .rollouts
@@ -302,20 +341,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         pipeline_key: &PipelineKey,
         now: Instant,
     ) {
-        loop {
-            let Some((shutdown_id, queue_len)) = state
-                .terminal_shutdowns
-                .get(pipeline_key)
-                .and_then(|queue| {
-                    queue
-                        .front()
-                        .cloned()
-                        .map(|shutdown_id| (shutdown_id, queue.len()))
-                })
-            else {
-                break;
-            };
-
+        while let Some((shutdown_id, queue_len)) = state
+            .terminal_shutdowns
+            .get(pipeline_key)
+            .and_then(|queue| {
+                queue
+                    .front()
+                    .cloned()
+                    .map(|shutdown_id| (shutdown_id, queue.len()))
+            })
+        {
             let should_evict = queue_len > TERMINAL_SHUTDOWN_RETENTION_LIMIT
                 || state
                     .shutdowns

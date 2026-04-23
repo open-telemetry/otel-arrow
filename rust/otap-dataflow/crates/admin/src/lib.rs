@@ -40,7 +40,7 @@ pub enum ControlPlaneError {
     GroupNotFound,
     /// The requested pipeline does not exist.
     PipelineNotFound,
-    /// Another rollout is already active for this logical pipeline.
+    /// Another incompatible live operation is active in the current consistency scope.
     RolloutConflict,
     /// Submitted pipeline configuration failed validation or violated a runtime boundary.
     InvalidRequest {

@@ -1,8 +1,16 @@
+//! Background rollout and shutdown execution.
+//!
+//! The planning module records accepted operations and spawns workers; this
+//! module contains the worker bodies. Each worker updates per-core progress,
+//! drives runtime instance launch/shutdown, commits successful generations, and
+//! performs best-effort rollback when a multi-step rollout fails.
+
 use super::*;
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
     ControllerRuntime<PData>
 {
+    /// Emits the internal telemetry event for a rollout/shutdown worker panic.
     pub(super) fn report_controller_worker_panic(
         &self,
         pipeline_key: &PipelineKey,
@@ -41,6 +49,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     ) {
         let report = PanicReport::capture("rollout worker", panic, Some(thread_name), None, None);
         let failure_reason = report.summary_message();
+        self.request_rollout_panic_candidate_cleanup(pipeline_key, rollout_id);
         self.update_rollout(pipeline_key, rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Failed;
             rollout.failure_reason = Some(failure_reason.clone());
@@ -49,6 +58,72 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self.finish_rollout(pipeline_key, rollout_id);
     }
 
+    /// Sends shutdown to candidate instances left behind by a panicking rollout worker.
+    fn request_rollout_panic_candidate_cleanup(
+        &self,
+        pipeline_key: &PipelineKey,
+        rollout_id: &str,
+    ) {
+        let (mut candidates, timeout_secs) = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(rollout) = state.rollouts.get(rollout_id) else {
+                return;
+            };
+            let target_generation = rollout.target_generation;
+            let timeout_secs = rollout.drain_timeout_secs;
+
+            // Only an uncommitted target generation is safe to clean up here.
+            // Resize rollouts use the committed generation, and a post-commit
+            // panic means the target generation is already the serving one.
+            if state
+                .logical_pipelines
+                .get(pipeline_key)
+                .is_some_and(|record| record.active_generation == target_generation)
+            {
+                return;
+            }
+
+            let candidates = state
+                .runtime_instances
+                .iter()
+                .filter_map(|(deployed_key, instance)| {
+                    if deployed_key.pipeline_group_id == *pipeline_key.pipeline_group_id()
+                        && deployed_key.pipeline_id == *pipeline_key.pipeline_id()
+                        && deployed_key.deployment_generation == target_generation
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                        && instance.control_sender.is_some()
+                    {
+                        Some(deployed_key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            (candidates, timeout_secs)
+        };
+        candidates.sort_by_key(|deployed_key| deployed_key.core_id);
+
+        for deployed_key in candidates {
+            if let Err(message) =
+                self.request_instance_shutdown(&deployed_key, timeout_secs, "rollout panic cleanup")
+            {
+                otel_error!(
+                    "controller.rollout_panic_cleanup_failed",
+                    pipeline_group_id = %deployed_key.pipeline_group_id.as_ref(),
+                    pipeline_id = %deployed_key.pipeline_id.as_ref(),
+                    core_id = deployed_key.core_id,
+                    deployment_generation = deployed_key.deployment_generation,
+                    rollout_id = rollout_id,
+                    error = message.as_str(),
+                );
+            }
+        }
+    }
+
+    /// Forces shutdown terminal cleanup when the detached shutdown worker panics.
     pub(super) fn handle_shutdown_worker_panic(
         &self,
         pipeline_key: &PipelineKey,
@@ -65,6 +140,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         self.report_controller_worker_panic(pipeline_key, "shutdown", shutdown_id, &report);
     }
 
+    /// Runs one accepted rollout plan and records its terminal state.
     pub(super) fn run_rollout(self: Arc<Self>, plan: CandidateRolloutPlan) {
         self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Running;
@@ -241,13 +317,27 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 "starting",
                 None,
             );
-            let deployed_key = self
-                .launch_regular_pipeline_instance(
-                    &plan.resolved_pipeline,
-                    *core_id,
-                    plan.target_generation,
-                )
-                .map_err(|err| RolloutExecutionError::Failed(err.to_string()))?;
+            let deployed_key = match self.launch_regular_pipeline_instance(
+                &plan.resolved_pipeline,
+                *core_id,
+                plan.target_generation,
+            ) {
+                Ok(deployed_key) => deployed_key,
+                Err(err) => {
+                    let reason = err.to_string();
+                    self.update_rollout_core_state(
+                        &plan.pipeline_key,
+                        &plan.rollout.rollout_id,
+                        *core_id,
+                        "failed",
+                        Some(reason.clone()),
+                    );
+                    // Create rollouts have no previous generation to restore, so a launch
+                    // failure must tear down any candidate instances that were already started.
+                    let _ = self.shutdown_instances(&launched, plan.drain_timeout_secs);
+                    return Err(RolloutExecutionError::Failed(reason));
+                }
+            };
             launched.push(deployed_key);
         }
 

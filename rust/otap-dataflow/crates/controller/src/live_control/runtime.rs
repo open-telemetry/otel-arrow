@@ -1,4 +1,22 @@
+//! Runtime-instance launch, shutdown, and exit reporting.
+//!
+//! This module owns the boundary between controller state and actual pipeline
+//! threads. It registers launched instances, reconciles early exits, sends
+//! shutdown control messages, waits for readiness/exit transitions, and exposes
+//! global runtime shutdown/error helpers used by controller teardown.
+
 use super::*;
+
+/// Formats a deployed instance compactly for aggregated operator errors.
+fn deployed_instance_label(deployed_key: &DeployedPipelineKey) -> String {
+    format!(
+        "{}:{} core={} generation={}",
+        deployed_key.pipeline_group_id.as_ref(),
+        deployed_key.pipeline_id.as_ref(),
+        deployed_key.core_id,
+        deployed_key.deployment_generation
+    )
+}
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
     ControllerRuntime<PData>
@@ -312,7 +330,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         )
     }
 
-    /// Drops the retained admin sender so draining can observe channel closure.
+    /// Drops the retained admin sender after shutdown has been accepted.
+    ///
+    /// The retained sender is the controller's "not yet signaled" marker for
+    /// an active instance. Releasing it makes shutdown dispatch idempotent for
+    /// that instance and lets the pipeline control loop observe channel closure
+    /// once node tasks have exited.
     pub(super) fn release_instance_control_sender(&self, deployed_key: &DeployedPipelineKey) {
         let mut state = self
             .state
@@ -324,8 +347,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     }
 
     /// Broadcasts shutdown to every currently active runtime instance.
+    ///
+    /// This is best-effort across the snapshot: one failed send must not prevent
+    /// later instances from receiving shutdown. It is also idempotent at the
+    /// dispatch boundary: instances that already accepted shutdown have released
+    /// their retained control sender and are skipped by later calls.
     pub(super) fn request_shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
-        let senders: Vec<_> = {
+        // Snapshot under the state lock, then send outside the lock so runtime
+        // callbacks can report exits while shutdown dispatch is in progress.
+        // Only active instances with a retained sender are eligible; a missing
+        // sender means shutdown was already accepted by a previous request.
+        let mut senders: Vec<_> = {
             let state = self
                 .state
                 .lock()
@@ -342,19 +374,65 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 })
                 .collect()
         };
+        // Stabilize both test assertions and the aggregated error message.
+        senders.sort_by_key(|(deployed_key, _)| {
+            (
+                deployed_key.pipeline_group_id.as_ref().to_owned(),
+                deployed_key.pipeline_id.as_ref().to_owned(),
+                deployed_key.core_id,
+                deployed_key.deployment_generation,
+            )
+        });
 
+        let mut failures = Vec::new();
         for (deployed_key, sender) in senders {
-            sender
-                .try_send_shutdown(
-                    Instant::now() + Duration::from_secs(timeout_secs.max(1)),
-                    "global shutdown".to_owned(),
-                )
-                .map_err(|err| ControlPlaneError::Internal {
-                    message: err.to_string(),
-                })?;
-            self.release_instance_control_sender(&deployed_key);
+            if let Err(err) = sender.try_send_shutdown(
+                Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+                "global shutdown".to_owned(),
+            ) {
+                // A failed send can race with the runtime thread exiting after
+                // the snapshot was taken. Treat clean exit as success, report a
+                // terminal runtime error if one was recorded, and otherwise keep
+                // the retained sender so a later shutdown-all can retry it.
+                match self.instance_exit(&deployed_key) {
+                    Some(RuntimeInstanceExit::Success) => {
+                        self.release_instance_control_sender(&deployed_key);
+                    }
+                    Some(RuntimeInstanceExit::Error(error)) => {
+                        failures.push(format!(
+                            "{}: {}",
+                            deployed_instance_label(&deployed_key),
+                            error.message
+                        ));
+                    }
+                    None => {
+                        failures.push(format!(
+                            "{}: {}",
+                            deployed_instance_label(&deployed_key),
+                            err
+                        ));
+                    }
+                }
+            } else {
+                // After a successful send, the controller should not send
+                // another shutdown message to this same active instance.
+                self.release_instance_control_sender(&deployed_key);
+            }
         }
-        Ok(())
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            // Report all failures together after every eligible instance has
+            // been attempted, preserving best-effort shutdown semantics.
+            Err(ControlPlaneError::Internal {
+                message: format!(
+                    "failed to send global shutdown to {} runtime instance(s): {}",
+                    failures.len(),
+                    failures.join("; ")
+                ),
+            })
+        }
     }
 
     /// Starts a tracked shutdown operation for one logical pipeline.

@@ -11,6 +11,7 @@ use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
 use otap_df_engine::control::{
     RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
 };
+use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::wiring_contract::WiringContract;
@@ -300,6 +301,61 @@ fn register_runtime_instance(
     rx
 }
 
+fn register_runtime_instance_with_sender(
+    runtime: &ControllerRuntime<()>,
+    pipeline_key: DeployedPipelineKey,
+    control_sender: Arc<dyn PipelineAdminSender>,
+    lifecycle: RuntimeInstanceLifecycle,
+) {
+    let is_active = matches!(&lifecycle, RuntimeInstanceLifecycle::Active);
+    let mut state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    _ = state.runtime_instances.insert(
+        pipeline_key,
+        RuntimeInstanceRecord {
+            control_sender: Some(control_sender),
+            lifecycle,
+        },
+    );
+    if is_active {
+        state.active_instances += 1;
+    }
+}
+
+struct RecordingPipelineAdminSender {
+    calls: Arc<Mutex<Vec<String>>>,
+    failure: Option<String>,
+}
+
+impl PipelineAdminSender for RecordingPipelineAdminSender {
+    fn try_send_shutdown(&self, _deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(reason);
+        if let Some(failure) = &self.failure {
+            Err(EngineError::RuntimeMsgError {
+                error: failure.clone(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn recording_admin_sender(
+    failure: Option<&str>,
+) -> (Arc<dyn PipelineAdminSender>, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let sender = Arc::new(RecordingPipelineAdminSender {
+        calls: Arc::clone(&calls),
+        failure: failure.map(ToOwned::to_owned),
+    });
+    (sender, calls)
+}
+
 fn launched_runtime_instance(
     pipeline_group_id: &str,
     pipeline_id: &str,
@@ -368,6 +424,7 @@ fn terminal_rollout_record(
         RolloutAction::Replace,
         1,
         Some(0),
+        60,
         Vec::new(),
     );
     rollout.state = RolloutLifecycleState::Succeeded;
@@ -1182,6 +1239,151 @@ connections:
         .expect("rollout conflict should be cleared after panic cleanup");
 }
 
+/// Scenario: a rollout worker panics after launching an uncommitted candidate
+/// generation.
+/// Guarantees: panic cleanup requests shutdown for the candidate generation
+/// before clearing the active rollout, avoiding active orphan instances.
+#[test]
+fn rollout_worker_panic_requests_shutdown_for_uncommitted_candidate_generation() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("rollout plan should be accepted");
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollout should register");
+
+    let candidate_key = deployed_key("g1", "p1", 0, plan.target_generation);
+    let mut candidate_rx = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        plan.target_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime.handle_rollout_worker_panic(
+        &plan.pipeline_key,
+        &plan.rollout.rollout_id,
+        "rollout-g1-p1".to_owned(),
+        Box::new("boom"),
+    );
+
+    assert!(matches!(
+        wait_for_shutdown_message(&mut candidate_rx),
+        RuntimeControlMsg::Shutdown { reason, .. } if reason == "rollout panic cleanup"
+    ));
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&candidate_key)
+            .expect("candidate instance should still be tracked until exit")
+            .control_sender
+            .is_none(),
+        "panic cleanup should release the retained sender after shutdown dispatch"
+    );
+    assert!(!state.active_rollouts.contains_key(&plan.pipeline_key));
+}
+
+/// Scenario: a rollout worker panics after the target generation was already
+/// committed as serving.
+/// Guarantees: panic cleanup does not shut down the committed generation,
+/// which would turn a late bookkeeping panic into runtime outage.
+#[test]
+fn rollout_worker_panic_does_not_shutdown_committed_target_generation() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("rollout plan should be accepted");
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollout should register");
+    runtime.commit_pipeline_record(&plan, plan.target_generation);
+
+    let mut candidate_rx = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        plan.target_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime.handle_rollout_worker_panic(
+        &plan.pipeline_key,
+        &plan.rollout.rollout_id,
+        "rollout-g1-p1".to_owned(),
+        Box::new("boom"),
+    );
+
+    assert!(
+        candidate_rx.try_recv().is_err(),
+        "committed target generation must not receive panic-cleanup shutdown"
+    );
+}
+
 /// Scenario: a shutdown request targets a group id that does not exist in
 /// the controller's committed config.
 /// Guarantees: per-pipeline shutdown fails fast with `GroupNotFound`
@@ -1549,6 +1751,131 @@ groups:
         );
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Scenario: global shutdown dispatch encounters a send failure for one
+/// active runtime instance while other active instances still need the signal.
+/// Guarantees: shutdown dispatch is best effort across the whole snapshot:
+/// every active sender is attempted, successful sends relinquish their retained
+/// control sender, repeated calls do not re-signal instances that already
+/// accepted shutdown, and failures are reported only after the full pass.
+#[test]
+fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let key0 = deployed_key("g1", "p1", 0, 0);
+    let key1 = deployed_key("g1", "p1", 1, 0);
+    let key2 = deployed_key("g1", "p1", 2, 0);
+    let (sender0, calls0) = recording_admin_sender(None);
+    let (sender1, calls1) = recording_admin_sender(Some("simulated send failure"));
+    let (sender2, calls2) = recording_admin_sender(None);
+
+    register_runtime_instance_with_sender(
+        &runtime,
+        key0.clone(),
+        sender0,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        key1.clone(),
+        sender1,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        key2.clone(),
+        sender2,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    let err = runtime
+        .request_shutdown_all(5)
+        .expect_err("shutdown-all should report the failed sender after dispatching all sends");
+
+    assert_eq!(
+        *calls0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
+    assert_eq!(
+        *calls1
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
+    assert_eq!(
+        *calls2
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
+
+    let ControlPlaneError::Internal { message } = err else {
+        panic!("unexpected shutdown-all error: {err:?}");
+    };
+    assert!(message.contains("g1:p1 core=1 generation=0"));
+    assert!(message.contains("simulated send failure"));
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_none(),
+        "successful shutdown send should release key0 control sender"
+    );
+    assert!(
+        state
+            .runtime_instances
+            .get(&key1)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_some(),
+        "failed shutdown send should retain key1 control sender"
+    );
+    assert!(
+        state
+            .runtime_instances
+            .get(&key2)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_none(),
+        "successful shutdown send should release key2 control sender"
+    );
+    drop(state);
+
+    // The first pass released the control sender for successful instances, so
+    // a retry should only reattempt the instance whose shutdown send failed.
+    let err = runtime
+        .request_shutdown_all(5)
+        .expect_err("shutdown-all retry should still report the failed sender");
+
+    let ControlPlaneError::Internal { message } = err else {
+        panic!("unexpected shutdown-all retry error: {err:?}");
+    };
+    assert!(message.contains("g1:p1 core=1 generation=0"));
+    assert!(message.contains("simulated send failure"));
+    assert_eq!(
+        *calls0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
+    assert_eq!(
+        *calls1
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned(), "global shutdown".to_owned()]
+    );
+    assert_eq!(
+        *calls2
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned()]
+    );
 }
 
 /// Scenario: all targeted runtime instances exit cleanly after a pipeline

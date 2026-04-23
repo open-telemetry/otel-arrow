@@ -28,6 +28,46 @@ a time without restarting the process or reloading the full startup file.
 
 ## Terminology
 
+Live reconfiguration uses a few controller-specific terms. They are important
+because the admin API exposes both committed pipeline state and in-progress
+runtime state.
+
+- Logical pipeline: the named pipeline addressed by `(pipeline_group_id,
+  pipeline_id)`. A logical pipeline can have several runtime instances over
+  time as it is rolled, resized, or shut down.
+- Runtime instance: one concrete execution of a logical pipeline on one core.
+  Runtime instances are identified by `(pipeline_group_id, pipeline_id, core_id,
+  deployment_generation)`.
+- Deployment generation: a monotonically assigned version for runtime
+  instances of one logical pipeline. `create` and `replace` rollouts start a new
+  generation. `resize` keeps the same generation and only changes the active
+  core set.
+- Active generation: the generation currently committed by the controller as
+  the logical pipeline's desired serving generation.
+- Serving generation: the generation currently selected for a specific core in
+  observed state. During a rolling cutover, different cores may temporarily
+  serve different generations.
+- Candidate pipeline config: the pipeline config submitted by the client and
+  validated by the controller before it is committed into the live in-memory
+  engine config.
+- Candidate generation: the target generation for a `create` or `replace`
+  rollout while it is still being tested and has not yet been committed as the
+  active generation.
+- Candidate instance: a runtime instance launched from the candidate generation.
+  Candidate instances must become admitted and ready before the controller uses
+  them for serving. If the rollout fails before commit, the controller
+  best-effort shuts them down.
+- Rollout worker: the background controller thread that executes an accepted
+  rollout plan after the admin request has been accepted. The API can return
+  before this worker finishes when `wait=false`.
+- Rollout worker panic: an unexpected Rust panic in the rollout worker itself,
+  not a normal pipeline runtime error. The controller catches this panic, marks
+  the rollout failed, reports diagnostics, clears the active-operation conflict,
+  and cleans up uncommitted candidate instances when needed.
+- Drain: a graceful shutdown step. The runtime stops accepting new ingress,
+  lets already admitted work finish as far as the node contracts allow, and
+  exits before the drain timeout.
+
 This document uses `serial rolling cutover with overlap` for topology-changing
 replacement.
 
@@ -53,6 +93,27 @@ traffic flip across the whole pipeline.
 - Group-level and engine-level policy mutation is out of scope.
 - There is no dedicated scale endpoint. Scale-only changes use the same `PUT`
   endpoint as topology changes.
+
+## Consistency Model
+
+The current API serializes live operations per logical pipeline, identified by
+`(pipeline_group_id, pipeline_id)`. A rollout or shutdown conflicts with another
+active operation for the same logical pipeline, while operations for different
+logical pipelines may run concurrently.
+
+Rollout planning validates a candidate by patching one pipeline into the
+controller's current in-memory `OtelDataflowSpec` snapshot and running full
+engine validation on that candidate snapshot. That validation does not make the
+operation a whole-config transaction: another logical pipeline can commit before
+this rollout commits, and commit applies only the accepted pipeline back into
+the latest live config.
+
+The API intentionally leaves room to widen the consistency scope later. If
+group-level invariants become mutable, the controller can serialize
+config-mutating operations per pipeline group and return `409 Conflict` for
+concurrent operations in that group without changing the existing pipeline
+endpoint or response schema. Engine-level reconfiguration can be added as a
+separate operation surface if full-engine transactions become necessary.
 
 ## How It Works
 
@@ -114,6 +175,54 @@ The query string also supports an overall client wait timeout:
   `rollback_failed` and the mixed state remains visible through status
   endpoints.
 
+### Controller Safety Behaviors
+
+The controller treats live reconfiguration as a runtime lifecycle operation,
+not just as an in-memory config edit. Several edge cases are handled explicitly
+to avoid orphaned runtime instances, stale conflicts, or unbounded status
+growth.
+
+- Partial `create` launch failure: if one core fails to launch after earlier
+  cores were already started, the controller best-effort shuts down the
+  candidate instances that were launched by that same create operation before
+  returning rollout failure.
+- Readiness failure after candidate launch: if a candidate generation starts
+  but does not reach `Admitted` and `Ready` before the step timeout, the
+  controller shuts down the candidate instance before continuing with failure
+  handling or rollback.
+- Rollout worker panic: if the detached rollout worker panics, the controller
+  records a terminal failed rollout, clears the active-operation conflict, and
+  emits internal panic diagnostics. If the panic happened while an uncommitted
+  target generation was active, the controller best-effort sends shutdown to
+  those candidate instances first.
+- Committed generation protection: panic cleanup does not shut down a target
+  generation that is already committed as the active serving generation. This
+  prevents a late bookkeeping panic from turning a successful rollout into an
+  outage.
+- Shutdown worker panic: if the detached shutdown worker panics, the controller
+  records a terminal failed shutdown and clears the active-operation conflict,
+  so later operations for the same logical pipeline are not blocked until
+  restart.
+- Runtime thread panic or error: runtime instance failures are reported back
+  into observed state with a concise operator message and diagnostic source
+  detail. The instance is marked exited so controller liveness accounting can
+  progress.
+- Launch and exit races: a runtime thread can exit before its launch
+  registration is visible to the controller. The controller records early exits
+  and reconciles them during registration, avoiding stale active-instance
+  counts.
+- Global shutdown dispatch: `POST /groups/shutdown` snapshots active instances
+  and attempts shutdown delivery to all of them. One failed send does not
+  prevent later instances from receiving shutdown. Dispatch is idempotent for
+  instances that already accepted shutdown.
+- Observed-state compaction: after active controller work no longer needs old
+  generations, the controller compacts retained instance status to the selected
+  serving view. During active rollout overlap, status still exposes both old and
+  new generations so operators can debug cutover behavior.
+- Bounded operation history: terminal rollout and shutdown records are retained
+  only in a bounded in-memory window. Recent terminal ids remain useful for
+  follow-up inspection, but old by-id history is intentionally evictable.
+
 ## API Surface
 
 ### Read current pipeline config
@@ -169,8 +278,10 @@ Status codes:
 - `202 Accepted`: request accepted and `wait=false`
 - `200 OK`: `wait=true` and the rollout finished successfully
 - `404 Not Found`: pipeline group does not exist
-- `409 Conflict`: another rollout or shutdown is already active for the same
-  logical pipeline, or a waited rollout finished in failure
+- `409 Conflict`: another incompatible live operation is active in the
+  controller's current consistency scope, or a waited rollout finished in
+  failure. In the current version of the API, that scope is one logical
+  pipeline.
 - `422 Unprocessable Entity`: validation failure or unsupported runtime
   mutation
 - `504 Gateway Timeout`: `wait=true` exceeded the overall wait timeout
@@ -207,7 +318,7 @@ overlapping old/new generations stay distinguishable during a rolling cutover.
 - `POST /groups/shutdown`
 
 These are separate from reconfiguration, but they use the same resident
-controller and the same logical-pipeline locking rules.
+controller and the same live-operation consistency scope.
 Terminal shutdown ids are retained only within a bounded in-memory window, so
 older ids may return `404 Not Found` after eviction.
 
@@ -227,7 +338,7 @@ cargo run -- -c configs/engine-conf/topic_multitenant_isolation.yaml
 In another terminal:
 
 ```bash
-BASE=http://127.0.0.1:8085
+BASE=http://127.0.0.1:8085/api/v1
 GROUP=topic_multitenant_isolation
 PIPE=tenant_c_pipeline
 ```
@@ -356,9 +467,12 @@ pattern.
 
 ## Operational Notes
 
-- Different logical pipelines may roll concurrently.
+- Different logical pipelines may roll concurrently in the current
+  implementation.
 - A single logical pipeline allows only one active rollout or shutdown at a
   time.
+- Future group-level consistency can widen the conflict scope so concurrent
+  operations in the same group return `409 Conflict`.
 - `GET /groups/{group}/pipelines/{id}` always returns the committed
   live config, not an uncommitted candidate.
 - `GET /groups/{group}/pipelines/{id}/status` is the best endpoint

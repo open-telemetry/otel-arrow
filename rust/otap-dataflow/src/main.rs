@@ -234,6 +234,11 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
+    {
+        dhat_start();
+    }
+
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
     otap_df_otap::crypto::install_crypto_provider()

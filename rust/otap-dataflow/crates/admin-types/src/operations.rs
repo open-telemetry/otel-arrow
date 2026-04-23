@@ -92,7 +92,7 @@ pub enum OperationErrorKind {
     RolloutNotFound,
     /// The requested shutdown does not exist.
     ShutdownNotFound,
-    /// Another rollout or shutdown is already active for this logical pipeline.
+    /// Another incompatible live operation is active in the server's consistency scope.
     Conflict,
     /// The request was rejected as invalid.
     InvalidRequest,
