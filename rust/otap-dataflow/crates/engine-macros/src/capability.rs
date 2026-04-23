@@ -178,6 +178,22 @@ fn trait_methods(trait_item: &ItemTrait) -> Vec<&TraitItemFn> {
         .collect()
 }
 
+/// Emit a trait-method signature for a generated `local::` / `shared::`
+/// trait: keep the attributes, preserve a default body if present, or
+/// emit a `;`-terminated signature otherwise. Both generated traits
+/// want the same shape \u2014 the only difference between them is the
+/// `#[async_trait]` vs `#[async_trait(?Send)]` outer attribute added by
+/// the caller.
+fn emit_method(m: &TraitItemFn) -> TokenStream {
+    let sig = &m.sig;
+    let attrs = &m.attrs;
+    if let Some(body) = &m.default {
+        quote! { #(#attrs)* #sig #body }
+    } else {
+        quote! { #(#attrs)* #sig; }
+    }
+}
+
 /// Generate the full output for a `#[capability(...)]` annotation.
 pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> TokenStream {
     if let Err(err) = validate_trait(&trait_item) {
@@ -202,34 +218,11 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
     }
     let known_cap_static = format_ident!("_KNOWN_CAP_{}", static_suffix);
 
-    // Generate method signatures for local trait (#[async_trait(?Send)])
-    // Methods with default bodies preserve them; methods without get `;`.
-    let local_methods: Vec<TokenStream> = methods
-        .iter()
-        .map(|m| {
-            let sig = &m.sig;
-            let attrs = &m.attrs;
-            if let Some(body) = &m.default {
-                quote! { #(#attrs)* #sig #body }
-            } else {
-                quote! { #(#attrs)* #sig; }
-            }
-        })
-        .collect();
-
-    // Generate method signatures for shared trait (#[async_trait] + Send)
-    let shared_methods: Vec<TokenStream> = methods
-        .iter()
-        .map(|m| {
-            let sig = &m.sig;
-            let attrs = &m.attrs;
-            if let Some(body) = &m.default {
-                quote! { #(#attrs)* #sig #body }
-            } else {
-                quote! { #(#attrs)* #sig; }
-            }
-        })
-        .collect();
+    // Generate method signatures for the local trait (#[async_trait(?Send)])
+    // and the shared trait (#[async_trait] + Send). Shape is identical
+    // between the two; only the outer async_trait attribute differs.
+    let local_methods: Vec<TokenStream> = methods.iter().map(|m| emit_method(m)).collect();
+    let shared_methods: Vec<TokenStream> = methods.iter().map(|m| emit_method(m)).collect();
 
     // Generate SharedAsLocal adapter delegation methods
     let adapter_methods: Vec<TokenStream> = methods

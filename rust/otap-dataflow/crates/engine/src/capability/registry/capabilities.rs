@@ -59,9 +59,10 @@ impl Capabilities {
     ///
     /// # Errors
     ///
-    /// - [`Error::ConfigError`] if no extension is bound to this
-    ///   capability for this node. The user must add a binding to the
-    ///   node's config.
+    /// - [`Error::CapabilityNotBound`] if no extension is bound to this
+    ///   capability for this node. Either add the binding to the
+    ///   node's capability declaration or switch to
+    ///   [`Self::optional_local`].
     /// - [`Error::CapabilityAlreadyConsumed`] if the capability was
     ///   already claimed on this node.
     ///
@@ -74,14 +75,13 @@ impl Capabilities {
         &self,
     ) -> Result<Rc<C::Local>, Error> {
         let id = TypeId::of::<C>();
-        let entry = self.local.get(&id).ok_or_else(|| {
-            Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-                error: format!(
-                    "required local capability '{}' not bound for this node",
-                    C::name(),
-                ),
-            }))
-        })?;
+        let entry = self
+            .local
+            .get(&id)
+            .ok_or_else(|| Error::CapabilityNotBound {
+                capability: C::name().to_owned(),
+                execution_model: "local",
+            })?;
         if entry.claimed.replace(true) {
             return Err(Error::CapabilityAlreadyConsumed {
                 capability: C::name().to_owned(),
@@ -112,9 +112,10 @@ impl Capabilities {
     ///
     /// # Errors
     ///
-    /// - [`Error::ConfigError`] if no extension is bound to this
-    ///   capability for this node. The user must add a binding to the
-    ///   node's config.
+    /// - [`Error::CapabilityNotBound`] if no extension is bound to this
+    ///   capability for this node. Either add the binding to the
+    ///   node's capability declaration or switch to
+    ///   [`Self::optional_shared`].
     /// - [`Error::CapabilityAlreadyConsumed`] if the capability was
     ///   already claimed on this node.
     ///
@@ -127,14 +128,13 @@ impl Capabilities {
         &self,
     ) -> Result<Box<C::Shared>, Error> {
         let id = TypeId::of::<C>();
-        let entry = self.shared.get(&id).ok_or_else(|| {
-            Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-                error: format!(
-                    "required shared capability '{}' not bound for this node",
-                    C::name(),
-                ),
-            }))
-        })?;
+        let entry = self
+            .shared
+            .get(&id)
+            .ok_or_else(|| Error::CapabilityNotBound {
+                capability: C::name().to_owned(),
+                execution_model: "shared",
+            })?;
         if entry.claimed.replace(true) {
             return Err(Error::CapabilityAlreadyConsumed {
                 capability: C::name().to_owned(),

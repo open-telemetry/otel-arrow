@@ -100,7 +100,10 @@ pub trait ExtensionCapability: private::Sealed + 'static {
 /// inside this crate, so external crates still can't reach `Sealed` to
 /// forge an `ExtensionCapability` impl.
 #[doc(hidden)]
-#[allow(unused_imports)] // used by future `#[capability]` invocations
+// Suppressed until the first `#[capability]` invocation lands alongside
+// its first consumer (PR4+). Until then no generated code references the
+// re-export and rustc would otherwise warn.
+#[allow(unused_imports)]
 pub(crate) use private::Sealed as CapabilitySealed;
 
 // ── KNOWN_CAPABILITIES (link-time registration) ──────────────────────────────
@@ -155,6 +158,9 @@ pub static KNOWN_CAPABILITIES: [KnownCapability] = [..];
 /// appropriate `*InstanceFactory`. The fn pointer internally builds one
 /// [`SharedCapabilityEntry`](registry::SharedCapabilityEntry) per
 /// listed capability and inserts it into the registry.
+///
+/// Returns [`registry::Error::InternalError`] on a duplicate
+/// `(capability, extension)` insert.
 #[derive(Clone)]
 pub struct ExtensionCapabilities {
     /// Capability names provided by the **shared** variant.
@@ -212,8 +218,9 @@ impl ExtensionCapabilities {
 
 /// Declares which capabilities an extension provides.
 ///
-/// The left side names the extension type(s); the right side is a single
-/// capability list that applies to both sides (no per-side divergence).
+/// The left-hand side names the extension type(s) — one or two,
+/// depending on form — and the right-hand side is a single capability
+/// list shared by both execution models.
 /// Three forms:
 ///
 /// ```rust,ignore

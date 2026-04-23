@@ -121,13 +121,18 @@ pub(crate) fn resolve_bindings(
                 local_entry.extension_id.clone(),
             );
 
-            let _ = local_entries.insert(
+            let prior = local_entries.insert(
                 cap_type_id,
                 ResolvedLocalEntry {
                     produce: local_entry.produce.clone_box(),
                     claimed: std::cell::Cell::new(false),
                     tracker_consumed,
                 },
+            );
+            debug_assert!(
+                prior.is_none(),
+                "resolve_bindings: duplicate local entry for capability '{cap_name_str}' \
+                 - the config layer should prevent two bindings with the same capability name",
             );
         } else if let Some(shared_entry) = shared_entry {
             // SharedAsLocal fallback: defer the shared mint to the
@@ -159,13 +164,18 @@ pub(crate) fn resolve_bindings(
                 shared_entry.extension_id.clone(),
             );
 
-            let _ = local_entries.insert(
+            let prior = local_entries.insert(
                 cap_type_id,
                 ResolvedLocalEntry {
                     produce: local_produce,
                     claimed: std::cell::Cell::new(false),
                     tracker_consumed,
                 },
+            );
+            debug_assert!(
+                prior.is_none(),
+                "resolve_bindings: duplicate local entry for capability '{cap_name_str}' \
+                 (SharedAsLocal fallback)",
             );
         }
 
@@ -181,13 +191,17 @@ pub(crate) fn resolve_bindings(
                 shared_entry.extension_id.clone(),
             );
 
-            let _ = shared_entries.insert(
+            let prior = shared_entries.insert(
                 cap_type_id,
                 ResolvedSharedEntry {
                     produce: shared_entry.produce.clone_box(),
                     claimed: std::cell::Cell::new(false),
                     tracker_consumed,
                 },
+            );
+            debug_assert!(
+                prior.is_none(),
+                "resolve_bindings: duplicate shared entry for capability '{cap_name_str}'",
             );
         }
     }

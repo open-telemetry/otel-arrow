@@ -939,3 +939,110 @@ fn test_end_to_end_shared_fresh_policy_mints_independent_instances() {
         "fresh factory should have been invoked exactly 2x (one per require_shared consumer)"
     );
 }
+
+// ── Envelope / error-shape regression tests ─────────────────────────────────
+
+/// The shared-side registry envelope must be `Box<Box<dyn C::Shared>>`
+/// erased as `Box<dyn Any + Send>`. `require_shared` downcasts the
+/// outer `Any` to `Box<dyn C::Shared>` then dereferences. This test
+/// pins the shape so anyone refactoring the macro cannot collapse the
+/// double-box without the consumer path failing loudly.
+#[test]
+fn test_shared_entry_produce_uses_double_box_envelope() {
+    let factory = shared_instance_factory("envelope-val");
+    let entry = TestCap::shared_entry::<SharedImpl>("ext-env".into(), factory);
+
+    // Directly invoke the stored produce closure and downcast using
+    // the exact shape the consumer (`require_shared`) relies on.
+    let erased: Box<dyn Any + Send> = (entry.produce)();
+    let boxed_trait_object: Box<Box<dyn TestCapShared>> = erased
+        .downcast::<Box<dyn TestCapShared>>()
+        .expect("shared_entry must emit Box<Box<dyn C::Shared>> erased as Box<dyn Any + Send>");
+    assert_eq!((*boxed_trait_object).value(), "envelope-val");
+}
+
+/// `require_local` on an unbound capability must return the dedicated
+/// `CapabilityNotBound` variant (not a generic `ConfigError`) so the
+/// diagnostic points at "node-code/declaration mismatch", not
+/// "user YAML problem".
+#[test]
+fn test_require_local_unbound_returns_capability_not_bound() {
+    let reg = CapabilityRegistry::new();
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(&HashMap::new(), &reg, &known_exts(&[]), &mut tracker).unwrap();
+
+    match caps.require_local::<TestCap>() {
+        Err(Error::CapabilityNotBound {
+            capability,
+            execution_model,
+        }) => {
+            assert_eq!(capability, "test_cap");
+            assert_eq!(execution_model, "local");
+        }
+        Err(other) => panic!("expected CapabilityNotBound, got {other:?}"),
+        Ok(_) => panic!("expected CapabilityNotBound, got Ok"),
+    }
+}
+
+#[test]
+fn test_require_shared_unbound_returns_capability_not_bound() {
+    let reg = CapabilityRegistry::new();
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(&HashMap::new(), &reg, &known_exts(&[]), &mut tracker).unwrap();
+
+    match caps.require_shared::<TestCap>() {
+        Err(Error::CapabilityNotBound {
+            capability,
+            execution_model,
+        }) => {
+            assert_eq!(capability, "test_cap");
+            assert_eq!(execution_model, "shared");
+        }
+        Err(other) => panic!("expected CapabilityNotBound, got {other:?}"),
+        Ok(_) => panic!("expected CapabilityNotBound, got Ok"),
+    }
+}
+
+/// When a node binds a shared-only extension through its *local*-facing
+/// capability (the `SharedAsLocal` fallback), consumption of the
+/// fallback adapter must flip the shared bucket of `ConsumedTracker`
+/// — not a phantom local bucket. Otherwise `unconsumed_shared` would
+/// claim the shared variant is unused and the engine would drop it
+/// while the adapter still depended on it.
+#[test]
+fn test_fallback_local_consumption_flips_shared_bucket() {
+    let mut reg = CapabilityRegistry::new();
+    register_shared(&mut reg, "ext-only-shared", "val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-only-shared"),
+        &reg,
+        &known_exts(&["ext-only-shared"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    // Before claim: both buckets show the shared extension unconsumed.
+    assert!(
+        tracker
+            .unconsumed_shared()
+            .iter()
+            .any(|(ext, _)| ext.as_ref() == "ext-only-shared"),
+        "shared bucket should list ext-only-shared before the fallback claim",
+    );
+    assert!(
+        tracker.unconsumed_local().is_empty(),
+        "no native local registration was made, so the local bucket must be empty",
+    );
+
+    // Fallback claim (local-facing, but backed by the shared factory).
+    let _ = caps.require_local::<TestCap>().unwrap();
+
+    // After claim: shared bucket flips (the shared *variant* is what
+    // got used).
+    assert!(
+        tracker.unconsumed_shared().is_empty(),
+        "fallback consumption must flip the shared bucket",
+    );
+}

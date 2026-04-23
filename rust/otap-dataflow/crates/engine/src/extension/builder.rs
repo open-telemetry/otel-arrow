@@ -116,6 +116,10 @@ impl ActiveStage {
     where
         E: shared_ext::Extension + Clone + Send + 'static,
     {
+        debug_assert!(
+            self.parent.shared.is_none(),
+            "ExtensionBundleBuilder: .shared(...) called more than once",
+        );
         let for_factory = extension.clone();
         self.parent.shared = Some(SharedDecomposed {
             extension: Some(Box::new(extension)),
@@ -133,6 +137,10 @@ impl ActiveStage {
     where
         E: local_ext::Extension + 'static,
     {
+        debug_assert!(
+            self.parent.local.is_none(),
+            "ExtensionBundleBuilder: .local(...) called more than once",
+        );
         let for_factory = std::rc::Rc::clone(&extension);
         self.parent.local = Some(LocalDecomposed {
             extension: Some(extension),
@@ -197,6 +205,10 @@ impl PassiveClonedStage {
     where
         E: Clone + Send + 'static,
     {
+        debug_assert!(
+            self.parent.shared.is_none(),
+            "ExtensionBundleBuilder: .shared(...) called more than once",
+        );
         self.parent.shared = Some(SharedDecomposed {
             extension: None,
             instance_factory: SharedInstanceFactory::new(move || {
@@ -214,6 +226,10 @@ impl PassiveClonedStage {
     where
         E: 'static,
     {
+        debug_assert!(
+            self.parent.local.is_none(),
+            "ExtensionBundleBuilder: .local(...) called more than once",
+        );
         self.parent.local = Some(LocalDecomposed {
             extension: None,
             instance_factory: LocalInstanceFactory::new(move || {
@@ -253,6 +269,10 @@ impl PassiveFreshStage {
         E: Send + 'static,
         F: Fn() -> E + Clone + Send + 'static,
     {
+        debug_assert!(
+            self.parent.shared.is_none(),
+            "ExtensionBundleBuilder: .shared(...) called more than once",
+        );
         self.parent.shared = Some(SharedDecomposed {
             extension: None,
             instance_factory: SharedInstanceFactory::new(move || {
@@ -271,6 +291,10 @@ impl PassiveFreshStage {
         E: 'static,
         F: Fn() -> std::rc::Rc<E> + Clone + 'static,
     {
+        debug_assert!(
+            self.parent.local.is_none(),
+            "ExtensionBundleBuilder: .local(...) called more than once",
+        );
         self.parent.local = Some(LocalDecomposed {
             extension: None,
             instance_factory: LocalInstanceFactory::new(move || produce() as std::rc::Rc<dyn Any>),
