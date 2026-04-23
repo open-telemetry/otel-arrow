@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776903540490,
+  "lastUpdate": 1776959423551,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "totan@microsoft.com",
-            "name": "Tom Tan",
-            "username": "ThomsonTan"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "7ec0f530fb1dac847fed28e7d55c2a96b25f7f8e",
-          "message": "ci: add help wanted auto-comment workflow (#2280)\n\nAdds a GitHub Actions workflow that\nautomatically posts a welcoming comment when the `help wanted` label is\napplied to an issue.\n\n### What it does\n\n- Posts a comment inviting contributors to pick up the issue and request\nassignment\n- Reminds them to reference the issue in their PR\n\n### Why\n\nA consistent, automated welcome message that:\n\n- **Signals availability** - Makes it immediately visible to\ncontributors browsing issues or receiving notifications that this one is\nopen for contribution, without requiring them to looking into labels.\n- **Sets expectations** - The \"reference this issue in your PR\"\ninstruction ensures PRs are linked, so the issue auto-closes on merge\nand maintains traceability.\n- **Reduces maintainer toil** - No one has to manually comment each time\n`help wanted` is applied.",
-          "timestamp": "2026-03-12T11:33:44Z",
-          "tree_id": "a1134b0656d48485ea97bf7c69d0fef2c71726a9",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/7ec0f530fb1dac847fed28e7d55c2a96b25f7f8e"
-        },
-        "date": 1773317230415,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.0394375324249268,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.18930121028035,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.59739789014414,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 55.04309895833333,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 56.34765625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 474497.4082521943,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 479429.51215943205,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00198,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10839948.698651733,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10784096.537241539,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 17058733.44872035,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f6fa92280658b62989971f21ab1000610b55d5d",
+          "message": "feat: Make fake data generator pacing more reliable and update sql reports to query correct time frame (#2723)\n\n# Change Summary\n\nThis PR is an attempt to solve #2713 with three connected changes.\n\nThe first is to make the reported data production rate coming out of the\nfake data generator smoother and more reliable especially under\nbackpressure by using tokio intervals which are less prone to drift and\nhave a catch-up mechanism.\n\nThe second makes sure we report metrics in smaller increments after\nevery batch is exported. #2685 made some progress in this area, but as\nnoted there it was an incomplete solution which held back metrics for\nprolonged periods of time in addition to having to heap allocate the\nsend futures. I went after the full solution to the problem in this PR.\nNow we exclusively do non-blocking sends one batch at a time and always\nbump counters in-between on successful sends.\n\nThe third is against the rate calculations which were using the total\nproduced signals from the run, but computing the rate from the\nobservation time interval only. This means that we artificially inflated\nthe overall rate by making it look like it took a shorter time to\nachieve than it did. We correct this by computing the rate for the\nobservation window only.\n\nOther small fixes:\n\n- Added two production modes for the fake data generator which can do\neither a smooth production loop or an open loop in case the interval to\ndo a smooth loop is too small.\n- Updated some try_from implementations.\n\n## What issue does this PR close?\n\n* Closes #2713\n\n## How are these changes tested?\n\nRan the benchmarks locally and we can see that the produced and received\nrates are _very_ close to 100klrps now as opposed to 120k.\n\n<img width=\"1393\" height=\"310\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/1360f96e-8b23-48ef-98e7-f3a73cd27721\"\n/>\n\n\n## Are there any user-facing changes?\n\nNew fake data generator `production_mode` setting.\n\n---------\n\nCo-authored-by: Laurent Quérel <laurent.querel@gmail.com>",
+          "timestamp": "2026-04-23T14:45:02Z",
+          "tree_id": "0350a7d43d3b13f9ade00ffdf398db468dd41399",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8f6fa92280658b62989971f21ab1000610b55d5d"
+        },
+        "date": 1776959422735,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.749362657324763,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.109238954429794,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 16.851692708333335,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.140625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 6041.346968251147,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6041.346968251147,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002513,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 210979.93663970375,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 175318.30224909083,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
