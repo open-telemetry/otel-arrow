@@ -25,6 +25,7 @@ use crate::control_plane_metrics::{PipelineCompletionMetricsState, RuntimeContro
 use crate::error::Error;
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
+use crate::stopwatch::StopwatchState;
 use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::MetricLevel;
@@ -892,6 +893,8 @@ pub struct PipelineCompletionMsgDispatcher<PData> {
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
     completion_metrics: PipelineCompletionMetricsState,
     control_plane_metrics_flush_interval: Duration,
+    stopwatch: StopwatchState,
+    metrics_reporter: MetricsReporter,
 }
 
 impl<PData> PipelineCompletionMsgDispatcher<PData> {
@@ -904,6 +907,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         metrics_reporter: MetricsReporter,
         control_plane_metrics_flush_interval: Duration,
         telemetry_policy: TelemetryPolicy,
+        stopwatch: StopwatchState,
     ) -> Self {
         Self {
             pipeline_completion_msg_receiver,
@@ -913,9 +917,11 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
             control_plane_metrics_flush_interval,
             completion_metrics: PipelineCompletionMetricsState::new(
                 &pipeline_context,
-                metrics_reporter,
+                metrics_reporter.clone(),
                 telemetry_policy.runtime_metrics,
             ),
+            stopwatch,
+            metrics_reporter,
         }
     }
 
@@ -1182,6 +1188,7 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                 error = err.to_string()
             );
         }
+        self.stopwatch.report(&mut self.metrics_reporter);
     }
 }
 
@@ -2518,6 +2525,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    StopwatchState::empty(),
                 );
 
                 // Start the manager in the background
@@ -2590,6 +2598,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    StopwatchState::empty(),
                 );
 
                 // Start the manager in the background
@@ -3428,6 +3437,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: metric_level,
+                stopwatches: Vec::new(),
             },
             Vec::new(),
             empty_node_metric_handles(),
@@ -3504,6 +3514,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: MetricLevel::None,
+                stopwatches: Vec::new(),
             },
             Vec::new(),
             empty_node_metric_handles(),
@@ -3612,7 +3623,9 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: metric_level,
+                stopwatches: Vec::new(),
             },
+            StopwatchState::empty(),
         );
         let completion_metrics_key = dispatcher.completion_metrics.metric_set_key();
 
@@ -3775,6 +3788,7 @@ mod tests {
                     metrics_reporter.clone(),
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     telemetry_policy.clone(),
+                    StopwatchState::empty(),
                 );
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
                 let dispatcher_handle =
@@ -5954,6 +5968,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    StopwatchState::empty(),
                 );
 
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -6078,6 +6093,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    StopwatchState::empty(),
                 );
 
                 // Pre-load the shared return channel: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
@@ -6223,6 +6239,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    StopwatchState::empty(),
                 );
 
                 let node_a_tx = return_tx.clone();

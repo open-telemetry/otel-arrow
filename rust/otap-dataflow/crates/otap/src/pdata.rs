@@ -18,9 +18,11 @@ use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
+use otap_df_engine::stopwatch::StopwatchId;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
     MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+    StopwatchAccumulation,
 };
 use otap_df_pdata::OtapPayload;
 
@@ -41,6 +43,12 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
+    /// Active stopwatch accumulators keyed by stopwatch ID.
+    ///
+    /// Populated by start nodes, accumulated by every node's send path,
+    /// consumed by stop nodes.  Supports multiple overlapping ranges.
+    /// Empty in the common case (no active stopwatches).
+    stopwatch_accumulators: Vec<(StopwatchId, u64)>,
 }
 
 impl Context {
@@ -51,6 +59,7 @@ impl Context {
         Self {
             stack: Vec::with_capacity(capacity),
             transport_headers: None,
+            stopwatch_accumulators: Vec::new(),
         }
     }
 
@@ -83,7 +92,7 @@ impl Context {
             route: RouteData {
                 calldata,
                 entry_time_ns,
-                output_port_index: 0,
+                ..Default::default()
             },
         });
     }
@@ -340,6 +349,50 @@ impl otap_df_engine::StampOutputPort for OtapPdata {
     }
 }
 
+impl StopwatchAccumulation for OtapPdata {
+    fn start_stopwatch_accumulators(&mut self, ids: &[StopwatchId]) {
+        for &id in ids {
+            // Only add if not already active (idempotent).
+            if !self
+                .context
+                .stopwatch_accumulators
+                .iter()
+                .any(|(existing, _)| *existing == id)
+            {
+                self.context.stopwatch_accumulators.push((id, 0));
+            }
+        }
+    }
+
+    fn add_stopwatch_compute(&mut self, ns: u64) {
+        for (_, acc) in &mut self.context.stopwatch_accumulators {
+            *acc = acc.saturating_add(ns);
+        }
+    }
+
+    fn take_stopwatch_compute(&mut self, id: StopwatchId) -> Option<u64> {
+        if let Some(pos) = self
+            .context
+            .stopwatch_accumulators
+            .iter()
+            .position(|(sw_id, _)| *sw_id == id)
+        {
+            let (_, total) = self.context.stopwatch_accumulators.remove(pos);
+            Some(total)
+        } else {
+            None
+        }
+    }
+}
+
+impl OtapPdata {
+    /// Returns `true` if any stopwatch accumulators are currently active.
+    #[must_use]
+    fn has_active_stopwatches(&self) -> bool {
+        !self.context.stopwatch_accumulators.is_empty()
+    }
+}
+
 /// Context + container for telemetry data
 #[derive(Clone, Debug)]
 pub struct OtapPdata {
@@ -432,6 +485,7 @@ impl OtapPdata {
             context: Context {
                 stack: Vec::new(),
                 transport_headers: self.context.transport_headers.clone(),
+                stopwatch_accumulators: Vec::new(),
             },
             payload: self.payload.clone(),
         }
@@ -641,6 +695,57 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
+/// Trait abstracting the stopwatch-related methods available on all EffectHandler types.
+trait StopwatchHandler {
+    fn per_message_compute_ns(&self) -> u64;
+    fn stopwatch_start_ids(&self) -> &[StopwatchId];
+    fn stopwatch_stop_ids(&self) -> Vec<StopwatchId>;
+    fn record_stopwatch_stop(&self, id: StopwatchId, total: u64);
+}
+
+macro_rules! impl_stopwatch_handler {
+    ($handler:ty) => {
+        impl StopwatchHandler for $handler {
+            fn per_message_compute_ns(&self) -> u64 {
+                self.per_message_compute_ns()
+            }
+            fn stopwatch_start_ids(&self) -> &[StopwatchId] {
+                self.stopwatch_start_ids()
+            }
+            fn stopwatch_stop_ids(&self) -> Vec<StopwatchId> {
+                self.stopwatch_stop_ids()
+            }
+            fn record_stopwatch_stop(&self, id: StopwatchId, total: u64) {
+                self.record_stopwatch_stop(id, total);
+            }
+        }
+    };
+}
+
+impl_stopwatch_handler!(otap_df_engine::local::processor::EffectHandler<OtapPdata>);
+impl_stopwatch_handler!(otap_df_engine::shared::processor::EffectHandler<OtapPdata>);
+impl_stopwatch_handler!(otap_df_engine::local::receiver::EffectHandler<OtapPdata>);
+impl_stopwatch_handler!(otap_df_engine::shared::receiver::EffectHandler<OtapPdata>);
+
+/// Forward-path stopwatch accumulation supporting overlapping ranges.
+fn stopwatch_accumulate(handler: &impl StopwatchHandler, data: &mut OtapPdata) {
+    let start_ids = handler.stopwatch_start_ids();
+    let stop_ids = handler.stopwatch_stop_ids();
+    if start_ids.is_empty() && stop_ids.is_empty() && !data.has_active_stopwatches() {
+        return;
+    }
+    let compute_ns = handler.per_message_compute_ns();
+    if !start_ids.is_empty() {
+        data.start_stopwatch_accumulators(start_ids);
+    }
+    data.add_stopwatch_compute(compute_ns);
+    for id in &stop_ids {
+        if let Some(total) = data.take_stopwatch_compute(*id) {
+            handler.record_stopwatch_stop(*id, total);
+        }
+    }
+}
+
 /// Implements a `MessageSource{Local,Shared}EffectHandlerExtension` for an EffectHandler type.
 ///
 /// Parameters:
@@ -657,6 +762,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                stopwatch_accumulate(self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -665,6 +771,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                stopwatch_accumulate(self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -677,6 +784,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                stopwatch_accumulate(self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -689,6 +797,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                stopwatch_accumulate(self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }

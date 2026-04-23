@@ -162,6 +162,52 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
+    /// Returns the accumulated per-message synchronous compute duration
+    /// in nanoseconds for the current PData message.
+    ///
+    /// Receivers do not call `timed()`, so this always returns the
+    /// value accumulated by the core (typically 0).
+    #[must_use]
+    pub fn per_message_compute_ns(&self) -> u64 {
+        self.core.per_message_compute_ns()
+    }
+
+    /// Returns the stopwatch IDs for which this node is a start node.
+    #[must_use]
+    pub fn stopwatch_start_ids(&self) -> &[crate::stopwatch::StopwatchId] {
+        &self.core.stopwatch_start_ids
+    }
+
+    /// Record `total` nanoseconds for each stopwatch where this node is
+    /// the stop node and the given ID matches, then report the snapshot
+    /// so the telemetry dispatcher can pick it up.
+    pub fn record_stopwatch_stop(&self, id: crate::stopwatch::StopwatchId, total: u64) {
+        let mut guard = self
+            .core
+            .stopwatch_stop_metrics
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for (sw_id, metric_set) in guard.iter_mut() {
+            if *sw_id == id {
+                metric_set.compute_duration_success.record(total as f64);
+                let _ = self
+                    .core
+                    .metrics_reporter
+                    .try_report_snapshot(metric_set.snapshot());
+            }
+        }
+    }
+
+    /// Returns the stopwatch IDs for which this node is a stop node.
+    pub fn stopwatch_stop_ids(&self) -> Vec<crate::stopwatch::StopwatchId> {
+        let guard = self
+            .core
+            .stopwatch_stop_metrics
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        guard.iter().map(|(id, _)| *id).collect()
+    }
+
     /// Returns the capture policy if a header capture policy is configured.
     ///
     /// Returns `None` when no capture policy is active (zero overhead).
