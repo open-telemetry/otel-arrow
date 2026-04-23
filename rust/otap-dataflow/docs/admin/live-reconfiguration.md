@@ -28,6 +28,46 @@ a time without restarting the process or reloading the full startup file.
 
 ## Terminology
 
+Live reconfiguration uses a few controller-specific terms. They are important
+because the admin API exposes both committed pipeline state and in-progress
+runtime state.
+
+- Logical pipeline: the named pipeline addressed by `(pipeline_group_id,
+  pipeline_id)`. A logical pipeline can have several runtime instances over
+  time as it is rolled, resized, or shut down.
+- Runtime instance: one concrete execution of a logical pipeline on one core.
+  Runtime instances are identified by `(pipeline_group_id, pipeline_id, core_id,
+  deployment_generation)`.
+- Deployment generation: a monotonically assigned version for runtime
+  instances of one logical pipeline. `create` and `replace` rollouts start a new
+  generation. `resize` keeps the same generation and only changes the active
+  core set.
+- Active generation: the generation currently committed by the controller as
+  the logical pipeline's desired serving generation.
+- Serving generation: the generation currently selected for a specific core in
+  observed state. During a rolling cutover, different cores may temporarily
+  serve different generations.
+- Candidate pipeline config: the pipeline config submitted by the client and
+  validated by the controller before it is committed into the live in-memory
+  engine config.
+- Candidate generation: the target generation for a `create` or `replace`
+  rollout while it is still being tested and has not yet been committed as the
+  active generation.
+- Candidate instance: a runtime instance launched from the candidate generation.
+  Candidate instances must become admitted and ready before the controller uses
+  them for serving. If the rollout fails before commit, the controller
+  best-effort shuts them down.
+- Rollout worker: the background controller thread that executes an accepted
+  rollout plan after the admin request has been accepted. The API can return
+  before this worker finishes when `wait=false`.
+- Rollout worker panic: an unexpected Rust panic in the rollout worker itself,
+  not a normal pipeline runtime error. The controller catches this panic, marks
+  the rollout failed, reports diagnostics, clears the active-operation conflict,
+  and cleans up uncommitted candidate instances when needed.
+- Drain: a graceful shutdown step. The runtime stops accepting new ingress,
+  lets already admitted work finish as far as the node contracts allow, and
+  exits before the drain timeout.
+
 This document uses `serial rolling cutover with overlap` for topology-changing
 replacement.
 
