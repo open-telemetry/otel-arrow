@@ -219,10 +219,14 @@ impl<PData> EffectHandler<PData> {
         for (sw_id, metric_set) in guard.iter_mut() {
             if *sw_id == id {
                 metric_set.compute_duration_success.record(total as f64);
-                let _ = self
+                if self
                     .core
                     .metrics_reporter
-                    .try_report_snapshot(metric_set.snapshot());
+                    .try_report_snapshot(metric_set.snapshot())
+                    .is_ok()
+                {
+                    metric_set.clear_values();
+                }
             }
         }
     }
