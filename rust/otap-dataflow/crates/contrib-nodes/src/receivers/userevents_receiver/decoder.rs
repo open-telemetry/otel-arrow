@@ -44,7 +44,7 @@ const FMT_STRING_UTF: u8 = 11;
 ///
 /// The OTAP attribute Arrow builder supports `str`/`int`/`bool`/`double` value
 /// types. Preserving the original typed encoding for PartC attributes and for
-/// `eventId` lets the Geneva uploader emit Bond fields with the correct
+/// `eventId` lets the ingestion path emit Bond fields with the correct
 /// `BT_*` type (e.g. `BT_INT64` instead of `BT_STRING` for numeric PartC
 /// fields), which keeps numeric query predicates usable downstream.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,8 +111,9 @@ impl DecodedUsereventsRecord {
     ) -> (Self, bool) {
         // Receiver-internal diagnostics and transport identity (tracepoint,
         // provider, level, keyword, CPU/sample metadata) are deliberately not
-        // pushed here. Geneva treats OTLP log attributes as backend columns, so
-        // this path emits only typed OTLP fields and application payload attrs.
+        // pushed here. The Ingestion backend treats OTLP log attributes as
+        // backend columns, so this path emits only typed OTLP fields and
+        // application payload attrs.
         let _ = format;
         let mut attributes: Vec<(Cow<'static, str>, DecodedAttrValue)> = Vec::with_capacity(16);
 
@@ -132,20 +133,21 @@ impl DecodedUsereventsRecord {
             // exporter carries the user-visible event name in `PartB.name`
             // (e.g. "my-event-name"), while `EH.Name` is fixed to "Log" and
             // `PartA.name` is typically absent. Prefer PartB.name, then the
-            // CS-level override (PartA.name or EH.Name), so Geneva batches and
-            // writes per-event-name records instead of collapsing them all to
-            // a single "Log" stream.
+            // CS-level override (PartA.name or EH.Name), so the Ingestion
+            // backend batches and writes per-event-name records instead of
+            // collapsing them all to a single "Log" stream.
             event_name = Some(cs.part_b_name.take().unwrap_or(cs.event_name));
             body = cs.body.unwrap_or_default();
             severity_number = cs.severity_number;
             severity_text = cs.severity_text.map(Cow::Owned);
             // PartB.name is surfaced via the typed OTLP `event_name` column
-            // above; no separate `cs.part_b.name` attribute is emitted so
-            // Geneva does not see a redundant `cs_part_b_name` backend column.
+            // above; no separate `cs.part_b.name` attribute is emitted so the
+            // Ingestion backend does not see a redundant
+            // `cs_part_b_name` backend column.
             if let Some(eid) = cs.event_id {
-                // G3: eventId is emitted as a typed Int so Geneva writes a
-                // Bond BT_INT64 column (matching mdsd's behavior) instead of
-                // BT_STRING.
+                // G3: eventId is emitted as a typed Int so the Ingestion
+                // backend writes a Bond BT_INT64 column (matching mdsd's
+                // behavior) instead of BT_STRING.
                 attributes.push((Cow::Borrowed(ATTR_EVENT_ID), DecodedAttrValue::Int(eid)));
             }
             if let Some(time_str) = &cs.time {
@@ -611,7 +613,7 @@ fn item_as_any_scalar_string(item: &EventHeaderItemInfo<'_>) -> Option<String> {
 ///
 /// Used for PartC attributes so the receiver preserves the source field's
 /// type through OTLP (str/int/bool/double) rather than stringifying every
-/// value. The Geneva uploader then emits the corresponding Bond `BT_*` type.
+/// value. The ingestion path then emits the corresponding Bond `BT_*` type.
 fn item_as_any_scalar_value(item: &EventHeaderItemInfo<'_>) -> Option<DecodedAttrValue> {
     let enc = item.metadata().encoding().without_flags().as_int();
     let fmt = item.metadata().format().as_int();
@@ -1562,8 +1564,8 @@ mod tests {
     #[test]
     fn cs_decode_part_b_name_becomes_event_name() {
         // G1: OTLP `event_name` should reflect PartB.name (the user-configured
-        // event name), not EH.Name, so Geneva routes/writes it as the Bond
-        // `name` field for this record type.
+        // event name), not EH.Name, so the Ingestion backend routes/writes it
+        // as the Bond `name` field for this record type.
         let mut meta = Vec::new();
         let mut data = Vec::new();
         add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);
@@ -1591,8 +1593,8 @@ mod tests {
     #[test]
     fn cs_decode_part_c_preserves_typed_values() {
         // G2: PartC int/bool/double fields should land on the record as the
-        // corresponding typed DecodedAttrValue variants, so the Geneva
-        // uploader emits BT_INT64/BT_BOOL/BT_DOUBLE (not BT_STRING).
+        // corresponding typed DecodedAttrValue variants, so the ingestion path
+        // emits BT_INT64/BT_BOOL/BT_DOUBLE (not BT_STRING).
         let mut meta = Vec::new();
         let mut data = Vec::new();
         add_value_field_meta(&mut meta, "__csver__", ENC_VALUE32, FMT_UNSIGNED_INT);

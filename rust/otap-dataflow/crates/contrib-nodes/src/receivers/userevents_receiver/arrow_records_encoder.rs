@@ -70,8 +70,9 @@ impl ArrowRecordsBuilder {
 
         // Receiver-internal transport/diagnostic fields are intentionally not
         // represented on decoded records or emitted as downstream attributes:
-        // Geneva treats OTLP log attributes as backend columns, so surfacing
-        // per-record diagnostics there would pollute the application schema.
+        // the Ingestion backend treats OTLP log attributes as backend columns,
+        // so surfacing per-record diagnostics there would pollute the
+        // application schema.
         for (key, value) in record.attributes {
             self.log_attrs.append_key(key.as_ref());
             match value {

@@ -110,8 +110,8 @@ fn validation()
             assert_eq!(log_record.severity_text, "ERROR");
             // G1: the OTLP typed `event_name` column should reflect PartB.name
             // (the user-visible event name carried by the Rust user-events
-            // exporter), so Geneva routes per-event-name rather than collapsing
-            // to a single "Log" stream.
+            // exporter), so the Ingestion backend routes per-event-name rather
+            // than collapsing to a single "Log" stream.
             assert_eq!(
                 log_record.event_name,
                 userevents_common_schema_emitter::EVENT_NAME
