@@ -285,7 +285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         dhat_finish();
     }
-    
+
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
