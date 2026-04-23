@@ -680,9 +680,15 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
         // Emit metrics for this group
         for field in g.brief.metrics.iter() {
             if let Some(value) = g.metrics.get(field.name) {
-                let metric_name = sanitize_prom_metric_name(field.name);
+                let base_metric_name = sanitize_prom_metric_name(field.name);
                 match value {
                     MetricValue::U64(_) | MetricValue::F64(_) => {
+                        // Per OTel spec, monotonic counters get a `_total` suffix.
+                        let metric_name = if field.instrument == Instrument::Counter {
+                            format!("{base_metric_name}_total")
+                        } else {
+                            base_metric_name.clone()
+                        };
                         if seen.insert(metric_name.clone()) {
                             if !field.brief.is_empty() {
                                 let _ = writeln!(
@@ -711,6 +717,12 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                             );
                         }
                     }
+                    // TODO: MMSC is currently exported as 4 separate scalar metrics
+                    // (_min gauge, _max gauge, _sum counter, _count counter). Per the
+                    // OTel spec, this should be a Prometheus histogram type with
+                    // _bucket{le="+Inf"}, _sum, and _count lines. The _min/_max
+                    // sub-metrics are not part of classic Prometheus text format.
+                    // See: https://github.com/open-telemetry/otel-arrow/issues/2748
                     MetricValue::Mmsc(s) => {
                         if s.count == 0 {
                             continue;
@@ -719,9 +731,9 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                         for (suffix, prom_type, val) in [
                             ("_min", "gauge", s.min),
                             ("_max", "gauge", s.max),
-                            ("_sum", "counter", s.sum),
+                            ("_sum_total", "counter", s.sum),
                         ] {
-                            let sub_name = format!("{metric_name}{suffix}");
+                            let sub_name = format!("{base_metric_name}{suffix}");
                             if seen.insert(sub_name.clone()) {
                                 if !field.brief.is_empty() {
                                     let _ = writeln!(&mut out, "# HELP {sub_name} {brief}");
@@ -738,7 +750,7 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                             }
                         }
                         // _count as counter with integer value
-                        let count_name = format!("{metric_name}_count");
+                        let count_name = format!("{base_metric_name}_count_total");
                         if seen.insert(count_name.clone()) {
                             if !field.brief.is_empty() {
                                 let _ = writeln!(&mut out, "# HELP {count_name} {brief}");
@@ -1027,10 +1039,16 @@ fn format_prometheus_text(
         }
 
         for (field, value) in metrics_iter {
-            let metric_name = sanitize_prom_metric_name(field.name);
+            let base_metric_name = sanitize_prom_metric_name(field.name);
 
             match value {
                 MetricValue::U64(_) | MetricValue::F64(_) => {
+                    // Per OTel spec, monotonic counters get a `_total` suffix.
+                    let metric_name = if field.instrument == Instrument::Counter {
+                        format!("{base_metric_name}_total")
+                    } else {
+                        base_metric_name.clone()
+                    };
                     // HELP/TYPE once per metric name
                     if seen.insert(metric_name.clone()) {
                         if !field.brief.is_empty() {
@@ -1060,6 +1078,12 @@ fn format_prometheus_text(
                         );
                     }
                 }
+                // TODO: MMSC is currently exported as 4 separate scalar metrics
+                // (_min gauge, _max gauge, _sum counter, _count counter). Per the
+                // OTel spec, this should be a Prometheus histogram type with
+                // _bucket{le="+Inf"}, _sum, and _count lines. The _min/_max
+                // sub-metrics are not part of classic Prometheus text format.
+                // See: https://github.com/open-telemetry/otel-arrow/issues/2748
                 MetricValue::Mmsc(s) => {
                     if s.count == 0 {
                         continue;
@@ -1068,9 +1092,9 @@ fn format_prometheus_text(
                     for (suffix, prom_type, val) in [
                         ("_min", "gauge", s.min),
                         ("_max", "gauge", s.max),
-                        ("_sum", "counter", s.sum),
+                        ("_sum_total", "counter", s.sum),
                     ] {
-                        let sub_name = format!("{metric_name}{suffix}");
+                        let sub_name = format!("{base_metric_name}{suffix}");
                         if seen.insert(sub_name.clone()) {
                             if !field.brief.is_empty() {
                                 let _ = writeln!(&mut out, "# HELP {sub_name} {brief}");
@@ -1085,7 +1109,7 @@ fn format_prometheus_text(
                         }
                     }
                     // _count as counter with integer value
-                    let count_name = format!("{metric_name}_count");
+                    let count_name = format!("{base_metric_name}_count_total");
                     if seen.insert(count_name.clone()) {
                         if !field.brief.is_empty() {
                             let _ = writeln!(&mut out, "# HELP {count_name} {brief}");
@@ -2166,13 +2190,13 @@ mod tests {
         assert!(output.contains("# TYPE request_duration_max gauge\n"));
         assert!(output.contains("request_duration_max{set=\"latency_metrics\"} 100 1000\n"));
 
-        assert!(output.contains("# HELP request_duration_sum Request duration\n"));
-        assert!(output.contains("# TYPE request_duration_sum counter\n"));
-        assert!(output.contains("request_duration_sum{set=\"latency_metrics\"} 250.5 1000\n"));
+        assert!(output.contains("# HELP request_duration_sum_total Request duration\n"));
+        assert!(output.contains("# TYPE request_duration_sum_total counter\n"));
+        assert!(output.contains("request_duration_sum_total{set=\"latency_metrics\"} 250.5 1000\n"));
 
-        assert!(output.contains("# HELP request_duration_count Request duration\n"));
-        assert!(output.contains("# TYPE request_duration_count counter\n"));
-        assert!(output.contains("request_duration_count{set=\"latency_metrics\"} 10 1000\n"));
+        assert!(output.contains("# HELP request_duration_count_total Request duration\n"));
+        assert!(output.contains("# TYPE request_duration_count_total counter\n"));
+        assert!(output.contains("request_duration_count_total{set=\"latency_metrics\"} 10 1000\n"));
 
         // Should NOT contain the base metric name without suffix
         assert!(!output.contains("# TYPE request_duration gauge"));
