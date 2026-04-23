@@ -236,6 +236,8 @@ pub(super) struct RolloutRecord {
     pub(super) state: RolloutLifecycleState,
     pub(super) target_generation: u64,
     pub(super) previous_generation: Option<u64>,
+    /// Drain timeout requested with the rollout, reused for panic cleanup.
+    pub(super) drain_timeout_secs: u64,
     pub(super) started_at: String,
     pub(super) updated_at: String,
     pub(super) failure_reason: Option<String>,
@@ -252,6 +254,7 @@ impl RolloutRecord {
         action: RolloutAction,
         target_generation: u64,
         previous_generation: Option<u64>,
+        drain_timeout_secs: u64,
         cores: Vec<RolloutCoreProgress>,
     ) -> Self {
         let now = timestamp_now();
@@ -263,6 +266,7 @@ impl RolloutRecord {
             state: RolloutLifecycleState::Pending,
             target_generation,
             previous_generation,
+            drain_timeout_secs,
             started_at: now.clone(),
             updated_at: now,
             failure_reason: None,

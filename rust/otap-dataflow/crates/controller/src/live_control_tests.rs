@@ -424,6 +424,7 @@ fn terminal_rollout_record(
         RolloutAction::Replace,
         1,
         Some(0),
+        60,
         Vec::new(),
     );
     rollout.state = RolloutLifecycleState::Succeeded;
@@ -1236,6 +1237,151 @@ connections:
             },
         )
         .expect("rollout conflict should be cleared after panic cleanup");
+}
+
+/// Scenario: a rollout worker panics after launching an uncommitted candidate
+/// generation.
+/// Guarantees: panic cleanup requests shutdown for the candidate generation
+/// before clearing the active rollout, avoiding active orphan instances.
+#[test]
+fn rollout_worker_panic_requests_shutdown_for_uncommitted_candidate_generation() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("rollout plan should be accepted");
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollout should register");
+
+    let candidate_key = deployed_key("g1", "p1", 0, plan.target_generation);
+    let mut candidate_rx = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        plan.target_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime.handle_rollout_worker_panic(
+        &plan.pipeline_key,
+        &plan.rollout.rollout_id,
+        "rollout-g1-p1".to_owned(),
+        Box::new("boom"),
+    );
+
+    assert!(matches!(
+        wait_for_shutdown_message(&mut candidate_rx),
+        RuntimeControlMsg::Shutdown { reason, .. } if reason == "rollout panic cleanup"
+    ));
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&candidate_key)
+            .expect("candidate instance should still be tracked until exit")
+            .control_sender
+            .is_none(),
+        "panic cleanup should release the retained sender after shutdown dispatch"
+    );
+    assert!(!state.active_rollouts.contains_key(&plan.pipeline_key));
+}
+
+/// Scenario: a rollout worker panics after the target generation was already
+/// committed as serving.
+/// Guarantees: panic cleanup does not shut down the committed generation,
+/// which would turn a late bookkeeping panic into runtime outage.
+#[test]
+fn rollout_worker_panic_does_not_shutdown_committed_target_generation() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("rollout plan should be accepted");
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollout should register");
+    runtime.commit_pipeline_record(&plan, plan.target_generation);
+
+    let mut candidate_rx = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        plan.target_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime.handle_rollout_worker_panic(
+        &plan.pipeline_key,
+        &plan.rollout.rollout_id,
+        "rollout-g1-p1".to_owned(),
+        Box::new("boom"),
+    );
+
+    assert!(
+        candidate_rx.try_recv().is_err(),
+        "committed target generation must not receive panic-cleanup shutdown"
+    );
 }
 
 /// Scenario: a shutdown request targets a group id that does not exist in

@@ -135,6 +135,54 @@ The query string also supports an overall client wait timeout:
   `rollback_failed` and the mixed state remains visible through status
   endpoints.
 
+### Controller Safety Behaviors
+
+The controller treats live reconfiguration as a runtime lifecycle operation,
+not just as an in-memory config edit. Several edge cases are handled explicitly
+to avoid orphaned runtime instances, stale conflicts, or unbounded status
+growth.
+
+- Partial `create` launch failure: if one core fails to launch after earlier
+  cores were already started, the controller best-effort shuts down the
+  candidate instances that were launched by that same create operation before
+  returning rollout failure.
+- Readiness failure after candidate launch: if a candidate generation starts
+  but does not reach `Admitted` and `Ready` before the step timeout, the
+  controller shuts down the candidate instance before continuing with failure
+  handling or rollback.
+- Rollout worker panic: if the detached rollout worker panics, the controller
+  records a terminal failed rollout, clears the active-operation conflict, and
+  emits internal panic diagnostics. If the panic happened while an uncommitted
+  target generation was active, the controller best-effort sends shutdown to
+  those candidate instances first.
+- Committed generation protection: panic cleanup does not shut down a target
+  generation that is already committed as the active serving generation. This
+  prevents a late bookkeeping panic from turning a successful rollout into an
+  outage.
+- Shutdown worker panic: if the detached shutdown worker panics, the controller
+  records a terminal failed shutdown and clears the active-operation conflict,
+  so later operations for the same logical pipeline are not blocked until
+  restart.
+- Runtime thread panic or error: runtime instance failures are reported back
+  into observed state with a concise operator message and diagnostic source
+  detail. The instance is marked exited so controller liveness accounting can
+  progress.
+- Launch and exit races: a runtime thread can exit before its launch
+  registration is visible to the controller. The controller records early exits
+  and reconciles them during registration, avoiding stale active-instance
+  counts.
+- Global shutdown dispatch: `POST /groups/shutdown` snapshots active instances
+  and attempts shutdown delivery to all of them. One failed send does not
+  prevent later instances from receiving shutdown. Dispatch is idempotent for
+  instances that already accepted shutdown.
+- Observed-state compaction: after active controller work no longer needs old
+  generations, the controller compacts retained instance status to the selected
+  serving view. During active rollout overlap, status still exposes both old and
+  new generations so operators can debug cutover behavior.
+- Bounded operation history: terminal rollout and shutdown records are retained
+  only in a bounded in-memory window. Recent terminal ids remain useful for
+  follow-up inspection, but old by-id history is intentionally evictable.
+
 ## API Surface
 
 ### Read current pipeline config

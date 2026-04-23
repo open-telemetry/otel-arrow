@@ -437,6 +437,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                 detail: None,
             })
             .collect();
+        let step_timeout_secs = request.step_timeout_secs.max(1);
+        let drain_timeout_secs = request.drain_timeout_secs.max(1);
         let rollout = RolloutRecord::new(
             rollout_id,
             pipeline_group_id.clone(),
@@ -446,6 +448,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             current_record
                 .as_ref()
                 .map(|record| record.active_generation),
+            drain_timeout_secs,
             cores,
         );
 
@@ -465,8 +468,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             resize_stop_cores,
             target_generation,
             rollout,
-            step_timeout_secs: request.step_timeout_secs.max(1),
-            drain_timeout_secs: request.drain_timeout_secs.max(1),
+            step_timeout_secs,
+            drain_timeout_secs,
         })
     }
 
