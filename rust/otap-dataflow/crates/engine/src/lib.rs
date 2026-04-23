@@ -80,6 +80,7 @@ pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;
+mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;
@@ -88,6 +89,7 @@ pub mod topic;
 pub mod wiring_contract;
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
+pub use route_admission::RouteAdmission;
 
 /// Trait for factory types that expose a name.
 ///
@@ -446,6 +448,16 @@ pub trait MessageSourceLocalEffectHandlerExtension<PData> {
     async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
     /// Try to send data after tagging with the source node.
     fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to admit data to the default output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, a missing default port)
+    /// while classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node(
+        &self,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>> {
+        route_admission::classify_route_admission(self.try_send_message_with_source_node(data))
+    }
     /// Send data to a specific port after tagging with the source node.
     async fn send_message_with_source_node_to<P>(
         &self,
@@ -462,6 +474,22 @@ pub trait MessageSourceLocalEffectHandlerExtension<PData> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName> + Send + 'static;
+    /// Try to admit data to a specific selected output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, an unknown port) while
+    /// classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static,
+    {
+        route_admission::classify_route_admission(
+            self.try_send_message_with_source_node_to(port, data),
+        )
+    }
 }
 
 /// Send-friendly variant for use in `Send` contexts (e.g., `tokio::spawn`).
@@ -471,6 +499,16 @@ pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
     async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
     /// Try to send data after tagging with the source node.
     fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to admit data to the default output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, a missing default port)
+    /// while classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node(
+        &self,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>> {
+        route_admission::classify_route_admission(self.try_send_message_with_source_node(data))
+    }
     /// Send data to a specific port after tagging with the source node.
     async fn send_message_with_source_node_to<P>(
         &self,
@@ -487,6 +525,22 @@ pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName> + Send + 'static;
+    /// Try to admit data to a specific selected output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, an unknown port) while
+    /// classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static,
+    {
+        route_admission::classify_route_admission(
+            self.try_send_message_with_source_node_to(port, data),
+        )
+    }
 }
 
 /// Builds a pipeline factory for initialization.

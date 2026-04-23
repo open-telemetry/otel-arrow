@@ -135,6 +135,19 @@ pub struct Config {
     /// ```
     #[serde(default, deserialize_with = "deserialize_resource_attributes")]
     resource_attributes: Vec<ResourceAttributeSet>,
+
+    /// Optional transport headers to attach to each generated pdata message.
+    ///
+    /// Keys are header names. Values are optional fixed strings; when left
+    /// empty, a random value is generated once at startup.
+    ///
+    /// ```yaml
+    /// transport_headers:
+    ///   x-tenant-id: "acme"
+    ///   x-request-id:
+    /// ```
+    #[serde(default)]
+    transport_headers: HashMap<String, Option<String>>,
 }
 
 /// Configuration to describe the traffic being sent
@@ -197,6 +210,7 @@ impl Config {
             generation_strategy: GenerationStrategy::default(),
             enable_ack_nack: default_enable_ack_nack(),
             resource_attributes: Vec::new(),
+            transport_headers: HashMap::new(),
         }
     }
 
@@ -214,6 +228,16 @@ impl Config {
         generation_strategy: GenerationStrategy,
     ) -> Self {
         self.generation_strategy = generation_strategy;
+        self
+    }
+
+    /// Builder-style method to set transport headers.
+    #[must_use]
+    pub fn with_transport_headers(
+        mut self,
+        transport_headers: HashMap<String, Option<String>>,
+    ) -> Self {
+        self.transport_headers = transport_headers;
         self
     }
 
@@ -280,6 +304,15 @@ impl Config {
     #[must_use]
     pub fn resource_attributes(&self) -> &[ResourceAttributeSet] {
         &self.resource_attributes
+    }
+
+    /// Get the transport headers configuration.
+    ///
+    /// Keys are header names. Entries with a value produce fixed headers;
+    /// entries left empty produce a random value generated once at startup.
+    #[must_use]
+    pub fn transport_headers(&self) -> &HashMap<String, Option<String>> {
+        &self.transport_headers
     }
 }
 
@@ -711,5 +744,49 @@ mod tests {
             },
         ];
         assert_eq!(build_rotation_table(&entries), vec![0, 0, 1, 1, 1]);
+    }
+
+    // -- transport_headers config tests ----------------------------------------
+
+    #[test]
+    fn parse_config_transport_headers_default_empty() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "generation_strategy": "fresh"
+        }))
+        .expect("config should parse");
+
+        assert!(
+            cfg.transport_headers().is_empty(),
+            "absent transport_headers should default to empty"
+        );
+    }
+
+    #[test]
+    fn parse_config_transport_headers_with_values() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "generation_strategy": "fresh",
+            "transport_headers": {
+                "x-tenant-id": "acme",
+                "x-request-id": null
+            }
+        }))
+        .expect("config should parse");
+
+        let headers = cfg.transport_headers();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(
+            headers.get("x-tenant-id"),
+            Some(&Some("acme".to_string())),
+            "fixed value should be preserved"
+        );
+        assert_eq!(
+            headers.get("x-request-id"),
+            Some(&None),
+            "null value should parse as None"
+        );
     }
 }

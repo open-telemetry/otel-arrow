@@ -14,6 +14,7 @@ use metrics::FakeSignalReceiverMetrics;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -316,6 +317,60 @@ impl BatchCache {
     }
 }
 
+/// Builds transport headers from the user-configured map.
+///
+/// Keys with `Some(value)` produce fixed header values.
+/// Keys with `None` produce a random value once at startup: a 16-char
+/// random alphabetical string for text headers, or 16 raw random bytes
+/// for binary headers (keys ending in `-bin`).
+///
+/// Returns `None` when the config map is empty (zero overhead).
+fn build_transport_headers(
+    config_headers: &HashMap<String, Option<String>>,
+) -> Option<TransportHeaders> {
+    if config_headers.is_empty() {
+        return None;
+    }
+    let mut headers = TransportHeaders::with_capacity(config_headers.len());
+    for (key, value) in config_headers {
+        // Infer the value kind from the key name, matching the convention
+        // used by the header capture policy: keys ending in `-bin` are
+        // treated as binary (the gRPC binary metadata convention).
+        if key.ends_with("-bin") {
+            let resolved_value = match value {
+                Some(v) => v.as_bytes().to_vec(),
+                None => {
+                    let mut buf = [0u8; 16];
+                    rand::RngExt::fill(&mut rand::rng(), &mut buf);
+                    buf.to_vec()
+                }
+            };
+            headers.push(TransportHeader::binary(
+                key.clone(),
+                key.clone(),
+                resolved_value,
+            ));
+        } else {
+            let resolved_value = match value {
+                Some(v) => v.as_bytes().to_vec(),
+                None => {
+                    // Generate bytes in ASCII printable range (space..tilde)
+                    let mut rng = rand::rng();
+                    (0..16)
+                        .map(|_| rand::RngExt::random_range(&mut rng, 32u8..127))
+                        .collect()
+                }
+            };
+            headers.push(TransportHeader::text(
+                key.clone(),
+                key.clone(),
+                resolved_value,
+            ));
+        }
+    }
+    Some(headers)
+}
+
 /// Handle a control message received on the control channel.
 ///
 /// Returns `Ok(Some(terminal_state))` when the receiver should exit,
@@ -414,6 +469,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             GenerationStrategy::Fresh | GenerationStrategy::Templates => None,
         };
 
+        let prebuilt_transport_headers = build_transport_headers(self.config.transport_headers());
         let mut signal_count: u64 = 0;
         let mut batch_rotation_index: u64 = 0;
         let one_second_duration = Duration::from_secs(1);
@@ -443,6 +499,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     &signal_generator,
                     &batch_cache,
                     enable_ack_nack,
+                    &prebuilt_transport_headers,
                 );
                 tokio::pin!(send_fut);
 
@@ -560,6 +617,7 @@ async fn send_signals(
     generator: &SignalGenerator,
     batch_cache: &Option<BatchCache>,
     enable_ack_nack: bool,
+    prebuilt_transport_headers: &Option<TransportHeaders>,
 ) -> Result<ProducedCounts, Error> {
     match batch_cache {
         Some(cache) => {
@@ -572,6 +630,7 @@ async fn send_signals(
                 log_count,
                 cache,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await
         }
@@ -587,6 +646,7 @@ async fn send_signals(
                 log_count,
                 generator,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await
         }
@@ -602,10 +662,14 @@ async fn send_generated_pdata(
     effect_handler: &local::EffectHandler<OtapPdata>,
     mut pdata: OtapPdata,
     enable_ack_nack: bool,
+    prebuilt_transport_headers: &Option<TransportHeaders>,
 ) -> Result<ProducedCounts, Error> {
     let signal_type = pdata.signal_type();
     let num_items = pdata.num_items() as u64;
 
+    if let Some(headers) = prebuilt_transport_headers {
+        pdata.set_transport_headers(headers.clone());
+    }
     if enable_ack_nack {
         effect_handler.subscribe_to(
             Interests::ACKS | Interests::NACKS,
@@ -636,6 +700,7 @@ async fn send_cached_signals(
     log_count: usize,
     cache: &BatchCache,
     enable_ack_nack: bool,
+    prebuilt_transport_headers: &Option<TransportHeaders>,
 ) -> Result<ProducedCounts, Error> {
     let total_per_iteration = (metric_count + trace_count + log_count) as u64;
     let mut produced = ProducedCounts::default();
@@ -652,8 +717,13 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.metrics {
             let send_count = metric_count / cache.metrics_batch_size;
             for _ in 0..send_count {
-                produced +=
-                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack).await?;
+                produced += send_generated_pdata(
+                    &effect_handler,
+                    batch.clone(),
+                    enable_ack_nack,
+                    prebuilt_transport_headers,
+                )
+                .await?;
             }
         }
     }
@@ -663,8 +733,13 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.traces {
             let send_count = trace_count / cache.traces_batch_size;
             for _ in 0..send_count {
-                produced +=
-                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack).await?;
+                produced += send_generated_pdata(
+                    &effect_handler,
+                    batch.clone(),
+                    enable_ack_nack,
+                    prebuilt_transport_headers,
+                )
+                .await?;
             }
         }
     }
@@ -674,8 +749,13 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.logs {
             let send_count = log_count / cache.logs_batch_size;
             for _ in 0..send_count {
-                produced +=
-                    send_generated_pdata(&effect_handler, batch.clone(), enable_ack_nack).await?;
+                produced += send_generated_pdata(
+                    &effect_handler,
+                    batch.clone(),
+                    enable_ack_nack,
+                    prebuilt_transport_headers,
+                )
+                .await?;
             }
         }
     }
@@ -696,6 +776,7 @@ async fn generate_signal_fresh(
     log_count: usize,
     generator: &SignalGenerator,
     enable_ack_nack: bool,
+    prebuilt_transport_headers: &Option<TransportHeaders>,
 ) -> Result<ProducedCounts, Error> {
     let mut produced = ProducedCounts::default();
     // nothing to send
@@ -726,6 +807,7 @@ async fn generate_signal_fresh(
                         .generate_metrics(max_batch_size, *batch_rotation_index)
                         .try_into()?,
                     enable_ack_nack,
+                    prebuilt_transport_headers,
                 )
                 .await?;
                 *batch_rotation_index += 1;
@@ -747,6 +829,7 @@ async fn generate_signal_fresh(
                         .generate_metrics(remaining_count, *batch_rotation_index)
                         .try_into()?,
                     enable_ack_nack,
+                    prebuilt_transport_headers,
                 )
                 .await?;
                 *batch_rotation_index += 1;
@@ -764,6 +847,7 @@ async fn generate_signal_fresh(
                     .generate_metrics(metric_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -779,6 +863,7 @@ async fn generate_signal_fresh(
                         .generate_traces(max_batch_size, *batch_rotation_index)
                         .try_into()?,
                     enable_ack_nack,
+                    prebuilt_transport_headers,
                 )
                 .await?;
                 *batch_rotation_index += 1;
@@ -799,6 +884,7 @@ async fn generate_signal_fresh(
                         .generate_traces(remaining_count, *batch_rotation_index)
                         .try_into()?,
                     enable_ack_nack,
+                    prebuilt_transport_headers,
                 )
                 .await?;
                 *batch_rotation_index += 1;
@@ -814,6 +900,7 @@ async fn generate_signal_fresh(
                     .generate_traces(trace_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -829,6 +916,7 @@ async fn generate_signal_fresh(
                         .generate_logs(max_batch_size, *batch_rotation_index)
                         .try_into()?,
                     enable_ack_nack,
+                    prebuilt_transport_headers,
                 )
                 .await?;
                 *batch_rotation_index += 1;
@@ -849,6 +937,7 @@ async fn generate_signal_fresh(
                         .generate_logs(remaining_count, *batch_rotation_index)
                         .try_into()?,
                     enable_ack_nack,
+                    prebuilt_transport_headers,
                 )
                 .await?;
                 *batch_rotation_index += 1;
@@ -864,6 +953,7 @@ async fn generate_signal_fresh(
                     .generate_logs(log_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -880,6 +970,7 @@ async fn generate_signal_fresh(
                     .generate_metrics(max_batch_size, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -892,6 +983,7 @@ async fn generate_signal_fresh(
                     .generate_metrics(metric_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -906,6 +998,7 @@ async fn generate_signal_fresh(
                     .generate_traces(max_batch_size, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -918,6 +1011,7 @@ async fn generate_signal_fresh(
                     .generate_traces(trace_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -932,6 +1026,7 @@ async fn generate_signal_fresh(
                     .generate_logs(max_batch_size, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -944,6 +1039,7 @@ async fn generate_signal_fresh(
                     .generate_logs(log_count_remainder, *batch_rotation_index)
                     .try_into()?,
                 enable_ack_nack,
+                prebuilt_transport_headers,
             )
             .await?;
             *batch_rotation_index += 1;
@@ -960,6 +1056,7 @@ mod tests {
 
     use crate::receivers::fake_data_generator::config::{Config, TrafficConfig};
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::transport_headers::ValueKind;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
@@ -1689,5 +1786,318 @@ mod tests {
         };
         assert!(generator.attrs_for_batch(0).is_none());
         assert!(generator.attrs_for_batch(1).is_none());
+    }
+
+    // -- Transport header tests -----------------------------------------------
+
+    /// Verifies that pdata messages contain transport headers with fixed values
+    /// when `transport_headers` is configured with explicit values.
+    #[test]
+    fn test_fake_data_transport_headers_fixed_value() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(
+            Some(MESSAGE_PER_SECOND),
+            Some(MAX_SIGNALS),
+            MAX_BATCH,
+            0,
+            0,
+            1,
+        );
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::Fresh)
+            .with_transport_headers(HashMap::from([(
+                "x-tenant-id".to_string(),
+                Some("acme".to_string()),
+            )]));
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_transport_headers"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = ctx.recv().await.expect("should receive at least one pdata");
+
+                let headers = pdata
+                    .transport_headers()
+                    .expect("pdata should have transport headers");
+                let tenant: Vec<_> = headers.find_by_name("x-tenant-id").collect();
+                assert_eq!(
+                    tenant.len(),
+                    1,
+                    "should have exactly one x-tenant-id header"
+                );
+                assert_eq!(
+                    tenant[0].value_as_str(),
+                    Some("acme"),
+                    "fixed header value should be 'acme'"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Verifies that pdata messages contain transport headers with random values
+    /// when `transport_headers` is configured with null values.
+    #[test]
+    fn test_fake_data_transport_headers_random_value() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(
+            Some(MESSAGE_PER_SECOND),
+            Some(MAX_SIGNALS),
+            MAX_BATCH,
+            0,
+            0,
+            1,
+        );
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::Fresh)
+            .with_transport_headers(HashMap::from([("x-request-id".to_string(), None)]));
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_random_headers"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = ctx.recv().await.expect("should receive at least one pdata");
+
+                let headers = pdata
+                    .transport_headers()
+                    .expect("pdata should have transport headers");
+                let request_id: Vec<_> = headers.find_by_name("x-request-id").collect();
+                assert_eq!(
+                    request_id.len(),
+                    1,
+                    "should have exactly one x-request-id header"
+                );
+                assert_eq!(
+                    request_id[0].value.len(),
+                    16,
+                    "random value should be 16 bytes"
+                );
+                assert_eq!(
+                    request_id[0].value_kind,
+                    ValueKind::Text,
+                    "non-bin key should produce a Text header"
+                );
+                assert!(
+                    request_id[0].value_as_str().is_some(),
+                    "text header random value should be valid UTF-8 (printable)"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Verifies that pdata messages contain binary transport headers with random
+    /// values when `transport_headers` is configured with null values and keys
+    /// ending in `-bin`.
+    #[test]
+    fn test_fake_data_transport_headers_binary_random_value() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(
+            Some(MESSAGE_PER_SECOND),
+            Some(MAX_SIGNALS),
+            MAX_BATCH,
+            0,
+            0,
+            1,
+        );
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::Fresh)
+            .with_transport_headers(HashMap::from([("x-trace-bin".to_string(), None)]));
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_binary_headers"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = ctx.recv().await.expect("should receive at least one pdata");
+
+                let headers = pdata
+                    .transport_headers()
+                    .expect("pdata should have transport headers");
+                let trace_bin: Vec<_> = headers.find_by_name("x-trace-bin").collect();
+                assert_eq!(
+                    trace_bin.len(),
+                    1,
+                    "should have exactly one x-trace-bin header"
+                );
+                assert_eq!(
+                    trace_bin[0].value.len(),
+                    16,
+                    "random binary value should be 16 bytes"
+                );
+                assert_eq!(
+                    trace_bin[0].value_kind,
+                    ValueKind::Binary,
+                    "-bin key should produce a Binary header"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Verifies that pdata messages do NOT have transport headers when
+    /// `transport_headers` is absent from the config.
+    #[test]
+    fn test_fake_data_transport_headers_empty_by_default() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(
+            Some(MESSAGE_PER_SECOND),
+            Some(MAX_SIGNALS),
+            MAX_BATCH,
+            0,
+            0,
+            1,
+        );
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::Fresh);
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_no_headers"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = ctx.recv().await.expect("should receive at least one pdata");
+
+                assert!(
+                    pdata.transport_headers().is_none(),
+                    "pdata should NOT have transport headers when config has no transport_headers"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
     }
 }
