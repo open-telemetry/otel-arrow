@@ -89,10 +89,13 @@ use crate::otlp::logs::LogsProtoBytesEncoder;
 use crate::otlp::metrics::MetricsProtoBytesEncoder;
 use crate::otlp::traces::TracesProtoBytesEncoder;
 use crate::otlp::{OtlpProtoBytes, ProtoBuffer, ProtoBytesEncoder};
+use crate::proto::OtlpProtoMessage;
 use crate::views::otlp::bytes::logs::RawLogsData;
 use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
+use bytes::BytesMut;
 use otap_df_config::{SignalFormat, SignalType};
+use prost::{EncodeError, Message};
 
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
@@ -425,6 +428,28 @@ impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
                 Ok(otap_batch)
             }
         }
+    }
+}
+
+impl TryFrom<OtlpProtoMessage> for OtapPayload {
+    type Error = EncodeError;
+
+    fn try_from(value: OtlpProtoMessage) -> Result<Self, Self::Error> {
+        let mut bytes = BytesMut::new();
+        Ok(match value {
+            OtlpProtoMessage::Logs(logs_data) => {
+                logs_data.encode(&mut bytes)?;
+                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()))
+            }
+            OtlpProtoMessage::Metrics(metrics_data) => {
+                metrics_data.encode(&mut bytes)?;
+                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()))
+            }
+            OtlpProtoMessage::Traces(trace_data) => {
+                trace_data.encode(&mut bytes)?;
+                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportTracesRequest(bytes.freeze()))
+            }
+        })
     }
 }
 
