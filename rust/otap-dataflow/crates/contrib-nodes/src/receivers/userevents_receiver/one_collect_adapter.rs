@@ -58,6 +58,37 @@ pub(crate) struct UserEventsSessionConfig {
     pub cpu_ids: Vec<usize>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy)]
+struct PerfTimeAnchor {
+    unix_nano: u64,
+    perf_nano: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl PerfTimeAnchor {
+    fn capture() -> Self {
+        let before = ExportMachine::qpc_time();
+        let unix_nano = current_time_unix_nano();
+        let after = ExportMachine::qpc_time();
+
+        Self {
+            unix_nano,
+            perf_nano: before.saturating_add(after.saturating_sub(before) / 2),
+        }
+    }
+
+    fn sample_perf_time_to_unix_nano(self, sample_perf_time: u64) -> u64 {
+        if sample_perf_time <= self.perf_nano {
+            self.unix_nano
+                .saturating_sub(self.perf_nano - sample_perf_time)
+        } else {
+            self.unix_nano
+                .saturating_add(sample_perf_time - self.perf_nano)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum CollectInitError {
     MissingTracepoint(String),
@@ -125,7 +156,10 @@ impl OneCollectUserEventsSession {
         let pending = Rc::new(RefCell::new(VecDeque::new()));
         let lost_samples = Rc::new(Cell::new(0u64));
         let time_field = session.time_data_ref();
+        // TODO: Prefer a one_collect-owned sample-time to realtime conversion API
+        // once the session exposes one.
         let tracefs = TraceFS::open().map_err(CollectInitError::Io)?;
+        let time_anchor = PerfTimeAnchor::capture();
 
         for (subscription_index, subscription) in subscriptions.iter().enumerate() {
             let (group, event_name) = subscription.tracepoint.split_once(':').ok_or_else(|| {
@@ -165,7 +199,7 @@ impl OneCollectUserEventsSession {
                 let full_data = data.full_data();
                 let timestamp = event_time_field
                     .try_get_u64(full_data)
-                    .map(sample_qpc_to_unix_nano)
+                    .map(|sample_time| time_anchor.sample_perf_time_to_unix_nano(sample_time))
                     .unwrap_or_else(current_time_unix_nano);
 
                 event_pending.borrow_mut().push_back(CollectedEvent {
@@ -314,17 +348,6 @@ fn current_time_unix_nano() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
         .unwrap_or_default()
-}
-
-#[cfg(target_os = "linux")]
-fn sample_qpc_to_unix_nano(sample_qpc: u64) -> u64 {
-    let now_unix = current_time_unix_nano();
-    let now_qpc = ExportMachine::qpc_time();
-    if sample_qpc <= now_qpc {
-        now_unix.saturating_sub(now_qpc - sample_qpc)
-    } else {
-        now_unix.saturating_add(sample_qpc - now_qpc)
-    }
 }
 
 #[cfg(not(target_os = "linux"))]
