@@ -281,6 +281,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever(engine_cfg);
+    #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
+    {
+        dhat_finish();
+    }
+    
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
