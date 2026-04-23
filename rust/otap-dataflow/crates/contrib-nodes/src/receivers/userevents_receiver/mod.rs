@@ -98,6 +98,8 @@ struct SessionConfig {
         dead_code,
         reason = "reserved for future one-collect wakeup watermark support"
     )]
+    // TODO: Wire this into the perf ring setup once one_collect exposes
+    // wakeup/readiness and watermark configuration for tracepoint sessions.
     #[serde(default = "default_wakeup_watermark")]
     wakeup_watermark: usize,
     #[serde(default)]
@@ -574,6 +576,10 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                             .expect("userevents session branch is gated by is_some()");
                         session.drain_ready(&drain_cfg, &mut drained_records).await
                     }, if session.is_some() => {
+                        // TODO: Reopen the session for recoverable mid-stream
+                        // collection failures once one_collect exposes typed
+                        // error classification. Today drain errors are reported
+                        // as terminal transport failures.
                         let drain_stats = drained.map_err(|error| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
                             kind: ReceiverErrorKind::Transport,

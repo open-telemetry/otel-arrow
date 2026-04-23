@@ -257,6 +257,10 @@ Exactly one of `tracepoint` or `subscriptions` must be configured.
 `session.wakeup_watermark` exists as a reserved configuration field for future
 one_collect wakeup support, but is currently ignored.
 
+TODO: Wire `session.wakeup_watermark` into the perf ring setup once
+`one_collect` exposes wakeup/readiness and watermark configuration for
+tracepoint sessions.
+
 ### Configuration Reference
 
 | Field | Default | Description |
@@ -443,6 +447,10 @@ full; it drops already-drained batches and reports them as
 the receiver drains it, that loss is reported by the perf path and counted as
 `lost_perf_samples`.
 
+TODO: Plumb corrupt perf event and corrupt perf buffer counters once
+`one_collect` exposes them. These should remain distinct from
+`cs_decode_fallbacks`, which can also count valid but unsupported payloads.
+
 ### Memory Pressure
 
 When process-wide memory pressure indicates ingress shedding, the receiver
@@ -456,6 +464,10 @@ tracepoint attachment until the producer has registered the tracepoint.
 If late registration is disabled and any configured tracepoint is missing or
 invalid, session startup fails and the receiver does not start. With multiple
 subscriptions, one missing tracepoint fails the whole session.
+
+TODO: Add mid-stream session recovery once the underlying collection layer
+exposes enough error classification to distinguish recoverable session loss from
+fatal data, permission, or configuration errors.
 
 ### Shutdown and Drain
 
@@ -480,6 +492,9 @@ The receiver reports these counters under `userevents.receiver.metrics`:
 | `late_registration_retries` | Late-registration retry attempts while waiting for tracepoints. |
 | `sessions_started` | Receiver perf sessions successfully opened. |
 | `flushed_batches` | Arrow log batches flushed downstream. |
+
+TODO: Add metrics for corrupt perf events and corrupt perf buffers once the
+underlying collection layer exposes those counters.
 
 ## Linux Requirements
 

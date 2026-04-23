@@ -27,6 +27,8 @@ pub(crate) struct CollectedEvent {
 /// user-defined event payload in every PERF_SAMPLE_RAW record:
 /// `common_type` (u16) + `common_flags` (u8) + `common_preempt_count` (u8)
 /// + `common_pid` (i32) = 8 bytes.
+/// TODO: Replace this constant with a metadata-derived common field size once
+/// one_collect exposes that value directly for tracepoint events.
 #[cfg(target_os = "linux")]
 const TRACEPOINT_COMMON_HEADER_LEN: usize = 8;
 
