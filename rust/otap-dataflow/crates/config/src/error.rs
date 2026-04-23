@@ -5,7 +5,7 @@
 
 use crate::node::NodeKind;
 use crate::pipeline::DispatchPolicy;
-use crate::{NodeId, PipelineGroupId, PipelineId, PortName};
+use crate::{ExtensionId, NodeId, PipelineGroupId, PipelineId, PortName};
 use miette::Diagnostic;
 use std::fmt::Display;
 
@@ -75,6 +75,16 @@ pub enum Error {
         context: Context,
         /// The id of the node that was duplicated.
         node_id: NodeId,
+    },
+
+    /// An extension with the same id already exists in the pipeline.
+    #[error("Duplicated extension id `{extension_id}`\nContext: {context}")]
+    #[diagnostic(code(data_plane::duplicate_extension), url(docsrs))]
+    DuplicateExtension {
+        /// The context in which the error occurred.
+        context: Context,
+        /// The id of the extension that was duplicated.
+        extension_id: ExtensionId,
     },
 
     /// The same output port was connected more than once on a single node.
@@ -230,6 +240,34 @@ pub enum Error {
     DuplicatePipeline {
         /// The id of the pipeline that was duplicated.
         pipeline_id: PipelineId,
+    },
+
+    /// A config URI uses an unrecognized scheme.
+    #[error("Unknown config URI scheme '{scheme}:'. Supported schemes are: file:, env:")]
+    #[diagnostic(code(data_plane::config_uri_unknown_scheme), url(docsrs))]
+    ConfigUriUnknownScheme {
+        /// The unrecognized scheme prefix.
+        scheme: String,
+    },
+
+    /// An env: config URI references an environment variable that is not set.
+    #[error(
+        "Could not resolve config from 'env:{var}': environment variable {var} is not set\n\nHint: Set the {var} environment variable with your pipeline configuration, or use:\n  --config=file:/path/to/config.yaml\n  --config=env:OTHER_VAR_NAME"
+    )]
+    #[diagnostic(code(data_plane::config_env_var_not_set), url(docsrs))]
+    ConfigEnvVarNotSet {
+        /// The name of the missing environment variable.
+        var: String,
+    },
+
+    /// No config was provided and the default config file was not found.
+    #[error(
+        "No configuration provided and no config file found at the default path ({path}).\n\nProvide a configuration using one of:\n  --config=file:/path/to/config.yaml\n  --config=env:MY_CONFIG_VAR\n  --config=config.yaml"
+    )]
+    #[diagnostic(code(data_plane::config_no_file_found), url(docsrs))]
+    ConfigNoFileFound {
+        /// The path that was tried.
+        path: String,
     },
 }
 

@@ -152,12 +152,12 @@ mod attributes_16 {
                     min_key_size: DictKeySize::U8,
                     value_type: Utf8,
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: ATTRIBUTE_TYPE,
                 data_type: DataType::Simple(UInt8),
-                required: false,
+                required: true,
             },
             Field {
                 name: ATTRIBUTE_STR,
@@ -240,12 +240,12 @@ mod attributes_32 {
                     min_key_size: DictKeySize::U8,
                     value_type: Utf8,
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: ATTRIBUTE_TYPE,
                 data_type: DataType::Simple(UInt8),
-                required: false,
+                required: true,
             },
             Field {
                 name: ATTRIBUTE_STR,
@@ -317,7 +317,7 @@ mod logs {
             Field {
                 name: ATTRIBUTE_TYPE,
                 data_type: DataType::Simple(UInt8),
-                required: false,
+                required: true,
             },
             Field {
                 name: ATTRIBUTE_STR,
@@ -531,7 +531,7 @@ mod spans {
             Field {
                 name: START_TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: DURATION_TIME_UNIX_NANO,
@@ -539,7 +539,7 @@ mod spans {
                     min_key_size: DictKeySize::U8,
                     value_type: DurationNanosecond,
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: TRACE_ID,
@@ -547,7 +547,7 @@ mod spans {
                     min_key_size: DictKeySize::U8,
                     value_type: FixedSizeBinary(16),
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: SPAN_ID,
@@ -555,7 +555,7 @@ mod spans {
                     min_key_size: DictKeySize::U8,
                     value_type: FixedSizeBinary(8),
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: NAME,
@@ -563,7 +563,7 @@ mod spans {
                     min_key_size: DictKeySize::U8,
                     value_type: Utf8,
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: ID,
@@ -678,7 +678,7 @@ mod span_events {
                     min_key_size: DictKeySize::U8,
                     value_type: Utf8,
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: ID,
@@ -732,7 +732,7 @@ mod span_links {
                     min_key_size: DictKeySize::U8,
                     value_type: FixedSizeBinary(8),
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: TRACE_ID,
@@ -740,7 +740,7 @@ mod span_links {
                     min_key_size: DictKeySize::U8,
                     value_type: FixedSizeBinary(16),
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: TRACE_STATE,
@@ -786,12 +786,12 @@ mod univariate_metrics {
             Field {
                 name: ID,
                 data_type: DataType::Simple(UInt16),
-                required: false,
+                required: true,
             },
             Field {
                 name: METRIC_TYPE,
                 data_type: DataType::Simple(UInt8),
-                required: false,
+                required: true,
             },
             Field {
                 name: NAME,
@@ -799,7 +799,7 @@ mod univariate_metrics {
                     min_key_size: DictKeySize::U8,
                     value_type: Utf8,
                 },
-                required: false,
+                required: true,
             },
             Field {
                 name: AGGREGATION_TEMPORALITY,
@@ -1277,7 +1277,7 @@ mod exemplars {
             Field {
                 name: TIME_UNIX_NANO,
                 data_type: DataType::Simple(TimestampNanosecond),
-                required: false,
+                required: true,
             },
             Field {
                 name: TRACE_ID,

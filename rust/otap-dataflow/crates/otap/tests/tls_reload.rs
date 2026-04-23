@@ -4,7 +4,6 @@
 #![allow(missing_docs)]
 #![allow(unused_results)]
 
-#[cfg(feature = "experimental-tls")]
 mod tests {
     use otap_df_config::tls::{TlsConfig, TlsServerConfig};
     use otap_df_otap::tls_utils::build_reloadable_server_config;
@@ -48,10 +47,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(
-        any(target_os = "windows", target_os = "macos"),
-        ignore = "Skipping on Windows and macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
-    )]
     async fn test_tls_reload_integration() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();

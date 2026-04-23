@@ -20,7 +20,7 @@ components:
       docker_component:
         allocated_cores: 1
       prometheus:
-        endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
   df-engine:
     deployment:
       docker:
@@ -41,7 +41,7 @@ components:
       docker_component:
         allocated_cores: 1
       prometheus:
-        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
   backend-service:
     deployment:
       docker:
@@ -62,7 +62,7 @@ components:
       docker_component:
         allocated_cores: 1
       prometheus:
-        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
   # --- Logs ---
@@ -107,6 +107,8 @@ tests:
         log_weight: 100
         metric_weight: 0
         trace_weight: 0
+        exporter_extra_config:
+          max_in_flight: 256
 
   - name: Logs-OTLP-OTLP
     from_template:
@@ -121,6 +123,8 @@ tests:
         log_weight: 100
         metric_weight: 0
         trace_weight: 0
+        exporter_extra_config:
+          max_in_flight: 256
 
   # --- Metrics ---
   - name: Metrics-OTAP-BATCH-OTAP
@@ -167,6 +171,8 @@ tests:
         metric_weight: 100
         trace_weight: 0
         report_config: ./test_suites/integration/configs/integration_report_metrics.yaml
+        exporter_extra_config:
+          max_in_flight: 256
 
   - name: Metrics-OTLP-OTLP
     from_template:
@@ -182,6 +188,8 @@ tests:
         metric_weight: 100
         trace_weight: 0
         report_config: ./test_suites/integration/configs/integration_report_metrics.yaml
+        exporter_extra_config:
+          max_in_flight: 256
 
   # --- Traces ---
   - name: Traces-OTAP-BATCH-OTAP
@@ -228,6 +236,8 @@ tests:
         metric_weight: 0
         trace_weight: 100
         report_config: ./test_suites/integration/configs/integration_report_traces.yaml
+        exporter_extra_config:
+          max_in_flight: 256
 
   - name: Traces-OTLP-OTLP
     from_template:
@@ -243,3 +253,5 @@ tests:
         metric_weight: 0
         trace_weight: 100
         report_config: ./test_suites/integration/configs/integration_report_traces.yaml
+        exporter_extra_config:
+          max_in_flight: 256

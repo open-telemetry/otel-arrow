@@ -23,6 +23,7 @@ use crate::control::{
 };
 use crate::control_plane_metrics::{PipelineCompletionMetricsState, RuntimeControlMetricsState};
 use crate::error::Error;
+use crate::memory_limiter::MemoryPressureChanged;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
@@ -39,6 +40,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 /// Threshold for the pending sends buffer. When the buffer exceeds this size,
 /// a warning is logged to help operators diagnose sustained backpressure.
@@ -244,6 +246,8 @@ pub struct RuntimeCtrlMsgManager<PData> {
     pipeline_context: PipelineContext,
     /// Receives control messages from nodes (e.g., start/cancel timer).
     runtime_ctrl_msg_receiver: RuntimeCtrlMsgReceiver<PData>,
+    /// Receives process-wide memory pressure transitions from the controller.
+    memory_pressure_rx: watch::Receiver<MemoryPressureChanged>,
     /// Allows sending control messages back to nodes.
     control_senders: ControlSenders<PData>,
     /// Repeating timers for generic TimerTick.
@@ -282,6 +286,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         pipeline_key: DeployedPipelineKey,
         pipeline_context: PipelineContext,
         runtime_ctrl_msg_receiver: RuntimeCtrlMsgReceiver<PData>,
+        memory_pressure_rx: watch::Receiver<MemoryPressureChanged>,
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
@@ -302,6 +307,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             pipeline_key,
             pipeline_context,
             runtime_ctrl_msg_receiver,
+            memory_pressure_rx,
             control_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
@@ -340,6 +346,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         let mut retry_delay: Option<clock::Sleep> = None;
         let mut metrics_flush_delay: Option<clock::Sleep> = None;
         let mut shutdown_deadline_forced = false;
+        let mut memory_pressure_updates_open = true;
 
         loop {
             // Drain any buffered sends before processing new messages.
@@ -628,6 +635,16 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     .set_delayed_data_queued(self.delayed_data.len());
                             }
                         }
+                    }
+                }
+                changed = self.memory_pressure_rx.changed(), if memory_pressure_updates_open => {
+                    if changed.is_err() {
+                        memory_pressure_updates_open = false;
+                        continue;
+                    }
+                    let update = *self.memory_pressure_rx.borrow_and_update();
+                    for node_id in self.control_senders.receiver_ids() {
+                        self.send(node_id, NodeControlMsg::MemoryPressureChanged { update });
                     }
                 }
                 _ = async {
@@ -1203,7 +1220,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
 mod tests {
     use super::*;
     use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
-    use crate::context::ControllerContext;
+    use crate::context::{ControllerContext, PipelineContextParams};
     use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
     use crate::control::{
         NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
@@ -1240,14 +1257,14 @@ mod tests {
     -> (PipelineContext, crate::entity_context::PipelineEntityScope) {
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let controller_context = ControllerContext::new(metrics_system.registry());
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            Default::default(),
-            Default::default(),
-            0,
-            1,
-            0,
-        );
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: Default::default(),
+            pipeline_id: Default::default(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -1285,6 +1302,8 @@ mod tests {
         crate::entity_context::PipelineEntityScope,
     ) {
         let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(pipeline_capacity);
+        let (_memory_pressure_tx, memory_pressure_rx) =
+            watch::channel(MemoryPressureChanged::initial());
 
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
@@ -1293,17 +1312,15 @@ mod tests {
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
         let core_id = 0;
-        let thread_id = 0;
         let controller_context = ControllerContext::new(metrics_system.registry());
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
             core_id,
-            1, // num_cores
-            thread_id,
-        );
-
+            num_cores: 1,
+            thread_id: 0,
+        };
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -1318,6 +1335,7 @@ mod tests {
             },
             pipeline_context,
             pipeline_rx,
+            memory_pressure_rx,
             control_senders,
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
@@ -1796,27 +1814,30 @@ mod tests {
                     pipeline_id: pipeline_id.clone(),
                     core_id,
                 };
-                let thread_id = 0;
                 let controller_context = ControllerContext::new(metrics_system.registry());
-                let pipeline_context = PipelineContext::new(
-                    controller_context,
-                    pipeline_group_id.clone(),
-                    pipeline_id.clone(),
+                let pipeline_context_params = PipelineContextParams {
+                    pipeline_group_id: pipeline_group_id.clone(),
+                    pipeline_id: pipeline_id.clone(),
                     core_id,
-                    1, // num_cores
-                    thread_id,
-                );
+                    num_cores: 1,
+                    thread_id: 0,
+                };
+                let pipeline_context =
+                    PipelineContext::new(controller_context, pipeline_context_params);
                 let pipeline_entity_key = pipeline_context.register_pipeline_entity();
                 let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
                     pipeline_context.metrics_registry(),
                     pipeline_entity_key,
                 );
+                let (_memory_pressure_tx, memory_pressure_rx) =
+                    watch::channel(MemoryPressureChanged::initial());
 
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = RuntimeCtrlMsgManager::<()>::new(
                     pipeline_key,
                     pipeline_context,
                     pipeline_rx,
+                    memory_pressure_rx,
                     ControlSenders::new(),
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
@@ -3051,15 +3072,14 @@ mod tests {
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
         let controller_context = ControllerContext::new(metrics_system.registry());
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            0,
-            1,
-            0,
-        );
-
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -3147,6 +3167,8 @@ mod tests {
         };
 
         let node_metric_handles = Rc::new(RefCell::new(node_metric_handles));
+        let (_memory_pressure_tx, memory_pressure_rx) =
+            watch::channel(MemoryPressureChanged::initial());
 
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
@@ -3156,6 +3178,7 @@ mod tests {
             },
             pipeline_context.clone(),
             pipeline_rx,
+            memory_pressure_rx,
             control_senders,
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter.clone(),
@@ -3207,6 +3230,13 @@ mod tests {
     fn assert_u64(values: &[MetricValue], index: usize, expected: u64, msg: &str) {
         match values[index] {
             MetricValue::U64(v) => assert_eq!(v, expected, "{msg}"),
+            other => panic!("{msg}: expected U64, got {other:?}"),
+        }
+    }
+
+    fn assert_u64_gte(values: &[MetricValue], index: usize, min: u64, msg: &str) {
+        match values[index] {
+            MetricValue::U64(v) => assert!(v >= min, "{msg}: expected >= {min}, got {v}"),
             other => panic!("{msg}: expected U64, got {other:?}"),
         }
     }
@@ -3318,6 +3348,15 @@ mod tests {
         _guard: crate::entity_context::PipelineEntityScope,
     }
 
+    struct MemoryPressureFanoutHarness<PData> {
+        manager: RuntimeCtrlMsgManager<PData>,
+        _pipeline_tx: crate::control::RuntimeCtrlMsgSender<PData>,
+        memory_pressure_tx: watch::Sender<MemoryPressureChanged>,
+        control_receivers: HashMap<usize, Receiver<NodeControlMsg<PData>>>,
+        nodes: Vec<NodeId>,
+        _guard: crate::entity_context::PipelineEntityScope,
+    }
+
     fn setup_runtime_control_telemetry_harness<PData: Clone>(
         node_specs: Vec<(&'static str, NodeType, usize)>,
         metric_level: MetricLevel,
@@ -3340,14 +3379,14 @@ mod tests {
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            0,
-            1,
-            0,
-        );
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -3369,6 +3408,8 @@ mod tests {
             _log_tx,
             engine_tx,
         );
+        let (_memory_pressure_tx, memory_pressure_rx) =
+            watch::channel(MemoryPressureChanged::initial());
 
         let manager = RuntimeCtrlMsgManager::new(
             DeployedPipelineKey {
@@ -3378,6 +3419,7 @@ mod tests {
             },
             pipeline_context,
             pipeline_rx,
+            memory_pressure_rx,
             control_senders,
             event_reporter,
             metrics_reporter,
@@ -3400,6 +3442,79 @@ mod tests {
             runtime_metrics_key,
             snapshot_rx,
             engine_rx,
+            _guard: pipeline_entity_guard,
+        }
+    }
+
+    fn setup_memory_pressure_fanout_harness<PData: Clone>(
+        node_specs: Vec<(&'static str, NodeType, usize)>,
+    ) -> MemoryPressureFanoutHarness<PData> {
+        let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_reporter = metrics_system.reporter();
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_group_id: PipelineGroupId = Default::default();
+        let pipeline_id: PipelineId = Default::default();
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_context.metrics_registry(),
+            pipeline_entity_key,
+        );
+        let nodes = test_nodes(node_specs.iter().map(|(name, _, _)| *name).collect());
+        let mut control_senders = ControlSenders::new();
+        let mut control_receivers = HashMap::new();
+        for (node, (_, node_type, capacity)) in nodes.iter().zip(node_specs.iter()) {
+            let (sender, receiver) = create_mock_control_sender_with_capacity(*capacity);
+            control_senders.register(node.clone(), *node_type, sender);
+            let _ = control_receivers.insert(node.index, receiver);
+        }
+
+        let (_log_tx, _log_rx) = flume::bounded(1);
+        let (engine_tx, _engine_rx) = flume::unbounded();
+        let event_reporter = ObservedEventReporter::new_with_engine_sender(
+            SendPolicy::default(),
+            _log_tx,
+            engine_tx,
+        );
+        let (memory_pressure_tx, memory_pressure_rx) =
+            watch::channel(MemoryPressureChanged::initial());
+
+        let manager = RuntimeCtrlMsgManager::new(
+            DeployedPipelineKey {
+                pipeline_group_id,
+                pipeline_id,
+                core_id: 0,
+            },
+            pipeline_context,
+            pipeline_rx,
+            memory_pressure_rx,
+            control_senders,
+            event_reporter,
+            metrics_reporter,
+            TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+            TelemetryPolicy {
+                pipeline_metrics: false,
+                tokio_metrics: false,
+                runtime_metrics: MetricLevel::None,
+            },
+            Vec::new(),
+            empty_node_metric_handles(),
+        );
+
+        MemoryPressureFanoutHarness {
+            manager,
+            _pipeline_tx: pipeline_tx,
+            memory_pressure_tx,
+            control_receivers,
+            nodes,
             _guard: pipeline_entity_guard,
         }
     }
@@ -3459,14 +3574,14 @@ mod tests {
         let (snapshot_rx, metrics_reporter) =
             MetricsReporter::create_new_and_receiver(reporter_channel_size);
         let controller_context = ControllerContext::new(metrics_system.registry());
-        let pipeline_context = PipelineContext::new(
-            controller_context,
-            Default::default(),
-            Default::default(),
-            0,
-            1,
-            0,
-        );
+        let pipeline_context_params = PipelineContextParams {
+            pipeline_group_id: Default::default(),
+            pipeline_id: Default::default(),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
+        let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
         let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
@@ -4050,6 +4165,67 @@ mod tests {
     // wait for the receiver to report drained before sending downstream
     // shutdown. The runtime-control metrics should expose both phases.
     #[tokio::test]
+    async fn test_memory_pressure_updates_are_fanned_out_only_to_receivers() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let MemoryPressureFanoutHarness {
+                    manager,
+                    _pipeline_tx,
+                    memory_pressure_tx,
+                    mut control_receivers,
+                    nodes,
+                    _guard: _,
+                } = setup_memory_pressure_fanout_harness::<String>(vec![
+                    ("receiver", NodeType::Receiver, 16),
+                    ("processor", NodeType::Processor, 16),
+                ]);
+
+                let receiver = nodes[0].clone();
+                let processor = nodes[1].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                memory_pressure_tx
+                    .send(MemoryPressureChanged {
+                        generation: 1,
+                        level: crate::memory_limiter::MemoryPressureLevel::Hard,
+                        retry_after_secs: 5,
+                        usage_bytes: 123,
+                    })
+                    .expect("watch send should succeed");
+
+                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+                let receiver_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                    .await
+                    .expect("receiver should get memory pressure update")
+                    .expect("receiver control channel should stay open");
+                assert!(matches!(
+                    receiver_msg,
+                    NodeControlMsg::MemoryPressureChanged {
+                        update: MemoryPressureChanged {
+                            generation: 1,
+                            level: crate::memory_limiter::MemoryPressureLevel::Hard,
+                            retry_after_secs: 5,
+                            usage_bytes: 123,
+                        }
+                    }
+                ));
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                assert!(
+                    timeout(Duration::from_millis(50), processor_ctrl.recv())
+                        .await
+                        .is_err(),
+                    "non-receiver nodes should not get memory pressure updates"
+                );
+
+                manager_handle.abort();
+            })
+            .await;
+    }
+
+    #[tokio::test]
     async fn test_runtime_control_metrics_track_receiver_first_drain() {
         let local = LocalSet::new();
 
@@ -4435,6 +4611,8 @@ mod tests {
                     ],
                 )
                 .expect("runtime-control metrics should export due-work counters");
+                // Inbound request counters are deterministic: the test sends
+                // exactly one of each message type.
                 assert_u64(
                     &due_metrics,
                     RUNTIME_START_TIMER_RECEIVED,
@@ -4455,21 +4633,26 @@ mod tests {
                 );
                 assert_u64(
                     &due_metrics,
+                    RUNTIME_DELAYED_DATA_SENT,
+                    1,
+                    "delayed_data.sent should count due delayed-data dispatches",
+                );
+                // Recurring timers reschedule immediately after firing, so
+                // the 5ms timer may fire more than once before `drop(pipeline_tx)`
+                // closes the manager. Unlike delayed data (one-shot), these are
+                // inherently non-deterministic — we only require at least one
+                // dispatch was recorded.
+                assert_u64_gte(
+                    &due_metrics,
                     RUNTIME_TIMER_TICK_SENT,
                     1,
                     "timer_tick.sent should count due timer dispatches",
                 );
-                assert_u64(
+                assert_u64_gte(
                     &due_metrics,
                     RUNTIME_COLLECT_TELEMETRY_SENT,
                     1,
                     "collect_telemetry.sent should count due telemetry dispatches",
-                );
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_DELAYED_DATA_SENT,
-                    1,
-                    "delayed_data.sent should count due delayed-data dispatches",
                 );
             })
             .await;

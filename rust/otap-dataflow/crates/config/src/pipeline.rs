@@ -5,9 +5,10 @@
 pub mod telemetry;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
+use crate::extension::ExtensionUserConfig;
 use crate::node::{NodeKind, NodeUserConfig};
 use crate::policy::Policies;
-use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
+use crate::{Description, ExtensionId, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,7 +28,7 @@ use std::sync::Arc;
 ///
 /// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
 /// deserializing directly with serde to ensure plugin URNs are normalized.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Type of the pipeline, which determines the type of PData it processes.
@@ -41,9 +42,21 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     policies: Option<Policies>,
 
-    /// All nodes in this pipeline, keyed by node ID.
+    /// All data-path nodes in this pipeline, keyed by node ID.
+    ///
+    /// This includes receivers, processors, and exporters — but NOT extensions.
+    /// Extensions are configured in the sibling `extensions` section.
     #[serde(default)]
     nodes: PipelineNodes,
+
+    /// Pipeline extensions, keyed by extension ID.
+    ///
+    /// Extensions are long-lived components that run alongside the pipeline and
+    /// expose functionality (e.g., authentication, service discovery) to other
+    /// components. Unlike nodes, extensions do NOT participate in data-path
+    /// connections.
+    #[serde(default, skip_serializing_if = "PipelineExtensions::is_empty")]
+    extensions: PipelineExtensions,
 
     /// Explicit graph connections between nodes.
     ///
@@ -59,7 +72,7 @@ const fn default_pipeline_type() -> PipelineType {
 
 /// The type of pipeline, which can be either OTLP (OpenTelemetry Protocol) or
 /// OTAP (OpenTelemetry with Apache Arrow Protocol).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineType {
     /// OpenTelemetry Protocol (OTLP) pipeline.
@@ -336,7 +349,7 @@ pub enum DispatchPolicy {
 ///
 /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
 /// across multiple cores/threads without cloning the entire configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(transparent)]
 pub struct PipelineNodes(HashMap<NodeId, Arc<NodeUserConfig>>);
 
@@ -425,6 +438,71 @@ impl IntoIterator for PipelineNodes {
     }
 }
 
+/// A collection of pipeline extensions, keyed by extension ID.
+///
+/// Mirrors [`PipelineNodes`] but uses [`ExtensionUserConfig`] instead of
+/// [`NodeUserConfig`], reflecting that extensions have a simpler configuration
+/// model (no output ports, wiring, or header policies).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+#[serde(transparent)]
+pub struct PipelineExtensions(HashMap<ExtensionId, Arc<ExtensionUserConfig>>);
+
+impl PipelineExtensions {
+    /// Returns true if the extensions collection is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the number of extensions.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns a reference to the extension with the given ID, if it exists.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&Arc<ExtensionUserConfig>> {
+        self.0.get(id)
+    }
+
+    /// Returns true if an extension with the given ID exists.
+    #[must_use]
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.0.contains_key(id)
+    }
+
+    /// Inserts an extension into the collection.
+    pub fn insert(&mut self, id: ExtensionId, config: ExtensionUserConfig) {
+        _ = self.0.insert(id, Arc::new(config));
+    }
+
+    /// Returns an iterator visiting all extensions.
+    pub fn iter(&self) -> impl Iterator<Item = (&ExtensionId, &Arc<ExtensionUserConfig>)> {
+        self.0.iter()
+    }
+
+    /// Returns an iterator over extension IDs.
+    pub fn keys(&self) -> impl Iterator<Item = &ExtensionId> {
+        self.0.keys()
+    }
+}
+
+impl IntoIterator for PipelineExtensions {
+    type Item = (ExtensionId, Arc<ExtensionUserConfig>);
+    type IntoIter = std::collections::hash_map::IntoIter<ExtensionId, Arc<ExtensionUserConfig>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl FromIterator<(ExtensionId, Arc<ExtensionUserConfig>)> for PipelineExtensions {
+    fn from_iter<T: IntoIterator<Item = (ExtensionId, Arc<ExtensionUserConfig>)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
 impl FromIterator<(NodeId, Arc<NodeUserConfig>)> for PipelineNodes {
     fn from_iter<T: IntoIterator<Item = (NodeId, Arc<NodeUserConfig>)>>(iter: T) -> Self {
         Self(iter.into_iter().collect())
@@ -474,15 +552,28 @@ impl PipelineConfig {
         self.policies.as_ref()
     }
 
-    /// Returns a reference to the main pipeline nodes.
+    /// Returns a reference to the main pipeline nodes (receivers, processors, exporters).
     #[must_use]
     pub const fn nodes(&self) -> &PipelineNodes {
         &self.nodes
     }
 
-    /// Returns an iterator visiting all nodes in the pipeline.
+    /// Returns a reference to the pipeline extensions.
+    #[must_use]
+    pub const fn extensions(&self) -> &PipelineExtensions {
+        &self.extensions
+    }
+
+    /// Returns an iterator visiting all data-path nodes in the pipeline.
     pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.nodes.iter()
+    }
+
+    /// Returns an iterator visiting all extension nodes in the pipeline.
+    pub fn extension_iter(
+        &self,
+    ) -> impl Iterator<Item = (&ExtensionId, &Arc<ExtensionUserConfig>)> {
+        self.extensions.iter()
     }
 
     /// Returns true if the pipeline graph is defined with top-level connections.
@@ -496,9 +587,16 @@ impl PipelineConfig {
         self.connections.iter()
     }
 
-    /// Creates a consuming iterator over the nodes in the pipeline.
+    /// Creates a consuming iterator over the data-path nodes in the pipeline.
     pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
         self.nodes.into_iter()
+    }
+
+    /// Creates a consuming iterator over the extensions in the pipeline.
+    pub fn extension_into_iter(
+        self,
+    ) -> impl Iterator<Item = (ExtensionId, Arc<ExtensionUserConfig>)> {
+        self.extensions.into_iter()
     }
 
     /// Remove unconnected nodes from the main pipeline graph and return removed node descriptors.
@@ -526,6 +624,8 @@ impl PipelineConfig {
                         !has_incoming || !has_outgoing
                     }
                     NodeKind::Exporter => !has_incoming,
+                    // Extensions are in a separate section and never appear in `nodes`.
+                    NodeKind::Extension => false,
                 };
 
                 if should_remove {
@@ -590,11 +690,15 @@ impl PipelineConfig {
             r#type: PipelineType::Otap,
             policies,
             nodes,
+            extensions: PipelineExtensions::default(),
             connections,
         }
     }
 
     /// Normalize plugin URNs for pipeline nodes.
+    ///
+    /// Extensions do not need canonicalization because `ExtensionUrn` is
+    /// already normalized at parse time via `#[serde(try_from = "String")]`.
     fn canonicalize_plugin_urns(
         &mut self,
         pipeline_group_id: &PipelineGroupId,
@@ -610,12 +714,18 @@ impl PipelineConfig {
     /// - Duplicate node IDs
     /// - Duplicate output ports (same source node + port name)
     /// - Invalid hyper-edges (missing source or target nodes)
+    /// - Invalid node-level transport header policy overrides
     pub fn validate(
         &self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         let mut errors = Vec::new();
+
+        // Validate node-level transport header policy fields.
+        for (node_name, node_config) in self.nodes.iter() {
+            node_config.validate_transport_header_fields(node_name, &mut errors);
+        }
 
         self.validate_connections(
             &self.nodes,
@@ -625,11 +735,38 @@ impl PipelineConfig {
             &mut errors,
         );
 
+        self.validate_capability_bindings(&mut errors);
+
         if !errors.is_empty() {
             Err(Error::InvalidConfiguration { errors })
         } else {
             Ok(())
         }
+    }
+
+    /// Validates that every capability binding references an extension that
+    /// exists in the `extensions:` section, and that extensions themselves
+    /// do not declare capability bindings (they provide capabilities, not
+    /// consume them).
+    fn validate_capability_bindings(&self, errors: &mut Vec<Error>) {
+        // Check that capability bindings on nodes reference valid extensions
+        for (node_id, node_config) in self.nodes.iter() {
+            for (capability_name, extension_name) in &node_config.capabilities {
+                if !self.extensions.contains_key(extension_name.as_ref()) {
+                    errors.push(Error::InvalidUserConfig {
+                        error: format!(
+                            "Node '{}' binds capability '{}' to extension '{}', \
+                             but no extension with that name exists in the `extensions` section.",
+                            node_id.as_ref(),
+                            capability_name,
+                            extension_name,
+                        ),
+                    });
+                }
+            }
+        }
+        // Extension URN format validation happens at parse time via ExtensionUrn::parse(),
+        // so no runtime kind check is needed here.
     }
 
     fn validate_connections(
@@ -878,7 +1015,9 @@ fn prune_connection(
 pub struct PipelineConfigBuilder {
     description: Option<Description>,
     nodes: HashMap<NodeId, NodeUserConfig>,
+    extensions: HashMap<ExtensionId, ExtensionUserConfig>,
     duplicate_nodes: Vec<NodeId>,
+    duplicate_extensions: Vec<ExtensionId>,
     pending_connections: Vec<PendingConnection>,
 }
 
@@ -896,7 +1035,9 @@ impl PipelineConfigBuilder {
         Self {
             description: None,
             nodes: HashMap::new(),
+            extensions: HashMap::new(),
             duplicate_nodes: Vec::new(),
+            duplicate_extensions: Vec::new(),
             pending_connections: Vec::new(),
         }
     }
@@ -930,6 +1071,9 @@ impl PipelineConfigBuilder {
                     outputs: Vec::new(),
                     default_output: None,
                     config: config.unwrap_or(Value::Null),
+                    capabilities: HashMap::new(),
+                    header_capture: None,
+                    header_propagation: None,
                 },
             );
         }
@@ -964,6 +1108,30 @@ impl PipelineConfigBuilder {
         config: Option<Value>,
     ) -> Self {
         self.add_node(id, node_type, config)
+    }
+
+    /// Add an extension (configured as a sibling to nodes, not as a node).
+    pub fn add_extension<S: Into<ExtensionId>, U: Into<crate::extension::ExtensionUrn>>(
+        mut self,
+        id: S,
+        ext_type: U,
+        config: Option<Value>,
+    ) -> Self {
+        let id = id.into();
+        let ext_type = ext_type.into();
+        if self.extensions.contains_key(&id) {
+            self.duplicate_extensions.push(id.clone());
+        } else {
+            _ = self.extensions.insert(
+                id.clone(),
+                ExtensionUserConfig {
+                    r#type: ext_type,
+                    description: None,
+                    config: config.unwrap_or(Value::Null),
+                },
+            );
+        }
+        self
     }
 
     /// Connects a source node output port to one or more target nodes
@@ -1085,6 +1253,14 @@ impl PipelineConfigBuilder {
             });
         }
 
+        // Report duplicated extensions
+        for ext_id in &self.duplicate_extensions {
+            errors.push(Error::DuplicateExtension {
+                context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                extension_id: ext_id.clone(),
+            });
+        }
+
         // Detect duplicate output ports (same src + port used twice)
         {
             let mut seen_ports = HashSet::new();
@@ -1166,6 +1342,11 @@ impl PipelineConfigBuilder {
                     .into_iter()
                     .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
+                extensions: self
+                    .extensions
+                    .into_iter()
+                    .map(|(id, node)| (id, Arc::new(node)))
+                    .collect(),
                 connections: built_connections,
                 policies: None,
                 r#type: pipeline_type,
@@ -1190,7 +1371,7 @@ mod tests {
     use crate::node::NodeKind;
     use crate::pipeline::DispatchPolicy;
     use crate::pipeline::telemetry::metrics::MetricsConfig;
-    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
+    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterType;
     use crate::pipeline::telemetry::metrics::readers::{
         MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
@@ -1600,7 +1781,7 @@ mod tests {
                 - periodic:
                     interval: "15s"
                     exporter:
-                      console: {}
+                      type: console
             "#;
         let config: TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.reporting_channel_size, 200);
@@ -1623,7 +1804,7 @@ mod tests {
         assert_eq!(readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 15);
-            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
+            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1638,13 +1819,13 @@ mod tests {
               - periodic:
                   interval: "10s"
                   exporter:
-                    console:
+                    type: console
             "#;
         let config: MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 10);
-            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
+            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1657,12 +1838,14 @@ mod tests {
         let yaml_data = r#"
             interval: "20s"
             exporter:
-              console:
+              type: console
             "#;
         let metrics_reader_periodic_config: MetricsReaderPeriodicConfig =
             serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(metrics_reader_periodic_config.interval.as_secs(), 20);
-        if MetricsPeriodicExporterConfig::Console != metrics_reader_periodic_config.exporter {
+        if MetricsPeriodicExporterType::Console
+            != metrics_reader_periodic_config.exporter.exporter_type
+        {
             panic!("Expected Console exporter config");
         }
     }
@@ -1672,7 +1855,7 @@ mod tests {
         let yaml_data = r#"
             interval: "20s"
             exporter:
-              unknown: {}
+              type: unknown
             "#;
         let metrics_reader_periodic_config_result: Result<
             MetricsReaderPeriodicConfig,
@@ -1680,7 +1863,7 @@ mod tests {
         > = serde_yaml::from_str(yaml_data);
         if let Err(e) = metrics_reader_periodic_config_result {
             let err_msg = e.to_string();
-            assert!(err_msg.contains("unknown field `unknown`"));
+            assert!(err_msg.contains("unknown variant `unknown`"));
         } else {
             panic!("Expected deserialization to fail due to unknown exporter");
         }
@@ -2368,6 +2551,111 @@ sink:
     }
 
     #[test]
+    fn test_header_capture_on_exporter_rejected_by_validate() {
+        let yaml = r#"
+            nodes:
+              recv:
+                type: "receiver:otap"
+                config: {}
+              exp:
+                type: "exporter:otap"
+                header_capture:
+                  headers:
+                    - match_names: ["x-tenant-id"]
+                config: {}
+            connections:
+              - from: recv
+                to: exp
+        "#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        match result {
+            Err(Error::InvalidConfiguration { errors }) => {
+                let msgs: Vec<_> = errors
+                    .iter()
+                    .filter_map(|e| match e {
+                        Error::InvalidUserConfig { error } => Some(error.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    msgs.iter().any(|m| m.contains("header_capture")),
+                    "expected a header_capture validation error, got: {msgs:?}"
+                );
+            }
+            other => panic!(
+                "expected Err(InvalidConfiguration) with header_capture error, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_header_propagation_on_receiver_rejected_by_validate() {
+        let yaml = r#"
+            nodes:
+              recv:
+                type: "receiver:otap"
+                header_propagation:
+                  default:
+                    selector:
+                        type: all_captured
+                config: {}
+              exp:
+                type: "exporter:otap"
+                config: {}
+            connections:
+              - from: recv
+                to: exp
+        "#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        match result {
+            Err(Error::InvalidConfiguration { errors }) => {
+                let msgs: Vec<_> = errors
+                    .iter()
+                    .filter_map(|e| match e {
+                        Error::InvalidUserConfig { error } => Some(error.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    msgs.iter().any(|m| m.contains("header_propagation")),
+                    "expected a header_propagation validation error, got: {msgs:?}"
+                );
+            }
+            other => panic!(
+                "expected Err(InvalidConfiguration) with header_propagation error, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_valid_header_overrides_pass_validation() {
+        let yaml = r#"
+            nodes:
+              recv:
+                type: "receiver:otap"
+                header_capture:
+                  headers:
+                    - match_names: ["x-tenant-id"]
+                config: {}
+              exp:
+                type: "exporter:otap"
+                header_propagation:
+                  default:
+                    selector:
+                        type: all_captured
+                config: {}
+            connections:
+              - from: recv
+                to: exp
+        "#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        assert!(
+            result.is_ok(),
+            "expected valid pipeline with correct header overrides, got: {result:?}"
+        );
+    }
+
+    #[test]
     fn test_remove_unconnected_prunes_connections_for_removed_nodes() {
         let yaml = r#"
             nodes:
@@ -2390,5 +2678,367 @@ sink:
         let removed_ids: Vec<_> = removed.iter().map(|(id, _)| id.as_ref()).collect();
         assert_eq!(removed_ids.len(), 3);
         assert!(config.connection_iter().next().is_none());
+    }
+
+    // ── Extension config tests ──────────────────────────────────────
+
+    #[test]
+    fn test_extensions_parsed_separately_from_nodes() {
+        let config = PipelineConfigBuilder::new()
+            .add_receiver("recv", "urn:test:receiver:example", None)
+            .add_exporter("exp", "urn:test:exporter:example", None)
+            .add_extension("auth", "urn:test:auth", None)
+            .connect("recv", "", ["exp"], DispatchPolicy::Broadcast)
+            .build(PipelineType::Otap, "g", "p")
+            .unwrap();
+
+        // Extensions should NOT appear in node_iter
+        let node_names: Vec<_> = config.node_iter().map(|(id, _)| id.as_ref()).collect();
+        assert!(node_names.contains(&"recv"));
+        assert!(node_names.contains(&"exp"));
+        assert!(!node_names.contains(&"auth"));
+
+        // Extensions should appear in extension_iter
+        let ext_names: Vec<_> = config.extension_iter().map(|(id, _)| id.as_ref()).collect();
+        assert_eq!(ext_names, vec!["auth"]);
+    }
+
+    #[test]
+    fn test_extension_with_config_and_capabilities() {
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+    capabilities:
+      bearer_token_provider: "auth"
+
+extensions:
+  auth:
+    type: "urn:test:auth"
+    config:
+      method: "managed_identity"
+      scope: "https://example.com/.default"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
+
+        // Extension parsed with config
+        let (_, ext_cfg) = config.extension_iter().next().unwrap();
+        assert_eq!(ext_cfg.r#type.as_ref(), "urn:test:auth");
+        assert_eq!(ext_cfg.config["method"], "managed_identity");
+
+        // Exporter has capabilities binding
+        let (_, exp_cfg) = config
+            .node_iter()
+            .find(|(id, _)| id.as_ref() == "exporter")
+            .unwrap();
+        assert_eq!(
+            exp_cfg.capabilities.get("bearer_token_provider"),
+            Some(&crate::NodeId::from("auth".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extension_urn_parsing() {
+        use crate::extension::ExtensionUrn;
+
+        let urn = ExtensionUrn::parse("urn:test:auth").unwrap();
+        assert_eq!(urn.namespace(), "test");
+        assert_eq!(urn.id(), "auth");
+    }
+
+    #[test]
+    fn test_same_name_in_nodes_and_extensions_allowed() {
+        // Nodes and extensions are separate namespaces — same name is valid.
+        let config = PipelineConfigBuilder::new()
+            .add_receiver("myname", "urn:test:receiver:example", None)
+            .add_exporter("exp", "urn:test:exporter:example", None)
+            .add_extension("myname", "urn:test:auth", None)
+            .connect("myname", "", ["exp"], DispatchPolicy::Broadcast)
+            .build(PipelineType::Otap, "g", "p")
+            .unwrap();
+
+        assert!(config.nodes().contains_key("myname"));
+        assert!(config.extensions().contains_key("myname"));
+    }
+
+    #[test]
+    fn test_extension_urn_format_rejected_in_nodes_section() {
+        // Extension URNs use a 3-segment format (`urn:<ns>:<id>`) which is
+        // incompatible with the 4-segment node URN format (`urn:<ns>:<kind>:<id>`).
+        // Placing an extension-style URN under `nodes:` is a parse error.
+        let yaml = r#"
+nodes:
+  auth:
+    type: "urn:test:auth"
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        assert!(
+            result.is_err(),
+            "3-segment extension URN should be rejected in nodes section"
+        );
+    }
+
+    #[test]
+    fn test_receiver_urn_in_extensions_section_rejected() {
+        // A 4-segment node URN placed in the `extensions:` section is rejected
+        // at parse time because ExtensionUrn only accepts 3-segment format.
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+
+extensions:
+  misplaced:
+    type: "urn:test:receiver:example"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let err = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml)
+            .expect_err("should reject node URN in extensions section");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("misplaced") || msg.contains("Invalid extension URN"),
+            "expected rejection of node URN in extensions section, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_empty_extensions_section_allowed() {
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+
+extensions: {}
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
+        assert_eq!(config.extension_iter().count(), 0);
+    }
+
+    #[test]
+    fn test_missing_extensions_section_allowed() {
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
+        assert_eq!(config.extension_iter().count(), 0);
+    }
+
+    #[test]
+    fn test_capabilities_empty_allowed() {
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+    capabilities: {}
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
+        let (_, exp_cfg) = config
+            .node_iter()
+            .find(|(id, _)| id.as_ref() == "exporter")
+            .unwrap();
+        assert!(exp_cfg.capabilities.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_extensions_parsed() {
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+    capabilities:
+      bearer_token_provider: "auth"
+      key_value_store: "kv"
+
+extensions:
+  auth:
+    type: "urn:test:auth"
+    config:
+      method: dev
+  kv:
+    type: "urn:test:kv_store"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
+
+        let ext_names: Vec<_> = config
+            .extension_iter()
+            .map(|(id, _)| id.as_ref().to_string())
+            .collect();
+        assert_eq!(ext_names.len(), 2);
+        assert!(ext_names.contains(&"auth".to_string()));
+        assert!(ext_names.contains(&"kv".to_string()));
+
+        // Exporter binds two capabilities
+        let (_, exp_cfg) = config
+            .node_iter()
+            .find(|(id, _)| id.as_ref() == "exporter")
+            .unwrap();
+        assert_eq!(exp_cfg.capabilities.len(), 2);
+        assert_eq!(exp_cfg.capabilities["bearer_token_provider"], "auth");
+        assert_eq!(exp_cfg.capabilities["key_value_store"], "kv");
+    }
+
+    #[test]
+    fn test_capability_binding_to_nonexistent_extension_rejected() {
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+    capabilities:
+      bearer_token_provider: "nonexistent_auth"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        match result {
+            Err(Error::InvalidConfiguration { errors }) => {
+                assert!(
+                    errors.iter().any(|e| matches!(
+                        e,
+                        Error::InvalidUserConfig { error } if error.contains("nonexistent_auth")
+                    )),
+                    "expected error naming 'nonexistent_auth', got: {errors:?}"
+                );
+            }
+            other => panic!("expected InvalidConfiguration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_capability_binding_to_existing_extension_passes() {
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+    capabilities:
+      bearer_token_provider: "auth"
+
+extensions:
+  auth:
+    type: "urn:test:auth"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
+        let result = config.validate(&"g".into(), &"p".into());
+        assert!(
+            result.is_ok(),
+            "capability binding to existing extension should pass: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_capabilities_on_extension_rejected() {
+        // ExtensionUserConfig uses #[serde(deny_unknown_fields)], so
+        // `capabilities` on an extension is caught at deserialization time
+        // (extensions don't consume capabilities — they provide them).
+        let yaml = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+  exporter:
+    type: "urn:test:exporter:example"
+
+extensions:
+  auth:
+    type: "urn:test:auth"
+    capabilities:
+      some_capability: "other_ext"
+
+connections:
+  - from: receiver
+    to: exporter
+"#;
+        let result = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml);
+        assert!(
+            result.is_err(),
+            "extensions with `capabilities` should be rejected"
+        );
+        let err = result.unwrap_err();
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("capabilities"),
+            "error should mention `capabilities`, got: {err_str}"
+        );
+    }
+
+    #[test]
+    fn test_extensions_at_group_level_rejected_by_serde() {
+        // PipelineGroupConfig uses #[serde(deny_unknown_fields)],
+        // so `extensions:` at the group level is rejected by deserialization.
+        let yaml = r#"
+pipelines:
+  main:
+    nodes:
+      recv:
+        type: "urn:test:receiver:example"
+      exp:
+        type: "urn:test:exporter:example"
+    connections:
+      - from: recv
+        to: exp
+extensions:
+  auth:
+    type: "urn:test:auth"
+"#;
+        let result: Result<crate::pipeline_group::PipelineGroupConfig, _> =
+            serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "extensions at group level should be rejected by serde"
+        );
     }
 }

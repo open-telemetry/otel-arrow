@@ -9,16 +9,17 @@ use crate::{
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
+    extension::ExtensionBundle,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
-    processor::ProcessorWrapper,
+    processor::{ProcessorWrapper, validate_local_wakeup_requirements},
     receiver::ReceiverWrapper,
     runtime_pipeline::{PipeNode, RuntimePipeline},
     shared::message::{SharedReceiver, SharedSender},
@@ -34,6 +35,9 @@ use otap_df_config::{
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
     policy::{ChannelCapacityPolicy, TelemetryPolicy},
+    transport_headers_policy::{
+        HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
+    },
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -51,6 +55,7 @@ use std::{
 pub mod clock;
 pub mod error;
 pub mod exporter;
+pub mod extension;
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -66,18 +71,25 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub(crate) mod indexed_min_heap;
 pub mod local;
+pub mod memory_limiter;
 pub mod node;
+mod node_local_scheduler;
 pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;
+mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;
 pub mod testing;
 pub mod topic;
 pub mod wiring_contract;
+pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
+pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
+pub use route_admission::RouteAdmission;
 
 /// Trait for factory types that expose a name.
 ///
@@ -200,6 +212,46 @@ impl<PData> Clone for ExporterFactory<PData> {
 }
 
 impl<PData> NamedFactory for ExporterFactory<PData> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// A factory for creating extensions.
+///
+/// Extension factories are NOT generic over PData — extensions never process
+/// pipeline data. This makes them fully decoupled from the data-plane type.
+pub struct ExtensionFactory {
+    /// The name of the extension.
+    pub name: &'static str,
+    /// A short, human-readable description of the extension.
+    pub description: &'static str,
+    /// URL to the extension's documentation.
+    pub documentation_url: &'static str,
+    /// A function that creates a new extension instance.
+    pub create: fn(
+        pipeline: PipelineContext,
+        name: otap_df_config::ExtensionId,
+        ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+        extension_config: &ExtensionConfig,
+    ) -> Result<ExtensionBundle, otap_df_config::error::Error>,
+    /// Validates the node-specific config statically, without creating the component.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
+}
+
+impl Clone for ExtensionFactory {
+    fn clone(&self) -> Self {
+        ExtensionFactory {
+            name: self.name,
+            description: self.description,
+            documentation_url: self.documentation_url,
+            create: self.create,
+            validate_config: self.validate_config,
+        }
+    }
+}
+
+impl NamedFactory for ExtensionFactory {
     fn name(&self) -> &'static str {
         self.name
     }
@@ -362,6 +414,33 @@ pub trait ConsumerEffectHandlerExtension<PData> {
     async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
 }
 
+/// Implementation-detail module re-exporting the internal
+/// [`AckNackRouting`] trait.
+///
+/// **Do not use directly.** Prefer
+/// [`ConsumerEffectHandlerExtension::notify_ack`] /
+/// [`ConsumerEffectHandlerExtension::notify_nack`] which stamp timing
+/// information required for correct duration metrics.
+#[doc(hidden)]
+pub mod _private {
+    use super::*;
+
+    /// Internal routing trait for ack/nack messages.
+    ///
+    /// Callers should use [`ConsumerEffectHandlerExtension::notify_ack`] and
+    /// [`ConsumerEffectHandlerExtension::notify_nack`] instead of calling these
+    /// methods directly. Those wrappers stamp timing information required for
+    /// correct duration metrics before forwarding to `route_ack`/`route_nack`.
+    #[async_trait(?Send)]
+    pub trait AckNackRouting<PData> {
+        /// Routes an ack message to the runtime control manager.
+        async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>;
+
+        /// Routes a nack message to the runtime control manager.
+        async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
+    }
+}
+
 /// Effect handler extension for adding message source
 #[async_trait(?Send)]
 pub trait MessageSourceLocalEffectHandlerExtension<PData> {
@@ -369,6 +448,16 @@ pub trait MessageSourceLocalEffectHandlerExtension<PData> {
     async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
     /// Try to send data after tagging with the source node.
     fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to admit data to the default output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, a missing default port)
+    /// while classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node(
+        &self,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>> {
+        route_admission::classify_route_admission(self.try_send_message_with_source_node(data))
+    }
     /// Send data to a specific port after tagging with the source node.
     async fn send_message_with_source_node_to<P>(
         &self,
@@ -385,6 +474,22 @@ pub trait MessageSourceLocalEffectHandlerExtension<PData> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName> + Send + 'static;
+    /// Try to admit data to a specific selected output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, an unknown port) while
+    /// classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static,
+    {
+        route_admission::classify_route_admission(
+            self.try_send_message_with_source_node_to(port, data),
+        )
+    }
 }
 
 /// Send-friendly variant for use in `Send` contexts (e.g., `tokio::spawn`).
@@ -394,6 +499,16 @@ pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
     async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
     /// Try to send data after tagging with the source node.
     fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to admit data to the default output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, a missing default port)
+    /// while classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node(
+        &self,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>> {
+        route_admission::classify_route_admission(self.try_send_message_with_source_node(data))
+    }
     /// Send data to a specific port after tagging with the source node.
     async fn send_message_with_source_node_to<P>(
         &self,
@@ -410,6 +525,22 @@ pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName> + Send + 'static;
+    /// Try to admit data to a specific selected output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, an unknown port) while
+    /// classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static,
+    {
+        route_admission::classify_route_admission(
+            self.try_send_message_with_source_node_to(port, data),
+        )
+    }
 }
 
 /// Builds a pipeline factory for initialization.
@@ -440,9 +571,11 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
+    extension_factory_map: OnceLock<HashMap<&'static str, ExtensionFactory>>,
     receiver_factories: &'static [ReceiverFactory<PData>],
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
+    extension_factories: &'static [ExtensionFactory],
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
@@ -452,14 +585,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         receiver_factories: &'static [ReceiverFactory<PData>],
         processor_factories: &'static [ProcessorFactory<PData>],
         exporter_factories: &'static [ExporterFactory<PData>],
+        extension_factories: &'static [ExtensionFactory],
     ) -> Self {
         Self {
             receiver_factory_map: OnceLock::new(),
             processor_factory_map: OnceLock::new(),
             exporter_factory_map: OnceLock::new(),
+            extension_factory_map: OnceLock::new(),
             receiver_factories,
             processor_factories,
             exporter_factories,
+            extension_factories,
         }
     }
 
@@ -493,6 +629,16 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         })
     }
 
+    /// Gets the extension factory map, initializing it if necessary.
+    pub fn get_extension_factory_map(&self) -> &HashMap<&'static str, ExtensionFactory> {
+        self.extension_factory_map.get_or_init(|| {
+            self.extension_factories
+                .iter()
+                .map(|f| (f.name(), f.clone()))
+                .collect::<HashMap<&'static str, ExtensionFactory>>()
+        })
+    }
+
     /// Builds a runtime pipeline from the given pipeline configuration.
     ///
     /// Main phases:
@@ -513,6 +659,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         mut config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        transport_headers_policy: Option<TransportHeadersPolicy>,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -596,6 +743,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         kind: "ProcessorChain".into(),
                     });
                 }
+                otap_df_config::node::NodeKind::Extension => {
+                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
+                }
             };
             let node_id = build_state.next_node_id(name.clone(), node_type, pipe_node)?;
             let _ = node_ids.insert(name.clone(), node_id);
@@ -646,6 +796,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 node_config.clone(),
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
+                                &transport_headers_policy,
                             )
                         },
                     )?;
@@ -684,6 +835,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 node_config.clone(),
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
+                                &transport_headers_policy,
                             )
                         },
                     )?;
@@ -692,6 +844,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     unreachable!("rejected in first pass");
+                }
+                otap_df_config::node::NodeKind::Extension => {
+                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
                 }
             }
         }
@@ -784,6 +939,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     return Err(Error::UnsupportedNodeKind {
                         kind: "ProcessorChain".into(),
                     });
+                }
+                otap_df_config::node::NodeKind::Extension => {
+                    // Extensions don't participate in wiring contracts.
+                    continue;
                 }
             };
 
@@ -1322,6 +1481,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
+        transport_headers_policy: &Option<TransportHeadersPolicy>,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1356,13 +1516,16 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
+        let capture_policy = resolve_capture_policy(&node_config, transport_headers_policy);
+
         let receiver = create(
             (*pipeline_ctx).clone(),
             node_id.clone(),
             node_config,
             &runtime_config,
         )
-        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+        .map_err(|e| Error::ConfigError(Box::new(e)))?
+        .with_capture_policy(capture_policy);
 
         otel_debug!(
             "receiver.create.complete",
@@ -1425,6 +1588,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
+        validate_local_wakeup_requirements(&node_id, processor.runtime_requirements())?;
+
         otel_debug!(
             "processor.create.complete",
             pipeline_group_id = pipeline_group_id.as_ref(),
@@ -1444,6 +1609,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
+        transport_headers_policy: &Option<TransportHeadersPolicy>,
     ) -> Result<ExporterWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1478,13 +1644,16 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
+        let propagation_policy = resolve_propagation_policy(&node_config, transport_headers_policy);
+
         let exporter = create(
             (*pipeline_ctx).clone(),
             node_id.clone(),
             node_config,
             &exporter_config,
         )
-        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+        .map_err(|e| Error::ConfigError(Box::new(e)))?
+        .with_propagation_policy(propagation_policy);
 
         otel_debug!(
             "exporter.create.complete",
@@ -1496,6 +1665,44 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         Ok(exporter)
     }
+}
+
+/// Resolves the effective capture policy for a receiver node.
+///
+/// Node-level `header_capture` takes precedence over the pipeline-level
+/// `transport_headers_policy`. Returns `None` when neither is configured.
+fn resolve_capture_policy(
+    node_config: &NodeUserConfig,
+    transport_headers_policy: &Option<TransportHeadersPolicy>,
+) -> Option<HeaderCapturePolicy> {
+    node_config
+        .header_capture
+        .as_ref()
+        .or_else(|| {
+            transport_headers_policy
+                .as_ref()
+                .map(|thp| &thp.header_capture)
+        })
+        .cloned()
+}
+
+/// Resolves the effective propagation policy for an exporter node.
+///
+/// Node-level `header_propagation` takes precedence over the pipeline-level
+/// `transport_headers_policy`. Returns `None` when neither is configured.
+fn resolve_propagation_policy(
+    node_config: &NodeUserConfig,
+    transport_headers_policy: &Option<TransportHeadersPolicy>,
+) -> Option<HeaderPropagationPolicy> {
+    node_config
+        .header_propagation
+        .as_ref()
+        .or_else(|| {
+            transport_headers_policy
+                .as_ref()
+                .map(|thp| &thp.header_propagation)
+        })
+        .cloned()
 }
 
 trait TelemetryWrapped: Sized {
@@ -1684,7 +1891,7 @@ where
         // sent each message.
         let multi_source = self.sources.len() > 1;
 
-        for (source, sender) in self.sources.into_iter().zip(self.senders.into_iter()) {
+        for (source, sender) in self.sources.into_iter().zip(self.senders) {
             let src_node = pipeline
                 .get_mut_node_with_pdata_sender(source.node_id.index)
                 .ok_or_else(|| Error::UnknownNode {
@@ -2005,9 +2212,240 @@ fn stable_hash64(value: &str) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otap_df_config::transport_headers_policy::{
+        CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
+        PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
+    };
 
     #[test]
     fn test_interests() {
         assert_eq!(Interests::ACKS | Interests::NACKS, Interests::ACKS_OR_NACKS);
+    }
+
+    // -- resolve_capture_policy tests -----------------------------------------
+
+    fn make_capture_policy_with_rule(name: &str) -> HeaderCapturePolicy {
+        HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![name.to_owned()],
+                store_as: None,
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+    }
+
+    #[test]
+    fn test_resolve_capture_policy_node_overrides_pipeline() {
+        let node_policy = make_capture_policy_with_rule("x-node-header");
+        let pipeline_policy = make_capture_policy_with_rule("x-pipeline-header");
+
+        let mut node_config = NodeUserConfig::new_receiver_config("test_receiver");
+        node_config.header_capture = Some(node_policy.clone());
+
+        let transport_headers_policy = Some(TransportHeadersPolicy {
+            header_capture: pipeline_policy,
+            ..Default::default()
+        });
+
+        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_some(), "should resolve a policy");
+
+        // Verify the node-level policy was used by checking that a
+        // "x-node-header" is captured while "x-pipeline-header" is not.
+        let policy = policy.unwrap();
+        let mut captured = otap_df_config::transport_headers::TransportHeaders::new();
+        let _ = policy.capture_from_pairs(
+            [("x-node-header", b"val" as &[u8])].into_iter(),
+            &mut captured,
+        );
+        assert_eq!(captured.len(), 1);
+        let _ = policy.capture_from_pairs(
+            [("x-pipeline-header", b"val" as &[u8])].into_iter(),
+            &mut captured,
+        );
+        assert_eq!(captured.len(), 0);
+    }
+
+    #[test]
+    fn test_resolve_capture_policy_falls_back_to_pipeline() {
+        let pipeline_policy = make_capture_policy_with_rule("x-pipeline-header");
+
+        let node_config = NodeUserConfig::new_receiver_config("test_receiver");
+        // node_config.header_capture is None by default
+
+        let transport_headers_policy = Some(TransportHeadersPolicy {
+            header_capture: pipeline_policy,
+            ..Default::default()
+        });
+
+        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_some(), "should fall back to pipeline policy");
+
+        let policy = policy.unwrap();
+        let mut captured = otap_df_config::transport_headers::TransportHeaders::new();
+        let _ = policy.capture_from_pairs(
+            [("x-pipeline-header", b"val" as &[u8])].into_iter(),
+            &mut captured,
+        );
+        assert_eq!(captured.len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_capture_policy_none_when_both_absent() {
+        let node_config = NodeUserConfig::new_receiver_config("test_receiver");
+        let transport_headers_policy = None;
+
+        let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_none());
+    }
+
+    // -- resolve_propagation_policy tests -------------------------------------
+
+    fn make_propagation_policy(action: PropagationAction) -> HeaderPropagationPolicy {
+        HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
+                action,
+                ..Default::default()
+            },
+            vec![],
+        )
+    }
+
+    #[test]
+    fn test_resolve_propagation_policy_node_overrides_pipeline() {
+        let node_policy = make_propagation_policy(PropagationAction::Propagate);
+        let pipeline_policy = make_propagation_policy(PropagationAction::Drop);
+
+        let mut node_config = NodeUserConfig::new_exporter_config("test_exporter");
+        node_config.header_propagation = Some(node_policy);
+
+        let transport_headers_policy = Some(TransportHeadersPolicy {
+            header_propagation: pipeline_policy,
+            ..Default::default()
+        });
+
+        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_some(), "should resolve a policy");
+
+        // Verify node-level policy (Propagate) was used, not pipeline (Drop).
+        let policy = policy.unwrap();
+        let mut headers = otap_df_config::transport_headers::TransportHeaders::new();
+        headers.push(otap_df_config::transport_headers::TransportHeader::text(
+            "x-test", "x-test", b"val",
+        ));
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1, "node policy should propagate");
+    }
+
+    #[test]
+    fn test_resolve_propagation_policy_falls_back_to_pipeline() {
+        let pipeline_policy = make_propagation_policy(PropagationAction::Propagate);
+
+        let node_config = NodeUserConfig::new_exporter_config("test_exporter");
+        // node_config.header_propagation is None by default
+
+        let transport_headers_policy = Some(TransportHeadersPolicy {
+            header_propagation: pipeline_policy,
+            ..Default::default()
+        });
+
+        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_some(), "should fall back to pipeline policy");
+
+        let policy = policy.unwrap();
+        let mut headers = otap_df_config::transport_headers::TransportHeaders::new();
+        headers.push(otap_df_config::transport_headers::TransportHeader::text(
+            "x-test", "x-test", b"val",
+        ));
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1, "pipeline policy should propagate");
+    }
+
+    #[test]
+    fn test_resolve_propagation_policy_none_when_both_absent() {
+        let node_config = NodeUserConfig::new_exporter_config("test_exporter");
+        let transport_headers_policy = None;
+
+        let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
+        assert!(policy.is_none());
+    }
+
+    // -- ExtensionFactory tests -----------------------------------------------
+
+    #[test]
+    fn test_extension_factory_named_factory() {
+        fn dummy_create(
+            _: PipelineContext,
+            _: otap_df_config::ExtensionId,
+            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+            unimplemented!()
+        }
+        fn dummy_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            Ok(())
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:test:example",
+            description: "test extension",
+            documentation_url: "",
+            create: dummy_create,
+            validate_config: dummy_validate,
+        };
+
+        assert_eq!(factory.name(), "urn:test:example");
+
+        let cloned = factory.clone();
+        assert_eq!(cloned.name(), "urn:test:example");
+        assert_eq!(cloned.description, "test extension");
+    }
+
+    // -- Error variant_name tests ---------------------------------------------
+
+    #[test]
+    fn test_extension_already_exists_variant_name() {
+        let err = Error::ExtensionAlreadyExists {
+            extension: "dup_ext".into(),
+        };
+        assert_eq!(err.variant_name(), "ExtensionAlreadyExists");
+    }
+
+    #[test]
+    fn test_extension_factory_validate_config() {
+        fn dummy_create(
+            _: PipelineContext,
+            _: otap_df_config::ExtensionId,
+            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+            unimplemented!()
+        }
+        fn dummy_validate(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            if config.is_null() {
+                Ok(())
+            } else {
+                Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: "expected null".into(),
+                })
+            }
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:test:example",
+            description: "test",
+            documentation_url: "",
+            create: dummy_create,
+            validate_config: dummy_validate,
+        };
+
+        assert!((factory.validate_config)(&serde_json::Value::Null).is_ok());
+        assert!((factory.validate_config)(&serde_json::json!({"key": "val"})).is_err());
     }
 }

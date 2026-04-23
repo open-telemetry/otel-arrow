@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the configuration of the fake signal receiver
-//!
 
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -49,14 +48,21 @@ pub enum GenerationStrategy {
     /// - Timestamps and IDs will repeat (stale)
     /// - Lowest CPU cost, maximum throughput
     PreGenerated,
+    // Future: Templates variant — pre-generate signal templates, clone and update
+    // timestamps/IDs per batch for moderate CPU cost with fresh data per batch.
+    // Not yet implemented.
+    // Templates,
+}
 
-    /// Pre-generate signal templates, clone and update timestamps/IDs per batch
-    /// - Templates cloned per batch
-    /// - Fresh timestamps and unique IDs
-    /// - Moderate CPU cost, good balance
-    ///
-    /// TODO: Not yet implemented - currently behaves like Fresh
-    Templates,
+/// Controls how signal batches are paced within each one-second production run.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductionMode {
+    /// Spread batches evenly across the second using a fixed-interval ticker.
+    #[default]
+    Smooth,
+    /// Produce all batches as fast as possible without pacing.
+    Open,
 }
 
 /// A single resource-attribute set with an optional batch weight.
@@ -135,36 +141,78 @@ pub struct Config {
     /// ```
     #[serde(default, deserialize_with = "deserialize_resource_attributes")]
     resource_attributes: Vec<ResourceAttributeSet>,
+
+    /// Optional transport headers to attach to each generated pdata message.
+    ///
+    /// Keys are header names. Values are optional fixed strings; when left
+    /// empty, a random value is generated once at startup.
+    ///
+    /// ```yaml
+    /// transport_headers:
+    ///   x-tenant-id: "acme"
+    ///   x-request-id:
+    /// ```
+    #[serde(default)]
+    transport_headers: HashMap<String, Option<String>>,
 }
 
 /// Configuration to describe the traffic being sent
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrafficConfig {
+    /// How signal batches are paced within each production run.
+    #[serde(default)]
+    pub production_mode: ProductionMode,
+    /// Target number of signals to produce per second across all signal types.
+    /// When `None`, defaults to `max_batch_size` (one full batch per second).
     #[serde(default = "default_signals_per_second")]
-    signals_per_second: Option<usize>,
+    pub signals_per_second: Option<usize>,
+    /// Maximum total signals to produce before stopping. `None` means unlimited.
     #[serde(default = "default_max_signal")]
-    max_signal_count: Option<u64>,
+    pub max_signal_count: Option<u64>,
+    /// Maximum number of signals in a single batch.
     #[serde(default = "default_max_batch_size")]
-    max_batch_size: usize,
+    pub max_batch_size: usize,
+    /// Relative weight for metric signal production (0 disables metrics).
     #[serde(default = "default_weight")]
-    metric_weight: u32,
+    pub metric_weight: u32,
+    /// Relative weight for trace signal production (0 disables traces).
     #[serde(default = "default_weight")]
-    trace_weight: u32,
+    pub trace_weight: u32,
+    /// Relative weight for log signal production (0 disables logs).
     #[serde(default = "default_weight")]
-    log_weight: u32,
+    pub log_weight: u32,
 
     /// Target size of each log record body in bytes (Static data source only).
-    /// When set, generates a log body string of approximately this size.
-    /// When unset, uses the default hardcoded body ("Order processed successfully").
+    /// When set, pre-generates a pool of 50 distinct body strings of this size;
+    /// records cycle through the pool for realistic dictionary cardinality.
+    /// When 0, the body is omitted entirely.
+    /// When unset, cycles through ~50 default log message templates.
     #[serde(default)]
-    log_body_size_bytes: Option<usize>,
+    pub log_body_size_bytes: Option<usize>,
 
     /// Number of attributes to attach to each log record (Static data source only).
     /// When set, generates this many key-value string attributes.
     /// When unset, uses the default 2 attributes (thread.id, thread.name).
     #[serde(default)]
-    num_log_attributes: Option<usize>,
+    pub num_log_attributes: Option<usize>,
+
+    /// When true, each log record gets a unique random trace_id and span_id,
+    /// matching real log-to-trace correlation and adding per-record entropy.
+    #[serde(default)]
+    pub use_trace_context: bool,
+
+    /// Number of attributes to attach to each metric data point (Static data source only).
+    /// When set, generates this many key-value attributes per data point.
+    /// When unset, uses the default 3 attributes (http.method, http.route, http.status_code).
+    #[serde(default)]
+    pub num_metric_attributes: Option<usize>,
+
+    /// Number of data points per metric (Static data source only).
+    /// When set, generates this many data points per metric.
+    /// When unset, uses the default of 1 data point per metric.
+    #[serde(default)]
+    pub num_data_points_per_metric: Option<usize>,
 }
 
 impl Config {
@@ -178,6 +226,7 @@ impl Config {
             generation_strategy: GenerationStrategy::default(),
             enable_ack_nack: default_enable_ack_nack(),
             resource_attributes: Vec::new(),
+            transport_headers: HashMap::new(),
         }
     }
 
@@ -195,6 +244,16 @@ impl Config {
         generation_strategy: GenerationStrategy,
     ) -> Self {
         self.generation_strategy = generation_strategy;
+        self
+    }
+
+    /// Builder-style method to set transport headers.
+    #[must_use]
+    pub fn with_transport_headers(
+        mut self,
+        transport_headers: HashMap<String, Option<String>>,
+    ) -> Self {
+        self.transport_headers = transport_headers;
         self
     }
 
@@ -260,6 +319,15 @@ impl Config {
     pub fn resource_attributes(&self) -> &[ResourceAttributeSet] {
         &self.resource_attributes
     }
+
+    /// Get the transport headers configuration.
+    ///
+    /// Keys are header names. Entries with a value produce fixed headers;
+    /// entries left empty produce a random value generated once at startup.
+    #[must_use]
+    pub fn transport_headers(&self) -> &HashMap<String, Option<String>> {
+        &self.transport_headers
+    }
 }
 
 impl TrafficConfig {
@@ -274,6 +342,7 @@ impl TrafficConfig {
         log_weight: u32,
     ) -> Self {
         Self {
+            production_mode: ProductionMode::Smooth,
             signals_per_second,
             max_signal_count,
             max_batch_size,
@@ -282,6 +351,9 @@ impl TrafficConfig {
             log_weight,
             log_body_size_bytes: None,
             num_log_attributes: None,
+            use_trace_context: false,
+            num_metric_attributes: None,
+            num_data_points_per_metric: None,
         }
     }
 
@@ -289,51 +361,6 @@ impl TrafficConfig {
     #[must_use]
     pub const fn get_signal_rate(&self) -> Option<usize> {
         self.signals_per_second
-    }
-
-    /// get the config describing how big the metric signal is
-    #[must_use]
-    pub fn calculate_signal_count(&self) -> (usize, usize, usize) {
-        if let Some(rate_limit) = self.signals_per_second {
-            // ToDo: Handle case where the total signal count don't add up the signals being sent per second
-            let total_weight: f32 =
-                (self.trace_weight + self.metric_weight + self.log_weight) as f32;
-
-            let metric_percent: f32 = self.metric_weight as f32 / total_weight;
-            let trace_percent: f32 = self.trace_weight as f32 / total_weight;
-            let log_percent: f32 = self.log_weight as f32 / total_weight;
-
-            let metric_count: usize = (metric_percent * rate_limit as f32) as usize;
-            let trace_count: usize = (trace_percent * rate_limit as f32) as usize;
-            let log_count: usize = (log_percent * rate_limit as f32) as usize;
-
-            let _remaining_count = rate_limit - (metric_count + trace_count + log_count);
-            // ToDo: Update signal count using by distributing the remaining count
-            // if remaining_count > 0 {
-            //     // we need to add to the remaining signal counts here to the counts
-
-            // }
-
-            (metric_count, trace_count, log_count)
-        } else {
-            // if no rate limit is set, use max_batch_size distributed by weights
-            let total_weight: f32 =
-                (self.trace_weight + self.metric_weight + self.log_weight) as f32;
-
-            if total_weight == 0.0 {
-                return (0, 0, 0);
-            }
-
-            let metric_percent: f32 = self.metric_weight as f32 / total_weight;
-            let trace_percent: f32 = self.trace_weight as f32 / total_weight;
-            let log_percent: f32 = self.log_weight as f32 / total_weight;
-
-            let metric_count: usize = (metric_percent * self.max_batch_size as f32) as usize;
-            let trace_count: usize = (trace_percent * self.max_batch_size as f32) as usize;
-            let log_count: usize = (log_percent * self.max_batch_size as f32) as usize;
-
-            (metric_count, trace_count, log_count)
-        }
     }
 
     /// returns the max amounts of signals that should be sent
@@ -358,6 +385,38 @@ impl TrafficConfig {
     #[must_use]
     pub const fn num_log_attributes(&self) -> Option<usize> {
         self.num_log_attributes
+    }
+
+    /// Returns whether log records should include trace_id and span_id.
+    #[must_use]
+    pub const fn use_trace_context(&self) -> bool {
+        self.use_trace_context
+    }
+
+    /// Returns the configured number of metric attributes, if set.
+    #[must_use]
+    pub const fn num_metric_attributes(&self) -> Option<usize> {
+        self.num_metric_attributes
+    }
+
+    /// Returns the configured number of data points per metric, if set.
+    #[must_use]
+    pub const fn num_data_points_per_metric(&self) -> Option<usize> {
+        self.num_data_points_per_metric
+    }
+
+    /// Validate semantic invariants that serde cannot express.
+    ///
+    /// Currently checks that at least one signal weight is non-zero so the
+    /// producer has something to generate.
+    pub fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+        if self.metric_weight + self.trace_weight + self.log_weight == 0 {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "at least one of metric_weight, trace_weight, or log_weight must be > 0"
+                    .to_string(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -405,7 +464,7 @@ fn default_resource_weight() -> NonZeroU32 {
 ///
 /// Two entries with weights 3 and 1 produce `[0, 0, 0, 1]`.
 ///
-/// TODO: replace with smooth weighted round-robin to avoid bursty traffic shape.
+/// Future improvement: replace with smooth weighted round-robin to avoid bursty traffic shape.
 #[must_use]
 pub(crate) fn build_rotation_table(entries: &[ResourceAttributeSet]) -> Vec<usize> {
     entries
@@ -669,5 +728,74 @@ mod tests {
             },
         ];
         assert_eq!(build_rotation_table(&entries), vec![0, 0, 1, 1, 1]);
+    }
+
+    // -- transport_headers config tests ----------------------------------------
+
+    #[test]
+    fn parse_config_transport_headers_default_empty() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "generation_strategy": "fresh"
+        }))
+        .expect("config should parse");
+
+        assert!(
+            cfg.transport_headers().is_empty(),
+            "absent transport_headers should default to empty"
+        );
+    }
+
+    #[test]
+    fn parse_config_transport_headers_with_values() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "data_source": "static",
+            "generation_strategy": "fresh",
+            "transport_headers": {
+                "x-tenant-id": "acme",
+                "x-request-id": null
+            }
+        }))
+        .expect("config should parse");
+
+        let headers = cfg.transport_headers();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(
+            headers.get("x-tenant-id"),
+            Some(&Some("acme".to_string())),
+            "fixed value should be preserved"
+        );
+        assert_eq!(
+            headers.get("x-request-id"),
+            Some(&None),
+            "null value should parse as None"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_all_zero_weights() {
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 0, 0, 0);
+        let result = cfg.validate();
+        assert!(
+            result.is_err(),
+            "all-zero signal weights should be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_at_least_one_nonzero_weight() {
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 0, 0, 1);
+        cfg.validate().expect("one non-zero weight should pass");
+
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 1, 0, 0);
+        cfg.validate().expect("one non-zero weight should pass");
+
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 0, 1, 0);
+        cfg.validate().expect("one non-zero weight should pass");
+
+        let cfg = super::TrafficConfig::new(Some(10), None, 100, 1, 1, 1);
+        cfg.validate().expect("all non-zero weights should pass");
     }
 }

@@ -11,11 +11,27 @@
 //! interact with plain Rust types defined here.
 
 use crate::error::ValidationError;
+use crate::template::render_jinja;
+use minijinja::context;
 use std::collections::HashMap;
+use std::time::Duration;
 use testcontainers::core::IntoContainerPort;
 use testcontainers::core::WaitFor;
+use testcontainers::core::wait::{
+    ExitWaitStrategy, HealthWaitStrategy, HttpWaitStrategy, LogWaitStrategy,
+};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+
+/// An environment variable whose value is a Jinja2 template resolved
+/// after host port allocation. `{{ host_port }}` in the template is
+/// replaced with the host port mapped to `internal_port`.
+#[derive(Debug, Clone)]
+pub(crate) struct TemplatedEnvVar {
+    pub(crate) key: String,
+    pub(crate) value_template: String,
+    pub(crate) internal_port: u16,
+}
 
 /// Describes a Docker container to run alongside the validation scenario.
 ///
@@ -43,6 +59,12 @@ pub struct ContainerConfig {
     /// with host port as the value. Populated by the framework during
     /// config wiring for container connections.
     pub(crate) mapped_ports: HashMap<u16, u16>,
+    /// Templated environment variables to be resolved after port allocation.
+    /// `None` when no templated env vars have been set.
+    pub(crate) templated_env_vars: Option<Vec<TemplatedEnvVar>>,
+    /// Condition to wait for before considering the container ready.
+    /// Defaults to [`WaitFor::Nothing`].
+    pub(crate) wait_for: WaitFor,
 }
 
 impl ContainerConfig {
@@ -55,6 +77,8 @@ impl ContainerConfig {
             env_vars: Vec::new(),
             entrypoint: None,
             mapped_ports: HashMap::new(),
+            templated_env_vars: None,
+            wait_for: WaitFor::Nothing,
         }
     }
 
@@ -72,6 +96,170 @@ impl ContainerConfig {
         self
     }
 
+    /// Set an environment variable whose value is a Jinja2 template.
+    /// After port allocation, `{{ host_port }}` is replaced with the host
+    /// port mapped to `internal_port`. If no connection maps that port,
+    /// the framework auto-allocates one during config wiring.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ContainerConfig::new("confluentinc/cp-kafka", "7.5.0")
+    ///     .env_host_port(
+    ///         "KAFKA_ADVERTISED_LISTENERS",
+    ///         "PLAINTEXT://127.0.0.1:{{ host_port }}",
+    ///         9092,
+    ///     )
+    /// ```
+    #[must_use]
+    pub fn env_host_port(
+        mut self,
+        key: impl Into<String>,
+        value_template: impl Into<String>,
+        internal_port: u16,
+    ) -> Self {
+        self.templated_env_vars
+            .get_or_insert_with(Vec::new)
+            .push(TemplatedEnvVar {
+                key: key.into(),
+                value_template: value_template.into(),
+                internal_port,
+            });
+        self
+    }
+
+    /// Do not wait for any readiness condition before considering the
+    /// container ready. This is the default.
+    #[must_use]
+    pub fn wait_for_nothing(mut self) -> Self {
+        self.wait_for = WaitFor::Nothing;
+        self
+    }
+
+    /// Wait for the given message to appear on either stdout or stderr
+    /// before considering the container ready.
+    #[must_use]
+    pub fn wait_for_log(mut self, message: impl AsRef<[u8]>) -> Self {
+        self.wait_for = WaitFor::log(LogWaitStrategy::stdout_or_stderr(message));
+        self
+    }
+
+    /// Wait for the given message to appear on the container's stdout
+    /// before considering the container ready.
+    #[must_use]
+    pub fn wait_for_log_stdout(mut self, message: impl AsRef<[u8]>) -> Self {
+        self.wait_for = WaitFor::log(LogWaitStrategy::stdout(message));
+        self
+    }
+
+    /// Wait for the given message to appear on the container's stderr
+    /// before considering the container ready.
+    #[must_use]
+    pub fn wait_for_log_stderr(mut self, message: impl AsRef<[u8]>) -> Self {
+        self.wait_for = WaitFor::log(LogWaitStrategy::stderr(message));
+        self
+    }
+
+    /// Wait for the specified duration before considering the container ready.
+    #[must_use]
+    pub fn wait_for_duration(mut self, length: Duration) -> Self {
+        self.wait_for = WaitFor::Duration { length };
+        self
+    }
+
+    /// Wait for the specified number of seconds before considering the
+    /// container ready. Convenience wrapper around [`Self::wait_for_duration`].
+    #[must_use]
+    pub fn wait_for_seconds(self, seconds: u64) -> Self {
+        self.wait_for_duration(Duration::from_secs(seconds))
+    }
+
+    /// Wait for the specified number of milliseconds before considering the
+    /// container ready. Convenience wrapper around [`Self::wait_for_duration`].
+    #[must_use]
+    pub fn wait_for_millis(self, millis: u64) -> Self {
+        self.wait_for_duration(Duration::from_millis(millis))
+    }
+
+    /// Wait for the container's Docker health check to report `healthy`
+    /// before considering the container ready.
+    #[must_use]
+    pub fn wait_for_healthcheck(mut self) -> Self {
+        self.wait_for = WaitFor::Healthcheck(HealthWaitStrategy::new());
+        self
+    }
+
+    /// Wait for an HTTP GET request to the given `path` to return a
+    /// successful (2xx) response before considering the container ready.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ContainerConfig::new("my-service", "latest")
+    ///     .wait_for_http("/health")
+    /// ```
+    #[must_use]
+    pub fn wait_for_http(mut self, path: impl Into<String>) -> Self {
+        self.wait_for = WaitFor::Http(Box::new(HttpWaitStrategy::new(path)));
+        self
+    }
+
+    /// Wait for an HTTP GET request to the given `path` to return the
+    /// specified `status_code` before considering the container ready.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ContainerConfig::new("my-service", "latest")
+    ///     .wait_for_http_with_status("/ready", 200)
+    /// ```
+    #[must_use]
+    pub fn wait_for_http_with_status(mut self, path: impl Into<String>, status_code: u16) -> Self {
+        self.wait_for = WaitFor::Http(Box::new(
+            HttpWaitStrategy::new(path).with_expected_status_code(status_code),
+        ));
+        self
+    }
+
+    /// Wait for the container to exit (with any exit code) before
+    /// considering the container ready.
+    #[must_use]
+    pub fn wait_for_exit(mut self) -> Self {
+        self.wait_for = WaitFor::Exit(ExitWaitStrategy::new());
+        self
+    }
+
+    /// Wait for the container to exit with the specified exit code
+    /// before considering the container ready.
+    #[must_use]
+    pub fn wait_for_exit_with_code(mut self, expected_code: i64) -> Self {
+        self.wait_for = WaitFor::Exit(ExitWaitStrategy::new().with_exit_code(expected_code));
+        self
+    }
+
+    /// Resolve all templated environment variables by rendering their
+    /// Jinja2 templates with `host_port` set to the allocated host port
+    /// from `mapped_ports`. Resolved values are appended to `env_vars`
+    /// in FIFO order. After resolution, `templated_env_vars` is set to
+    /// `None`.
+    pub(crate) fn resolve_templated_env_vars(&mut self) -> Result<(), ValidationError> {
+        let vars = match self.templated_env_vars.take() {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        for tev in vars {
+            let &host_port = self.mapped_ports.get(&tev.internal_port).ok_or_else(|| {
+                ValidationError::Config(format!(
+                    "templated env var '{}' references unmapped internal port {}",
+                    tev.key, tev.internal_port
+                ))
+            })?;
+            let rendered = render_jinja(&tev.value_template, context! { host_port => host_port })?;
+            self.env_vars.push((tev.key, rendered));
+        }
+        Ok(())
+    }
+
     /// Start the container described by this configuration.
     ///
     /// Builds the Docker image, applies port mappings, environment variables,
@@ -84,7 +272,7 @@ impl ContainerConfig {
             image = image.with_entrypoint(ep);
         }
 
-        image = image.with_wait_for(WaitFor::Nothing);
+        image = image.with_wait_for(self.wait_for);
 
         // Convert to ContainerRequest for settings that consume the image.
         let mut request = testcontainers::core::ContainerRequest::from(image);
@@ -119,6 +307,8 @@ mod tests {
         assert!(config.env_vars.is_empty());
         assert!(config.entrypoint.is_none());
         assert!(config.mapped_ports.is_empty());
+        assert!(config.templated_env_vars.is_none());
+        assert!(matches!(config.wait_for, WaitFor::Nothing));
     }
 
     #[test]
@@ -159,5 +349,190 @@ mod tests {
 
         // Stop the container via testcontainers stop().
         container.stop().await.expect("container should stop");
+    }
+
+    #[test]
+    fn env_host_port_stores_templated_var() {
+        let config = ContainerConfig::new("kafka", "7.5.0").env_host_port(
+            "KAFKA_ADVERTISED_LISTENERS",
+            "PLAINTEXT://127.0.0.1:{{ host_port }}",
+            9092,
+        );
+        let tevs = config.templated_env_vars.as_ref().expect("should be Some");
+        assert_eq!(tevs.len(), 1);
+        assert_eq!(tevs[0].key, "KAFKA_ADVERTISED_LISTENERS");
+        assert_eq!(
+            tevs[0].value_template,
+            "PLAINTEXT://127.0.0.1:{{ host_port }}"
+        );
+        assert_eq!(tevs[0].internal_port, 9092);
+    }
+
+    #[test]
+    fn env_host_port_multiple_preserves_order() {
+        let config = ContainerConfig::new("kafka", "7.5.0")
+            .env_host_port("FIRST", "{{ host_port }}", 9092)
+            .env_host_port("SECOND", "{{ host_port }}", 8080);
+        let tevs = config.templated_env_vars.as_ref().expect("should be Some");
+        assert_eq!(tevs.len(), 2);
+        assert_eq!(tevs[0].key, "FIRST");
+        assert_eq!(tevs[0].internal_port, 9092);
+        assert_eq!(tevs[1].key, "SECOND");
+        assert_eq!(tevs[1].internal_port, 8080);
+    }
+
+    #[test]
+    fn resolve_templated_env_vars_renders_and_consumes() {
+        let mut config = ContainerConfig::new("kafka", "7.5.0").env_host_port(
+            "LISTENERS",
+            "PLAINTEXT://127.0.0.1:{{ host_port }}",
+            9092,
+        );
+        // Simulate port allocation during wiring.
+        let _ = config.mapped_ports.insert(9092, 54321);
+
+        config
+            .resolve_templated_env_vars()
+            .expect("resolve should succeed");
+
+        assert!(config.templated_env_vars.is_none());
+        assert_eq!(config.env_vars.len(), 1);
+        assert_eq!(config.env_vars[0].0, "LISTENERS");
+        assert_eq!(config.env_vars[0].1, "PLAINTEXT://127.0.0.1:54321");
+    }
+
+    #[test]
+    fn resolve_templated_env_vars_preserves_order() {
+        let mut config = ContainerConfig::new("img", "tag")
+            .env_host_port("FIRST", "a:{{ host_port }}", 9092)
+            .env_host_port("SECOND", "b:{{ host_port }}", 8080);
+        let _ = config.mapped_ports.insert(9092, 11111);
+        let _ = config.mapped_ports.insert(8080, 22222);
+
+        config
+            .resolve_templated_env_vars()
+            .expect("resolve should succeed");
+
+        assert!(config.templated_env_vars.is_none());
+        assert_eq!(config.env_vars.len(), 2);
+        assert_eq!(config.env_vars[0], ("FIRST".into(), "a:11111".into()));
+        assert_eq!(config.env_vars[1], ("SECOND".into(), "b:22222".into()));
+    }
+
+    #[test]
+    fn resolve_templated_env_vars_unmapped_port_errors() {
+        let mut config =
+            ContainerConfig::new("img", "tag").env_host_port("MY_VAR", "{{ host_port }}", 5432);
+
+        let err = config
+            .resolve_templated_env_vars()
+            .expect_err("should error on unmapped port");
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(err.to_string().contains("unmapped internal port"));
+        assert!(err.to_string().contains("MY_VAR"));
+    }
+
+    #[test]
+    fn resolve_templated_env_vars_none_is_noop() {
+        let mut config = ContainerConfig::new("img", "tag");
+        assert!(config.templated_env_vars.is_none());
+
+        config
+            .resolve_templated_env_vars()
+            .expect("noop resolve should succeed");
+
+        assert!(config.templated_env_vars.is_none());
+        assert!(config.env_vars.is_empty());
+    }
+
+    // --- wait_for setter tests ---
+
+    #[test]
+    fn wait_for_nothing_sets_nothing_variant() {
+        // Start with a non-Nothing variant, then reset to Nothing.
+        let config = ContainerConfig::new("img", "tag")
+            .wait_for_healthcheck()
+            .wait_for_nothing();
+        assert!(matches!(config.wait_for, WaitFor::Nothing));
+    }
+
+    #[test]
+    fn wait_for_log_sets_log_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_log("ready");
+        assert!(matches!(config.wait_for, WaitFor::Log(_)));
+    }
+
+    #[test]
+    fn wait_for_log_stdout_sets_log_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_log_stdout("ready");
+        assert!(matches!(config.wait_for, WaitFor::Log(_)));
+    }
+
+    #[test]
+    fn wait_for_log_stderr_sets_log_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_log_stderr("error occurred");
+        assert!(matches!(config.wait_for, WaitFor::Log(_)));
+    }
+
+    #[test]
+    fn wait_for_duration_sets_duration_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_duration(Duration::from_secs(5));
+        assert!(
+            matches!(config.wait_for, WaitFor::Duration { length } if length == Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn wait_for_seconds_sets_duration_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_seconds(10);
+        assert!(
+            matches!(config.wait_for, WaitFor::Duration { length } if length == Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn wait_for_millis_sets_duration_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_millis(500);
+        assert!(
+            matches!(config.wait_for, WaitFor::Duration { length } if length == Duration::from_millis(500))
+        );
+    }
+
+    #[test]
+    fn wait_for_healthcheck_sets_healthcheck_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_healthcheck();
+        assert!(matches!(config.wait_for, WaitFor::Healthcheck(_)));
+    }
+
+    #[test]
+    fn wait_for_http_sets_http_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_http("/health");
+        assert!(matches!(config.wait_for, WaitFor::Http(_)));
+    }
+
+    #[test]
+    fn wait_for_http_with_status_sets_http_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_http_with_status("/ready", 200);
+        assert!(matches!(config.wait_for, WaitFor::Http(_)));
+    }
+
+    #[test]
+    fn wait_for_exit_sets_exit_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_exit();
+        assert!(matches!(config.wait_for, WaitFor::Exit(_)));
+    }
+
+    #[test]
+    fn wait_for_exit_with_code_sets_exit_variant() {
+        let config = ContainerConfig::new("img", "tag").wait_for_exit_with_code(0);
+        assert!(matches!(config.wait_for, WaitFor::Exit(_)));
+    }
+
+    #[test]
+    fn wait_for_last_call_wins() {
+        let config = ContainerConfig::new("img", "tag")
+            .wait_for_log("ready")
+            .wait_for_healthcheck();
+        assert!(matches!(config.wait_for, WaitFor::Healthcheck(_)));
     }
 }

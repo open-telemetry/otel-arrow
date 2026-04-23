@@ -5,6 +5,7 @@ use super::Error;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -16,6 +17,10 @@ pub struct Config {
     /// Authentication configuration
     #[serde(default)]
     pub auth: AuthConfig,
+
+    /// Heartbeat configuration
+    #[serde(default)]
+    pub heartbeat: HeartbeatConfig,
 }
 
 /// Authentication method for Azure
@@ -78,6 +83,60 @@ impl Default for AuthConfig {
 
 fn default_scope() -> String {
     "https://monitor.azure.com/.default".to_string()
+}
+
+/// Default heartbeat frequency.
+fn default_heartbeat_frequency() -> Duration {
+    Duration::from_secs(60)
+}
+
+/// Heartbeat configuration
+#[derive(Debug, Deserialize, Clone)]
+pub struct HeartbeatConfig {
+    /// Whether heartbeat is enabled (defaults to false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Heartbeat frequency (defaults to 60s). Accepts human-readable durations like "30s" or "2m".
+    #[serde(with = "humantime_serde", default = "default_heartbeat_frequency")]
+    pub frequency: Duration,
+
+    /// Optional overrides for heartbeat row columns
+    #[serde(default)]
+    pub overrides: HeartbeatOverrides,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            frequency: default_heartbeat_frequency(),
+            overrides: HeartbeatOverrides::default(),
+        }
+    }
+}
+
+/// Optional overrides for heartbeat row columns.
+/// When set, these values replace the auto-detected defaults.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct HeartbeatOverrides {
+    /// Override the version field
+    pub version: Option<String>,
+
+    /// Override the computer name
+    pub computer: Option<String>,
+
+    /// Override the OS type (e.g. "Linux", "Windows", "MacOS")
+    pub os_type: Option<String>,
+
+    /// Override the OS name
+    pub os_name: Option<String>,
+
+    /// Override the OS major version
+    pub os_major_version: Option<String>,
+
+    /// Override the OS minor version
+    pub os_minor_version: Option<String>,
 }
 
 /// Default compression level. Level 6 provides a good starting point for most workloads.
@@ -176,6 +235,13 @@ impl Config {
             ));
         }
 
+        if self.heartbeat.enabled && self.heartbeat.frequency.is_zero() {
+            return Err(Error::Config(
+                "Invalid configuration: heartbeat frequency must be greater than 0 when enabled"
+                    .to_string(),
+            ));
+        }
+
         self.validate_schema_unique_columns()?;
 
         Ok(())
@@ -199,10 +265,8 @@ impl Config {
 
         for (key, value) in &self.api.schema.log_record_mapping {
             match value {
-                Value::String(s) => {
-                    if !seen.insert(s.clone()) {
-                        _ = duplicates.insert(s.clone());
-                    }
+                Value::String(s) if !seen.insert(s.clone()) => {
+                    _ = duplicates.insert(s.clone());
                 }
                 Value::Object(map) => {
                     if key != "attributes" {
@@ -251,6 +315,15 @@ mod tests {
         }
     }
 
+    /// Returns a valid `Config` with dummy values for use in tests.
+    fn test_config() -> Config {
+        Config {
+            api: test_api_config(),
+            auth: AuthConfig::default(),
+            heartbeat: HeartbeatConfig::default(),
+        }
+    }
+
     #[test]
     fn test_valid_config() {
         let config = Config {
@@ -260,6 +333,7 @@ mod tests {
                 client_id: Some("myclientid".to_string()),
                 method: AuthMethod::ManagedIdentity,
             },
+            ..test_config()
         };
 
         assert!(config.validate().is_ok());
@@ -274,7 +348,7 @@ mod tests {
                 dcr: "".to_string(),
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         let result = config.validate();
@@ -300,7 +374,7 @@ mod tests {
                 },
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         let result = config.validate();
@@ -338,7 +412,7 @@ mod tests {
                 },
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         let result = config.validate();
@@ -365,7 +439,7 @@ mod tests {
                 },
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         let result = config.validate();
@@ -392,7 +466,7 @@ mod tests {
                 },
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         let result = config.validate();
@@ -419,7 +493,7 @@ mod tests {
                 },
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         let result = config.validate();
@@ -446,7 +520,7 @@ mod tests {
                 },
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         let result = config.validate();
@@ -473,7 +547,7 @@ mod tests {
                 },
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         let result = config.validate();
@@ -511,7 +585,7 @@ mod tests {
                 },
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         assert!(config.validate().is_ok());
@@ -526,7 +600,7 @@ mod tests {
                 ),
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
 
         assert_eq!(
@@ -555,7 +629,7 @@ mod tests {
                 gzip_compression_level: 0,
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
         assert!(config.validate().is_ok());
     }
@@ -567,7 +641,7 @@ mod tests {
                 gzip_compression_level: 9,
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
         assert!(config.validate().is_ok());
     }
@@ -579,7 +653,7 @@ mod tests {
                 gzip_compression_level: 60,
                 ..test_api_config()
             },
-            auth: AuthConfig::default(),
+            ..test_config()
         };
         let result = config.validate();
         assert!(result.is_err());
@@ -587,5 +661,186 @@ mod tests {
             result.unwrap_err().to_string(),
             "Configuration error: Invalid configuration: gzip_compression_level must be 0-9"
         );
+    }
+
+    #[test]
+    fn test_heartbeat_default_config() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.heartbeat.enabled);
+        assert_eq!(config.heartbeat.frequency, Duration::from_secs(60));
+        assert!(config.heartbeat.overrides.version.is_none());
+        assert!(config.heartbeat.overrides.computer.is_none());
+    }
+
+    #[test]
+    fn test_heartbeat_disabled() {
+        let config = Config {
+            heartbeat: HeartbeatConfig {
+                enabled: false,
+                ..HeartbeatConfig::default()
+            },
+            ..test_config()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_heartbeat_custom_frequency() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+            heartbeat:
+                frequency: 2m
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.heartbeat.enabled);
+        assert_eq!(config.heartbeat.frequency, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_heartbeat_zero_frequency_when_enabled_rejected() {
+        let config = Config {
+            heartbeat: HeartbeatConfig {
+                enabled: true,
+                frequency: Duration::ZERO,
+                ..HeartbeatConfig::default()
+            },
+            ..test_config()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: heartbeat frequency must be greater than 0 when enabled"
+        );
+    }
+
+    #[test]
+    fn test_heartbeat_zero_frequency_when_disabled_accepted() {
+        let config = Config {
+            heartbeat: HeartbeatConfig {
+                enabled: false,
+                frequency: Duration::ZERO,
+                ..HeartbeatConfig::default()
+            },
+            ..test_config()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_heartbeat_overrides_from_yaml() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+            heartbeat:
+                frequency: 30s
+                overrides:
+                    version: "2.0.0-custom"
+                    computer: "my-host"
+                    os_type: "Linux"
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.heartbeat.frequency, Duration::from_secs(30));
+        assert_eq!(
+            config.heartbeat.overrides.version,
+            Some("2.0.0-custom".to_string())
+        );
+        assert_eq!(
+            config.heartbeat.overrides.computer,
+            Some("my-host".to_string())
+        );
+        assert_eq!(
+            config.heartbeat.overrides.os_type,
+            Some("Linux".to_string())
+        );
+        assert!(config.heartbeat.overrides.os_name.is_none());
+        assert!(config.heartbeat.overrides.os_major_version.is_none());
+        assert!(config.heartbeat.overrides.os_minor_version.is_none());
+    }
+
+    #[test]
+    fn test_heartbeat_all_overrides_from_yaml() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+            heartbeat:
+                overrides:
+                    version: "3.0.0"
+                    computer: "host-1"
+                    os_type: "Windows"
+                    os_name: "Windows Server"
+                    os_major_version: "10"
+                    os_minor_version: "22H2"
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.heartbeat.overrides.version,
+            Some("3.0.0".to_string())
+        );
+        assert_eq!(
+            config.heartbeat.overrides.computer,
+            Some("host-1".to_string())
+        );
+        assert_eq!(
+            config.heartbeat.overrides.os_type,
+            Some("Windows".to_string())
+        );
+        assert_eq!(
+            config.heartbeat.overrides.os_name,
+            Some("Windows Server".to_string())
+        );
+        assert_eq!(
+            config.heartbeat.overrides.os_major_version,
+            Some("10".to_string())
+        );
+        assert_eq!(
+            config.heartbeat.overrides.os_minor_version,
+            Some("22H2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_heartbeat_empty_overrides_section() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+            heartbeat:
+                overrides: {}
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.heartbeat.overrides.version.is_none());
+        assert!(config.heartbeat.overrides.computer.is_none());
+    }
+
+    #[test]
+    fn test_heartbeat_disabled_from_yaml() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+            heartbeat:
+                enabled: false
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.heartbeat.enabled);
+        // frequency still gets its default
+        assert_eq!(config.heartbeat.frequency, Duration::from_secs(60));
+        assert!(config.validate().is_ok());
     }
 }

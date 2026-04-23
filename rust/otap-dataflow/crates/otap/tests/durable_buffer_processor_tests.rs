@@ -44,6 +44,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+/// Initialize a tracing subscriber so `otel_warn!`/`otel_error!` events from
+/// the pipeline are visible in test output (`cargo test -- --nocapture`).
+/// Respects `RUST_LOG` env var; defaults to `warn` level.
+/// Safe to call from multiple tests — only the first call takes effect.
+fn init_test_tracing() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Configuration Builder
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,6 +79,7 @@ struct TestConfigBuilder {
     retry_config: Option<serde_json::Value>,
     size_cap_policy: &'static str,
     otlp_handling: Option<&'static str>,
+    use_trace_context: bool,
 }
 
 /// Which exporter to use in the test pipeline.
@@ -96,6 +111,7 @@ impl TestConfigBuilder {
             retry_config: None,
             size_cap_policy: "backpressure",
             otlp_handling: None,
+            use_trace_context: false,
         }
     }
 
@@ -158,6 +174,11 @@ impl TestConfigBuilder {
         self
     }
 
+    const fn use_trace_context(mut self, enabled: bool) -> Self {
+        self.use_trace_context = enabled;
+        self
+    }
+
     fn build(
         self,
         pipeline_group_id: &PipelineGroupId,
@@ -172,7 +193,8 @@ impl TestConfigBuilder {
                 "max_batch_size": self.max_batch_size,
                 "metric_weight": self.metric_weight,
                 "trace_weight": self.trace_weight,
-                "log_weight": self.log_weight
+                "log_weight": self.log_weight,
+                "use_trace_context": self.use_trace_context
             },
             "data_source": "static"
         });
@@ -243,33 +265,11 @@ impl TestConfigBuilder {
 // Test Runner Helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Run a pipeline with the given config, then shut down.
-///
-/// Handles all the boilerplate: telemetry, context, channels, shutdown thread.
-///
-/// If `shutdown_condition` is provided, it will be polled every 10ms and
-/// shutdown will be triggered as soon as the condition returns true (or when
-/// `run_duration` is reached, whichever comes first). This allows tests to
-/// complete as fast as the actual work takes, rather than waiting for a fixed
-/// duration.
-fn run_pipeline(
-    config: PipelineConfig,
-    pipeline_group_id: &PipelineGroupId,
-    pipeline_id: &PipelineId,
-    run_duration: Duration,
-    shutdown_deadline: Duration,
-) {
-    run_pipeline_with_condition(
-        config,
-        pipeline_group_id,
-        pipeline_id,
-        run_duration,
-        shutdown_deadline,
-        None::<fn() -> bool>,
-    );
-}
-
 /// Run a pipeline with an optional early shutdown condition.
+///
+/// Asserts that no segment finalization failures occurred during the run.
+/// Waits for at least one telemetry cycle to ensure metrics are populated
+/// before checking assertions (prevents vacuous pass on fast test completion).
 fn run_pipeline_with_condition<F>(
     config: PipelineConfig,
     pipeline_group_id: &PipelineGroupId,
@@ -280,55 +280,77 @@ fn run_pipeline_with_condition<F>(
 ) where
     F: Fn() -> bool + Send + 'static,
 {
-    let _ = run_pipeline_collecting_metrics(
+    let metrics = run_pipeline_collecting_metrics(
         config,
         pipeline_group_id,
         pipeline_id,
         max_duration,
         shutdown_deadline,
         shutdown_condition,
-        false,
+        true, // wait for telemetry cycle so metrics assertions are meaningful
+    );
+    assert!(
+        metrics.flush_failures() == 0,
+        "segment finalization should not fail (flush_failures metric should be 0, got {})",
+        metrics.flush_failures()
     );
 }
 
-/// Collected metrics from a pipeline run, aggregated across all telemetry snapshots.
-///
-/// Field indices correspond to `DurableBufferMetrics` declaration order:
-///   0: bundles_acked
-///   1: bundles_nacked_deferred
-///   2: bundles_nacked_permanent
-///   3: rejected_log_records
-///   4: rejected_metric_points
-///   5: rejected_spans
-///   6: consumed_log_records
-///   7: consumed_metric_points
-///   8: consumed_spans
-///   9: produced_log_records
-///   10: produced_metric_points
-///   11: produced_spans
-///   12: ingest_errors
-///   13: ingest_backpressure
-///   14: read_errors
-///   15: storage_bytes_used
-///   16: storage_bytes_cap
-///   17: dropped_segments
-///   18: dropped_bundles
-///   19: dropped_items
-///   20: expired_bundles
-///   21: expired_items
-///   22: retries_scheduled
-///   23: in_flight
-///   24: requeued_log_records
-///   25: requeued_metric_points
-///   26: requeued_spans
-///   27: queued_log_records
-///   28: queued_metric_points
-///   29: queued_spans
-const DURABLE_BUFFER_METRIC_COUNT: usize = 30;
+/// Field indices into `DurableBufferMetrics` snapshot (declaration order).
+/// New metrics MUST be appended to `DurableBufferMetrics` so existing indices
+/// never shift. Add new constants at the end of this block.
+const IDX_BUNDLES_ACKED: usize = 0;
+const IDX_BUNDLES_NACKED_DEFERRED: usize = 1;
+const IDX_BUNDLES_NACKED_PERMANENT: usize = 2;
+const IDX_REJECTED_LOG_RECORDS: usize = 3;
+const IDX_REJECTED_METRIC_POINTS: usize = 4;
+const IDX_REJECTED_SPANS: usize = 5;
+#[allow(dead_code)]
+const IDX_CONSUMED_LOG_RECORDS: usize = 6;
+#[allow(dead_code)]
+const IDX_CONSUMED_METRIC_POINTS: usize = 7;
+#[allow(dead_code)]
+const IDX_CONSUMED_SPANS: usize = 8;
+const IDX_PRODUCED_LOG_RECORDS: usize = 9;
+const IDX_PRODUCED_METRIC_POINTS: usize = 10;
+const IDX_PRODUCED_SPANS: usize = 11;
+#[allow(dead_code)]
+const IDX_INGEST_ERRORS: usize = 12;
+#[allow(dead_code)]
+const IDX_INGEST_BACKPRESSURE: usize = 13;
+#[allow(dead_code)]
+const IDX_READ_ERRORS: usize = 14;
+#[allow(dead_code)]
+const IDX_STORAGE_BYTES_USED: usize = 15;
+#[allow(dead_code)]
+const IDX_STORAGE_BYTES_CAP: usize = 16;
+#[allow(dead_code)]
+const IDX_DROPPED_SEGMENTS: usize = 17;
+#[allow(dead_code)]
+const IDX_DROPPED_BUNDLES: usize = 18;
+#[allow(dead_code)]
+const IDX_DROPPED_ITEMS: usize = 19;
+#[allow(dead_code)]
+const IDX_EXPIRED_BUNDLES: usize = 20;
+#[allow(dead_code)]
+const IDX_EXPIRED_ITEMS: usize = 21;
+const IDX_RETRIES_SCHEDULED: usize = 22;
+#[allow(dead_code)]
+const IDX_IN_FLIGHT: usize = 23;
+const IDX_REQUEUED_LOG_RECORDS: usize = 24;
+const IDX_REQUEUED_METRIC_POINTS: usize = 25;
+const IDX_REQUEUED_SPANS: usize = 26;
+const IDX_QUEUED_LOG_RECORDS: usize = 27;
+const IDX_QUEUED_METRIC_POINTS: usize = 28;
+const IDX_QUEUED_SPANS: usize = 29;
+const IDX_FLUSH_FAILURES: usize = 30;
 
+const DURABLE_BUFFER_METRIC_COUNT: usize = 31;
+
+/// Collected metrics from a pipeline run, aggregated across all telemetry snapshots.
 #[derive(Debug, Default)]
 struct CollectedMetrics {
-    /// Accumulated metric values by field index (summed deltas — correct for Counters).
+    /// Accumulated metric values by field index (summed deltas - correct for Counters).
     values: Vec<u64>,
     /// Last-seen metric values by field index (correct for Gauges).
     last_values: Vec<u64>,
@@ -360,69 +382,73 @@ impl CollectedMetrics {
     }
 
     fn bundles_acked(&self) -> u64 {
-        self.values.first().copied().unwrap_or(0)
+        self.values[IDX_BUNDLES_ACKED]
     }
 
     fn bundles_nacked_deferred(&self) -> u64 {
-        self.values.get(1).copied().unwrap_or(0)
+        self.values[IDX_BUNDLES_NACKED_DEFERRED]
     }
 
     fn bundles_nacked_permanent(&self) -> u64 {
-        self.values.get(2).copied().unwrap_or(0)
+        self.values[IDX_BUNDLES_NACKED_PERMANENT]
     }
 
     fn rejected_log_records(&self) -> u64 {
-        self.values.get(3).copied().unwrap_or(0)
+        self.values[IDX_REJECTED_LOG_RECORDS]
     }
 
     fn rejected_metric_points(&self) -> u64 {
-        self.values.get(4).copied().unwrap_or(0)
+        self.values[IDX_REJECTED_METRIC_POINTS]
     }
 
     fn rejected_spans(&self) -> u64 {
-        self.values.get(5).copied().unwrap_or(0)
+        self.values[IDX_REJECTED_SPANS]
     }
 
     fn produced_log_records(&self) -> u64 {
-        self.values.get(9).copied().unwrap_or(0)
+        self.values[IDX_PRODUCED_LOG_RECORDS]
     }
 
-    #[allow(dead_code)] // Available for future tests with mixed signal types
+    #[allow(dead_code)]
     fn produced_metric_points(&self) -> u64 {
-        self.values.get(10).copied().unwrap_or(0)
+        self.values[IDX_PRODUCED_METRIC_POINTS]
     }
 
-    #[allow(dead_code)] // Available for future tests with mixed signal types
+    #[allow(dead_code)]
     fn produced_spans(&self) -> u64 {
-        self.values.get(11).copied().unwrap_or(0)
+        self.values[IDX_PRODUCED_SPANS]
     }
 
     fn retries_scheduled(&self) -> u64 {
-        self.values.get(22).copied().unwrap_or(0)
+        self.values[IDX_RETRIES_SCHEDULED]
     }
 
     fn requeued_log_records(&self) -> u64 {
-        self.values.get(24).copied().unwrap_or(0)
+        self.values[IDX_REQUEUED_LOG_RECORDS]
     }
 
     fn requeued_metric_points(&self) -> u64 {
-        self.values.get(25).copied().unwrap_or(0)
+        self.values[IDX_REQUEUED_METRIC_POINTS]
     }
 
     fn requeued_spans(&self) -> u64 {
-        self.values.get(26).copied().unwrap_or(0)
+        self.values[IDX_REQUEUED_SPANS]
     }
 
     fn queued_log_records(&self) -> u64 {
-        self.last_values.get(27).copied().unwrap_or(0)
+        self.last_values[IDX_QUEUED_LOG_RECORDS]
     }
 
     fn queued_metric_points(&self) -> u64 {
-        self.last_values.get(28).copied().unwrap_or(0)
+        self.last_values[IDX_QUEUED_METRIC_POINTS]
     }
 
     fn queued_spans(&self) -> u64 {
-        self.last_values.get(29).copied().unwrap_or(0)
+        self.last_values[IDX_QUEUED_SPANS]
+    }
+
+    fn flush_failures(&self) -> u64 {
+        self.values[IDX_FLUSH_FAILURES]
     }
 }
 
@@ -467,7 +493,8 @@ where
             config.clone(),
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -530,12 +557,16 @@ where
     let run_result = {
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
+        let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
+            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+        );
         runtime_pipeline.run_forever(
             pipeline_key,
             pipeline_ctx,
             event_reporter,
             metrics_reporter,
             Duration::from_secs(1),
+            memory_pressure_rx,
             runtime_ctrl_tx,
             runtime_ctrl_rx,
             pipeline_completion_tx,
@@ -544,14 +575,10 @@ where
     };
 
     let _ = shutdown_handle.join();
-    // Accept either Ok or a "Channel is closed" error during shutdown.
-    // When an always-NACK exporter races with shutdown, the exporter may try to
-    // send a NACK after the control channel has closed. This is expected behavior
-    // for this test scenario (error_exporter + time-based shutdown).
-    let is_acceptable_shutdown = match &run_result {
-        Ok(_) => true,
-        Err(e) => e.to_string().contains("Channel is closed"),
-    };
+    // Accept either Ok or a channel-send shutdown race.
+    // When an always-NACK exporter races with shutdown, the pipeline can return
+    // a ChannelSendError depending on where closure is observed.
+    let is_acceptable_shutdown = is_acceptable_shutdown_result(&run_result);
     assert!(
         is_acceptable_shutdown,
         "pipeline failed to shut down cleanly: {:?}",
@@ -576,6 +603,20 @@ where
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Return true when pipeline shutdown completed cleanly or hit an expected
+/// shutdown-time channel close race.
+///
+/// Only the closed-channel case is accepted; other `ChannelSendError`
+/// reasons (e.g. "full") would indicate a real bug.
+fn is_acceptable_shutdown_result(
+    run_result: &Result<Vec<()>, otap_df_engine::error::Error>,
+) -> bool {
+    matches!(
+        run_result,
+        Ok(_) | Err(otap_df_engine::error::Error::ChannelSendError { closed: true, .. })
+    )
+}
 
 /// Wait for a condition to become true, with timeout.
 ///
@@ -633,20 +674,34 @@ fn count_signals_in_segments(
         .unwrap_or(0)
 }
 
-/// Wait for at least `min_count` signals to exist in the primary signal table across all segments.
+/// Count the total item_count across all bundle manifest entries in segment files.
 ///
-/// Returns `true` if the condition was met within `timeout`, `false` otherwise.
-fn wait_for_signals_in_segments(
-    segments_dir: &std::path::Path,
-    payload_type: ArrowPayloadType,
-    min_count: u64,
-    timeout: Duration,
-) -> bool {
-    wait_for_condition(
-        || count_signals_in_segments(segments_dir, payload_type) >= min_count,
-        timeout,
-        Duration::from_millis(10),
-    )
+/// For OTLP pass-through mode, each item corresponds to one signal (log record,
+/// span, or metric data point). This reads the segment manifest rather than Arrow
+/// streams, so it works for any storage format.
+fn count_manifest_items_in_segments(segments_dir: &std::path::Path) -> u64 {
+    if !segments_dir.exists() {
+        return 0;
+    }
+    std::fs::read_dir(segments_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+                .map(|e| {
+                    SegmentReader::open(e.path())
+                        .map(|reader| {
+                            reader
+                                .manifest()
+                                .iter()
+                                .map(|entry| entry.item_count())
+                                .sum::<u64>()
+                        })
+                        .unwrap_or(0)
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -753,7 +808,8 @@ where
             config.clone(),
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None,
+            None, // transport_headers_policy
+            None, // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -823,12 +879,16 @@ where
     let run_result = {
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
+        let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
+            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+        );
         runtime_pipeline.run_forever(
             pipeline_key,
             pipeline_ctx,
             event_reporter,
             metrics_reporter,
             Duration::from_secs(1),
+            memory_pressure_rx,
             runtime_ctrl_tx,
             runtime_ctrl_rx,
             pipeline_completion_tx,
@@ -838,10 +898,7 @@ where
 
     let snapshot = shutdown_handle.join().expect("shutdown thread panicked");
 
-    let is_acceptable_shutdown = match &run_result {
-        Ok(_) => true,
-        Err(e) => e.to_string().contains("Channel is closed"),
-    };
+    let is_acceptable_shutdown = is_acceptable_shutdown_result(&run_result);
     assert!(
         is_acceptable_shutdown,
         "pipeline failed to shut down cleanly: {:?}",
@@ -1012,6 +1069,13 @@ fn test_durable_buffer_retries_on_nack() {
         "Expected produced_log_records metric > 0 (items sent downstream), got {}",
         metrics.produced_log_records()
     );
+
+    // Verify no segment finalization failures occurred.
+    assert_eq!(
+        metrics.flush_failures(),
+        0,
+        "segment finalization should not fail (flush_failures metric)"
+    );
 }
 
 /// Test recovery after downstream outage with data integrity validation.
@@ -1038,19 +1102,9 @@ fn test_durable_buffer_recovery_after_outage() {
 
     // Run 1: Downstream failing (all NACKs) - data persists to Quiver
     //
-    // Key timing considerations for reliable segment persistence:
-    // - max_segment_open_duration: 50ms (from TestConfigBuilder default)
-    // - poll_interval: 20ms (timer tick that triggers flush)
-    // - signals_per_second: 500 (generates all 25 signals in ~50ms)
-    //
-    // The pipeline needs enough time for:
-    // 1. Data generation (~50ms for 25 signals at 500/sec)
-    // 2. At least one timer tick to trigger segment flush (poll_interval: 20ms)
-    // 3. max_segment_open_duration to elapse so flush actually finalizes (50ms)
-    // 4. Graceful shutdown to complete flush and engine shutdown
-    //
-    // Run for 300ms to ensure multiple flush opportunities, with a generous
-    // shutdown deadline to ensure the engine properly finalizes segments.
+    // Instead of a fixed timeout (which is flaky on slow CI), we use a
+    // condition-based shutdown that waits until all signals are actually
+    // persisted to segment files before triggering shutdown.
     let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(run1_signals))
         .max_batch_size(5)
@@ -1064,31 +1118,25 @@ fn test_durable_buffer_recovery_after_outage() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    run_pipeline(
+    let segments_dir = buffer_path.join("core_0").join("segments");
+    let segments_dir_for_condition = segments_dir.clone();
+    run_pipeline_with_condition(
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_millis(300), // Allow time for segment flush cycles
-        Duration::from_secs(1),     // Generous shutdown deadline for segment finalization
+        Duration::from_secs(10), // generous max timeout for CI
+        Duration::from_secs(1),  // Generous shutdown deadline for segment finalization
+        Some(move || {
+            count_signals_in_segments(&segments_dir_for_condition, ArrowPayloadType::Logs)
+                >= run1_signals
+        }),
     );
 
     // Verify data was persisted to segment files (not just the WAL).
     //
     // We verify by counting actual signal rows in the LOGS table.
     // Each row = 1 log signal, so we should see exactly 25 signals persisted.
-    let segments_dir = buffer_path.join("core_0").join("segments");
-    let signals_exist = wait_for_signals_in_segments(
-        &segments_dir,
-        ArrowPayloadType::Logs,
-        run1_signals,
-        Duration::from_secs(2),
-    );
     let actual_signals = count_signals_in_segments(&segments_dir, ArrowPayloadType::Logs);
-    assert!(
-        signals_exist,
-        "Run 1 should have persisted {} signals, found {}",
-        run1_signals, actual_signals
-    );
     assert_eq!(
         actual_signals, run1_signals,
         "Run 1 should have persisted exactly {} signals, found {}",
@@ -1245,6 +1293,243 @@ fn test_durable_buffer_convert_to_arrow_mode() {
     assert!(
         buffer_path.join("core_0").exists(),
         "Quiver data directory should exist"
+    );
+}
+
+/// Same as `test_durable_buffer_convert_to_arrow_mode` but with
+/// `use_trace_context: true` so each log record carries a random trace_id
+/// and span_id.
+///
+/// Exercises dictionary unification: trace_id and span_id are
+/// dictionary-encoded with unique values per record, producing different
+/// dictionaries across batches within the same segment.
+#[test]
+fn test_durable_buffer_convert_to_arrow_mode_with_trace_context() {
+    init_test_tracing();
+
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let buffer_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "arrow-trace-ctx-test".into();
+    let pipeline_id: PipelineId = "arrow-trace-ctx-pipeline".into();
+    let test_id = "convert_to_arrow_trace_ctx";
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::register_counter(test_id, counter.clone());
+
+    let total_signals = 10u64;
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(5)
+        .otlp_handling("convert_to_arrow")
+        .use_trace_context(true)
+        .use_counting_exporter()
+        .exporter_id(test_id)
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let delivered_counter = counter.clone();
+    let metrics = run_pipeline_collecting_metrics(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10),
+        Duration::from_millis(500),
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+        true,
+    );
+
+    counting_exporter::unregister_counter(test_id);
+    let delivered = counter.load(Ordering::Relaxed);
+
+    assert!(
+        delivered >= total_signals,
+        "Should have delivered at least {} items through Arrow conversion with trace context, got {}",
+        total_signals,
+        delivered
+    );
+
+    // Verify no segment finalization failures occurred.
+    assert_eq!(
+        metrics.flush_failures(),
+        0,
+        "segment finalization should not fail (flush_failures metric)"
+    );
+}
+
+/// Exercises traces through `convert_to_arrow` mode.
+///
+/// Spans produce dictionary-encoded columns not present in logs: `name`,
+/// `kind`, `duration_time_unix_nano`, `trace_state`, plus `resource` and
+/// `scope` struct columns with dictionary children. Verifying
+/// `flush_failures == 0` confirms that dictionary unification handles
+/// these trace-specific columns correctly during segment finalization.
+#[test]
+fn test_durable_buffer_convert_to_arrow_mode_traces() {
+    init_test_tracing();
+
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let buffer_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "arrow-traces-test".into();
+    let pipeline_id: PipelineId = "arrow-traces-pipeline".into();
+    let test_id = "convert_to_arrow_traces";
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::register_counter(test_id, counter.clone());
+
+    let total_signals = 10u64;
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(5)
+        .signal_weights(0, 100, 0) // traces only
+        .otlp_handling("convert_to_arrow")
+        .use_counting_exporter()
+        .exporter_id(test_id)
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let delivered_counter = counter.clone();
+    let metrics = run_pipeline_collecting_metrics(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10),
+        Duration::from_millis(500),
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+        true,
+    );
+
+    counting_exporter::unregister_counter(test_id);
+    let delivered = counter.load(Ordering::Relaxed);
+
+    assert!(
+        delivered >= total_signals,
+        "Should have delivered at least {} trace items through Arrow conversion, got {}",
+        total_signals,
+        delivered
+    );
+
+    assert_eq!(
+        metrics.flush_failures(),
+        0,
+        "segment finalization should not fail for traces (flush_failures metric)"
+    );
+}
+
+/// Exercises metrics through `convert_to_arrow` mode.
+///
+/// Metrics produce dictionary-encoded columns not present in logs or
+/// traces: `name`, `description`, `unit`, `aggregation_temporality` on
+/// the `UnivariateMetrics` record batch, plus associated
+/// `NumberDataPoints` and attribute record batches. Verifying
+/// `flush_failures == 0` confirms dictionary unification handles these
+/// metric-specific columns correctly during segment finalization.
+#[test]
+fn test_durable_buffer_convert_to_arrow_mode_metrics() {
+    init_test_tracing();
+
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let buffer_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "arrow-metrics-test".into();
+    let pipeline_id: PipelineId = "arrow-metrics-pipeline".into();
+    let test_id = "convert_to_arrow_metrics";
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::register_counter(test_id, counter.clone());
+
+    let total_signals = 10u64;
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(5)
+        .signal_weights(100, 0, 0) // metrics only
+        .otlp_handling("convert_to_arrow")
+        .use_counting_exporter()
+        .exporter_id(test_id)
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let delivered_counter = counter.clone();
+    let metrics = run_pipeline_collecting_metrics(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10),
+        Duration::from_millis(500),
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+        true,
+    );
+
+    counting_exporter::unregister_counter(test_id);
+    let delivered = counter.load(Ordering::Relaxed);
+
+    assert!(
+        delivered >= total_signals,
+        "Should have delivered at least {} metric items through Arrow conversion, got {}",
+        total_signals,
+        delivered
+    );
+
+    assert_eq!(
+        metrics.flush_failures(),
+        0,
+        "segment finalization should not fail for metrics (flush_failures metric)"
+    );
+}
+
+/// Exercises all three signal types (logs, traces, metrics) simultaneously
+/// through `convert_to_arrow` mode.
+///
+/// This is the broadest end-to-end coverage test: the OTAP encoder
+/// produces different Arrow schemas for each signal type, each with
+/// distinct dictionary-encoded columns and struct-nested dictionaries.
+/// Running all three concurrently stresses the segment accumulator's
+/// ability to handle multiple streams with different schemas and
+/// dictionary patterns within the same segment.
+#[test]
+fn test_durable_buffer_convert_to_arrow_mode_mixed_signals() {
+    init_test_tracing();
+
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let buffer_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "arrow-mixed-test".into();
+    let pipeline_id: PipelineId = "arrow-mixed-pipeline".into();
+    let test_id = "convert_to_arrow_mixed";
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::register_counter(test_id, counter.clone());
+
+    let total_signals = 30u64;
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(5)
+        .signal_weights(1, 1, 1) // equal mix of all three
+        .otlp_handling("convert_to_arrow")
+        .use_trace_context(true)
+        .use_counting_exporter()
+        .exporter_id(test_id)
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let delivered_counter = counter.clone();
+    let metrics = run_pipeline_collecting_metrics(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(15),
+        Duration::from_millis(500),
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+        true,
+    );
+
+    counting_exporter::unregister_counter(test_id);
+    let delivered = counter.load(Ordering::Relaxed);
+
+    assert!(
+        delivered >= total_signals,
+        "Should have delivered at least {} mixed-signal items through Arrow conversion, got {}",
+        total_signals,
+        delivered
+    );
+
+    assert_eq!(
+        metrics.flush_failures(),
+        0,
+        "segment finalization should not fail for mixed signals (flush_failures metric)"
     );
 }
 
@@ -1441,16 +1726,22 @@ fn test_durable_buffer_otlp_item_count_metrics() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    run_pipeline(
+    // Use a condition-based shutdown that waits until all signals are persisted
+    // to segment files, rather than a fixed timeout that can be too short on slow CI.
+    let segments_dir = buffer_path.join("core_0").join("segments");
+    let segments_dir_for_condition = segments_dir.clone();
+    run_pipeline_with_condition(
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(2), // Give time for WAL → segment rotation
+        Duration::from_secs(10), // generous max timeout for CI
         Duration::from_secs(1),
+        Some(move || {
+            count_manifest_items_in_segments(&segments_dir_for_condition) >= phase1_signals
+        }),
     );
 
     // ── Between phases: verify per-signal item_count in segment manifests ────
-    let segments_dir = buffer_path.join("core_0").join("segments");
     assert!(
         segments_dir.exists(),
         "Segments directory should exist after Phase 1"

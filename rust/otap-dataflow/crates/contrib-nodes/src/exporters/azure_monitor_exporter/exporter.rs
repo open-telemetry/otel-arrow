@@ -10,13 +10,12 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterMessageChannel, Message};
+use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_pdata_views::views::logs::LogsDataView;
 
 use super::auth::{Auth, PendingTokenRefresh};
 use super::client::LogsIngestionClientPool;
@@ -34,13 +33,14 @@ use reqwest::header::HeaderValue;
 
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
+use bytes::Bytes;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
-const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
+
 /// Minimum interval between token refresh attempts (10 seconds).
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
 /// Buffer time before token expiry to trigger a refresh.
@@ -58,7 +58,7 @@ pub struct AzureMonitorExporter {
     client_pool: LogsIngestionClientPool,
     in_flight_exports: InFlightExports,
     last_batch_queued_at: tokio::time::Instant,
-    heartbeat: Heartbeat,
+    heartbeat: Option<Heartbeat>,
 }
 
 impl AzureMonitorExporter {
@@ -82,7 +82,11 @@ impl AzureMonitorExporter {
         let gzip_batcher = GzipBatcher::new(config.api.gzip_compression_level);
 
         // Create heartbeat handler
-        let heartbeat = Heartbeat::new(&config.api)?;
+        let heartbeat = if config.heartbeat.enabled {
+            Some(Heartbeat::new(&config.api, &config.heartbeat.overrides)?)
+        } else {
+            None
+        };
 
         Ok(Self {
             config,
@@ -203,6 +207,13 @@ impl AzureMonitorExporter {
             None => return Ok(()), // No pending batch - nothing to do
         };
 
+        self.metrics
+            .borrow_mut()
+            .add_batch_uncompressed_size(pending_batch.uncompressed_size as f64);
+        self.metrics
+            .borrow_mut()
+            .add_batch_size(pending_batch.compressed_data.len() as f64);
+
         let client = self.client_pool.take();
         if let Some(completed_export) = self
             .in_flight_exports
@@ -223,12 +234,12 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    async fn handle_logs_view<T: LogsDataView>(
+    async fn handle_logs(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         context: Context,
         payload: OtapPayload,
-        logs_view: &T,
+        log_entries: Vec<Bytes>,
         msg_id: u64,
     ) -> Result<(), EngineError> {
         if context.may_return_payload() {
@@ -237,9 +248,6 @@ impl AzureMonitorExporter {
             self.state
                 .add_msg_to_data(msg_id, context, OtapPayload::empty(SignalType::Logs));
         }
-
-        // Use a generic transformer method that accepts LogsDataView
-        let log_entries = self.transformer.convert_to_log_analytics(logs_view);
 
         for log_entry in log_entries {
             let entry_len = log_entry.len();
@@ -387,29 +395,17 @@ impl AzureMonitorExporter {
             Ok(Message::PData(pdata)) => {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
-                let payload_to_match = payload.clone();
 
-                match payload_to_match {
+                let log_entries = match &payload {
                     OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
-                        OtapArrowRecords::Logs(otap_records) => {
-                            let otap_arrow_records = OtapArrowRecords::Logs(otap_records);
-
-                            let logs_view =
-                                OtapLogsView::try_from(&otap_arrow_records).map_err(|e| {
-                                    let error = Error::LogsViewCreationFailed { source: e };
-                                    EngineError::InternalError {
-                                        message: error.to_string(),
-                                    }
-                                })?;
-
-                            self.handle_logs_view(
-                                effect_handler,
-                                context,
-                                payload,
-                                &logs_view,
-                                *msg_id,
-                            )
-                            .await?;
+                        OtapArrowRecords::Logs(_) => {
+                            let logs_view = OtapLogsView::try_from(otap_records).map_err(|e| {
+                                let error = Error::LogsViewCreationFailed { source: e };
+                                EngineError::InternalError {
+                                    message: error.to_string(),
+                                }
+                            })?;
+                            Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
                             otel_warn!(
@@ -417,21 +413,13 @@ impl AzureMonitorExporter {
                                 signal = "metrics_or_traces",
                                 format = "otap_arrow"
                             );
+                            None
                         }
                     },
-
                     OtapPayload::OtlpBytes(otlp_bytes) => match otlp_bytes {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             let logs_view = RawLogsData::new(bytes.as_ref());
-
-                            self.handle_logs_view(
-                                effect_handler,
-                                context,
-                                payload,
-                                &logs_view,
-                                *msg_id,
-                            )
-                            .await?;
+                            Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtlpProtoBytes::ExportMetricsRequest(_)
                         | OtlpProtoBytes::ExportTracesRequest(_) => {
@@ -440,8 +428,14 @@ impl AzureMonitorExporter {
                                 signal = "metrics_or_traces",
                                 format = "otlp_proto"
                             );
+                            None
                         }
                     },
+                };
+
+                if let Some(log_entries) = log_entries {
+                    self.handle_logs(effect_handler, context, payload, log_entries, *msg_id)
+                        .await?;
                 }
             }
 
@@ -462,7 +456,7 @@ impl AzureMonitorExporter {
 impl Exporter<OtapPdata> for AzureMonitorExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: ExporterMessageChannel<OtapPdata>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
@@ -535,7 +529,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
                                 Ok(header) => {
                                     self.client_pool.update_auth(header.clone());
-                                    self.heartbeat.update_auth(header.clone());
+                                    if let Some(ref mut hb) = self.heartbeat {
+                                        hb.update_auth(header.clone());
+                                    }
 
                                     // Compute expiry before consuming access_token
                                     let now_utc = azure_core::time::OffsetDateTime::now_utc();
@@ -582,12 +578,14 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_heartbeat_send), if has_token => {
-                    next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
+                _ = tokio::time::sleep_until(next_heartbeat_send), if has_token && self.heartbeat.is_some() => {
+                    next_heartbeat_send = tokio::time::Instant::now() + self.config.heartbeat.frequency;
                     self.metrics.borrow_mut().add_heartbeat();
-                    match self.heartbeat.send().await {
-                        Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
-                        Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = ?e),
+                    if let Some(ref mut hb) = self.heartbeat {
+                        match hb.send().await {
+                            Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
+                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = %e),
+                        }
                     }
                 }
 
@@ -661,7 +659,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+    use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
     use super::*;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
@@ -701,6 +699,7 @@ mod tests {
                 gzip_compression_level: 6,
             },
             auth: AuthConfig::default(),
+            heartbeat: HeartbeatConfig::default(),
         }
     }
 
@@ -709,14 +708,14 @@ mod tests {
     ) -> (
         mpsc::Sender<NodeControlMsg<OtapPdata>>,
         mpsc::Sender<OtapPdata>,
-        ExporterMessageChannel<OtapPdata>,
+        ExporterInbox<OtapPdata>,
     ) {
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<OtapPdata>>::new(capacity);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<OtapPdata>::new(capacity);
         (
             control_tx,
             pdata_tx,
-            ExporterMessageChannel::new(
+            ExporterInbox::new(
                 Receiver::Local(LocalReceiver::mpsc(control_rx)),
                 Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
                 0,

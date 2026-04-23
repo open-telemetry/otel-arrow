@@ -727,6 +727,51 @@ mod tests {
     }
 
     #[test]
+    fn test_cef_with_rfc3164_priority_no_hostname() {
+        // CEF message with priority but no timestamp or hostname — the RFC 3164
+        // parser should fall through to the tag/content path directly.
+        let input = b"<34>CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1";
+        let result = parse(input).unwrap();
+
+        match result {
+            ParsedSyslogMessage::CefWithRfc3164(syslog, cef) => {
+                assert!(syslog.priority.is_some());
+                assert_eq!(syslog.priority.as_ref().unwrap().facility, 4);
+                assert_eq!(syslog.priority.as_ref().unwrap().severity, 2);
+
+                // No timestamp or hostname expected
+                assert_eq!(syslog.timestamp, None);
+                assert_eq!(syslog.hostname, None);
+
+                // Tag should be "CEF" (RFC 3164 parser splits "CEF:0|..." at the colon)
+                assert_eq!(syslog.tag, Some(&b"CEF"[..]));
+
+                // Content should be the full CEF message
+                assert!(syslog.content.is_some());
+                assert!(
+                    syslog.content.unwrap().starts_with(b"CEF:0|"),
+                    "content should start with CEF:0|, got: {:?}",
+                    std::str::from_utf8(syslog.content.unwrap())
+                );
+
+                // Verify CEF fields
+                assert_eq!(cef.version, 0);
+                assert_eq!(cef.device_vendor, &b"Security"[..]);
+                assert_eq!(cef.device_product, &b"threatmanager"[..]);
+                assert_eq!(cef.name, &b"worm stopped"[..]);
+
+                let extensions = cef.parse_extensions().collect_all();
+                assert_eq!(extensions.len(), 1);
+                assert_eq!(extensions[0].0.as_slice(), b"src");
+                assert_eq!(extensions[0].1.as_slice(), b"10.0.0.1");
+
+                assert_eq!(syslog.input, input);
+            }
+            _ => panic!("Expected CefWithRfc3164, got {:?}", result),
+        }
+    }
+
+    #[test]
     fn test_parsed_syslog_message_format() {
         // RFC 5424
         let input = b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test message";
