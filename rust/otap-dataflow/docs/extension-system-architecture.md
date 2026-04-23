@@ -211,13 +211,16 @@ themselves, and they never touch pipeline data directly.
    types (`Local` and `Shared`) that map to the correct
    trait object variants. Sealing via `ExtensionCapability`
    ensures only engine-defined capabilities are accepted
-   at compile time. Local fallback from shared extensions is
-   materialized at `resolve_bindings()` time via the
-   capability's `wrap_shared_as_local` adapter: the shared
-   produce closure fires once per node, its result is
-   wrapped in `Rc<dyn C::Local>`, and every subsequent
-   `require_local()` call on that node returns an
-   `Rc::clone` of the same adapter.
+   at compile time. Each of the four accessors
+   (`require_*` / `optional_*`) is intended to be called
+   **exactly once per capability per node** at node
+   construction; a second call returns
+   `Error::CapabilityAlreadyConsumed`. Local fallback from
+   shared extensions is materialized lazily at that call:
+   on `require_local()`, the registered shared factory
+   runs and its result is routed through the capability's
+   `wrap_shared_as_local` adapter to produce
+   `Rc<dyn C::Local>`.
 
 7. **`#[capability]` proc macro.** Each capability is
    defined via a single `#[capability]` attribute on a
@@ -515,13 +518,16 @@ kv.get("key").await?;
 Sealing via `ExtensionCapability` (which requires
 `CapabilitySealed`) ensures at compile time that only
 engine-defined capabilities can be passed.
+
 Local fallback from shared extensions is materialized
-at `resolve_bindings()` time: the shared produce closure
-fires once per node, its result is passed through
-`wrap_shared_as_local`, and the resulting `Rc` is
-captured in a cloning closure so subsequent `require_local()`
-calls on that node each return an `Rc::clone` of the same
-adapter -- no per-call adapter logic on the hot path.
+lazily at consumption time: the resolved local entry
+captures the capability's `wrap_shared_as_local` adapter
+plus the shared produce closure. On the node's
+`require_local()` call, the shared closure fires, its
+result is routed through the adapter, and the returned
+`Rc<dyn local::Trait>` is handed back. Nothing is minted
+at resolve time, so `resolve_bindings()` stays
+allocation-free on the fallback path.
 
 #### require_local/shared and optional_local/shared
 
@@ -530,8 +536,11 @@ is passed to every node factory. It provides four methods
 for resolving capabilities:
 
 **`require_local()`** -- Returns `Rc<dyn local::Trait>`.
-Fallback from shared is pre-populated at build time.
-If not bound, returns an error:
+If the binding resolves via the `SharedAsLocal` fallback,
+a fresh shared instance is minted through the registered
+factory and wrapped by the capability's adapter. If the
+capability is not bound for this node, returns
+`Error::ConfigError`:
 
 ```rust
 let auth = capabilities
@@ -547,31 +556,55 @@ let kv = capabilities
 ```
 
 **`optional_local()`** / **`optional_shared()`** -- Same
-semantics but return `Option` instead of `Result`:
+semantics but return `Result<Option<_>, Error>`:
 
 ```rust
 if let Some(store) = capabilities
-    .optional_local::<KeyValueStore>()
+    .optional_local::<KeyValueStore>()?
 {
     store.set("offset", offset_bytes).await?;
 }
 ```
 
-All methods set the `(capability, extension)` consumption
-flag (`Rc<Cell<bool>>` shared with the
-`ConsumedTracker` at registry scope). After all nodes are
-built, the engine uses
-`ConsumedTracker::unconsumed_local()` /
+**One-shot contract.** Each of the four accessors may be
+called **at most once per capability per node**, at node
+construction. The handle returned should be stored and
+cloned/shared within the node as needed. A second call
+for the same capability returns
+`Error::CapabilityAlreadyConsumed`. This keeps the
+consumer API consistent regardless of whether a binding
+resolves natively or through the shared-to-local fallback,
+and removes any ambiguity about per-call instance
+policy: whatever instance policy the extension author
+chose at the builder (`.cloned()` vs `.fresh()`) is
+observed exactly once per node. Nodes that need multiple
+handles into the same capability clone the returned
+`Rc` (local) or hold the `Box` (shared) themselves.
+
+Per-node one-shot enforcement uses a
+`Cell<bool>` on each resolved entry, distinct from the
+cross-node consumption flag described below.
+
+All successful `require_*` / `optional_*` calls also set
+the `(capability, extension)` cross-node consumption flag
+(`Rc<Cell<bool>>` shared with the `ConsumedTracker` at
+registry scope). After all nodes are built, the engine
+uses `ConsumedTracker::unconsumed_local()` /
 `unconsumed_shared()` to emit warnings for configured
 bindings that no node consumed -- a configuration hygiene
 check that catches dead extension registrations.
 
 When a local entry is materialized via the
 `wrap_shared_as_local` adapter (shared-only with local
-fallback), its consumption flag lives under the **shared**
-bucket of `ConsumedTracker` -- consuming the adapter is
-counted as use of the underlying shared extension, so
-the extension is not flagged as unused.
+fallback), its cross-node consumption flag lives under
+the **shared** bucket of `ConsumedTracker` -- consuming
+the adapter is counted as use of the underlying shared
+extension, so the extension is not flagged as unused.
+The per-node one-shot cell is independent of this, so a
+single node can legitimately claim both the
+local-via-shared adapter *and* the native shared variant
+of the same binding; each claim mints its own instance
+via the registered factory.
 
 ### Extension Traits
 
