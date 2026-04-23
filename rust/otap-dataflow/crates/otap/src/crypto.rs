@@ -57,7 +57,7 @@ pub fn install_crypto_provider() -> Result<(), String> {
             "crypto.no_provider",
             message = "no crypto-* feature enabled: TLS operations will fail at runtime. \
                        Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-openssl, \
-                       crypto-native-tls"
+                       crypto-symcrypt"
             );
         }
     }
