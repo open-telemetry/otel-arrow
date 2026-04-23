@@ -1153,12 +1153,18 @@ Add type-safe capability resolution:
 - `CapabilityRegistry`, `Capabilities` struct
 - `resolve_bindings()` with 4-step validation
 - `require_local()` / `require_shared()` /
-  `optional_local()` / `optional_shared()`
+  `optional_local()` / `optional_shared()` with
+  one-shot-per-node enforcement (returns
+  `Error::CapabilityNotBound` /
+  `Error::CapabilityAlreadyConsumed`)
 - `extension_capabilities!` macro (3 arms:
   `shared:`, `local:`, dual)
-- `SharedAsLocal` adapter + `shared_as_local` tracking
-- `consumed_local()` / `consumed_shared()` +
-  `drop_local()` / `drop_shared()`
+- `SharedAsLocal` adapter (deferred, per-node) with
+  fallback-bucket tracker accounting
+- Two-level consumption tracking: per-node
+  `claimed: Cell<bool>` on each resolved entry, plus
+  `tracker_consumed: Rc<Cell<bool>>` feeding the
+  registry-wide `ConsumedTracker`
 - `KNOWN_CAPABILITIES` link-time registration
 - Sealed traits + `ExtensionCapability` with
   `Local`/`Shared` associated types

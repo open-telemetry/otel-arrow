@@ -37,17 +37,17 @@
 //! |-----------------|----------------------------------------------------------------------------|
 //! | Lifecycle       | `.active()` / `.passive()`                                                 |
 //! | Instance policy | *(implicit Cloned for Active)* `.cloned()` / `.fresh()` *(Passive only)* |
-//! | Side            | `.shared(...)` / `.local(...)` *(repeatable, register once each)*          |
+//! | Execution model | `.shared(...)` / `.local(...)` *(repeatable, register once each)*          |
 //!
 //! **Why the lifecycle and policy are sealed per bundle.** "This
 //! extension has an event loop" or "this capability hands out fresh
 //! instances" is a property of the extension, not of which trait-object
 //! shape (shared vs local) the consumer happens to request. Letting the
-//! two sides diverge would mean consumers observe different
+//! two execution models diverge would mean consumers observe different
 //! instance-sharing semantics depending on whether they call
 //! `require_local` vs `require_shared` on the same extension — a
 //! debugging hazard with no known legitimate use case. Forcing a single
-//! strategy across both sides makes the extension's behavior
+//! strategy across both execution models makes the extension's behavior
 //! predictable and eliminates a combinatorial footgun.
 //!
 //! **Active + Fresh is unrepresentable.** Active extensions have a
