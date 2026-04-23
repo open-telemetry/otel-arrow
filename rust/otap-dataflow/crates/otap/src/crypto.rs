@@ -49,9 +49,11 @@ pub fn install_crypto_provider() -> Result<(), String> {
             rustls_openssl::default_provider()
             .install_default()
             .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
-        } else if #[cfg(feature = "crypto-native-tls")] {
-            // native-tls uses the platform's TLS stack (SChannel/OpenSSL/Security.framework)
-            // and does not require a rustls CryptoProvider.
+        } else if #[cfg(feature = "crypto-symcrypt")] {
+            rustls_symcrypt::default_symcrypt_provider()
+            .install_default()
+            .map_err(|_| {
+                "crypto provider is already installed (crypto-symcrypt)".to_string()})?;
         } else {
             otap_df_telemetry::otel_warn!(
             "crypto.no_provider",
