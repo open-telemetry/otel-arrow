@@ -584,7 +584,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     if let Some(ref mut hb) = self.heartbeat {
                         match hb.send().await {
                             Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
-                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = ?e),
+                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = %e),
                         }
                     }
                 }

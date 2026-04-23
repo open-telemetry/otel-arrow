@@ -1158,14 +1158,19 @@ impl SliceScalarExpression {
             if v < 0 {
                 return Err(ExpressionError::ValidationFailure(
                     query_location.clone(),
-                    format!("Range {name} for a slice expression cannot be a negative value"),
+                    format!(
+                        "Range {name} for a slice expression cannot be a negative value, encountered '{v}' value"
+                    ),
                 ));
             }
             Ok(v as usize)
         } else {
             Err(ExpressionError::TypeMismatch(
                 query_location.clone(),
-                format!("Range {name} for a slice expression should be an integer type"),
+                format!(
+                    "Range {name} for a slice expression should be an integer type, encountered '{}' type",
+                    value.get_value_type()
+                ),
             ))
         }
     }
@@ -1181,8 +1186,7 @@ impl SliceScalarExpression {
             return Err(ExpressionError::ValidationFailure(
                 query_location.clone(),
                 format!(
-                    "{name} slice index starts at '{range_start}' but target ends at index '{}'",
-                    target_length - 1
+                    "{name} slice index starts at '{range_start}' but target has a length of '{target_length}'"
                 ),
             ));
         }
@@ -2602,7 +2606,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "Range start for a slice expression cannot be a negative value".into(),
+                "Range start for a slice expression cannot be a negative value, encountered '-1' value".into(),
             ),
         );
 
@@ -2617,7 +2621,7 @@ mod tests {
             ),
             ExpressionError::TypeMismatch(
                 QueryLocation::new_fake(),
-                "Range start for a slice expression should be an integer type".into(),
+                "Range start for a slice expression should be an integer type, encountered 'Boolean' type".into(),
             ),
         );
 
@@ -2632,7 +2636,7 @@ mod tests {
             ),
             ExpressionError::ValidationFailure(
                 QueryLocation::new_fake(),
-                "Range length for a slice expression cannot be a negative value".into(),
+                "Range length for a slice expression cannot be a negative value, encountered '-1' value".into(),
             ),
         );
 
@@ -2647,7 +2651,7 @@ mod tests {
             ),
             ExpressionError::TypeMismatch(
                 QueryLocation::new_fake(),
-                "Range length for a slice expression should be an integer type".into(),
+                "Range length for a slice expression should be an integer type, encountered 'Boolean' type".into(),
             ),
         );
     }
@@ -2825,7 +2829,7 @@ mod tests {
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 50),
                 ))),
             ),
-            "String slice index starts at '50' but target ends at index '4'",
+            "String slice index starts at '50' but target has a length of '5'",
         );
 
         let large_string_source = ScalarExpression::Static(StaticScalarExpression::String(
@@ -2933,7 +2937,7 @@ mod tests {
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
                 ))),
             ),
-            "Array slice index starts at '5' but target ends at index '4'",
+            "Array slice index starts at '5' but target has a length of '5'",
         );
     }
 

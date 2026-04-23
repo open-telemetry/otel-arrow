@@ -22,6 +22,7 @@ use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_config::SignalType;
+use otap_df_config::transport_headers::TransportHeaders;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{
@@ -365,12 +366,43 @@ impl UnaryService<OtapPdata> for OtapBatchService {
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
 
     fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
-        let mut otap_batch = request.into_inner();
+        let (metadata, _extensions, mut otap_batch) = request.into_parts();
 
         let effect_handler = self
             .effect_handler
             .take()
             .expect("`OtapBatchService` is not reused for multiple calls");
+
+        // Capture transport headers synchronously before moving the effect handler
+        // into the async block, avoiding a clone of the capture policy.
+        if let Some(policy) = effect_handler.capture_policy() {
+            let mut transport_headers = TransportHeaders::new();
+
+            // Collect all metadata pairs, decoding binary values so we store
+            // raw bytes rather than the base64 wire encoding (which would be
+            // double-encoded on downstream gRPC propagation).
+            let pairs: Vec<(&str, Vec<u8>)> = metadata
+                .iter()
+                .filter_map(|kv| match kv {
+                    tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                        Some((key.as_str(), value.as_bytes().to_vec()))
+                    }
+                    tonic::metadata::KeyAndValueRef::Binary(key, value) => value
+                        .to_bytes()
+                        .ok()
+                        .map(|decoded| (key.as_str(), decoded.to_vec())),
+                })
+                .collect();
+
+            let _stats = policy.capture_from_pairs(
+                pairs.iter().map(|(k, v)| (*k, v.as_slice())),
+                &mut transport_headers,
+            );
+            if !transport_headers.is_empty() {
+                otap_batch.set_transport_headers(transport_headers);
+            }
+        }
+
         let state = self.state.clone();
         let metrics = self.metrics.clone();
         Box::pin(async move {
