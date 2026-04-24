@@ -14,6 +14,7 @@ It is intended to be:
 ```text
 dfctl completions <shell>
 dfctl completions install <shell>
+dfctl commands
 dfctl config view
 dfctl engine status|livez|readyz
 dfctl groups describe|status|shutdown
@@ -84,6 +85,27 @@ and `--output agent-json` for single responses. Use `--output ndjson` with
 
 Bundle commands support `--output json`, `--output yaml`, and
 `--output agent-json`.
+
+## Command Catalog
+
+`dfctl commands` emits a human-readable table of runnable commands. It is local
+only and does not connect to the admin API:
+
+```bash
+dfctl commands
+```
+
+Use JSON for scripts and agents that need to discover command paths,
+arguments, aliases, output modes, examples, and execution hints:
+
+```bash
+dfctl commands --output json
+```
+
+The catalog is generated from the clap command tree and uses
+`schemaVersion: dfctl-command-catalog/v1`. Top-level `globalArguments` apply to
+all commands. Each command entry includes local `arguments`, `outputModes`,
+`examples`, `requiresAdminClient`, `interactive`, `longRunning`, and `mutation`.
 
 ## Shell Completions
 

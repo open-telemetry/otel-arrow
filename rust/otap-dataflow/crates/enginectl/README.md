@@ -129,6 +129,26 @@ Agent-friendly one-shot snapshots can use an explicit dfctl envelope:
 dfctl engine status --output agent-json
 ```
 
+### Discover commands for automation and agents
+
+Use `dfctl commands` to list runnable commands in a compact human table:
+
+```bash
+dfctl commands
+```
+
+Use JSON when a script or agent needs the command tree, arguments, aliases,
+output modes, examples, and execution hints without scraping help text:
+
+```bash
+dfctl commands --output json
+```
+
+The JSON catalog uses `schemaVersion: dfctl-command-catalog/v1`. It includes
+`globalArguments` once at the top level and per-command `arguments`,
+`outputModes`, `examples`, `requiresAdminClient`, `interactive`, `longRunning`,
+and `mutation` fields.
+
 ### Reconfigure a pipeline
 
 Apply a pipeline config from a file and wait for completion:

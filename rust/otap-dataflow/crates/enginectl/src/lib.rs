@@ -65,6 +65,11 @@ pub async fn run_with_terminal_and_diagnostics(
             commands::completions::run(stdout, args)?;
             return Ok(());
         }
+        Command::Commands(args) => {
+            let human_style = HumanStyle::resolve(color, stdout_is_terminal);
+            commands::catalog::run(stdout, human_style, args)?;
+            return Ok(());
+        }
         other => other,
     };
 
@@ -93,6 +98,7 @@ pub async fn run_with_terminal_and_diagnostics(
 
     match command {
         Command::Completions(_) => unreachable!("completions returned before client creation"),
+        Command::Commands(_) => unreachable!("commands returned before client creation"),
         Command::Config(_) => unreachable!("config commands returned before client creation"),
         Command::Ui(args) => {
             ui::run_ui(

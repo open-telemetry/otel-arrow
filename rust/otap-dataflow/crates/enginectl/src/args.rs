@@ -168,6 +168,7 @@ pub struct ConnectionArgs {
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     Completions(CompletionArgs),
+    Commands(CommandsArgs),
     Config(ConfigArgs),
     Ui(UiArgs),
     Engine(EngineArgs),
@@ -198,6 +199,12 @@ pub struct CompletionInstallArgs {
 
     #[arg(long, value_name = "DIR")]
     pub dir: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CommandsArgs {
+    #[command(flatten)]
+    pub output: ReadOutputArgs,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1006,6 +1013,20 @@ mod tests {
                 }
                 other => panic!("unexpected completion command: {other:?}"),
             },
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    /// Scenario: an agent asks for the generated command catalog in JSON mode.
+    /// Guarantees: the top-level discovery command parses locally and carries
+    /// the standard read-output selection.
+    #[test]
+    fn commands_catalog_command_parses_output() {
+        let cli = Cli::try_parse_from(["dfctl", "commands", "--output", "json"])
+            .expect("commands catalog command should parse");
+
+        match cli.command {
+            Command::Commands(args) => assert_eq!(args.output.output, ReadOutput::Json),
             other => panic!("unexpected command: {other:?}"),
         }
     }
