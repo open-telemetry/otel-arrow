@@ -524,8 +524,10 @@ impl FilterPlan {
                         source_scalar_expr.get_value_accessor()
                     }
                     _ => {
-                        // not yet supported
-                        todo!()
+                        // the source for the get type expression isn't something that we can check
+                        // determine to statically be the identifier of a type, defer to expression
+                        // evaluation for this filter
+                        return Ok(None);
                     }
                 };
 
@@ -546,7 +548,12 @@ impl FilterPlan {
                         stream_element_type,
                     ))))
                 } else {
-                    todo!()
+                    // TODO - we will support this soon
+                    Err(Error::NotYetSupportedError {
+                        message:
+                            "Checking if a field of stream element is a type is not yet supported"
+                                .into(),
+                    })
                 }
             }
             _ => Ok(None),
