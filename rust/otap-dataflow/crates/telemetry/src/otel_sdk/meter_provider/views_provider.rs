@@ -54,6 +54,18 @@ impl DeclarativeView {
                 return None;
             }
 
+            if let Some(scope_attributes) = &config.selector.scope_attributes {
+                let scope_attrs: Vec<_> = instrument.scope().attributes().collect();
+                for (key, value) in scope_attributes {
+                    let matched = scope_attrs
+                        .iter()
+                        .any(|kv| kv.key.as_str() == key && kv.value.to_string() == *value);
+                    if !matched {
+                        return None;
+                    }
+                }
+            }
+
             let mut stream_builder = Stream::builder();
             if let Some(name) = &config.stream.name {
                 stream_builder = stream_builder.with_name(name.clone());
@@ -69,6 +81,8 @@ impl DeclarativeView {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use opentelemetry_sdk::metrics::SdkMeterProvider;
     use otap_df_config::pipeline::telemetry::metrics::views::{
@@ -81,6 +95,7 @@ mod tests {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
                 scope_name: None,
+                scope_attributes: None,
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -99,6 +114,7 @@ mod tests {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
                 scope_name: None,
+                scope_attributes: None,
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -123,6 +139,7 @@ mod tests {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
                 scope_name: None,
+                scope_attributes: None,
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -139,6 +156,7 @@ mod tests {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
                 scope_name: Some("my.scope".to_string()),
+                scope_attributes: None,
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -157,10 +175,33 @@ mod tests {
             selector: MetricSelector {
                 instrument_name: None,
                 scope_name: Some("azure_monitor_exporter.metrics".to_string()),
+                scope_attributes: None,
             },
             stream: MetricStream {
                 name: None,
                 description: Some("Scoped metrics".to_string()),
+            },
+        };
+        let views_config = vec![view_config];
+        let sdk_meter_builder = SdkMeterProvider::builder();
+        let result = ViewsProvider::configure(sdk_meter_builder, views_config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_views_provider_configure_with_scope_attributes() {
+        let view_config = ViewConfig {
+            selector: MetricSelector {
+                instrument_name: None,
+                scope_name: Some("my.library".to_string()),
+                scope_attributes: Some(HashMap::from([
+                    ("env".to_string(), "production".to_string()),
+                    ("region".to_string(), "us-east-1".to_string()),
+                ])),
+            },
+            stream: MetricStream {
+                name: None,
+                description: Some("Production histograms".to_string()),
             },
         };
         let views_config = vec![view_config];
