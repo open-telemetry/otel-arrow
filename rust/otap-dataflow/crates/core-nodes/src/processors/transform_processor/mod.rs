@@ -1035,6 +1035,138 @@ mod test {
     }
 
     #[test]
+    fn test_conditional_on_signal_type() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs| 
+            if (is Log) {
+                set attributes["is_log"] = true
+            } else if (is Metric) {
+                set attributes["is_metric"] = true
+            } else if (is Span) {
+                set attributes["is_span"] = true
+            }"#;
+        let processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_record = LogRecord::build().severity_text("ERROR").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![log_record.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let span = Span::build().name("hello").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+                    resource_spans: vec![ResourceSpans::new(
+                        Resource::default(),
+                        vec![ScopeSpans::new(
+                            InstrumentationScope::default(),
+                            vec![span.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let metric = Metric::build().name("my_metric").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![ScopeMetrics::new(
+                            InstrumentationScope::default(),
+                            vec![metric.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // check anything not routed get outputted to the default port
+                let mut out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap)
+                    .map(|otap_batch| otap_to_otlp(&otap_batch));
+
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Logs(output_logs) = result else {
+                    panic!("expected logs, got {result:?}")
+                };
+                assert_eq!(
+                    &output_logs.resource_logs[0].scope_logs[0].log_records[0],
+                    &LogRecord {
+                        attributes: vec![KeyValue::new("is_log", AnyValue::new_bool(true))],
+                        ..log_record
+                    }
+                );
+
+                // let default_result = out.into_iter().next().expect("one result");
+                // assert_logs_records_equal(default_result, other_log_record);
+
+                // // check error log record got routed to correct out port
+                // let mut routed = Vec::new();
+                // while let Ok(msg) = error_port_rx.try_recv() {
+                //     routed.push(msg);
+                // }
+                // assert_eq!(routed.len(), 1);
+                // let (_context, payload) = routed.pop().unwrap().into_parts();
+                // match payload {
+                //     OtapPayload::OtapArrowRecords(result) => {
+                //         // ensure the routed record was "sanitized"
+                //         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
+                //         let severity_text_col = logs_batch
+                //             .column_by_name(consts::SEVERITY_TEXT)
+                //             .unwrap()
+                //             .as_any()
+                //             .downcast_ref::<DictionaryArray<UInt8Type>>()
+                //             .unwrap();
+                //         let eq_filtered_val =
+                //             eq(severity_text_col.values(), &StringArray::new_scalar("INFO"))
+                //                 .unwrap();
+                //         assert_eq!(eq_filtered_val.true_count(), 0);
+
+                //         // ensure the routed record equals what was expected
+                //         assert_logs_records_equal(result, log_record);
+                //     }
+                //     _ => panic!("unexpected payload type"),
+                // }
+
+                // // check info log record got routed to correct out port
+                // let mut routed = Vec::new();
+                // while let Ok(msg) = info_port_rx.try_recv() {
+                //     routed.push(msg);
+                // }
+                // assert_eq!(routed.len(), 1);
+                // let (_context, payload) = routed.pop().unwrap().into_parts();
+                // match payload {
+                //     OtapPayload::OtapArrowRecords(result) => {
+                //         assert_logs_records_equal(result, info_log_record);
+                //     }
+                //     _ => panic!("unexpected payload type"),
+                // }
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
     fn test_conditional_route_to() {
         // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
