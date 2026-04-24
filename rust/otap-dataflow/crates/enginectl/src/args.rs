@@ -821,6 +821,10 @@ pub fn parse_duration_arg(raw: &str) -> Result<Duration, String> {
 mod tests {
     use super::*;
 
+    /// Scenario: the legacy `pipelines details` alias is used instead of the
+    /// canonical `pipelines get` command.
+    /// Guarantees: clap still maps the alias onto the same get subcommand and
+    /// preserves the target coordinates.
     #[test]
     fn details_alias_parses_to_get() {
         let cli = Cli::try_parse_from(["dfctl", "pipelines", "details", "tenant-a", "ingest"])
@@ -837,6 +841,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a caller passes an explicit global color flag before the
+    /// selected command.
+    /// Guarantees: the parsed CLI stores the requested color policy so later
+    /// rendering decisions see the exact override.
     #[test]
     fn color_flag_parses() {
         let cli = Cli::try_parse_from(["dfctl", "--color", "always", "engine", "status"])
@@ -845,6 +853,10 @@ mod tests {
         assert_eq!(cli.color, ColorChoice::Always);
     }
 
+    /// Scenario: the interactive UI command is launched with non-default
+    /// startup and refresh arguments.
+    /// Guarantees: the parsed UI args preserve the selected start view,
+    /// refresh interval, and retained log tail size.
     #[test]
     fn ui_args_parse() {
         let cli = Cli::try_parse_from([
@@ -869,6 +881,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a caller asks the group shutdown command to both wait for
+    /// completion and stream watch output.
+    /// Guarantees: clap rejects the incompatible flag combination before any
+    /// runtime request is attempted.
     #[test]
     fn groups_shutdown_watch_conflicts_with_wait() {
         let result = Cli::try_parse_from(["dfctl", "groups", "shutdown", "--wait", "--watch"]);
@@ -876,6 +892,10 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Scenario: pipeline event watch arguments include scope, kind, content,
+    /// and streaming-output filters.
+    /// Guarantees: the parsed command preserves every filter and stream option
+    /// needed by the event watch implementation.
     #[test]
     fn pipeline_events_watch_parses_filters() {
         let cli = Cli::try_parse_from([
@@ -920,6 +940,10 @@ mod tests {
         }
     }
 
+    /// Scenario: telemetry metric filters are supplied on the command line for
+    /// metric set, metric name, scope, and core selection.
+    /// Guarantees: the parsed filters capture every requested field so the
+    /// client-side metric pruning logic sees the intended scope.
     #[test]
     fn telemetry_filters_parse() {
         let cli = Cli::try_parse_from([

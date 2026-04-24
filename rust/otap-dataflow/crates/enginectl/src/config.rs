@@ -136,6 +136,10 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Scenario: connection settings are loaded from a profile file and then
+    /// selectively overridden by explicit CLI values.
+    /// Guarantees: profile-only values remain intact while explicit CLI flags
+    /// take precedence for the overlapping fields.
     #[test]
     fn cli_values_override_profile_values() {
         let dir = tempdir().expect("tempdir");

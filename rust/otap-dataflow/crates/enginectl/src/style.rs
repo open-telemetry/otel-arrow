@@ -157,6 +157,10 @@ impl AnsiCode {
 mod tests {
     use super::*;
 
+    /// Scenario: color mode is left on auto while terminal detection and
+    /// `NO_COLOR` vary.
+    /// Guarantees: automatic human styling respects both terminal presence and
+    /// the global no-color override.
     #[test]
     fn auto_respects_terminal_and_no_color() {
         assert!(!HumanStyle::resolve_with_no_color(ColorChoice::Auto, false, false).enabled);
@@ -164,12 +168,19 @@ mod tests {
         assert!(!HumanStyle::resolve_with_no_color(ColorChoice::Auto, true, true).enabled);
     }
 
+    /// Scenario: a caller explicitly selects always or never for human color
+    /// rendering.
+    /// Guarantees: explicit color choices override the automatic terminal
+    /// heuristics.
     #[test]
     fn explicit_color_choice_overrides_auto_rules() {
         assert!(HumanStyle::resolve_with_no_color(ColorChoice::Always, false, true).enabled);
         assert!(!HumanStyle::resolve_with_no_color(ColorChoice::Never, true, false).enabled);
     }
 
+    /// Scenario: semantic state labels are rendered with color enabled.
+    /// Guarantees: known success and failure states receive ANSI styling while
+    /// unknown labels stay untouched.
     #[test]
     fn state_uses_semantic_colors() {
         let style = HumanStyle::resolve_with_no_color(ColorChoice::Always, false, false);
