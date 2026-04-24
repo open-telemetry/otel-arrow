@@ -473,7 +473,7 @@ mod test {
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
                 resource::v1::Resource,
-                trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
+                trace::v1::{ResourceSpans, ScopeSpans, Span, Status, TracesData},
             },
         },
         schema::consts,
@@ -1038,7 +1038,7 @@ mod test {
     fn test_conditional_on_signal_type() {
         // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
-        let query = r#"logs| 
+        let query = r#"signals | 
             if (is Log) {
                 set attributes["is_log"] = true
             } else if (is Metric) {
@@ -1066,7 +1066,15 @@ mod test {
                     .await
                     .expect("no process error");
 
-                let span = Span::build().name("hello").finish();
+                let span = Span::build()
+                    .name("hello")
+                    .trace_id([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                    .span_id([0, 0, 0, 0, 0, 0, 0, 0])
+                    .status(Status {
+                        message: "hello".into(),
+                        code: 0,
+                    })
+                    .finish();
                 let input = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
                     resource_spans: vec![ResourceSpans::new(
                         Resource::default(),
@@ -1118,50 +1126,29 @@ mod test {
                     }
                 );
 
-                // let default_result = out.into_iter().next().expect("one result");
-                // assert_logs_records_equal(default_result, other_log_record);
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Traces(output_traces) = result else {
+                    panic!("expected trace, got {result:?}")
+                };
+                assert_eq!(
+                    &output_traces.resource_spans[0].scope_spans[0].spans[0],
+                    &Span {
+                        attributes: vec![KeyValue::new("is_span", AnyValue::new_bool(true))],
+                        ..span
+                    }
+                );
 
-                // // check error log record got routed to correct out port
-                // let mut routed = Vec::new();
-                // while let Ok(msg) = error_port_rx.try_recv() {
-                //     routed.push(msg);
-                // }
-                // assert_eq!(routed.len(), 1);
-                // let (_context, payload) = routed.pop().unwrap().into_parts();
-                // match payload {
-                //     OtapPayload::OtapArrowRecords(result) => {
-                //         // ensure the routed record was "sanitized"
-                //         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
-                //         let severity_text_col = logs_batch
-                //             .column_by_name(consts::SEVERITY_TEXT)
-                //             .unwrap()
-                //             .as_any()
-                //             .downcast_ref::<DictionaryArray<UInt8Type>>()
-                //             .unwrap();
-                //         let eq_filtered_val =
-                //             eq(severity_text_col.values(), &StringArray::new_scalar("INFO"))
-                //                 .unwrap();
-                //         assert_eq!(eq_filtered_val.true_count(), 0);
-
-                //         // ensure the routed record equals what was expected
-                //         assert_logs_records_equal(result, log_record);
-                //     }
-                //     _ => panic!("unexpected payload type"),
-                // }
-
-                // // check info log record got routed to correct out port
-                // let mut routed = Vec::new();
-                // while let Ok(msg) = info_port_rx.try_recv() {
-                //     routed.push(msg);
-                // }
-                // assert_eq!(routed.len(), 1);
-                // let (_context, payload) = routed.pop().unwrap().into_parts();
-                // match payload {
-                //     OtapPayload::OtapArrowRecords(result) => {
-                //         assert_logs_records_equal(result, info_log_record);
-                //     }
-                //     _ => panic!("unexpected payload type"),
-                // }
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Metrics(output_metrics) = result else {
+                    panic!("expected metric, got {result:?}")
+                };
+                assert_eq!(
+                    &output_metrics.resource_metrics[0].scope_metrics[0].metrics[0],
+                    &Metric {
+                        metadata: vec![KeyValue::new("is_metric", AnyValue::new_bool(true))],
+                        ..metric
+                    }
+                )
             })
             .validate(|_ctx| async move {})
     }
