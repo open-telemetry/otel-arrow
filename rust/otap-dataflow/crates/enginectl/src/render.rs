@@ -18,8 +18,8 @@ pub use human::{
     render_pipeline_status, render_rollout_status, render_shutdown_status,
 };
 pub use output::{
-    write_bundle_output, write_event_output, write_human, write_log_event, write_mutation_output,
-    write_read_output, write_stream_snapshot,
+    write_agent_output, write_bundle_output, write_event_output, write_human, write_log_event,
+    write_mutation_output, write_read_output, write_stream_snapshot,
 };
 
 #[cfg(test)]

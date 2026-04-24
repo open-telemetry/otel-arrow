@@ -31,6 +31,7 @@ Assuming the engine is already running:
 $CTL engine livez
 $CTL engine readyz
 $CTL engine status
+$CTL config view
 
 $CTL groups status
 
@@ -51,11 +52,25 @@ dfctl --url https://admin.example.com/engine-a engine readyz
 Use these first to confirm the engine is reachable and healthy:
 
 ```bash
+dfctl config view
 dfctl engine livez
 dfctl engine readyz
 dfctl engine status
 dfctl groups status
 ```
+
+### Inspect the resolved client configuration
+
+`config view` resolves CLI flags, `DFCTL_` environment variables, and an
+explicit profile file without connecting to the engine:
+
+```bash
+dfctl config view
+dfctl --profile-file ./dfctl-profile.yaml config view --output json
+```
+
+The output reports the final target URL, timeout, TCP, and TLS settings. Client
+key paths are redacted to a `configured` flag.
 
 ### Inspect one pipeline
 
@@ -304,8 +319,8 @@ Long-running `watch` commands support:
 - `--output human`
 - `--output ndjson`
 
-Mutation commands support `human`, `json`, `yaml`, and `ndjson`. Use
-`--output ndjson` together with `--watch`.
+Mutation commands support `human`, `json`, `yaml`, `agent-json`, and `ndjson`.
+Use `--output ndjson` together with `--watch`.
 
 Human-readable output also supports:
 
@@ -325,9 +340,40 @@ dfctl completions zsh
 dfctl completions fish
 ```
 
+## Diagnostics and Errors
+
+Use `-v` or `-vv` to print client-side diagnostics to stderr while keeping
+stdout reserved for command output:
+
+```bash
+dfctl -v engine status --output json
+dfctl -vv config view
+```
+
+Runtime errors can be formatted for humans or automation:
+
+```bash
+dfctl --error-format text engine status
+dfctl --error-format json engine status 2>error.json
+dfctl --error-format agent-json engine status 2>error.json
+```
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 2 | Invalid CLI usage |
+| 3 | Requested group, pipeline, rollout, or shutdown was not found |
+| 4 | Admin API rejected the request as invalid or conflicting |
+| 5 | A requested operation was accepted but failed or timed out |
+| 6 | Configuration, I/O, transport, decode, or internal error |
+
 ## More Details
 
 - CLI reference and command overview:
   [docs/admin/enginectl.md](../../docs/admin/enginectl.md)
 - Live rollout and shutdown behavior:
   [docs/admin/live-reconfiguration.md](../../docs/admin/live-reconfiguration.md)
+- Remaining CLI best-practice backlog:
+  [docs/admin/dfctl-cli-improvement-plan.md](../../docs/admin/dfctl-cli-improvement-plan.md)

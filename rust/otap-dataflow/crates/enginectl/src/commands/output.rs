@@ -8,7 +8,8 @@ use crate::args::{
 };
 use crate::error::CliError;
 use crate::render::{
-    write_bundle_output, write_event_output, write_human, write_mutation_output, write_read_output,
+    write_agent_output, write_bundle_output, write_event_output, write_human,
+    write_mutation_output, write_read_output,
 };
 use crate::troubleshoot::{BundleMetadata, BundleMetricsShape};
 use serde::Serialize;
@@ -45,9 +46,10 @@ pub(crate) fn emit_mutation<T: Serialize>(
 ) -> Result<(), CliError> {
     match output {
         MutationOutput::Human => write_human(stdout, &human()?),
-        MutationOutput::Json | MutationOutput::Yaml | MutationOutput::Ndjson => {
-            write_mutation_output(stdout, output, outcome, value)
-        }
+        MutationOutput::Json
+        | MutationOutput::Yaml
+        | MutationOutput::Ndjson
+        | MutationOutput::AgentJson => write_mutation_output(stdout, output, outcome, value),
     }
 }
 
@@ -63,6 +65,9 @@ pub(crate) fn emit_group_shutdown<T: Serialize>(
         GroupShutdownOutput::Json => write_read_output(stdout, ReadOutput::Json, value),
         GroupShutdownOutput::Yaml => write_read_output(stdout, ReadOutput::Yaml, value),
         GroupShutdownOutput::Ndjson => write_event_output(stdout, "snapshot", value),
+        GroupShutdownOutput::AgentJson => {
+            write_agent_output(stdout, "mutation", Some("group_shutdown"), value)
+        }
     }
 }
 
@@ -111,7 +116,12 @@ pub(crate) fn validate_mutation_output(
     output: MutationOutput,
     watch: bool,
 ) -> Result<(), CliError> {
-    if watch && matches!(output, MutationOutput::Json | MutationOutput::Yaml) {
+    if watch
+        && matches!(
+            output,
+            MutationOutput::Json | MutationOutput::Yaml | MutationOutput::AgentJson
+        )
+    {
         return Err(CliError::invalid_usage(
             "--watch requires --output human or --output ndjson",
         ));
@@ -130,7 +140,7 @@ pub(crate) fn validate_group_shutdown_output(
     if watch
         && matches!(
             output,
-            GroupShutdownOutput::Json | GroupShutdownOutput::Yaml
+            GroupShutdownOutput::Json | GroupShutdownOutput::Yaml | GroupShutdownOutput::AgentJson
         )
     {
         return Err(CliError::invalid_usage(
@@ -150,9 +160,9 @@ pub(crate) fn stream_output_from_mutation(
     match output {
         MutationOutput::Human => Ok(StreamOutput::Human),
         MutationOutput::Ndjson => Ok(StreamOutput::Ndjson),
-        MutationOutput::Json | MutationOutput::Yaml => Err(CliError::invalid_usage(
-            "--watch requires --output human or --output ndjson",
-        )),
+        MutationOutput::Json | MutationOutput::Yaml | MutationOutput::AgentJson => Err(
+            CliError::invalid_usage("--watch requires --output human or --output ndjson"),
+        ),
     }
 }
 
@@ -163,9 +173,11 @@ pub(crate) fn group_shutdown_stream_output(
     match output {
         GroupShutdownOutput::Human => Ok(StreamOutput::Human),
         GroupShutdownOutput::Ndjson => Ok(StreamOutput::Ndjson),
-        GroupShutdownOutput::Json | GroupShutdownOutput::Yaml => Err(CliError::invalid_usage(
-            "--watch requires --output human or --output ndjson",
-        )),
+        GroupShutdownOutput::Json | GroupShutdownOutput::Yaml | GroupShutdownOutput::AgentJson => {
+            Err(CliError::invalid_usage(
+                "--watch requires --output human or --output ndjson",
+            ))
+        }
     }
 }
 

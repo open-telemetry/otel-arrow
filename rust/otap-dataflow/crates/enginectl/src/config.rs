@@ -4,10 +4,10 @@
 use crate::args::ConnectionArgs;
 use crate::error::CliError;
 use otap_df_admin_api::config::tls::{TlsClientConfig, TlsConfig};
-use otap_df_admin_api::{AdminEndpoint, HttpAdminClientSettings};
+use otap_df_admin_api::{AdminEndpoint, AdminScheme, HttpAdminClientSettings};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const DEFAULT_LOCAL_URL: &str = "http://127.0.0.1:8085";
@@ -15,6 +15,7 @@ pub const DEFAULT_LOCAL_URL: &str = "http://127.0.0.1:8085";
 #[derive(Debug, Clone)]
 pub struct ResolvedConnection {
     pub settings: HttpAdminClientSettings,
+    pub profile_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -109,7 +110,100 @@ pub fn resolve_connection(args: &ConnectionArgs) -> Result<ResolvedConnection, C
         });
     }
 
-    Ok(ResolvedConnection { settings })
+    Ok(ResolvedConnection {
+        settings,
+        profile_file: args.profile_file.clone(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedConnectionView {
+    pub url: String,
+    pub scheme: String,
+    pub host: String,
+    pub port: u16,
+    pub base_path: Option<String>,
+    pub profile_file: Option<String>,
+    pub connect_timeout: String,
+    pub request_timeout: Option<String>,
+    pub request_timeout_disabled: bool,
+    pub tcp_nodelay: bool,
+    pub tcp_keepalive: Option<String>,
+    pub tcp_keepalive_interval: Option<String>,
+    pub tls: ResolvedTlsView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedTlsView {
+    pub enabled: bool,
+    pub ca_file: Option<String>,
+    pub client_cert_file: Option<String>,
+    pub client_key_file_configured: bool,
+    pub include_system_ca_certs: Option<bool>,
+    pub insecure_skip_verify: Option<bool>,
+}
+
+impl ResolvedConnection {
+    pub fn display_url(&self) -> String {
+        endpoint_url(&self.settings.endpoint)
+    }
+
+    pub fn view(&self) -> ResolvedConnectionView {
+        let endpoint = &self.settings.endpoint;
+        let tls = self.settings.tls.as_ref();
+        ResolvedConnectionView {
+            url: self.display_url(),
+            scheme: endpoint.scheme.as_str().to_string(),
+            host: endpoint.host.clone(),
+            port: endpoint.port,
+            base_path: endpoint.base_path.clone(),
+            profile_file: self.profile_file.as_deref().map(path_display),
+            connect_timeout: duration_display(self.settings.connect_timeout),
+            request_timeout: self.settings.timeout.map(duration_display),
+            request_timeout_disabled: self.settings.timeout.is_none(),
+            tcp_nodelay: self.settings.tcp_nodelay,
+            tcp_keepalive: self.settings.tcp_keepalive.map(duration_display),
+            tcp_keepalive_interval: self.settings.tcp_keepalive_interval.map(duration_display),
+            tls: ResolvedTlsView {
+                enabled: tls.is_some(),
+                ca_file: tls.and_then(|tls| tls.ca_file.as_deref().map(path_display)),
+                client_cert_file: tls
+                    .and_then(|tls| tls.config.cert_file.as_deref().map(path_display)),
+                client_key_file_configured: tls
+                    .and_then(|tls| tls.config.key_file.as_ref())
+                    .is_some(),
+                include_system_ca_certs: tls.and_then(|tls| tls.include_system_ca_certs_pool),
+                insecure_skip_verify: tls.and_then(|tls| tls.insecure_skip_verify),
+            },
+        }
+    }
+}
+
+fn endpoint_url(endpoint: &AdminEndpoint) -> String {
+    let base_path = endpoint.base_path.as_deref().unwrap_or_default();
+    let host = match endpoint.scheme {
+        AdminScheme::Http | AdminScheme::Https if endpoint.host.contains(':') => {
+            format!("[{}]", endpoint.host)
+        }
+        AdminScheme::Http | AdminScheme::Https => endpoint.host.clone(),
+    };
+    format!(
+        "{}://{}:{}{}",
+        endpoint.scheme.as_str(),
+        host,
+        endpoint.port,
+        base_path
+    )
+}
+
+fn path_display(path: &Path) -> String {
+    path.display().to_string()
+}
+
+fn duration_display(duration: Duration) -> String {
+    humantime::format_duration(duration).to_string()
 }
 
 fn load_profile(profile_file: Option<&PathBuf>) -> Result<ConnectionProfile, CliError> {

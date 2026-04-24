@@ -12,6 +12,7 @@ It is intended to be:
 ## Command Overview
 
 ```text
+dfctl config view
 dfctl engine status|livez|readyz
 dfctl groups describe|status|shutdown
 dfctl groups events get|watch
@@ -54,6 +55,13 @@ Example:
 dfctl --url https://admin.example.com/engine-a engine readyz
 ```
 
+Inspect the resolved client configuration without contacting the engine:
+
+```bash
+dfctl config view
+dfctl --profile-file ./dfctl-profile.yaml config view --output json
+```
+
 ## Output Modes
 
 One-shot commands support:
@@ -61,16 +69,19 @@ One-shot commands support:
 - `--output human`
 - `--output json`
 - `--output yaml`
+- `--output agent-json`
 
 Long-running `watch` commands support:
 
 - `--output human`
 - `--output ndjson`
 
-Mutation commands also support `--output ndjson` when used together with
+Mutation commands support `--output human`, `--output json`, `--output yaml`,
+and `--output agent-json` for single responses. Use `--output ndjson` with
 `--watch`.
 
-Bundle commands support `--output json` and `--output yaml`.
+Bundle commands support `--output json`, `--output yaml`, and
+`--output agent-json`.
 
 ## Color Policy
 
@@ -85,6 +96,35 @@ terminal and `NO_COLOR` is not set.
 
 `json`, `yaml`, and `ndjson` outputs stay unstyled regardless of the color
 setting.
+
+## Diagnostics and Errors
+
+Use `-v` or `-vv` to emit client-side diagnostics on stderr without changing
+stdout:
+
+```bash
+dfctl -v engine status --output json
+dfctl -vv config view
+```
+
+Runtime errors support text and structured stderr formats:
+
+```bash
+dfctl --error-format text engine status
+dfctl --error-format json engine status 2>error.json
+dfctl --error-format agent-json engine status 2>error.json
+```
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 2 | Invalid CLI usage |
+| 3 | Requested group, pipeline, rollout, or shutdown was not found |
+| 4 | Admin API rejected the request as invalid or conflicting |
+| 5 | A requested operation was accepted but failed or timed out |
+| 6 | Configuration, I/O, transport, decode, or internal error |
 
 ## Examples
 

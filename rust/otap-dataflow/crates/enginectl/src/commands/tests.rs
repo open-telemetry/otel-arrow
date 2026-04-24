@@ -8,7 +8,7 @@ use crate::crypto::ensure_crypto_provider;
 use crate::pipeline_config_io::load_pipeline_config;
 use crate::style::HumanStyle;
 use crate::troubleshoot::{LogFilters, MetricsFilters};
-use crate::{Cli, run, run_with_terminal};
+use crate::{Cli, run, run_with_terminal, run_with_terminal_and_diagnostics};
 use clap::Parser;
 use otap_df_admin_api::config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otap_df_admin_api::telemetry::MetricsOptions;
@@ -97,6 +97,63 @@ async fn engine_status_agent_json_wraps_data() {
     assert_eq!(output["schemaVersion"], "dfctl/v1");
     assert_eq!(output["type"], "snapshot");
     assert_eq!(output["data"]["generatedAt"], "2026-01-01T00:00:00Z");
+}
+
+/// Scenario: the CLI runs `dfctl config view --output json` with a profile and
+/// an explicit URL override.
+/// Guarantees: the command resolves connection settings locally, performs no
+/// admin API call, and redacts the client key path to a configured flag.
+#[tokio::test]
+async fn config_view_json_reports_resolved_connection() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("dfctl-profile.yaml");
+    fs::write(
+        &path,
+        "url: https://profile.example.com\nclient_key_file: /secret/client.key\n",
+    )
+    .expect("write profile");
+
+    let cli = Cli::try_parse_from([
+        "dfctl",
+        "--profile-file",
+        path.to_str().expect("profile path"),
+        "--url",
+        "https://admin.example.com/engine-a",
+        "config",
+        "view",
+        "--output",
+        "json",
+    ])
+    .expect("parse");
+
+    let mut stdout = Vec::new();
+    run(cli, &mut stdout).await.expect("run");
+
+    let output: serde_json::Value = serde_json::from_slice(&stdout).expect("json output");
+    assert_eq!(output["url"], "https://admin.example.com:443/engine-a");
+    assert_eq!(output["profileFile"], path.display().to_string());
+    assert_eq!(output["tls"]["clientKeyFileConfigured"], true);
+    assert_eq!(output["tls"]["enabled"], true);
+}
+
+/// Scenario: a human invokes a command with repeated verbose flags.
+/// Guarantees: diagnostics are written to stderr and keep stdout reserved for
+/// the command result.
+#[tokio::test]
+async fn verbose_config_view_writes_diagnostics_to_stderr() {
+    let cli = Cli::try_parse_from(["dfctl", "-vv", "config", "view"]).expect("parse");
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run_with_terminal_and_diagnostics(cli, &mut stdout, false, &mut stderr)
+        .await
+        .expect("run");
+
+    let stdout = String::from_utf8(stdout).expect("stdout utf8");
+    let stderr = String::from_utf8(stderr).expect("stderr utf8");
+    assert!(stdout.contains("dfctl configuration"));
+    assert!(stderr.contains("dfctl: target=http://127.0.0.1:8085"));
+    assert!(stderr.contains("connect_timeout=3s"));
 }
 
 /// Scenario: the CLI requests compact metrics in non-human output mode.
@@ -915,6 +972,8 @@ fn mutation_output_validation_enforces_watch_contract() {
     assert!(validate_mutation_output(MutationOutput::Human, true).is_ok());
     assert!(validate_mutation_output(MutationOutput::Ndjson, true).is_ok());
     assert!(validate_mutation_output(MutationOutput::Json, true).is_err());
+    assert!(validate_mutation_output(MutationOutput::AgentJson, true).is_err());
+    assert!(validate_mutation_output(MutationOutput::AgentJson, false).is_ok());
     assert!(validate_mutation_output(MutationOutput::Ndjson, false).is_err());
 }
 

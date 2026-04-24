@@ -8,10 +8,11 @@ use std::io::{self, IsTerminal, Write};
 
 fn main() -> std::process::ExitCode {
     let cli = otap_df_enginectl::Cli::parse();
+    let error_format = cli.error_format();
     let stdout_is_terminal = io::stdout().is_terminal();
     if cli.is_ui() {
         let mut stderr = io::stderr().lock();
-        return match run_ui(cli, stdout_is_terminal, &mut stderr) {
+        return match run_ui(cli, stdout_is_terminal, error_format, &mut stderr) {
             Ok(code) => code,
             Err(code) => code,
         };
@@ -19,7 +20,13 @@ fn main() -> std::process::ExitCode {
 
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
-    match run(cli, stdout_is_terminal, &mut stdout, &mut stderr) {
+    match run(
+        cli,
+        stdout_is_terminal,
+        error_format,
+        &mut stdout,
+        &mut stderr,
+    ) {
         Ok(code) => code,
         Err(code) => code,
     }
@@ -28,6 +35,7 @@ fn main() -> std::process::ExitCode {
 fn run(
     cli: otap_df_enginectl::Cli,
     stdout_is_terminal: bool,
+    error_format: otap_df_enginectl::ErrorFormat,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<std::process::ExitCode, std::process::ExitCode> {
@@ -39,15 +47,16 @@ fn run(
             std::process::ExitCode::from(6)
         })?;
 
-    match runtime.block_on(otap_df_enginectl::run_with_terminal(
+    match runtime.block_on(otap_df_enginectl::run_with_terminal_and_diagnostics(
         cli,
         stdout,
         stdout_is_terminal,
+        stderr,
     )) {
         Ok(()) => Ok(std::process::ExitCode::SUCCESS),
         Err(err) => {
             if err.should_print() {
-                let _ = writeln!(stderr, "error: {err}");
+                let _ = err.write_to(stderr, error_format);
             }
             Err(std::process::ExitCode::from(err.exit_code()))
         }
@@ -57,6 +66,7 @@ fn run(
 fn run_ui(
     cli: otap_df_enginectl::Cli,
     stdout_is_terminal: bool,
+    error_format: otap_df_enginectl::ErrorFormat,
     stderr: &mut dyn Write,
 ) -> Result<std::process::ExitCode, std::process::ExitCode> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -67,15 +77,16 @@ fn run_ui(
             std::process::ExitCode::from(6)
         })?;
 
-    match runtime.block_on(otap_df_enginectl::run_with_terminal(
+    match runtime.block_on(otap_df_enginectl::run_with_terminal_and_diagnostics(
         cli,
         &mut io::sink(),
         stdout_is_terminal,
+        stderr,
     )) {
         Ok(()) => Ok(std::process::ExitCode::SUCCESS),
         Err(err) => {
             if err.should_print() {
-                let _ = writeln!(stderr, "error: {err}");
+                let _ = err.write_to(stderr, error_format);
             }
             Err(std::process::ExitCode::from(err.exit_code()))
         }

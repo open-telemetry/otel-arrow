@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,6 +18,24 @@ pub struct Cli {
     #[command(flatten)]
     pub connection: ConnectionArgs,
 
+    /// Increase diagnostic output on stderr. Repeat for more detail.
+    #[arg(
+        short,
+        long,
+        global = true,
+        action = ArgAction::Count,
+        conflicts_with = "quiet"
+    )]
+    pub verbose: u8,
+
+    /// Suppress non-error diagnostic output.
+    #[arg(short, long, global = true, default_value_t = false)]
+    pub quiet: bool,
+
+    /// Format used when reporting runtime errors on stderr.
+    #[arg(long, global = true, value_enum, default_value_t = ErrorFormat::Text)]
+    pub error_format: ErrorFormat,
+
     /// Terminal color policy for human-readable output.
     #[arg(long, global = true, value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
@@ -32,6 +50,18 @@ impl Cli {
     #[must_use]
     pub const fn is_ui(&self) -> bool {
         matches!(self.command, Command::Ui(_))
+    }
+
+    /// Returns true when non-error diagnostics should be suppressed.
+    #[must_use]
+    pub const fn is_quiet(&self) -> bool {
+        self.quiet
+    }
+
+    /// Returns the configured runtime error output format.
+    #[must_use]
+    pub const fn error_format(&self) -> ErrorFormat {
+        self.error_format
     }
 }
 
@@ -138,6 +168,7 @@ pub struct ConnectionArgs {
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     Completions(CompletionArgs),
+    Config(ConfigArgs),
     Ui(UiArgs),
     Engine(EngineArgs),
     Groups(GroupsArgs),
@@ -149,6 +180,17 @@ pub enum Command {
 pub struct CompletionArgs {
     #[arg(value_enum)]
     pub shell: Shell,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ConfigCommand {
+    View(ReadOutputArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -785,6 +827,7 @@ pub enum MutationOutput {
     Json,
     Yaml,
     Ndjson,
+    AgentJson,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -793,12 +836,24 @@ pub enum GroupShutdownOutput {
     Json,
     Yaml,
     Ndjson,
+    AgentJson,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum BundleOutput {
     Json,
     Yaml,
+    AgentJson,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+/// Runtime error output format for stderr diagnostics.
+pub enum ErrorFormat {
+    /// Human-readable single-line errors.
+    Text,
+    /// Compact JSON error object for scripts.
+    Json,
+    /// Agent-oriented JSON envelope with schema version and timestamp.
     AgentJson,
 }
 

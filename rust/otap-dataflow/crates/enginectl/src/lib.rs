@@ -14,7 +14,7 @@ mod style;
 mod troubleshoot;
 mod ui;
 
-pub use args::Cli;
+pub use args::{Cli, ErrorFormat};
 
 pub(crate) use commands::fetch::{fetch_logs, fetch_pipeline_describe};
 pub(crate) use commands::output::bundle_metadata;
@@ -23,12 +23,12 @@ pub(crate) use pipeline_config_io::{
 };
 
 use crate::args::{Cli as ParsedCli, Command};
-use crate::config::resolve_connection;
+use crate::config::{ResolvedConnection, resolve_connection};
 use crate::crypto::ensure_crypto_provider;
 use crate::error::CliError;
 use crate::style::HumanStyle;
 use clap::CommandFactory;
-use std::io::Write;
+use std::io::{self, Write};
 
 /// Executes a parsed `dfctl` command and writes command output to `stdout`.
 pub async fn run(cli: ParsedCli, stdout: &mut dyn Write) -> Result<(), CliError> {
@@ -41,9 +41,23 @@ pub async fn run_with_terminal(
     stdout: &mut dyn Write,
     stdout_is_terminal: bool,
 ) -> Result<(), CliError> {
+    let mut stderr = io::sink();
+    run_with_terminal_and_diagnostics(cli, stdout, stdout_is_terminal, &mut stderr).await
+}
+
+/// Executes a parsed command and writes requested diagnostics to `stderr`.
+pub async fn run_with_terminal_and_diagnostics(
+    cli: ParsedCli,
+    stdout: &mut dyn Write,
+    stdout_is_terminal: bool,
+    stderr: &mut dyn Write,
+) -> Result<(), CliError> {
     ensure_crypto_provider()?;
     let ParsedCli {
         connection,
+        verbose,
+        quiet,
+        error_format: _,
         color,
         command,
     } = cli;
@@ -61,6 +75,13 @@ pub async fn run_with_terminal(
 
     let human_style = HumanStyle::resolve(color, stdout_is_terminal);
     let resolved = resolve_connection(&connection)?;
+    write_diagnostics(stderr, verbose, quiet, &resolved)?;
+    let command = match command {
+        Command::Config(args) => {
+            return commands::config::run(stdout, human_style, args, &resolved);
+        }
+        other => other,
+    };
     let ui_command_context = match &command {
         Command::Ui(args) => Some(ui::build_command_context(&resolved.settings, color, args)),
         _ => None,
@@ -71,6 +92,7 @@ pub async fn run_with_terminal(
 
     match command {
         Command::Completions(_) => unreachable!("completions returned before client creation"),
+        Command::Config(_) => unreachable!("config commands returned before client creation"),
         Command::Ui(args) => {
             ui::run_ui(
                 &client,
@@ -89,4 +111,37 @@ pub async fn run_with_terminal(
             commands::telemetry::run(&client, stdout, human_style, args).await
         }
     }
+}
+
+fn write_diagnostics(
+    stderr: &mut dyn Write,
+    verbose: u8,
+    quiet: bool,
+    resolved: &ResolvedConnection,
+) -> Result<(), CliError> {
+    if quiet || verbose == 0 {
+        return Ok(());
+    }
+
+    writeln!(stderr, "dfctl: target={}", resolved.display_url())?;
+    if verbose > 1 {
+        let settings = &resolved.settings;
+        let request_timeout = settings
+            .timeout
+            .map(|timeout| humantime::format_duration(timeout).to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let tcp_keepalive = settings
+            .tcp_keepalive
+            .map(|timeout| humantime::format_duration(timeout).to_string())
+            .unwrap_or_else(|| "none".to_string());
+        writeln!(
+            stderr,
+            "dfctl: connect_timeout={} request_timeout={} tcp_nodelay={} tcp_keepalive={}",
+            humantime::format_duration(settings.connect_timeout),
+            request_timeout,
+            settings.tcp_nodelay,
+            tcp_keepalive
+        )?;
+    }
+    Ok(())
 }

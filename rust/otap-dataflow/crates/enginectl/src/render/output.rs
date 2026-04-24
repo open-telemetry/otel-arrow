@@ -78,7 +78,28 @@ pub fn write_mutation_output<T: Serialize>(
             .map_err(io_serialize_error)?;
             writeln!(writer)?;
         }
+        MutationOutput::AgentJson => {
+            serde_json::to_writer_pretty(
+                &mut *writer,
+                &agent_mutation_envelope(outcome, "mutation", value),
+            )
+            .map_err(io_serialize_error)?;
+            writeln!(writer)?;
+        }
     }
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn write_agent_output<T: Serialize>(
+    writer: &mut dyn Write,
+    kind: &str,
+    resource: Option<&str>,
+    value: &T,
+) -> Result<(), CliError> {
+    serde_json::to_writer_pretty(&mut *writer, &agent_envelope(kind, resource, value))
+        .map_err(io_serialize_error)?;
+    writeln!(writer)?;
     writer.flush()?;
     Ok(())
 }
@@ -208,6 +229,21 @@ fn agent_envelope<T: Serialize>(
         "type": kind,
         "resource": resource,
         "generatedAt": humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string(),
+        "data": value
+    })
+}
+
+fn agent_mutation_envelope<T: Serialize>(
+    outcome: &str,
+    resource: &str,
+    value: &T,
+) -> serde_json::Value {
+    json!({
+        "schemaVersion": "dfctl/v1",
+        "type": "mutation",
+        "resource": resource,
+        "generatedAt": humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string(),
+        "outcome": outcome,
         "data": value
     })
 }
