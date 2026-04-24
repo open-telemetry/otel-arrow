@@ -269,22 +269,31 @@ impl PipelineRuntimeStatus {
         }
     }
 
+    /// Returns the current Accepted condition for this runtime instance.
     #[must_use]
-    pub(crate) const fn accepted_condition(&self) -> &ConditionState {
+    pub const fn accepted_condition(&self) -> &ConditionState {
         &self.accepted_condition
     }
 
     #[must_use]
-    pub(crate) const fn ready_condition(&self) -> &ConditionState {
+    /// Returns the current Ready condition for this runtime instance.
+    pub const fn ready_condition(&self) -> &ConditionState {
         &self.ready_condition
     }
 
     #[must_use]
-    pub(crate) fn conditions(&self) -> [Condition; 2] {
+    /// Returns the serialized condition pair for this runtime instance.
+    pub fn conditions(&self) -> [Condition; 2] {
         [
             Condition::from_state(ConditionKind::Accepted, &self.accepted_condition),
             Condition::from_state(ConditionKind::Ready, &self.ready_condition),
         ]
+    }
+
+    /// Returns the current phase for this runtime instance.
+    #[must_use]
+    pub const fn phase(&self) -> PipelinePhase {
+        self.phase
     }
 
     /// Apply a single observed event to this pipeline.
@@ -381,6 +390,9 @@ impl PipelineRuntimeStatus {
             }
             (PipelinePhase::Draining, EventType::Error(ErrEv::DrainError(_))) => {
                 self.goto(PipelinePhase::Failed(FailReason::DrainError))
+            }
+            (PipelinePhase::Draining, EventType::Error(ErrEv::RuntimeError(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::RuntimeError))
             }
             (PipelinePhase::Draining, EventType::Request(Req::DeleteRequested)) => {
                 if !self.delete_pending {
@@ -678,6 +690,29 @@ mod tests {
             )))
             .unwrap();
         assert_eq!(p2.phase, PipelinePhase::Failed(FailReason::DeleteError));
+    }
+
+    #[test]
+    fn draining_runtime_error_becomes_terminal_failure() {
+        let mut p = PipelineRuntimeStatus::default();
+        p.apply_many([
+            EventType::Success(OkEv::Admitted),
+            EventType::Success(OkEv::Ready),
+            EventType::Request(Req::ShutdownRequested),
+        ])
+        .unwrap();
+
+        _ = p
+            .apply(EventType::Error(ErrEv::RuntimeError(
+                ErrorSummary::Pipeline {
+                    error_kind: "".to_string(),
+                    message: "late send failed during shutdown".to_string(),
+                    source: None,
+                },
+            )))
+            .unwrap();
+
+        assert_eq!(p.phase, PipelinePhase::Failed(FailReason::RuntimeError));
     }
 
     #[test]
