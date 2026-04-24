@@ -206,6 +206,33 @@ pub struct ResolvedPolicies {
     /// (opt-in only -- no headers are captured or propagated by default).
     pub transport_headers: Option<TransportHeadersPolicy>,
 }
+
+impl ResolvedPolicies {
+    /// Compares resolved policies while intentionally ignoring the resources
+    /// policy, which controls placement and scaling rather than runtime shape.
+    #[must_use]
+    pub fn eq_ignoring_resources(&self, other: &Self) -> bool {
+        let Self {
+            channel_capacity: self_channel_capacity,
+            health: self_health,
+            telemetry: self_telemetry,
+            resources: _,
+            transport_headers: self_transport_headers,
+        } = self;
+        let Self {
+            channel_capacity: other_channel_capacity,
+            health: other_health,
+            telemetry: other_telemetry,
+            resources: _,
+            transport_headers: other_transport_headers,
+        } = other;
+
+        self_channel_capacity == other_channel_capacity
+            && self_health == other_health
+            && self_telemetry == other_telemetry
+            && self_transport_headers == other_transport_headers
+    }
+}
 /// instrumentation overhead.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -594,6 +621,41 @@ const fn default_pdata_channel_capacity() -> usize {
 mod tests {
     use super::{MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource, Policies};
     use std::time::Duration;
+
+    #[test]
+    fn resolved_policies_eq_ignoring_resources_ignores_resource_only_changes() {
+        let current = super::ResolvedPolicies {
+            resources: super::ResourcesPolicy {
+                core_allocation: super::CoreAllocation::core_count(1),
+                memory_limiter: None,
+            },
+            ..super::ResolvedPolicies::default()
+        };
+        let candidate = super::ResolvedPolicies {
+            resources: super::ResourcesPolicy {
+                core_allocation: super::CoreAllocation::core_count(2),
+                memory_limiter: None,
+            },
+            ..super::ResolvedPolicies::default()
+        };
+
+        assert_ne!(current, candidate);
+        assert!(current.eq_ignoring_resources(&candidate));
+    }
+
+    #[test]
+    fn resolved_policies_eq_ignoring_resources_detects_runtime_policy_change() {
+        let current = super::ResolvedPolicies::default();
+        let candidate = super::ResolvedPolicies {
+            telemetry: super::TelemetryPolicy {
+                pipeline_metrics: false,
+                ..super::TelemetryPolicy::default()
+            },
+            ..super::ResolvedPolicies::default()
+        };
+
+        assert!(!current.eq_ignoring_resources(&candidate));
+    }
 
     #[test]
     fn defaults_match_expected_values() {
