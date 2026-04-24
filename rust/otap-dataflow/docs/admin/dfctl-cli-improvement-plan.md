@@ -14,21 +14,17 @@ required for the initial `dfctl` operator workflow.
    changing engine state. Extend later when the admin API exposes server-side
    validation.
 
-3. Add completion installation helpers.
-   Keep `dfctl completions <shell>` as the primitive, then add documented
-   install snippets or a `dfctl completions install <shell>` helper.
-
-4. Add consistent large-output shaping.
+3. Add consistent large-output shaping.
    Extend list and table commands with common `--filter`, `--sort-by`,
    `--columns`, and `--limit` conventions where the admin API or local snapshot
    data makes this cheap and deterministic.
 
-5. Add configurable redaction controls.
+4. Add configurable redaction controls.
    Introduce `--redact`, `--no-redact`, or a redaction policy for support
    bundles and machine-readable output that may include environment-specific
    names, headers, paths, or configuration values.
 
-6. Add a machine-readable command catalog.
+5. Add a machine-readable command catalog.
    Provide `dfctl commands --output json` or generated metadata from the clap
    command tree so AI agents can discover commands, arguments, output modes,
    and examples without scraping help text.

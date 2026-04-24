@@ -177,9 +177,27 @@ pub enum Command {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct CompletionArgs {
+    #[command(subcommand)]
+    pub command: Option<CompletionCommand>,
+
+    #[arg(value_enum)]
+    pub shell: Option<Shell>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum CompletionCommand {
+    Install(CompletionInstallArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CompletionInstallArgs {
     #[arg(value_enum)]
     pub shell: Shell,
+
+    #[arg(long, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -963,7 +981,31 @@ mod tests {
         let cli = Cli::try_parse_from(["dfctl", "completions", "bash"])
             .expect("completion command should parse");
         match cli.command {
-            Command::Completions(args) => assert_eq!(args.shell, Shell::Bash),
+            Command::Completions(args) => {
+                assert_eq!(args.shell, Some(Shell::Bash));
+                assert!(args.command.is_none());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    /// Scenario: an operator installs completions into the default directory
+    /// for a specific shell.
+    /// Guarantees: clap treats `install` as a subcommand while preserving the
+    /// existing direct `dfctl completions <shell>` generation syntax.
+    #[test]
+    fn completions_install_command_parses_shell() {
+        let cli = Cli::try_parse_from(["dfctl", "completions", "install", "zsh"])
+            .expect("completion install command should parse");
+        match cli.command {
+            Command::Completions(args) => match args.command {
+                Some(CompletionCommand::Install(install)) => {
+                    assert_eq!(install.shell, Shell::Zsh);
+                    assert!(install.dir.is_none());
+                    assert!(args.shell.is_none());
+                }
+                other => panic!("unexpected completion command: {other:?}"),
+            },
             other => panic!("unexpected command: {other:?}"),
         }
     }

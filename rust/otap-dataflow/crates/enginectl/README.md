@@ -340,6 +340,20 @@ dfctl completions zsh
 dfctl completions fish
 ```
 
+Install completion scripts into user-local shell completion directories with:
+
+```bash
+dfctl completions install bash
+dfctl completions install zsh
+dfctl completions install fish
+```
+
+Use `--dir` when your shell uses a custom completion directory:
+
+```bash
+dfctl completions install zsh --dir ~/.zsh/completions
+```
+
 ## Diagnostics and Errors
 
 Use `-v` or `-vv` to print client-side diagnostics to stderr while keeping

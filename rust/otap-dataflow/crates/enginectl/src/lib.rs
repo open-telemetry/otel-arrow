@@ -27,7 +27,6 @@ use crate::config::{ResolvedConnection, resolve_connection};
 use crate::crypto::ensure_crypto_provider;
 use crate::error::CliError;
 use crate::style::HumanStyle;
-use clap::CommandFactory;
 use std::io::{self, Write};
 
 /// Executes a parsed `dfctl` command and writes command output to `stdout`.
@@ -61,11 +60,13 @@ pub async fn run_with_terminal_and_diagnostics(
         color,
         command,
     } = cli;
-    if let Command::Completions(args) = &command {
-        let mut command = ParsedCli::command();
-        clap_complete::generate(args.shell, &mut command, "dfctl", stdout);
-        return Ok(());
-    }
+    let command = match command {
+        Command::Completions(args) => {
+            commands::completions::run(stdout, args)?;
+            return Ok(());
+        }
+        other => other,
+    };
 
     if matches!(command, Command::Ui(_)) && !stdout_is_terminal {
         return Err(CliError::invalid_usage(

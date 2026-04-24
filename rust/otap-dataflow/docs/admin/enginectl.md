@@ -12,6 +12,8 @@ It is intended to be:
 ## Command Overview
 
 ```text
+dfctl completions <shell>
+dfctl completions install <shell>
 dfctl config view
 dfctl engine status|livez|readyz
 dfctl groups describe|status|shutdown
@@ -82,6 +84,31 @@ and `--output agent-json` for single responses. Use `--output ndjson` with
 
 Bundle commands support `--output json`, `--output yaml`, and
 `--output agent-json`.
+
+## Shell Completions
+
+Generate a completion script on stdout:
+
+```bash
+dfctl completions bash
+dfctl completions zsh
+dfctl completions fish
+```
+
+Install a completion script into the default user-local directory for the
+selected shell:
+
+```bash
+dfctl completions install bash
+dfctl completions install zsh
+dfctl completions install fish
+```
+
+Use `--dir` for custom shell completion directories:
+
+```bash
+dfctl completions install zsh --dir ~/.zsh/completions
+```
 
 ## Color Policy
 
