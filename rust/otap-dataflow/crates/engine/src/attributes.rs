@@ -91,6 +91,10 @@ pub struct PipelineAttributeSet {
     /// Pipeline group identifier.
     #[attribute]
     pub pipeline_group_id: Cow<'static, str>,
+
+    /// Deployment generation for this runtime instance.
+    #[attribute]
+    pub deployment_generation: u64,
 }
 
 /// Node attributes.

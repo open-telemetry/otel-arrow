@@ -182,6 +182,15 @@ impl<T> Receiver<T> {
             Receiver::Shared(receiver) => receiver.is_empty(),
         }
     }
+
+    /// Checks whether the receive side has observed channel closure.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match self {
+            Receiver::Local(receiver) => receiver.is_closed(),
+            Receiver::Shared(receiver) => receiver.is_closed(),
+        }
+    }
 }
 
 /// Small private adapter trait used by [`InboxCore`].
@@ -201,6 +210,8 @@ trait ChannelReceiver<T> {
     fn try_recv(&mut self) -> Result<T, RecvError>;
 
     fn is_empty(&self) -> bool;
+
+    fn is_closed(&self) -> bool;
 }
 
 impl<T> ChannelReceiver<T> for Receiver<T> {
@@ -215,6 +226,10 @@ impl<T> ChannelReceiver<T> for Receiver<T> {
     fn is_empty(&self) -> bool {
         Receiver::is_empty(self)
     }
+
+    fn is_closed(&self) -> bool {
+        Receiver::is_closed(self)
+    }
 }
 
 impl<T> ChannelReceiver<T> for SharedReceiver<T> {
@@ -228,6 +243,10 @@ impl<T> ChannelReceiver<T> for SharedReceiver<T> {
 
     fn is_empty(&self) -> bool {
         SharedReceiver::is_empty(self)
+    }
+
+    fn is_closed(&self) -> bool {
+        SharedReceiver::is_closed(self)
     }
 }
 
@@ -344,10 +363,14 @@ where
     }
 
     fn shutdown_drain_complete(&self) -> bool {
-        self.pdata_rx
-            .as_ref()
-            .expect("pdata_rx must exist")
-            .is_empty()
+        let pdata_rx = self.pdata_rx.as_ref().expect("pdata_rx must exist");
+        // Shutdown may only be released once no upstream sender can still
+        // deliver more work into this inbox. Queue emptiness alone is not
+        // sufficient because an upstream node can still finish one already
+        // admitted message outside the channel and send it after we observe an
+        // empty buffer.
+        pdata_rx.is_closed()
+            && pdata_rx.is_empty()
             && self
                 .local_scheduler
                 .as_ref()
@@ -1090,6 +1113,60 @@ mod tests {
             .recv_when(true)
             .await
             .expect("shutdown should follow drain");
+        assert!(matches!(
+            shutdown,
+            Message::Control(NodeControlMsg::Shutdown { .. })
+        ));
+    }
+
+    /// Scenario: an exporter has latched shutdown, its bounded inbox is
+    /// temporarily empty, but an upstream sender is still alive and may still
+    /// forward one already-admitted message later.
+    /// Guarantees: the exporter does not release the latched shutdown on queue
+    /// emptiness alone; it stays alive until that late pdata arrives and the
+    /// upstream channel closes.
+    #[tokio::test]
+    async fn exporter_inbox_waits_for_upstream_closure_before_shutdown() {
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<TestMsg>>::new(16);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<TestMsg>::new(16);
+        let mut inbox = ExporterInbox::new(
+            Receiver::Local(LocalReceiver::mpsc(control_rx)),
+            Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+            9,
+            Interests::empty(),
+        );
+
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "shutdown".to_owned(),
+            })
+            .await
+            .expect("shutdown should enqueue");
+
+        let pending = tokio::time::timeout(Duration::from_millis(20), inbox.recv_when(false)).await;
+        assert!(
+            pending.is_err(),
+            "shutdown should stay latched while upstream senders can still deliver pdata"
+        );
+
+        pdata_tx
+            .send_async(TestMsg::new("late"))
+            .await
+            .expect("late pdata should enqueue");
+
+        let drained = tokio::time::timeout(Duration::from_millis(50), inbox.recv_when(false))
+            .await
+            .expect("late pdata should unblock the exporter inbox")
+            .expect("late pdata should drain");
+        assert!(matches!(drained, Message::PData(TestMsg(ref value)) if value == "late"));
+
+        drop(pdata_tx);
+
+        let shutdown = tokio::time::timeout(Duration::from_millis(50), inbox.recv_when(false))
+            .await
+            .expect("shutdown should follow once upstream closes")
+            .expect("shutdown control should arrive");
         assert!(matches!(
             shutdown,
             Message::Control(NodeControlMsg::Shutdown { .. })

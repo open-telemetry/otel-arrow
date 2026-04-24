@@ -76,6 +76,59 @@ pub struct ResolvedPipelineConfig {
     pub role: ResolvedPipelineRole,
 }
 
+impl ResolvedPipelineConfig {
+    /// Compares two resolved pipelines for exact runtime equivalence.
+    ///
+    /// Logical identity is intentionally ignored here; callers compare two
+    /// candidate snapshots for the same logical pipeline and only care whether
+    /// runtime-relevant config and resolved policies match.
+    #[must_use]
+    pub fn runtime_matches(&self, other: &Self) -> bool {
+        let Self {
+            pipeline_group_id: _,
+            pipeline_id: _,
+            pipeline: self_pipeline,
+            policies: self_policies,
+            role: self_role,
+        } = self;
+        let Self {
+            pipeline_group_id: _,
+            pipeline_id: _,
+            pipeline: other_pipeline,
+            policies: other_policies,
+            role: other_role,
+        } = other;
+
+        self_role == other_role
+            && self_pipeline == other_pipeline
+            && self_policies == other_policies
+    }
+
+    /// Compares two resolved pipelines while ignoring resource-only policy
+    /// differences used by resize classification.
+    #[must_use]
+    pub fn runtime_shape_matches_ignoring_resources(&self, other: &Self) -> bool {
+        let Self {
+            pipeline_group_id: _,
+            pipeline_id: _,
+            pipeline: self_pipeline,
+            policies: self_policies,
+            role: self_role,
+        } = self;
+        let Self {
+            pipeline_group_id: _,
+            pipeline_id: _,
+            pipeline: other_pipeline,
+            policies: other_policies,
+            role: other_role,
+        } = other;
+
+        self_role == other_role
+            && self_pipeline.eq_ignoring_policies(other_pipeline)
+            && self_policies.eq_ignoring_resources(other_policies)
+    }
+}
+
 impl OtelDataflowSpec {
     /// Resolves and materializes policies once for all pipelines.
     ///
@@ -171,5 +224,129 @@ impl OtelDataflowSpec {
             return Some(group_topic.clone());
         }
         self.topics.get(topic_name).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResolvedPipelineConfig, ResolvedPipelineRole};
+    use crate::pipeline::PipelineConfig;
+    use crate::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy, TelemetryPolicy};
+
+    #[test]
+    fn runtime_shape_matches_ignoring_resources_ignores_resource_only_changes() {
+        let current = ResolvedPipelineConfig {
+            pipeline_group_id: "g1".into(),
+            pipeline_id: "p1".into(),
+            pipeline: PipelineConfig::from_yaml(
+                "g1".into(),
+                "p1".into(),
+                r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+            )
+            .expect("current pipeline should parse"),
+            policies: ResolvedPolicies {
+                resources: ResourcesPolicy {
+                    core_allocation: CoreAllocation::core_count(1),
+                    memory_limiter: None,
+                },
+                ..ResolvedPolicies::default()
+            },
+            role: ResolvedPipelineRole::Regular,
+        };
+        let candidate = ResolvedPipelineConfig {
+            pipeline_group_id: "g1".into(),
+            pipeline_id: "p1".into(),
+            pipeline: PipelineConfig::from_yaml(
+                "g1".into(),
+                "p1".into(),
+                r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+            )
+            .expect("candidate pipeline should parse"),
+            policies: ResolvedPolicies {
+                resources: ResourcesPolicy {
+                    core_allocation: CoreAllocation::core_count(2),
+                    memory_limiter: None,
+                },
+                ..ResolvedPolicies::default()
+            },
+            role: ResolvedPipelineRole::Regular,
+        };
+
+        assert!(!current.runtime_matches(&candidate));
+        assert!(current.runtime_shape_matches_ignoring_resources(&candidate));
+    }
+
+    #[test]
+    fn runtime_shape_matches_ignoring_resources_detects_runtime_policy_change() {
+        let current = ResolvedPipelineConfig {
+            pipeline_group_id: "g1".into(),
+            pipeline_id: "p1".into(),
+            pipeline: PipelineConfig::from_yaml(
+                "g1".into(),
+                "p1".into(),
+                r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+            )
+            .expect("current pipeline should parse"),
+            policies: ResolvedPolicies::default(),
+            role: ResolvedPipelineRole::Regular,
+        };
+        let candidate = ResolvedPipelineConfig {
+            pipeline_group_id: "g1".into(),
+            pipeline_id: "p1".into(),
+            pipeline: current.pipeline.clone(),
+            policies: ResolvedPolicies {
+                telemetry: TelemetryPolicy {
+                    pipeline_metrics: false,
+                    ..TelemetryPolicy::default()
+                },
+                ..ResolvedPolicies::default()
+            },
+            role: ResolvedPipelineRole::Regular,
+        };
+
+        assert!(!current.runtime_shape_matches_ignoring_resources(&candidate));
     }
 }

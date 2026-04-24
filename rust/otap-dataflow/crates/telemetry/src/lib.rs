@@ -443,6 +443,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use prost::Message;
+    use std::time::Duration;
 
     fn test_reporter() -> ObservedEventReporter {
         let (sender, _receiver) = flume::bounded(16);
@@ -503,7 +504,9 @@ mod tests {
             });
 
             // Receiver should have the log
-            let recv = rx.recv().expect("receiver should have log after emit");
+            let recv = rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("receiver should have log after emit");
             assert!(matches!(recv, ObservedEvent::Log(_)));
             let text = recv.to_string();
             assert!(text.contains("test log message"), "log message is {}", text);
