@@ -52,7 +52,7 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
-use tempfile::NamedTempFile;
+use tempfile::Builder;
 use tokio::sync::mpsc;
 
 pub(crate) async fn run_ui(
@@ -342,11 +342,15 @@ fn run_editor_command(
     pipeline_id: &str,
 ) -> Result<String, CliError> {
     let editor = resolve_editor_command()?;
-    let mut file = NamedTempFile::new().map_err(|err| {
-        CliError::config(format!(
-            "failed to create temporary pipeline config file: {err}"
-        ))
-    })?;
+    let mut file = Builder::new()
+        .prefix("dfctl-pipeline-")
+        .suffix(".yaml")
+        .tempfile()
+        .map_err(|err| {
+            CliError::config(format!(
+                "failed to create temporary pipeline config file: {err}"
+            ))
+        })?;
     Write::write_all(&mut file, initial_yaml.as_bytes()).map_err(|err| {
         CliError::config(format!(
             "failed to write temporary pipeline config file: {err}"
