@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776988038580,
+  "lastUpdate": 1776993110499,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "4fde1cc67a8724f2948cb80637e90546db7849f5",
-          "message": "Columnar Query Engine support treating attributes as elements of a nested pipeline (#2190)\n\nCurrent Status: Ready for Review ~WIP/Draft - after the 4th March SIG\nmeeting, deciding we can rework the AST/Expression tree used to\nrepresent these nested pipelines as function invocations. This change is\nstill in-progress~\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nAdds support for an operation in OPL/Columnar query engine to treat\nattributes as elements in a nested stream and execute a pipeline on this\nstream. The result of the stream will be assigned back to the OTAP batch\nattributes.\n\nCurrently the only type of pipeline stage supported in the nested\npipeline is filtering, but already this can be used to build some\nsophisticated attribute redaction capability.\n\nSome simple examples\n```kql\n// keep only attributes where the value isn't a mastercard credit card number:\nlogs | apply attributes {\n  where not(contains(value, \"5198\"))\n}\n\n// keep only k8s resource attributes:\nlogs | apply attributes {\n  where matches(key, \".*k8s.*\")\n}\n```\n\n`value` in these expressions case is actually treated as a virtual\ncolumn, and we determine which actual attribute value column to use in\nthe expression based on the type on the other side of the binary\nexpression.\n\n~To support this functionality, this PR adds a new type of\n`DataExpression` to our AST expression crate called\n`NestedDataExpression`, which contains a source and a list of inner\nchild `DataExpression`s.~ (<-- _this is no longer correct. On SIG\nmeeting 4 March, decided to change how the AST is modelled_)\n\nA new operator call is added to OPL called the `apply` operator call\nwhich contains a nested pipeline of operations to apply to some\nattributes record batch. These operations are parsed into the body of a\n`PipelineFunction`, and we use a\n`DataExpression::Transform(TransformExpression::Set(..))` where the\nsource is an `InvokeFunctionExpression` referencing this function and\nthe destination is the attributes record batch.\n\nTo support the types of operations we want to apply to attribute, which\nfor this particular PR is simply filtering, this PR adds a `Discard`\nvariant to the `PipelineFunctionExpression` enum. It implements handling\nof this type of expression in the record set engine, by simply returning\n`Null` from the function if such a statement is encountered and if the\ninput to the statement does not pass the predicate. Because this also\nconstitutes a statement from which we an return from the function, this\nstatement is taken into account when calling\n`InvokeFunctionExpression::try_fold`.\n\nOur `PipelinePlanner` is responsible for taking this expression/function\ndefinition and planning the pipeline. It converts the\n`PipelineFunctionExpression`s in the function body back into a list of\n`DataExpression`s. The planner now has a new mode (indicated by a flag)\nfor whether it's planning for an attributes pipeline, or an OTAP batches\npipeline. Internally, when it encounters the `NestedDataExpression`, it\ncreates a new instance of itself and plans the inner expression in the\nattributes planning mode.\n\nThe columnar query engine's planning stage also expects that `optimize`\n/ `try_fold` has been called on the `DataExpression`s it receives. For\nthis reason, we also implement calling `try_fold` on the expressions\nwithin the pipeline function body.\n\nThe `PipelineStage` trait now exposes two new methods:\n`execute_on_attributes` and `supports_exec_on_attributes`. The latter is\nused by the planner in attribute planning mode - if it plans a pipeline\nstage where this method returns false (which is the default in the trait\ndefinition), it returns a planning error. Only `PipelineStage`\nimplementations that support executing on attributes will implement\nthese methods (and return `true` from `supports_exec_on_attributes`).\n\nThe Filter pipeline stage is currently the only `PipelineStage`\nimplementation that supports operating on attributes record batches. In\nthis case, the `FilterPlan` is planned as normal, and then some new\nfilter optimizers are used to combine the various\n`Composite<FilterPlan>` variants into a single datafusion logical\n`Expr`, and to change references to the virutal \"value\" column into the\nactual typed attribute value column.\n\nA new `PipelineStage` impl called the `ApplyToAttributesPipelineStage`\nis what drives the inner pipeline. For each record batch it receives, it\npulls out the attributes record batch, calls the chain of inner pipeline\nstages, and assigns the end result back to the OTAP batch.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Related to #2034\n\n## How are these changes tested?\n\nThere are new unit tests for the parser, and the new pipeline stage.\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n \nThis new OPL syntax would be available for users using the transform\nprocessor.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>\nCo-authored-by: Mikel Blanchard <mblanchard@macrosssoftware.com>",
-          "timestamp": "2026-03-12T16:40:14Z",
-          "tree_id": "cada2173035062689295bef5e213cfe1009fb75a",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/4fde1cc67a8724f2948cb80637e90546db7849f5"
-        },
-        "date": 1773336755312,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.075502872467041,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.61278329976973,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.94746275138803,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 54.840755208333334,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 56.2109375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 470493.9467920893,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 475554.12254426494,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001078,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10889421.195510289,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10827599.059743937,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 175492.17509181474,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0c30214c41fdfb38302b635e7fe451b4cf3ff081",
+          "message": "[query-engine] Rename log-specific methods in bridge (#2746)\n\nRelates to #2736\n\n# Changes\n\n* Adds \"logs\" into names of bridge methods which are specific to logs\nprocessing\n\n# Details\n\nPrepping for #2736 which seems like it will require \"metrics\" APIs in\nbridge.",
+          "timestamp": "2026-04-23T20:33:44Z",
+          "tree_id": "b9d86a856696104df84a80c427fdb00431aa6605",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0c30214c41fdfb38302b635e7fe451b4cf3ff081"
+        },
+        "date": 1776993109901,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.5617977380752563,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.7608202955962255,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.3160089444058904,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.032942708333334,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.27734375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 6075.4966927371515,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6109.6286966289335,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002337,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 209855.8830600124,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 174173.7821801354,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
