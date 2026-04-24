@@ -35,15 +35,15 @@ use cfg_if::cfg_if;
 pub fn install_crypto_provider() -> Result<(), String> {
     cfg_if! {
         // If you're using rustls, you must install a rustls CryptoProvider.
-        if #[cfg(all(feature = "crypto-ring"))] {
+        if #[cfg(feature = "crypto-ring")] {
             rustls::crypto::ring::default_provider()
                 .install_default()
                 .map_err(|_| "crypto provider already installed (ring)".to_string())?;
-        } else if #[cfg(all(feature = "crypto-aws-lc"))] {
+        } else if #[cfg(feature = "crypto-aws-lc")] {
             rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .map_err(|_| "crypto provider already installed (aws-lc-rs)".to_string())?;
-        } else if #[cfg(all(feature = "crypto-openssl"))] {
+        } else if #[cfg(feature = "crypto-openssl")] {
             rustls_openssl::default_provider()
             .install_default()
             .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
