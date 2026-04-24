@@ -14,6 +14,8 @@
 //! | `crypto-openssl` | `rustls-openssl` | Regulated / FIPS environments      |
 //! | `crypto-symcrypt`| `rustls-symcrypt`| Microsoft/SymCrypt-aligned backend |
 
+use cfg_if::cfg_if;
+
 /// Installs the selected rustls `CryptoProvider` as the process-wide default.
 ///
 /// The provider is chosen at compile time via feature flags.
@@ -31,71 +33,34 @@
 /// Returns `Err` if a provider was already installed (non-fatal in most cases).
 /// Returns `Ok(())` if installation succeeds or if no crypto feature is enabled.
 pub fn install_crypto_provider() -> Result<(), String> {
-    // Priority order when multiple features are enabled (e.g. --all-features):
-    // ring > aws-lc-rs > openssl > symcrypt.
-    #[cfg(feature = "crypto-ring")]
-    {
-        rustls::crypto::ring::default_provider()
+    cfg_if! {
+        // If you're using rustls, you must install a rustls CryptoProvider.
+        if #[cfg(feature = "crypto-ring")] {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .map_err(|_| "crypto provider already installed (ring)".to_string())?;
+        } else if #[cfg(feature = "crypto-aws-lc")] {
+            rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .map_err(|_| "crypto provider already installed (aws-lc-rs)".to_string())?;
+        } else if #[cfg(feature = "crypto-openssl")] {
+            rustls_openssl::default_provider()
+            .install_default()
+            .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
+        } else if #[cfg(feature = "crypto-symcrypt")] {
+            rustls_symcrypt::default_symcrypt_provider()
             .install_default()
             .map_err(|_| {
-                "failed to install crypto provider (ring): a crypto provider is already installed"
-                    .to_string()
-            })?;
-    }
-
-    #[cfg(all(feature = "crypto-aws-lc", not(feature = "crypto-ring")))]
-    {
-        rustls::crypto::aws_lc_rs::default_provider()
-            .install_default()
-            .map_err(|_| {
-                "failed to install crypto provider (aws-lc-rs): a crypto provider is already installed"
-                    .to_string()
-            })?;
-    }
-
-    #[cfg(all(
-        feature = "crypto-openssl",
-        not(feature = "crypto-ring"),
-        not(feature = "crypto-aws-lc")
-    ))]
-    {
-        rustls_openssl::default_provider()
-            .install_default()
-            .map_err(|_| {
-                "failed to install crypto provider (openssl): a crypto provider is already installed"
-                    .to_string()
-            })?;
-    }
-
-    #[cfg(all(
-        feature = "crypto-symcrypt",
-        not(feature = "crypto-ring"),
-        not(feature = "crypto-aws-lc"),
-        not(feature = "crypto-openssl")
-    ))]
-    {
-        rustls_symcrypt::default_symcrypt_provider()
-            .install_default()
-            .map_err(|_| {
-                "failed to install crypto provider (symcrypt): a crypto provider is already installed"
-                    .to_string()
-            })?;
-    }
-
-    #[cfg(not(any(
-        feature = "crypto-ring",
-        feature = "crypto-aws-lc",
-        feature = "crypto-symcrypt",
-        feature = "crypto-openssl"
-    )))]
-    {
-        otap_df_telemetry::otel_warn!(
+                "crypto provider is already installed (crypto-symcrypt)".to_string()})?;
+        } else {
+            otap_df_telemetry::otel_warn!(
             "crypto.no_provider",
             message = "no crypto-* feature enabled: TLS operations will fail at runtime. \
-                       Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-symcrypt, crypto-openssl"
-        );
+                       Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-openssl, \
+                       crypto-symcrypt"
+            );
+        }
     }
-
     Ok(())
 }
 
