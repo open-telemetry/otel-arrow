@@ -139,6 +139,8 @@ rel_expression = {
     additive_expression ~ (rel_op ~ rel_expression)*
 }
 
+// TODO add bitwise expressions
+
 type_name = {
     "Log"
   | "Metric"
@@ -151,8 +153,6 @@ type_check_expression = {
     type_check_op ~ type_name
   | rel_expression ~ (type_check_op ~ type_name)?
 }
-
-// TODO add bitwise expressions
 
 and_expression = {
     type_check_expression ~ ("and" ~ and_expression)*
