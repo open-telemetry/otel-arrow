@@ -260,6 +260,10 @@ pub(super) fn severity_fallback_from_tracepoint(tracepoint: &str) -> Option<(i32
 /// borrowing payload-backed field slices where practical. Removing this
 /// intermediate entirely would be a larger change and would likely need
 /// rollback/checkpoint support in the final builders.
+///
+/// TODO(perf): Also avoid allocating the PartC/promoted-attributes Vec before
+/// knowing that Common Schema decode succeeds; fallback records currently
+/// allocate the attributes buffer even though they emit no attributes.
 #[derive(Debug, Default)]
 struct CsDecodedLog {
     event_name: String,
@@ -1510,7 +1514,12 @@ mod tests {
                 .any(|(k, v)| k == "ok" && v == "value")
         );
         assert!(!decoded.attributes.iter().any(|(k, _)| k == "env_time"));
-        assert!(!decoded.attributes.iter().any(|(k, _)| k == "env_dt_traceId"));
+        assert!(
+            !decoded
+                .attributes
+                .iter()
+                .any(|(k, _)| k == "env_dt_traceId")
+        );
     }
 
     #[test]

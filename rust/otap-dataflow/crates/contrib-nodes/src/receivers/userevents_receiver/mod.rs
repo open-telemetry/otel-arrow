@@ -215,6 +215,7 @@ impl UsereventsReceiver {
             max_size: default_batch_max_size(),
             max_duration: default_batch_max_duration(),
         });
+        Self::validate_batching(&batching)?;
         let overflow = config.overflow.clone().unwrap_or(OverflowConfig {
             on_downstream_full: default_overflow_mode(),
         });
@@ -287,11 +288,33 @@ impl UsereventsReceiver {
     }
 
     fn validate_drain(drain: &DrainConfig) -> Result<(), otap_df_config::error::Error> {
+        if drain.max_records_per_turn == 0 {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "userevents receiver `drain.max_records_per_turn` must be greater than zero"
+                    .to_owned(),
+            });
+        }
+        if drain.max_bytes_per_turn == 0 {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "userevents receiver `drain.max_bytes_per_turn` must be greater than zero"
+                    .to_owned(),
+            });
+        }
         if drain.max_drain_ns.is_zero() {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: "userevents receiver `drain.max_drain_ns` must be greater than zero; \
                         a zero budget would starve either parsing or the pending-queue \
                         pop phase under continuous load"
+                    .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_batching(batching: &BatchConfig) -> Result<(), otap_df_config::error::Error> {
+        if batching.max_duration.is_zero() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "userevents receiver `batching.max_duration` must be greater than zero"
                     .to_owned(),
             });
         }
@@ -849,12 +872,62 @@ mod config_tests {
     }
 
     #[test]
-    fn validate_drain_accepts_nonzero_max_drain_ns() {
+    fn validate_drain_rejects_zero_max_records_per_turn() {
+        let drain = DrainConfig {
+            max_records_per_turn: 0,
+            max_bytes_per_turn: default_max_bytes_per_turn(),
+            max_drain_ns: default_max_drain_ns(),
+        };
+        let error = UsereventsReceiver::validate_drain(&drain).expect_err("zero rejected");
+        assert!(
+            error.to_string().contains("max_records_per_turn"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_drain_rejects_zero_max_bytes_per_turn() {
+        let drain = DrainConfig {
+            max_records_per_turn: default_max_records_per_turn(),
+            max_bytes_per_turn: 0,
+            max_drain_ns: default_max_drain_ns(),
+        };
+        let error = UsereventsReceiver::validate_drain(&drain).expect_err("zero rejected");
+        assert!(
+            error.to_string().contains("max_bytes_per_turn"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_drain_accepts_nonzero_values() {
         let drain = DrainConfig {
             max_records_per_turn: default_max_records_per_turn(),
             max_bytes_per_turn: default_max_bytes_per_turn(),
             max_drain_ns: Duration::from_millis(2),
         };
         UsereventsReceiver::validate_drain(&drain).expect("non-zero accepted");
+    }
+
+    #[test]
+    fn validate_batching_rejects_zero_max_duration() {
+        let batching = BatchConfig {
+            max_size: default_batch_max_size(),
+            max_duration: Duration::ZERO,
+        };
+        let error = UsereventsReceiver::validate_batching(&batching).expect_err("zero rejected");
+        assert!(
+            error.to_string().contains("max_duration"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_batching_accepts_nonzero_max_duration() {
+        let batching = BatchConfig {
+            max_size: default_batch_max_size(),
+            max_duration: default_batch_max_duration(),
+        };
+        UsereventsReceiver::validate_batching(&batching).expect("non-zero accepted");
     }
 }
