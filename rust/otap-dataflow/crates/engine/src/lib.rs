@@ -83,6 +83,7 @@ pub mod process_duration;
 mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
+pub mod stopwatch;
 pub mod terminal_state;
 pub mod testing;
 pub mod topic;
@@ -395,6 +396,40 @@ impl StampOutputPort for () {
 
 impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+
+/// Trait for forward-path stopwatch compute accumulation on PData.
+///
+/// Multiple overlapping stopwatch ranges are supported. Each accumulator
+/// is keyed by `StopwatchId` so they can be started, accumulated, and
+/// finalised independently.
+pub trait StopwatchAccumulation {
+    /// Start accumulators for the given stopwatch IDs.
+    /// Called at the start node for each stopwatch that begins here.
+    fn start_stopwatch_accumulators(&mut self, ids: &[stopwatch::StopwatchId]);
+
+    /// Add `ns` nanoseconds to all active stopwatch accumulators.
+    fn add_stopwatch_compute(&mut self, ns: u64);
+
+    /// Remove and return the accumulated total for the given stopwatch ID.
+    /// Returns `None` if that ID was not active.
+    fn take_stopwatch_compute(&mut self, id: stopwatch::StopwatchId) -> Option<u64>;
+}
+
+impl StopwatchAccumulation for () {
+    fn start_stopwatch_accumulators(&mut self, _ids: &[stopwatch::StopwatchId]) {}
+    fn add_stopwatch_compute(&mut self, _ns: u64) {}
+    fn take_stopwatch_compute(&mut self, _id: stopwatch::StopwatchId) -> Option<u64> {
+        None
+    }
+}
+
+impl StopwatchAccumulation for String {
+    fn start_stopwatch_accumulators(&mut self, _ids: &[stopwatch::StopwatchId]) {}
+    fn add_stopwatch_compute(&mut self, _ns: u64) {}
+    fn take_stopwatch_compute(&mut self, _id: stopwatch::StopwatchId) -> Option<u64> {
+        None
+    }
 }
 
 /// Effect handler extensions for producers specific to data type.

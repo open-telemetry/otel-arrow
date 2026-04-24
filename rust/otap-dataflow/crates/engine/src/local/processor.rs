@@ -177,12 +177,62 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
+    /// Returns the accumulated per-message synchronous compute duration
+    /// in nanoseconds for the current PData message.
+    #[must_use]
+    pub fn per_message_compute_ns(&self) -> u64 {
+        self.core.per_message_compute_ns()
+    }
+
+    /// Returns the stopwatch IDs for which this node is a start node.
+    #[must_use]
+    pub fn stopwatch_start_ids(&self) -> &[crate::stopwatch::StopwatchId] {
+        &self.core.stopwatch_start_ids
+    }
+
+    /// Record `total` nanoseconds for each stopwatch where this node is
+    /// the stop node and the given ID matches, then report the snapshot
+    /// so the telemetry dispatcher can pick it up.
+    pub fn record_stopwatch_stop(&self, id: crate::stopwatch::StopwatchId, total: u64) {
+        let mut guard = self
+            .core
+            .stopwatch_stop_metrics
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for (sw_id, metric_set) in guard.iter_mut() {
+            if *sw_id == id {
+                metric_set.compute_duration_success.record(total as f64);
+                if self
+                    .core
+                    .metrics_reporter
+                    .try_report_snapshot(metric_set.snapshot())
+                    .is_ok()
+                {
+                    metric_set.clear_values();
+                }
+            }
+        }
+    }
+
+    /// Returns the stopwatch IDs for which this node is a stop node.
+    pub fn stopwatch_stop_ids(&self) -> Vec<crate::stopwatch::StopwatchId> {
+        let guard = self
+            .core
+            .stopwatch_stop_metrics
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        guard.iter().map(|(id, _)| *id).collect()
+    }
+
     /// Time a synchronous, fallible closure if process-duration timing
     /// is enabled.
     ///
-    /// Delegates to [`ComputeDuration::timed`] with this handler's
-    /// precomputed interests.  Duration is recorded into the `ok` or
-    /// `err` accumulator based on the closure's `Result` outcome.
+    /// Delegates to [`ComputeDuration::timed_with_capture`] with this
+    /// handler's precomputed interests.  Duration is recorded into the
+    /// `ok` or `err` accumulator based on the closure's `Result` outcome
+    /// **and** accumulated into the per-message compute counter so the
+    /// engine can stamp it into the context frame for stopwatch metrics.
+    ///
     /// The closure-based API structurally prevents timing from
     /// spanning `.await` points.
     #[inline]
@@ -191,7 +241,11 @@ impl<PData> EffectHandler<PData> {
         cd: &ComputeDuration,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
-        cd.timed(self.core.node_interests(), f)
+        cd.timed(
+            self.core.node_interests(),
+            Some(&self.core.per_message_compute_ns),
+            f,
+        )
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -784,5 +838,76 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .counts();
         assert_eq!(counts, (0, 0));
+    }
+
+    /// Verify that record_stopwatch_stop resets the MetricSet after reporting,
+    /// so that successive calls produce delta snapshots rather than
+    /// monotonically growing cumulative values.
+    #[test]
+    fn record_stopwatch_stop_resets_after_report() {
+        use crate::context::ControllerContext;
+        use crate::stopwatch::{StopwatchAttributeSet, StopwatchMetrics};
+        use otap_df_config::node::NodeKind;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+        // Set up a pipeline context and register a stopwatch entity.
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline_ctx = controller
+            .pipeline_context_with("g".into(), "p".into(), 0, 1, 0)
+            .with_node_context(
+                "stop_node".into(),
+                "urn:test:processor:example".into(),
+                NodeKind::Processor,
+                HashMap::new(),
+            );
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(StopwatchAttributeSet::default());
+        let metric_set = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<StopwatchMetrics>(entity_key);
+
+        // Create an EffectHandler with the stopwatch stop role.
+        let (_snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+        let mut eh = EffectHandler::<u64>::new(
+            test_node("stop_node"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.core
+            .set_stopwatch_roles(Vec::new(), vec![(0, metric_set)]);
+
+        // First recording.
+        eh.record_stopwatch_stop(0, 1000);
+
+        // Read the local MetricSet state after the first call.
+        let guard = eh.core.stopwatch_stop_metrics.lock().unwrap();
+        let snap_after_first = guard[0].1.compute_duration_success.get();
+        drop(guard);
+
+        // BUG: without reset, count keeps growing. After fix, count should be 0
+        // because the snapshot was sent and the local Mmsc was cleared.
+        // This assertion documents the expected post-fix behavior.
+        assert_eq!(
+            snap_after_first.count, 0,
+            "MetricSet should be reset after successful report (count should be 0, got {})",
+            snap_after_first.count,
+        );
+
+        // Second recording.
+        eh.record_stopwatch_stop(0, 2000);
+
+        let guard = eh.core.stopwatch_stop_metrics.lock().unwrap();
+        let snap_after_second = guard[0].1.compute_duration_success.get();
+        drop(guard);
+
+        // After fix: should be a fresh delta with count=0 (just reported).
+        assert_eq!(
+            snap_after_second.count, 0,
+            "Second call should also reset after report (count should be 0, got {})",
+            snap_after_second.count,
+        );
     }
 }

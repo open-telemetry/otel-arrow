@@ -3,6 +3,9 @@
 
 //! Common foundation of all effect handlers.
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::Interests;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 #[cfg(any(test, feature = "test-utils"))]
@@ -14,6 +17,7 @@ use crate::control::{
 use crate::error::Error;
 use crate::node::NodeId;
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
+use crate::stopwatch::{StopwatchId, StopwatchMetrics};
 use crate::{WakeupError, WakeupSetOutcome};
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -47,7 +51,6 @@ impl SourceTagging {
 /// Common implementation of all effect handlers.
 ///
 /// Note: This implementation is `Send`.
-#[derive(Clone)]
 pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) node_id: NodeId,
     // ToDo refactor the code to avoid using Option here.
@@ -64,11 +67,49 @@ pub(crate) struct EffectHandlerCore<PData> {
     node_interests: Interests,
     /// Optional processor-local wakeup scheduler.
     local_scheduler: Option<NodeLocalSchedulerHandle>,
+    /// Accumulated synchronous compute duration (nanoseconds) for the
+    /// current PData message.  Reset to 0 before each `process()` call
+    /// and written into the frame when the processor sends the message
+    /// downstream.  Uses `AtomicU64` so the core remains `Send + Sync`.
+    pub(crate) per_message_compute_ns: AtomicU64,
+    /// Stopwatch IDs for which this node is a start node.
+    /// The processor's send path initialises accumulators for these IDs.
+    pub(crate) stopwatch_start_ids: Vec<StopwatchId>,
+    /// (StopwatchId, MetricSet) pairs for stopwatches where this node is the
+    /// stop node.  At send time the accumulated total for each ID is taken
+    /// from PData and recorded into the corresponding MetricSet.
+    /// Wrapped in `Mutex` for interior mutability from `&self` in send paths.
+    pub(crate) stopwatch_stop_metrics: Mutex<Vec<(StopwatchId, MetricSet<StopwatchMetrics>)>>,
+}
+
+impl<PData: Clone> Clone for EffectHandlerCore<PData> {
+    fn clone(&self) -> Self {
+        Self {
+            node_id: self.node_id.clone(),
+            runtime_ctrl_msg_sender: self.runtime_ctrl_msg_sender.clone(),
+            pipeline_completion_msg_sender: self.pipeline_completion_msg_sender.clone(),
+            metrics_reporter: self.metrics_reporter.clone(),
+            completion_emission_metrics: self.completion_emission_metrics.clone(),
+            source_tag: self.source_tag,
+            node_interests: self.node_interests,
+            local_scheduler: self.local_scheduler.clone(),
+            per_message_compute_ns: AtomicU64::new(
+                self.per_message_compute_ns.load(Ordering::Relaxed),
+            ),
+            stopwatch_start_ids: self.stopwatch_start_ids.clone(),
+            stopwatch_stop_metrics: Mutex::new(
+                self.stopwatch_stop_metrics
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone(),
+            ),
+        }
+    }
 }
 
 impl<PData> EffectHandlerCore<PData> {
     /// Creates a new EffectHandlerCore with node_id and a metrics reporter.
-    pub(crate) const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub(crate) fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         Self {
             node_id,
             runtime_ctrl_msg_sender: None,
@@ -78,6 +119,9 @@ impl<PData> EffectHandlerCore<PData> {
             source_tag: SourceTagging::Disabled,
             node_interests: Interests::empty(),
             local_scheduler: None,
+            per_message_compute_ns: AtomicU64::new(0),
+            stopwatch_start_ids: Vec::new(),
+            stopwatch_stop_metrics: Mutex::new(Vec::new()),
         }
     }
 
@@ -126,6 +170,16 @@ impl<PData> EffectHandlerCore<PData> {
         self.node_interests = interests;
     }
 
+    /// Sets stopwatch start/stop roles for this node.
+    pub(crate) fn set_stopwatch_roles(
+        &mut self,
+        start_ids: Vec<StopwatchId>,
+        stop_metrics: Vec<(StopwatchId, MetricSet<StopwatchMetrics>)>,
+    ) {
+        self.stopwatch_start_ids = start_ids;
+        self.stopwatch_stop_metrics = Mutex::new(stop_metrics);
+    }
+
     /// Returns the precomputed node interests.
     ///
     /// Includes SOURCE_TAGGING when source tagging is enabled.
@@ -142,6 +196,21 @@ impl<PData> EffectHandlerCore<PData> {
     #[must_use]
     pub(crate) fn node_id(&self) -> NodeId {
         self.node_id.clone()
+    }
+
+    /// Reset the per-message compute accumulator to zero.
+    ///
+    /// Called at the start of each PData message processing cycle so that
+    /// `timed()` calls within a single `process()` invocation accumulate
+    /// fresh values.
+    pub(crate) fn reset_per_message_compute_ns(&self) {
+        self.per_message_compute_ns.store(0, Ordering::Relaxed);
+    }
+
+    /// Return the accumulated per-message compute duration in nanoseconds.
+    #[must_use]
+    pub(crate) fn per_message_compute_ns(&self) -> u64 {
+        self.per_message_compute_ns.load(Ordering::Relaxed)
     }
 
     /// Print an info message to stdout.

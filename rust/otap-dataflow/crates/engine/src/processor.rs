@@ -27,10 +27,12 @@ use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
+use crate::stopwatch::{StopwatchId, StopwatchMetrics};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -511,6 +513,8 @@ impl<PData> ProcessorWrapper<PData> {
             metrics_reporter,
             node_interests,
             None,
+            Vec::new(),
+            Vec::new(),
         )
         .await
     }
@@ -522,6 +526,8 @@ impl<PData> ProcessorWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+        stopwatch_start_ids: Vec<StopwatchId>,
+        stopwatch_stop_metrics: Vec<(StopwatchId, MetricSet<StopwatchMetrics>)>,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode,
@@ -546,6 +552,10 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
+                effect_handler.core.set_stopwatch_roles(
+                    stopwatch_start_ids.clone(),
+                    stopwatch_stop_metrics.clone(),
+                );
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -553,6 +563,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
+                    effect_handler.core.reset_per_message_compute_ns();
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
@@ -580,6 +591,9 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics);
+                effect_handler
+                    .core
+                    .set_stopwatch_roles(stopwatch_start_ids, stopwatch_stop_metrics);
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -587,6 +601,7 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
+                    effect_handler.core.reset_per_message_compute_ns();
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection

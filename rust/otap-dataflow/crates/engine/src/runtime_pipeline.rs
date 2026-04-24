@@ -23,6 +23,7 @@ use crate::pipeline_ctrl::{
     NodeMetricHandles, PipelineCompletionMsgDispatcher, RuntimeCtrlMsgManager,
     report_node_metrics_with_handles,
 };
+use crate::stopwatch::{StopwatchAttributeSet, StopwatchMetrics, StopwatchState};
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
@@ -31,7 +32,9 @@ use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::Duration;
@@ -214,6 +217,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         let mut control_senders = ControlSenders::default();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
 
+        // Build a name→index map from NodeDefs so we can resolve stopwatch
+        // config before processors are spawned.
+        let node_name_to_index: HashMap<String, usize> = _nodes
+            .iter()
+            .map(|(nid, _)| (nid.name.to_string(), nid.index))
+            .collect();
+
+        // Build stopwatch state and per-node role assignments up front.
+        let stopwatch_state =
+            build_stopwatch_state(&telemetry_policy, &node_name_to_index, &pipeline_context);
+
         // Spawn node tasks and register their control senders, scoping telemetry where available.
         for exporter in exporters {
             let mut exporter = exporter;
@@ -299,6 +313,21 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
+            // Extract stopwatch roles for this processor node.
+            let sw_start_ids: Vec<usize> = stopwatch_state
+                .start_nodes
+                .get(&node_id.index)
+                .cloned()
+                .unwrap_or_default();
+            let sw_stop_metrics: Vec<(usize, MetricSet<StopwatchMetrics>)> = stopwatch_state
+                .stop_nodes
+                .get(&node_id.index)
+                .map(|ids| {
+                    ids.iter()
+                        .map(|&id| (id, stopwatch_state.metrics[id].clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
             let fut = async move {
                 let result = processor
                     .start_with_completion_metrics(
@@ -307,6 +336,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                         metrics_reporter,
                         node_interests,
                         completion_emission_metrics,
+                        sw_start_ids,
+                        sw_stop_metrics,
                     )
                     .await;
                 drop(telemetry_guard);
@@ -431,6 +462,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 dispatcher_metrics_reporter,
                 control_plane_metrics_flush_interval,
                 dispatcher_telemetry_policy,
+                stopwatch_state,
             );
             dispatcher.run().await
         }));
@@ -581,5 +613,61 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 message: format!("node {node_id:?}"),
             })),
         }
+    }
+}
+
+/// Build stopwatch state from the telemetry policy configuration.
+///
+/// Resolves stopwatch start/stop node names to node indices via the
+/// control senders registry, registers metric entities, and builds the
+/// lookup tables used by the completion dispatcher during ack unwinding.
+fn build_stopwatch_state(
+    telemetry_policy: &TelemetryPolicy,
+    node_name_to_index: &HashMap<String, usize>,
+    pipeline_context: &PipelineContext,
+) -> StopwatchState {
+    let mut metrics = Vec::new();
+    let mut stop_nodes: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut start_nodes: HashMap<usize, Vec<usize>> = HashMap::new();
+
+    let pipeline_attrs = pipeline_context.pipeline_attribute_set();
+
+    for sw_config in &telemetry_policy.stopwatches {
+        let start_idx = node_name_to_index.get(&sw_config.start_node).copied();
+        let stop_idx = node_name_to_index.get(&sw_config.stop_node).copied();
+
+        let (Some(start_idx), Some(stop_idx)) = (start_idx, stop_idx) else {
+            otap_df_telemetry::otel_warn!(
+                "stopwatch.config.invalid",
+                name = sw_config.name,
+                start = sw_config.start_node,
+                stop = sw_config.stop_node,
+                "Stopwatch references unknown node(s), skipping"
+            );
+            continue;
+        };
+
+        let attrs = StopwatchAttributeSet {
+            stopwatch_name: Cow::Owned(sw_config.name.clone()),
+            start_node: Cow::Owned(sw_config.start_node.clone()),
+            stop_node: Cow::Owned(sw_config.stop_node.clone()),
+            pipeline_attrs: pipeline_attrs.clone(),
+        };
+
+        let entity_key = pipeline_context.metrics_registry().register_entity(attrs);
+        let metric_set = pipeline_context
+            .metrics_registry()
+            .register_metric_set_for_entity::<StopwatchMetrics>(entity_key);
+
+        let id = metrics.len();
+        metrics.push(metric_set);
+        stop_nodes.entry(stop_idx).or_default().push(id);
+        start_nodes.entry(start_idx).or_default().push(id);
+    }
+
+    StopwatchState {
+        metrics,
+        stop_nodes,
+        start_nodes,
     }
 }
