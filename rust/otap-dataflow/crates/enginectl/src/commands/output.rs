@@ -17,6 +17,9 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 /// Emit read-style command output, delegating human rendering to the caller.
 pub(crate) fn emit_read<T: Serialize>(
     stdout: &mut dyn Write,
@@ -26,7 +29,9 @@ pub(crate) fn emit_read<T: Serialize>(
 ) -> Result<(), CliError> {
     match output {
         ReadOutput::Human => write_human(stdout, &human()?),
-        ReadOutput::Json | ReadOutput::Yaml => write_read_output(stdout, output, value),
+        ReadOutput::Json | ReadOutput::Yaml | ReadOutput::AgentJson => {
+            write_read_output(stdout, output, value)
+        }
     }
 }
 
@@ -70,7 +75,7 @@ pub(crate) fn write_bundle<T: Serialize>(
 ) -> Result<(), CliError> {
     match path {
         Some(path) if path != Path::new("-") => {
-            let mut file = fs::File::create(path).map_err(|err| {
+            let mut file = create_private_file(path).map_err(|err| {
                 CliError::config(format!(
                     "failed to create bundle output file '{}': {err}",
                     path.display()
@@ -80,6 +85,25 @@ pub(crate) fn write_bundle<T: Serialize>(
         }
         _ => write_bundle_output(stdout, output, value),
     }
+}
+
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> Result<fs::File, std::io::Error> {
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_file(path: &Path) -> Result<fs::File, std::io::Error> {
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
 }
 
 /// Reject invalid output combinations before command execution starts.

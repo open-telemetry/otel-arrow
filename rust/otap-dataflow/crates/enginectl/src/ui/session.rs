@@ -4,11 +4,13 @@
 //! Terminal session lifecycle and event-thread helpers for the TUI.
 
 use super::*;
+use tokio::sync::mpsc::error::TrySendError;
 
 #[derive(Debug)]
 pub(super) enum UiEvent {
     Terminal(Event),
     TerminalError(String),
+    RefreshComplete(Box<AppState>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,25 +86,24 @@ impl Drop for TerminalSession {
 
 pub(super) fn spawn_event_thread(
     stop: Arc<AtomicBool>,
-    tx: mpsc::UnboundedSender<UiEvent>,
+    tx: mpsc::Sender<UiEvent>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => match event::read() {
-                    Ok(event) => {
-                        if tx.send(UiEvent::Terminal(event)).is_err() {
-                            break;
-                        }
-                    }
+                    Ok(event) => match tx.try_send(UiEvent::Terminal(event)) {
+                        Ok(()) | Err(TrySendError::Full(_)) => {}
+                        Err(TrySendError::Closed(_)) => break,
+                    },
                     Err(err) => {
-                        let _ = tx.send(UiEvent::TerminalError(err.to_string()));
+                        let _ = tx.try_send(UiEvent::TerminalError(err.to_string()));
                         break;
                     }
                 },
                 Ok(false) => {}
                 Err(err) => {
-                    let _ = tx.send(UiEvent::TerminalError(err.to_string()));
+                    let _ = tx.try_send(UiEvent::TerminalError(err.to_string()));
                     break;
                 }
             }
@@ -123,7 +124,7 @@ pub(super) fn stop_event_thread(
 pub(super) fn restart_event_thread(
     stop: &mut Arc<AtomicBool>,
     event_thread: &mut Option<thread::JoinHandle<()>>,
-    tx: &mpsc::UnboundedSender<UiEvent>,
+    tx: &mpsc::Sender<UiEvent>,
 ) {
     *stop = Arc::new(AtomicBool::new(false));
     *event_thread = Some(spawn_event_thread(stop.clone(), tx.clone()));

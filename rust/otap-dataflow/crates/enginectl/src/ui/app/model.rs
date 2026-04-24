@@ -44,6 +44,7 @@ pub(crate) struct CommandRecipe {
 pub(crate) struct UiCommandContext {
     pub(crate) target_url: String,
     pub(crate) prefix_args: Vec<String>,
+    pub(crate) sensitive_args_redacted: bool,
     pub(crate) refresh_interval: Duration,
     pub(crate) logs_tail: usize,
 }
@@ -57,6 +58,7 @@ impl UiCommandContext {
                 "--url".to_string(),
                 "http://127.0.0.1:8085".to_string(),
             ],
+            sensitive_args_redacted: false,
             refresh_interval: Duration::from_secs(2),
             logs_tail,
         }

@@ -255,6 +255,7 @@ fn pipeline_logs_recipe_uses_selected_target_and_context() {
             "--color".to_string(),
             "always".to_string(),
         ],
+        sensitive_args_redacted: false,
         refresh_interval: Duration::from_secs(5),
         logs_tail: 250,
     });

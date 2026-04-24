@@ -27,6 +27,7 @@ use crate::config::resolve_connection;
 use crate::crypto::ensure_crypto_provider;
 use crate::error::CliError;
 use crate::style::HumanStyle;
+use clap::CommandFactory;
 use std::io::Write;
 
 /// Executes a parsed `dfctl` command and writes command output to `stdout`.
@@ -46,6 +47,12 @@ pub async fn run_with_terminal(
         color,
         command,
     } = cli;
+    if let Command::Completions(args) = &command {
+        let mut command = ParsedCli::command();
+        clap_complete::generate(args.shell, &mut command, "dfctl", stdout);
+        return Ok(());
+    }
+
     if matches!(command, Command::Ui(_)) && !stdout_is_terminal {
         return Err(CliError::invalid_usage(
             "`dfctl ui` requires an interactive terminal",
@@ -63,6 +70,7 @@ pub async fn run_with_terminal(
         .build()?;
 
     match command {
+        Command::Completions(_) => unreachable!("completions returned before client creation"),
         Command::Ui(args) => {
             ui::run_ui(
                 &client,

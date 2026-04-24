@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -136,6 +137,7 @@ pub struct ConnectionArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
+    Completions(CompletionArgs),
     Ui(UiArgs),
     Engine(EngineArgs),
     Groups(GroupsArgs),
@@ -144,11 +146,17 @@ pub enum Command {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct CompletionArgs {
+    #[arg(value_enum)]
+    pub shell: Shell,
+}
+
+#[derive(Args, Debug, Clone)]
 pub struct UiArgs {
     #[arg(long, value_enum, default_value_t = UiStartView::Pipelines)]
     pub start_view: UiStartView,
 
-    #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long, value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub refresh_interval: Duration,
 
     #[arg(long, default_value_t = 200)]
@@ -462,7 +470,7 @@ pub struct GroupShutdownArgs {
     #[arg(long, default_value_t = false, conflicts_with = "wait")]
     pub watch: bool,
 
-    #[arg(long = "watch-interval", value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long = "watch-interval", value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub watch_interval: Duration,
 
     #[arg(long, value_enum, default_value_t = GroupShutdownOutput::Human)]
@@ -492,7 +500,7 @@ pub struct ReconfigureArgs {
     #[arg(long, default_value_t = false, conflicts_with = "wait")]
     pub watch: bool,
 
-    #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long, value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub watch_interval: Duration,
 
     #[arg(long, value_enum, default_value_t = MutationOutput::Human)]
@@ -513,7 +521,7 @@ pub struct PipelineShutdownArgs {
     #[arg(long, default_value_t = false, conflicts_with = "wait")]
     pub watch: bool,
 
-    #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long, value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub watch_interval: Duration,
 
     #[arg(long, value_enum, default_value_t = MutationOutput::Human)]
@@ -525,7 +533,7 @@ pub struct RolloutWatchArgs {
     #[command(flatten)]
     pub target: RolloutTargetArgs,
 
-    #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long, value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub interval: Duration,
 
     #[command(flatten)]
@@ -537,7 +545,7 @@ pub struct ShutdownWatchArgs {
     #[command(flatten)]
     pub target: ShutdownTargetArgs,
 
-    #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long, value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub interval: Duration,
 
     #[command(flatten)]
@@ -558,7 +566,7 @@ pub struct GroupEventsWatchArgs {
     #[command(flatten)]
     pub filters: GroupEventsFilterArgs,
 
-    #[arg(long = "watch-interval", value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long = "watch-interval", value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub interval: Duration,
 
     #[command(flatten)]
@@ -585,7 +593,7 @@ pub struct PipelineEventsWatchArgs {
     #[command(flatten)]
     pub filters: PipelineEventsFilterArgs,
 
-    #[arg(long = "watch-interval", value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long = "watch-interval", value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub interval: Duration,
 
     #[command(flatten)]
@@ -696,7 +704,7 @@ pub struct LogsWatchArgs {
     #[arg(long)]
     pub limit: Option<usize>,
 
-    #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long, value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub interval: Duration,
 
     #[command(flatten)]
@@ -735,7 +743,7 @@ pub struct MetricsWatchArgs {
     #[arg(long, default_value_t = false)]
     pub keep_all_zeroes: bool,
 
-    #[arg(long, value_parser = parse_duration_arg, default_value = "2s")]
+    #[arg(long, value_parser = parse_poll_interval_arg, default_value = "2s")]
     pub interval: Duration,
 
     #[command(flatten)]
@@ -762,6 +770,7 @@ pub enum ReadOutput {
     Human,
     Json,
     Yaml,
+    AgentJson,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -790,6 +799,7 @@ pub enum GroupShutdownOutput {
 pub enum BundleOutput {
     Json,
     Yaml,
+    AgentJson,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -815,6 +825,15 @@ pub enum ColorChoice {
 
 pub fn parse_duration_arg(raw: &str) -> Result<Duration, String> {
     humantime::parse_duration(raw).map_err(|err| err.to_string())
+}
+
+pub fn parse_poll_interval_arg(raw: &str) -> Result<Duration, String> {
+    let duration = parse_duration_arg(raw)?;
+    let minimum = Duration::from_millis(100);
+    if duration < minimum {
+        return Err("poll intervals must be at least 100ms".to_string());
+    }
+    Ok(duration)
 }
 
 #[cfg(test)]
@@ -879,6 +898,28 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    /// Scenario: an operator requests shell completion generation.
+    /// Guarantees: the completion command parses without requiring a runtime
+    /// admin connection.
+    #[test]
+    fn completions_command_parses_shell() {
+        let cli = Cli::try_parse_from(["dfctl", "completions", "bash"])
+            .expect("completion command should parse");
+        match cli.command {
+            Command::Completions(args) => assert_eq!(args.shell, Shell::Bash),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    /// Scenario: a polling interval is configured as zero.
+    /// Guarantees: the parser rejects intervals that would spin or panic in
+    /// long-running watch and TUI loops.
+    #[test]
+    fn poll_intervals_reject_zero_duration() {
+        let result = Cli::try_parse_from(["dfctl", "ui", "--refresh-interval", "0s"]);
+        assert!(result.is_err());
     }
 
     /// Scenario: a caller asks the group shutdown command to both wait for

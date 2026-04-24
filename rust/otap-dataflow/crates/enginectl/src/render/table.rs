@@ -3,19 +3,23 @@
 
 //! Shared table and field-formatting helpers for human rendering.
 
-use crate::style::HumanStyle;
+use crate::style::{HumanStyle, terminal_safe};
 use otap_df_admin_api::{pipelines, telemetry};
 use std::collections::BTreeMap;
 
 pub(super) fn field(style: &HumanStyle, label: &str, value: impl std::fmt::Display) -> String {
-    format!("{} {}", style.label(format!("{label}:")), value)
+    format!(
+        "{} {}",
+        style.label(format!("{label}:")),
+        terminal_safe(value.to_string())
+    )
 }
 
 pub(super) fn state_field(style: &HumanStyle, label: &str, value: impl AsRef<str>) -> String {
     format!(
         "{} {}",
         style.label(format!("{label}:")),
-        style.state(value.as_ref())
+        style.state(terminal_safe(value.as_ref()))
     )
 }
 
@@ -25,15 +29,19 @@ pub(super) fn condition_line(style: &HumanStyle, condition: &pipelines::Conditio
         style.label("condition:"),
         style.state(format!("{:?}", condition.kind)),
         style.state(format!("{:?}", condition.status)),
-        condition
-            .reason
-            .as_ref()
-            .map(|value| value.as_str().to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        condition
-            .message
-            .clone()
-            .unwrap_or_else(|| "none".to_string())
+        terminal_safe(
+            condition
+                .reason
+                .as_ref()
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        ),
+        terminal_safe(
+            condition
+                .message
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+        )
     )
 }
 
@@ -46,14 +54,14 @@ pub(super) fn format_metric_attributes(
 
     attributes
         .iter()
-        .map(|(key, value)| format!("{key}={}", attribute_value_string(value)))
+        .map(|(key, value)| format!("{}={}", terminal_safe(key), attribute_value_string(value)))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 pub(super) fn attribute_value_string(value: &telemetry::AttributeValue) -> String {
     match value {
-        telemetry::AttributeValue::String(value) => value.clone(),
+        telemetry::AttributeValue::String(value) => terminal_safe(value),
         telemetry::AttributeValue::Int(value) => value.to_string(),
         telemetry::AttributeValue::UInt(value) => value.to_string(),
         telemetry::AttributeValue::Double(value) => value.to_string(),
@@ -62,7 +70,11 @@ pub(super) fn attribute_value_string(value: &telemetry::AttributeValue) -> Strin
             "{{{}}}",
             values
                 .iter()
-                .map(|(key, value)| format!("{key}={}", attribute_value_string(value)))
+                .map(|(key, value)| format!(
+                    "{}={}",
+                    terminal_safe(key),
+                    attribute_value_string(value)
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

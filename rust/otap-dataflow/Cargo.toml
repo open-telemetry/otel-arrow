@@ -92,6 +92,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
+clap_complete = "4.5.55"
 core_affinity = "0.8.3"
 criterion = "0.8.0"
 data-encoding = "2.9.0"

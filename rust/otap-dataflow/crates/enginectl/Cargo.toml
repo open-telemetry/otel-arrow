@@ -27,6 +27,7 @@ otap-df-admin-api = { path = "../admin-api", default-features = false, features 
 otap-df-config = { workspace = true }
 
 clap = { workspace = true, features = ["derive", "env"] }
+clap_complete = { workspace = true }
 crossterm = { workspace = true }
 humantime = { workspace = true }
 humantime-serde = { workspace = true }

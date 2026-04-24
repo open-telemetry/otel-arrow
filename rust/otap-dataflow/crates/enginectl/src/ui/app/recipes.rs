@@ -7,11 +7,19 @@ use super::*;
 
 impl AppState {
     pub(crate) fn current_command_recipe(&self) -> CommandRecipe {
-        match self.view {
+        let mut recipe = match self.view {
             View::Pipelines => self.pipeline_command_recipe(),
             View::Groups => self.group_command_recipe(),
             View::Engine => self.engine_command_recipe(),
+        };
+        if self.command_context.sensitive_args_redacted {
+            let redaction_note = "Sensitive command arguments are redacted in the TUI. Replace placeholders before running the command.";
+            recipe.note = Some(match recipe.note {
+                Some(note) => format!("{note} {redaction_note}"),
+                None => redaction_note.to_string(),
+            });
         }
+        recipe
     }
 
     pub(crate) fn start_filter_input(&mut self) {

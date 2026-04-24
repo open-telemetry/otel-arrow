@@ -5,6 +5,7 @@ use super::*;
 
 use crate::args::UiStartView;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use otap_df_admin_api::config::tls::{TlsClientConfig, TlsConfig};
 use otap_df_admin_api::{AdminEndpoint, HttpAdminClientSettings, telemetry};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
@@ -426,6 +427,42 @@ fn build_command_context_emits_canonical_prefix() {
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>()
+    );
+    assert!(!context.sensitive_args_redacted);
+}
+
+/// Scenario: the UI command context includes an mTLS client key path.
+/// Guarantees: equivalent-command display redacts the private key path so it is
+/// not leaked in screenshots or copied diagnostics.
+#[test]
+fn build_command_context_redacts_client_key_path() {
+    let endpoint =
+        AdminEndpoint::from_url("https://admin.example.com:8443/engine-a").expect("endpoint");
+    let settings = HttpAdminClientSettings::new(endpoint).with_tls(TlsClientConfig {
+        config: TlsConfig {
+            key_file: Some("/secret/admin-client.key".into()),
+            ..TlsConfig::default()
+        },
+        ..TlsClientConfig::default()
+    });
+    let args = UiArgs {
+        start_view: UiStartView::Pipelines,
+        refresh_interval: Duration::from_secs(4),
+        logs_tail: 150,
+    };
+
+    let context = build_command_context(&settings, ColorChoice::Auto, &args);
+
+    assert!(context.sensitive_args_redacted);
+    assert!(
+        context
+            .prefix_args
+            .contains(&"<client-key-file>".to_string())
+    );
+    assert!(
+        !context
+            .prefix_args
+            .contains(&"/secret/admin-client.key".to_string())
     );
 }
 

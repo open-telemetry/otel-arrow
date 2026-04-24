@@ -9,7 +9,7 @@ use super::table::{
     render_table, state_field,
 };
 use crate::error::CliError;
-use crate::style::HumanStyle;
+use crate::style::{HumanStyle, terminal_safe};
 use crate::troubleshoot::{
     DiagnosisFinding, DiagnosisReport, GroupShutdownWatchSnapshot, GroupsDescribeReport,
     NormalizedEvent, PipelineDescribeReport,
@@ -97,7 +97,7 @@ pub fn render_engine_probe(style: &HumanStyle, probe: &engine::ProbeResponse) ->
         lines.push(format!(
             "{} {} kind={} status={}",
             style.label("failing_pipeline:"),
-            failure.pipeline,
+            terminal_safe(&failure.pipeline),
             style.state(format!("{:?}", failure.condition.kind)),
             style.state(format!("{:?}", failure.condition.status))
         ));
@@ -151,7 +151,7 @@ pub fn render_pipeline_describe(style: &HumanStyle, report: &PipelineDescribeRep
         lines.push(format!(
             "{} id={} state={} target_generation={}",
             style.label("rollout:"),
-            rollout.rollout_id,
+            terminal_safe(&rollout.rollout_id),
             style.state(format!("{:?}", rollout.state)),
             rollout.target_generation
         ));
@@ -193,13 +193,15 @@ pub fn render_pipeline_details(
         lines.push(format!(
             "{} id={} state={} target_generation={}",
             style.label("rollout:"),
-            rollout.rollout_id,
+            terminal_safe(&rollout.rollout_id),
             style.state(format!("{:?}", rollout.state)),
             rollout.target_generation
         ));
     }
     lines.push(style.header("pipeline:"));
-    lines.push(serde_yaml::to_string(&details.pipeline).map_err(io_serialize_error)?);
+    lines.push(terminal_safe(
+        serde_yaml::to_string(&details.pipeline).map_err(io_serialize_error)?,
+    ));
     Ok(lines.join("\n"))
 }
 
@@ -223,7 +225,7 @@ pub fn render_pipeline_status(style: &HumanStyle, status: &pipelines::Status) ->
         lines.push(format!(
             "{} id={} state={} target_generation={}",
             style.label("rollout:"),
-            rollout.rollout_id,
+            terminal_safe(&rollout.rollout_id),
             style.state(format!("{:?}", rollout.state)),
             rollout.target_generation
         ));
@@ -334,7 +336,7 @@ pub fn render_metrics_compact(
         lines.push(format!(
             "{} {}",
             style.header("metric_set:"),
-            metric_set.name
+            terminal_safe(&metric_set.name)
         ));
         lines.push(field(
             style,
@@ -347,7 +349,7 @@ pub fn render_metrics_compact(
             metric_set
                 .metrics
                 .iter()
-                .map(|(name, value)| vec![name.clone(), metric_value_string(value)])
+                .map(|(name, value)| vec![terminal_safe(name), metric_value_string(value)])
                 .collect(),
         ));
     }
@@ -364,7 +366,7 @@ pub fn render_metrics_full(style: &HumanStyle, response: &telemetry::MetricsResp
         lines.push(format!(
             "{} {}",
             style.header("metric_set:"),
-            metric_set.name
+            terminal_safe(&metric_set.name)
         ));
         lines.push(field(
             style,
@@ -384,8 +386,8 @@ pub fn render_metrics_full(style: &HumanStyle, response: &telemetry::MetricsResp
                 .iter()
                 .map(|point| {
                     vec![
-                        point.metadata.name.clone(),
-                        point.metadata.unit.clone(),
+                        terminal_safe(&point.metadata.name),
+                        terminal_safe(&point.metadata.unit),
                         format!("{:?}", point.metadata.instrument),
                         metric_value_string(&point.value),
                     ]
@@ -405,17 +407,27 @@ pub fn render_events(style: &HumanStyle, events: &[NormalizedEvent]) -> String {
 }
 
 pub fn render_event_line(style: &HumanStyle, event: &NormalizedEvent) -> String {
-    let target = format!("{}:{}", event.pipeline_group_id, event.pipeline_id);
+    let target = format!(
+        "{}:{}",
+        terminal_safe(&event.pipeline_group_id),
+        terminal_safe(&event.pipeline_id)
+    );
     let extra = match (&event.message, &event.detail) {
-        (Some(message), Some(detail)) => format!(" message={message} detail={detail}"),
-        (Some(message), None) => format!(" message={message}"),
-        (None, Some(detail)) => format!(" detail={detail}"),
+        (Some(message), Some(detail)) => {
+            format!(
+                " message={} detail={}",
+                terminal_safe(message),
+                terminal_safe(detail)
+            )
+        }
+        (Some(message), None) => format!(" message={}", terminal_safe(message)),
+        (None, Some(detail)) => format!(" detail={}", terminal_safe(detail)),
         (None, None) => String::new(),
     };
     let node = event
         .node_id
         .as_ref()
-        .map(|value| format!(" node={value}"))
+        .map(|value| format!(" node={}", terminal_safe(value)))
         .unwrap_or_default();
     let generation = event
         .deployment_generation
@@ -423,11 +435,11 @@ pub fn render_event_line(style: &HumanStyle, event: &NormalizedEvent) -> String 
         .unwrap_or_default();
     format!(
         "{} {} core={} kind={} name={}{}{}{}",
-        style.dim(&event.time),
+        style.dim(terminal_safe(&event.time)),
         style.target(target),
         event.core_id,
         style.state(format!("{:?}", event.kind)),
-        style.label(&event.name),
+        style.label(terminal_safe(&event.name)),
         generation,
         node,
         extra
@@ -452,12 +464,16 @@ pub fn render_diagnosis(style: &HumanStyle, report: &DiagnosisReport) -> String 
                     .as_ref()
                     .map(|value| style.dim(value))
                     .unwrap_or_default(),
-                evidence.message
+                terminal_safe(&evidence.message)
             ));
         }
     }
     for step in &report.recommended_next_steps {
-        lines.push(format!("{} {}", style.label("next_step:"), step));
+        lines.push(format!(
+            "{} {}",
+            style.label("next_step:"),
+            terminal_safe(step)
+        ));
     }
     lines.join("\n")
 }
@@ -496,10 +512,10 @@ pub fn render_group_shutdown_watch(
                 .iter()
                 .map(|pipeline| {
                     vec![
-                        pipeline.pipeline.clone(),
+                        terminal_safe(&pipeline.pipeline),
                         format!("{}/{}", pipeline.running_cores, pipeline.total_cores),
                         style.state(pipeline.terminal.to_string()),
-                        style.state(pipeline.phases.join(", ")),
+                        style.state(terminal_safe(pipeline.phases.join(", "))),
                     ]
                 })
                 .collect(),
@@ -511,10 +527,10 @@ pub fn render_group_shutdown_watch(
 pub fn render_log_line(style: &HumanStyle, entry: &telemetry::LogEntry) -> String {
     format!(
         "{} [{}] {} {}",
-        style.dim(&entry.timestamp),
-        style.log_level(&entry.level),
-        style.target(&entry.target),
-        entry.rendered
+        style.dim(terminal_safe(&entry.timestamp)),
+        style.log_level(terminal_safe(&entry.level)),
+        style.target(terminal_safe(&entry.target)),
+        terminal_safe(&entry.rendered)
     )
 }
 
@@ -522,9 +538,9 @@ fn render_finding_line(style: &HumanStyle, finding: &DiagnosisFinding) -> String
     format!(
         "{} code={} severity={} summary={}",
         style.label("finding:"),
-        finding.code,
+        terminal_safe(&finding.code),
         style.state(format!("{:?}", finding.severity)),
-        finding.summary
+        terminal_safe(&finding.summary)
     )
 }
 
@@ -544,7 +560,7 @@ fn render_pipeline_summary_table(
             .iter()
             .map(|(name, status)| {
                 vec![
-                    name.clone(),
+                    terminal_safe(name),
                     format!("{}/{}", status.running_cores, status.total_cores),
                     status
                         .active_generation
@@ -580,7 +596,7 @@ fn render_pipeline_core_table(
                     core_id.to_string(),
                     style.state(format!("{:?}", core.phase)),
                     core.delete_pending.to_string(),
-                    core.last_heartbeat_time.clone(),
+                    terminal_safe(&core.last_heartbeat_time),
                 ]
             })
             .collect(),
@@ -602,12 +618,12 @@ fn render_rollout_core_table(style: &HumanStyle, cores: &[pipelines::RolloutCore
             .map(|core| {
                 vec![
                     core.core_id.to_string(),
-                    style.state(&core.state),
+                    style.state(terminal_safe(&core.state)),
                     core.target_generation.to_string(),
                     core.previous_generation
                         .map(|value| value.to_string())
                         .unwrap_or_else(|| "none".to_string()),
-                    core.updated_at.clone(),
+                    terminal_safe(&core.updated_at),
                 ]
             })
             .collect(),
@@ -631,9 +647,9 @@ fn render_shutdown_core_table(
             .map(|core| {
                 vec![
                     core.core_id.to_string(),
-                    style.state(&core.state),
+                    style.state(terminal_safe(&core.state)),
                     core.deployment_generation.to_string(),
-                    core.updated_at.clone(),
+                    terminal_safe(&core.updated_at),
                 ]
             })
             .collect(),

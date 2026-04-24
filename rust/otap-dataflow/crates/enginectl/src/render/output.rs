@@ -22,6 +22,11 @@ pub fn write_read_output<T: Serialize>(
             serde_json::to_writer_pretty(&mut *writer, value).map_err(io_serialize_error)?;
             writeln!(writer)?;
         }
+        ReadOutput::AgentJson => {
+            serde_json::to_writer_pretty(&mut *writer, &agent_envelope("snapshot", None, value))
+                .map_err(io_serialize_error)?;
+            writeln!(writer)?;
+        }
         ReadOutput::Yaml => {
             write!(
                 writer,
@@ -61,7 +66,14 @@ pub fn write_mutation_output<T: Serialize>(
         MutationOutput::Ndjson => {
             serde_json::to_writer(
                 &mut *writer,
-                &json!({ "event": "snapshot", "outcome": outcome, "data": value }),
+                &json!({
+                    "schemaVersion": "dfctl/v1",
+                    "type": "snapshot",
+                    "event": "snapshot",
+                    "resource": "mutation",
+                    "outcome": outcome,
+                    "data": value
+                }),
             )
             .map_err(io_serialize_error)?;
             writeln!(writer)?;
@@ -79,6 +91,11 @@ pub fn write_bundle_output<T: Serialize>(
     match output {
         BundleOutput::Json => {
             serde_json::to_writer_pretty(&mut *writer, value).map_err(io_serialize_error)?;
+            writeln!(writer)?;
+        }
+        BundleOutput::AgentJson => {
+            serde_json::to_writer_pretty(&mut *writer, &agent_envelope("bundle", None, value))
+                .map_err(io_serialize_error)?;
             writeln!(writer)?;
         }
         BundleOutput::Yaml => {
@@ -100,11 +117,7 @@ pub fn write_snapshot_event<T: Serialize>(
 ) -> Result<(), CliError> {
     serde_json::to_writer(
         &mut *writer,
-        &json!({
-            "event": "snapshot",
-            "resource": resource,
-            "data": value
-        }),
+        &stream_envelope("snapshot", "snapshot", resource, value),
     )
     .map_err(io_serialize_error)?;
     writeln!(writer)?;
@@ -116,8 +129,18 @@ pub fn write_log_event(
     writer: &mut dyn Write,
     entry: &telemetry::LogEntry,
 ) -> Result<(), CliError> {
-    serde_json::to_writer(&mut *writer, &json!({ "event": "log", "log": entry }))
-        .map_err(io_serialize_error)?;
+    serde_json::to_writer(
+        &mut *writer,
+        &json!({
+            "schemaVersion": "dfctl/v1",
+            "type": "log",
+            "event": "log",
+            "resource": "telemetry_logs",
+            "data": entry,
+            "log": entry
+        }),
+    )
+    .map_err(io_serialize_error)?;
     writeln!(writer)?;
     writer.flush()?;
     Ok(())
@@ -130,10 +153,7 @@ pub fn write_event_output<T: Serialize>(
 ) -> Result<(), CliError> {
     serde_json::to_writer(
         &mut *writer,
-        &json!({
-            "event": resource,
-            "data": value
-        }),
+        &stream_envelope("event", resource, resource, value),
     )
     .map_err(io_serialize_error)?;
     writeln!(writer)?;
@@ -176,4 +196,33 @@ pub fn write_stream_snapshot<T: Serialize>(
 
 pub(super) fn io_serialize_error(error: impl std::fmt::Display) -> CliError {
     CliError::config(format!("failed to serialize output: {error}"))
+}
+
+fn agent_envelope<T: Serialize>(
+    kind: &str,
+    resource: Option<&str>,
+    value: &T,
+) -> serde_json::Value {
+    json!({
+        "schemaVersion": "dfctl/v1",
+        "type": kind,
+        "resource": resource,
+        "generatedAt": humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string(),
+        "data": value
+    })
+}
+
+fn stream_envelope<T: Serialize>(
+    kind: &str,
+    event: &str,
+    resource: &str,
+    value: &T,
+) -> serde_json::Value {
+    json!({
+        "schemaVersion": "dfctl/v1",
+        "type": kind,
+        "event": event,
+        "resource": resource,
+        "data": value
+    })
 }

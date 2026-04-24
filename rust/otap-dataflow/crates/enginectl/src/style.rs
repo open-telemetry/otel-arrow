@@ -153,6 +153,58 @@ impl AnsiCode {
     }
 }
 
+/// Remove terminal control sequences from engine-provided text before it is
+/// interpolated into human-readable output.
+pub(crate) fn terminal_safe(text: impl AsRef<str>) -> String {
+    let mut safe = String::with_capacity(text.as_ref().len());
+    let mut chars = text.as_ref().chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\u{1b}' => skip_escape_sequence(&mut chars),
+            '\n' | '\t' => safe.push(ch),
+            ch if ch.is_control() => {
+                safe.push_str("\\u{");
+                safe.push_str(&format!("{:x}", ch as u32));
+                safe.push('}');
+            }
+            _ => safe.push(ch),
+        }
+    }
+
+    safe
+}
+
+fn skip_escape_sequence<I>(chars: &mut std::iter::Peekable<I>)
+where
+    I: Iterator<Item = char>,
+{
+    match chars.peek().copied() {
+        Some('[') => {
+            let _ = chars.next();
+            for ch in chars.by_ref() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        }
+        Some(']') => {
+            let _ = chars.next();
+            let mut previous_was_escape = false;
+            for ch in chars.by_ref() {
+                if ch == '\u{7}' || (previous_was_escape && ch == '\\') {
+                    break;
+                }
+                previous_was_escape = ch == '\u{1b}';
+            }
+        }
+        Some(_) => {
+            let _ = chars.next();
+        }
+        None => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +239,14 @@ mod tests {
         assert!(style.state("succeeded").contains("\u{1b}["));
         assert!(style.state("failed").contains("\u{1b}["));
         assert_eq!(style.state("custom"), "custom");
+    }
+
+    /// Scenario: engine-provided text contains terminal control sequences.
+    /// Guarantees: human renderers can neutralize escape sequences before
+    /// writing the text to a terminal.
+    #[test]
+    fn terminal_safe_strips_escape_sequences() {
+        assert_eq!(terminal_safe("ok\u{1b}[2Jsecret"), "oksecret");
+        assert_eq!(terminal_safe("line\rrewrite"), "line\\u{d}rewrite");
     }
 }

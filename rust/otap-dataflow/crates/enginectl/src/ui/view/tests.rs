@@ -96,6 +96,7 @@ fn title_bar_and_command_overlay_render() {
             "--url".to_string(),
             "https://admin.example.com:8443/engine-a".to_string(),
         ],
+        sensitive_args_redacted: false,
         refresh_interval: Duration::from_secs(2),
         logs_tail: 200,
     });

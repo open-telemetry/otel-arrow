@@ -108,6 +108,12 @@ dfctl telemetry logs watch --tail 50 --output ndjson
 dfctl telemetry metrics watch --shape compact --output ndjson
 ```
 
+Agent-friendly one-shot snapshots can use an explicit dfctl envelope:
+
+```bash
+dfctl engine status --output agent-json
+```
+
 ### Reconfigure a pipeline
 
 Apply a pipeline config from a file and wait for completion:
@@ -178,6 +184,10 @@ Export a support bundle for humans or other agents:
 dfctl groups bundle --file shutdown-bundle.json
 dfctl pipelines bundle "$GROUP" "$PIPE" --output yaml > pipeline-bundle.yaml
 ```
+
+Bundles can contain pipeline configuration, retained logs, diagnosis evidence,
+and metrics. When written with `--file` on Unix, `dfctl` creates the file with
+owner-only permissions.
 
 Watch coordinated shutdown progress client-side:
 
@@ -281,11 +291,13 @@ One-shot commands support:
 - `--output human`
 - `--output json`
 - `--output yaml`
+- `--output agent-json`
 
 Bundle commands support:
 
 - `--output json`
 - `--output yaml`
+- `--output agent-json`
 
 Long-running `watch` commands support:
 
@@ -304,6 +316,14 @@ Human-readable output also supports:
 `--color auto` is the default. It enables ANSI styling only when stdout is a
 terminal and `NO_COLOR` is not set. Machine-readable outputs never include ANSI
 escapes, even when `--color always` is selected.
+
+Generate shell completion scripts with:
+
+```bash
+dfctl completions bash
+dfctl completions zsh
+dfctl completions fish
+```
 
 ## More Details
 

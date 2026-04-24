@@ -63,6 +63,42 @@ async fn engine_status_json_command_hits_expected_route() {
     assert!(output.contains("\"generatedAt\""));
 }
 
+/// Scenario: the CLI runs a one-shot read command in agent JSON mode.
+/// Guarantees: the output includes a stable dfctl envelope with provenance and
+/// the SDK response nested under `data`.
+#[tokio::test]
+async fn engine_status_agent_json_wraps_data() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "pipelines": {}
+        })))
+        .mount(&server)
+        .await;
+
+    let cli = Cli::try_parse_from([
+        "dfctl",
+        "--url",
+        &server.uri(),
+        "engine",
+        "status",
+        "--output",
+        "agent-json",
+    ])
+    .expect("parse");
+
+    let mut stdout = Vec::new();
+    run(cli, &mut stdout).await.expect("run");
+
+    let output: serde_json::Value =
+        serde_json::from_slice(&stdout).expect("agent output should be JSON");
+    assert_eq!(output["schemaVersion"], "dfctl/v1");
+    assert_eq!(output["type"], "snapshot");
+    assert_eq!(output["data"]["generatedAt"], "2026-01-01T00:00:00Z");
+}
+
 /// Scenario: the CLI requests compact metrics in non-human output mode.
 /// Guarantees: the HTTP request uses the compact `format=json_compact` query
 /// shape expected by the admin API.
@@ -412,7 +448,7 @@ async fn rollout_watch_emits_ndjson_and_stops_on_success() {
         "--output",
         "ndjson",
         "--interval",
-        "1ms",
+        "100ms",
     ])
     .expect("parse");
 
@@ -458,7 +494,7 @@ async fn shutdown_watch_emits_ndjson_and_stops_on_success() {
         "--output",
         "ndjson",
         "--interval",
-        "1ms",
+        "100ms",
     ])
     .expect("parse");
 

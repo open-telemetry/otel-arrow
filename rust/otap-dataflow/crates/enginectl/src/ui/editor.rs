@@ -8,7 +8,7 @@ use super::*;
 pub(super) async fn stage_pipeline_editor_draft(
     client: &AdminClient,
     session: &mut TerminalSession,
-    tx: &mpsc::UnboundedSender<UiEvent>,
+    tx: &mpsc::Sender<UiEvent>,
     stop: &mut Arc<AtomicBool>,
     event_thread: &mut Option<thread::JoinHandle<()>>,
     app: &mut AppState,
@@ -68,7 +68,7 @@ pub(super) async fn stage_pipeline_editor_draft(
 
 fn edit_pipeline_config_external(
     session: &mut TerminalSession,
-    tx: &mpsc::UnboundedSender<UiEvent>,
+    tx: &mpsc::Sender<UiEvent>,
     stop: &mut Arc<AtomicBool>,
     event_thread: &mut Option<thread::JoinHandle<()>>,
     initial_yaml: &str,
@@ -204,6 +204,15 @@ pub(super) fn build_yaml_diff(original: &str, edited: &str) -> String {
 
     let original_lines = original.lines().collect::<Vec<_>>();
     let edited_lines = edited.lines().collect::<Vec<_>>();
+    let comparison_size = original_lines.len().saturating_mul(edited_lines.len());
+    if comparison_size > 250_000 {
+        return format!(
+            "--- current\n+++ edited\nDiff omitted because the files are too large for the inline TUI diff ({} x {} lines).",
+            original_lines.len(),
+            edited_lines.len()
+        );
+    }
+
     let lcs = longest_common_subsequence_lengths(&original_lines, &edited_lines);
 
     let mut lines = vec!["--- current".to_string(), "+++ edited".to_string()];

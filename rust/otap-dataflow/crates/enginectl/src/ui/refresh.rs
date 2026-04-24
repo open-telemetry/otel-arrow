@@ -12,6 +12,7 @@ pub(crate) fn build_command_context(
 ) -> UiCommandContext {
     let target_url = canonical_target_url(&settings.endpoint);
     let mut prefix_args = vec!["dfctl".to_string(), "--url".to_string(), target_url.clone()];
+    let mut sensitive_args_redacted = false;
     let defaults = HttpAdminClientSettings::new(settings.endpoint.clone());
 
     if color != ColorChoice::Auto {
@@ -57,9 +58,10 @@ pub(crate) fn build_command_context(
             prefix_args.push("--client-cert-file".to_string());
             prefix_args.push(path.display().to_string());
         }
-        if let Some(path) = &tls.config.key_file {
+        if tls.config.key_file.is_some() {
             prefix_args.push("--client-key-file".to_string());
-            prefix_args.push(path.display().to_string());
+            prefix_args.push("<client-key-file>".to_string());
+            sensitive_args_redacted = true;
         }
         if tls.include_system_ca_certs_pool == Some(false) {
             prefix_args.push("--include-system-ca-certs".to_string());
@@ -74,6 +76,7 @@ pub(crate) fn build_command_context(
     UiCommandContext {
         target_url,
         prefix_args,
+        sensitive_args_redacted,
         refresh_interval: args.refresh_interval,
         logs_tail: args.logs_tail,
     }

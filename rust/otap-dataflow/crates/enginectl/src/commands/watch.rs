@@ -20,7 +20,7 @@ use crate::troubleshoot::{
 };
 use otap_df_admin_api::telemetry::MetricsOptions;
 use otap_df_admin_api::{AdminClient, telemetry};
-use std::collections::BTreeSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::time::{Duration, SystemTime};
 
@@ -39,7 +39,7 @@ pub(crate) async fn watch_group_events(
         extract_events_from_group_status(&initial, Some(&filters)),
         tail,
     );
-    let mut seen = BTreeSet::new();
+    let mut seen = SeenEvents::default();
     emit_events(stdout, human_style, output, &initial_events, &mut seen)?;
 
     loop {
@@ -75,7 +75,7 @@ pub(crate) async fn watch_pipeline_events(
         ),
         tail,
     );
-    let mut seen = BTreeSet::new();
+    let mut seen = SeenEvents::default();
     emit_events(stdout, human_style, output, &initial_events, &mut seen)?;
 
     loop {
@@ -337,7 +337,7 @@ fn emit_events(
     human_style: HumanStyle,
     output: StreamOutput,
     events: &[NormalizedEvent],
-    seen: &mut BTreeSet<String>,
+    seen: &mut SeenEvents,
 ) -> Result<(), CliError> {
     for event in events {
         let identity = event.identity_key();
@@ -352,6 +352,40 @@ fn emit_events(
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct SeenEvents {
+    order: VecDeque<String>,
+    keys: HashSet<String>,
+    capacity: usize,
+}
+
+impl Default for SeenEvents {
+    fn default() -> Self {
+        Self {
+            order: VecDeque::new(),
+            keys: HashSet::new(),
+            capacity: 4096,
+        }
+    }
+}
+
+impl SeenEvents {
+    fn insert(&mut self, key: String) -> bool {
+        if self.keys.contains(&key) {
+            return false;
+        }
+
+        _ = self.keys.insert(key.clone());
+        self.order.push_back(key);
+        while self.order.len() > self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                _ = self.keys.remove(&oldest);
+            }
+        }
+        true
+    }
 }
 
 fn emit_logs(

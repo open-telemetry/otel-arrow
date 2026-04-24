@@ -4,12 +4,13 @@
 //! Row builders and tone helpers shared by TUI panes.
 
 use super::*;
+use crate::style::terminal_safe;
 
 pub(super) fn event_rows(events: &[NormalizedEvent]) -> Vec<TimelineRow> {
     events
         .iter()
         .map(|event| TimelineRow {
-            time: event.time.clone(),
+            time: terminal_safe(&event.time),
             kind: format!("{:?}", event.kind).to_ascii_lowercase(),
             scope: event_scope(event),
             message: event_message(event),
@@ -22,10 +23,10 @@ pub(super) fn log_rows(entries: &[telemetry::LogEntry]) -> Vec<LogRow> {
     entries
         .iter()
         .map(|entry| LogRow {
-            time: entry.timestamp.clone(),
-            level: entry.level.clone(),
-            target: entry.target.clone(),
-            message: entry.rendered.clone(),
+            time: terminal_safe(&entry.timestamp),
+            level: terminal_safe(&entry.level),
+            target: terminal_safe(&entry.target),
+            message: terminal_safe(&entry.rendered),
             tone: state_tone(&entry.level),
         })
         .collect()
@@ -37,8 +38,8 @@ pub(super) fn metric_rows(metrics: &telemetry::CompactMetricsResponse) -> Vec<Me
         let set = metric_set_label(metric_set);
         for (metric, value) in &metric_set.metrics {
             rows.push(MetricRow {
-                metric_set: set.clone(),
-                metric: metric.clone(),
+                metric_set: terminal_safe(&set),
+                metric: terminal_safe(metric),
                 instrument: String::new(),
                 unit: String::new(),
                 value: metric_value_string(value),
@@ -59,7 +60,7 @@ pub(super) fn condition_rows(conditions: &[pipelines::Condition]) -> Vec<Conditi
                 .as_ref()
                 .map(|value| value.as_str().to_ascii_lowercase())
                 .unwrap_or_default(),
-            message: condition.message.clone().unwrap_or_default(),
+            message: terminal_safe(condition.message.clone().unwrap_or_default()),
             tone: condition_tone(condition),
         })
         .collect()
@@ -73,7 +74,7 @@ pub(super) fn core_rows(status: &pipelines::Status) -> Vec<CoreRow> {
                 core: instance.core_id.to_string(),
                 generation: instance.deployment_generation.to_string(),
                 phase: phase_label(&instance.status.phase),
-                heartbeat: instance.status.last_heartbeat_time.clone(),
+                heartbeat: terminal_safe(&instance.status.last_heartbeat_time),
                 delete_pending: bool_label(instance.status.delete_pending),
                 tone: phase_tone(&instance.status.phase),
             })
@@ -89,7 +90,7 @@ pub(super) fn core_rows(status: &pipelines::Status) -> Vec<CoreRow> {
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "active".to_string()),
                 phase: phase_label(&core.phase),
-                heartbeat: core.last_heartbeat_time.clone(),
+                heartbeat: terminal_safe(&core.last_heartbeat_time),
                 delete_pending: bool_label(core.delete_pending),
                 tone: phase_tone(&core.phase),
             })
@@ -112,7 +113,7 @@ pub(super) fn pipeline_inventory_rows(
             };
             let (_, tone) = classify_pipeline(status);
             PipelineInventoryRow {
-                pipeline,
+                pipeline: terminal_safe(pipeline),
                 running: format!("{}/{}", status.running_cores, status.total_cores),
                 ready: bool_label(pipeline_is_ready(status)),
                 active_generation: status
@@ -133,8 +134,8 @@ pub(super) fn pipeline_inventory_rows(
 pub(super) fn finding_row(finding: &DiagnosisFinding) -> FindingRow {
     FindingRow {
         severity: format!("{:?}", finding.severity).to_ascii_lowercase(),
-        code: finding.code.clone(),
-        summary: finding.summary.clone(),
+        code: terminal_safe(&finding.code),
+        summary: terminal_safe(&finding.summary),
         tone: match finding.severity {
             FindingSeverity::Info => Tone::Accent,
             FindingSeverity::Warning => Tone::Warning,
@@ -145,30 +146,32 @@ pub(super) fn finding_row(finding: &DiagnosisFinding) -> FindingRow {
 
 pub(super) fn evidence_row(evidence: &EvidenceExcerpt) -> EvidenceRow {
     EvidenceRow {
-        source: evidence.source.clone(),
-        time: evidence.time.clone().unwrap_or_default(),
-        message: evidence.message.clone(),
+        source: terminal_safe(&evidence.source),
+        time: terminal_safe(evidence.time.clone().unwrap_or_default()),
+        message: terminal_safe(&evidence.message),
     }
 }
 
 pub(super) fn event_scope(event: &NormalizedEvent) -> String {
     let mut parts = vec![format!(
         "{}/{} c{}",
-        event.pipeline_group_id, event.pipeline_id, event.core_id
+        terminal_safe(&event.pipeline_group_id),
+        terminal_safe(&event.pipeline_id),
+        event.core_id
     )];
     if let Some(node_id) = &event.node_id {
-        parts.push(format!("node={node_id}"));
+        parts.push(format!("node={}", terminal_safe(node_id)));
     }
     parts.join(" ")
 }
 
 pub(super) fn event_message(event: &NormalizedEvent) -> String {
-    let mut parts = vec![event.name.clone()];
+    let mut parts = vec![terminal_safe(&event.name)];
     if let Some(message) = &event.message {
-        parts.push(message.clone());
+        parts.push(terminal_safe(message));
     }
     if let Some(detail) = &event.detail {
-        parts.push(detail.clone());
+        parts.push(terminal_safe(detail));
     }
     parts.join(" - ")
 }
@@ -178,24 +181,26 @@ pub(super) fn metric_set_label(metric_set: &telemetry::MetricSet) -> String {
         .attributes
         .iter()
         .take(3)
-        .map(|(key, value)| format!("{key}={}", attribute_value_string(value)))
+        .map(|(key, value)| format!("{}={}", terminal_safe(key), attribute_value_string(value)))
         .collect::<Vec<_>>()
         .join(" ");
     if attrs.is_empty() {
-        metric_set.name.clone()
+        terminal_safe(&metric_set.name)
     } else {
-        format!("{} [{}]", metric_set.name, attrs)
+        format!("{} [{}]", terminal_safe(&metric_set.name), attrs)
     }
 }
 
 pub(super) fn attribute_value_string(value: &telemetry::AttributeValue) -> String {
     match value {
-        telemetry::AttributeValue::String(value) => value.clone(),
+        telemetry::AttributeValue::String(value) => terminal_safe(value),
         telemetry::AttributeValue::Int(value) => value.to_string(),
         telemetry::AttributeValue::UInt(value) => value.to_string(),
         telemetry::AttributeValue::Double(value) => value.to_string(),
         telemetry::AttributeValue::Boolean(value) => value.to_string(),
-        telemetry::AttributeValue::Map(value) => serde_json::to_string(value).unwrap_or_default(),
+        telemetry::AttributeValue::Map(value) => {
+            terminal_safe(serde_json::to_string(value).unwrap_or_default())
+        }
     }
 }
 
