@@ -141,31 +141,57 @@ impl SharedCapabilityEntry {
 // ── Resolved entries (per-node) ─────────────────────────────────────────────
 
 /// A resolved local capability entry for a specific node.
+///
+/// Inserted only for **native** local registrations. The
+/// SharedAsLocal fallback path does *not* produce a separate local
+/// entry — instead, [`Capabilities::require_local`] falls through to
+/// the [`ResolvedSharedEntry`] when no native local entry exists,
+/// taking the shared `produce` cell and routing its output through
+/// the entry's `adapt_as_local` fn pointer. This collapses the
+/// fallback's two former entries into one, so the per-binding
+/// one-shot guard is encoded directly in the shared entry's
+/// `Cell::take()` — no separate claim flag needed.
 pub(crate) struct ResolvedLocalEntry {
     /// Per-node produce closure, cloned from the registry entry.
-    pub(crate) produce: Box<dyn LocalProduce>,
-    /// Per-node one-shot consumption flag for the consumer-side
-    /// "claim each binding at most once per node" contract enforced
-    /// by [`Capabilities`](super::Capabilities).
-    pub(crate) claimed: Cell<bool>,
-    /// Cross-node consumption flag for the underlying extension
-    /// variant, shared with the [`ConsumedTracker`].
     ///
-    /// - For native local bindings: cell lives under the tracker's
-    ///   *local* bucket for the `(capability, extension)` pair.
-    /// - For `SharedAsLocal` bindings: cell lives under the tracker's
-    ///   *shared* bucket — consuming the adapter is considered a use
-    ///   of the shared variant.
+    /// Wrapped in `Cell<Option<_>>` so the consumer-side one-shot
+    /// guard is encoded in the type: `Some` = unclaimed, `None` =
+    /// already claimed. Consumption is a single `Cell::take()` that
+    /// atomically moves the closure out and marks the binding as
+    /// claimed; a second `take()` returns `None` and yields
+    /// [`Error::CapabilityAlreadyConsumed`](super::Error::CapabilityAlreadyConsumed).
+    pub(crate) produce: Cell<Option<Box<dyn LocalProduce>>>,
+    /// Cross-node consumption flag for the local variant, shared
+    /// with the [`ConsumedTracker`].
     pub(crate) tracker_consumed: Rc<Cell<bool>>,
 }
 
 /// A resolved shared capability entry for a specific node.
+///
+/// Serves two roles. As a native shared entry, [`Capabilities::require_shared`]
+/// takes its `produce` cell to mint a `Box<dyn C::Shared>`. As the
+/// SharedAsLocal fallback for a binding with no native local entry,
+/// [`Capabilities::require_local`] takes the same cell and routes the
+/// output through `adapt_as_local` to mint an `Rc<dyn C::Local>`.
+/// Either path consumes the single underlying [`Cell::take()`], so the
+/// per-binding one-shot contract is enforced naturally without an
+/// auxiliary claim flag.
 pub(crate) struct ResolvedSharedEntry {
     /// Per-node produce closure, cloned from the registry entry.
-    pub(crate) produce: Box<dyn SharedProduce>,
-    /// Per-node one-shot consumption flag.
-    pub(crate) claimed: Cell<bool>,
+    ///
+    /// Wrapped in `Cell<Option<_>>` for the same reason as
+    /// [`ResolvedLocalEntry::produce`]: `Cell::take()` doubles as
+    /// the one-shot consumer-side guard, and is shared between the
+    /// native shared and SharedAsLocal-fallback paths.
+    pub(crate) produce: Cell<Option<Box<dyn SharedProduce>>>,
     /// Cross-node consumption flag, shared with the
     /// [`ConsumedTracker`].
     pub(crate) tracker_consumed: Rc<Cell<bool>>,
+    /// Adapter fn pointer used by the SharedAsLocal fallback path
+    /// in [`Capabilities::require_local`]. Takes a produced shared
+    /// trait object (erased as `Box<dyn Any + Send>`) and returns a
+    /// local trait object (erased as `Rc<dyn Any>` wrapping
+    /// `Rc<dyn C::Local>`). Originally minted by the
+    /// `#[capability]`-generated `shared_entry::<E>` caster.
+    pub(crate) adapt_as_local: fn(Box<dyn Any + Send>) -> Rc<dyn Any>,
 }

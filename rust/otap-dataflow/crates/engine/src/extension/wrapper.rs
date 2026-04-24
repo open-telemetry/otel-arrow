@@ -577,13 +577,62 @@ impl ExtensionBundle {
     ///
     /// # Errors
     ///
-    /// Propagates any error returned by the capability registry
-    /// (e.g. duplicate `(capability, extension)` registration).
+    /// - [`Error::InternalError`](crate::capability::registry::Error::InternalError)
+    ///   if `capabilities` advertises an execution model that the
+    ///   runtime [`ExtensionBundle`] does not contain (e.g. the
+    ///   `extension_capabilities!` macro lists local capabilities but
+    ///   the factory's `create()` body never called `.local(...)` on
+    ///   the builder). This catches a metadata-vs-bundle drift early
+    ///   instead of letting it surface as a downstream
+    ///   `Error::ConfigError("…does not provide capability…")` from
+    ///   `resolve_bindings`. The shared-only-with-`SharedAsLocal`
+    ///   fallback case stays valid: that macro arm advertises an
+    ///   empty `local: &[]`, so there is no asymmetry to reject.
+    /// - Any error returned by the capability registry
+    ///   (e.g. duplicate `(capability, extension)` registration).
     pub fn register_into(
         &self,
         capabilities: &crate::capability::ExtensionCapabilities,
         registry: &mut crate::capability::registry::CapabilityRegistry,
     ) -> Result<(), crate::capability::registry::Error> {
+        // Fail fast on metadata-vs-bundle drift: the
+        // `extension_capabilities!` macro only checks that the listed
+        // types implement the listed capability traits. It cannot see
+        // what the factory's `create()` actually built. If the macro
+        // advertises an execution model the runtime bundle is
+        // missing, the mismatch would silently slip through
+        // `register_into` and surface later as a confusing
+        // `"extension does not provide capability"` config error
+        // pointing at the wrong layer.
+        let bundle_name = self
+            .local
+            .as_ref()
+            .or(self.shared.as_ref())
+            .map(|w| w.name().to_string())
+            .unwrap_or_else(|| "<empty bundle>".to_string());
+        if !capabilities.shared.is_empty() && self.shared.is_none() {
+            return Err(crate::capability::registry::Error::InternalError {
+                message: format!(
+                    "extension '{bundle_name}': extension_capabilities! advertises shared \
+                     capabilities {caps:?} but the ExtensionBundle has no shared variant \
+                     - either add `.shared(...)` to the builder chain or remove the \
+                     capabilities from the macro list",
+                    caps = capabilities.shared,
+                ),
+            });
+        }
+        if !capabilities.local.is_empty() && self.local.is_none() {
+            return Err(crate::capability::registry::Error::InternalError {
+                message: format!(
+                    "extension '{bundle_name}': extension_capabilities! advertises local \
+                     capabilities {caps:?} but the ExtensionBundle has no local variant \
+                     - either add `.local(...)` to the builder chain or remove the \
+                     capabilities from the macro list",
+                    caps = capabilities.local,
+                ),
+            });
+        }
+
         if let Some(shared) = self.shared.as_ref()
             && let Some(factory) = shared.shared_instance_factory()
         {

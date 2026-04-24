@@ -48,14 +48,25 @@ impl Capabilities {
     ///
     /// # One-shot contract
     ///
-    /// Each capability binding may be claimed **at most once per
-    /// node** across all four accessors (`require_local`,
-    /// `require_shared`, `optional_local`, `optional_shared`). Node
-    /// factories are expected to call this once at construction,
-    /// store the returned handle, and clone/share it within the node
-    /// as needed. A second call for the same capability — including
-    /// the implicit shared claim made by the `SharedAsLocal` fallback
-    /// — returns [`Error::CapabilityAlreadyConsumed`].
+    /// Each resolved entry is one-shot per node: a `require_local`
+    /// claim consumes the local entry, and a `require_shared` claim
+    /// consumes the shared entry. Node factories are expected to
+    /// call each accessor at most once at construction, store the
+    /// returned handle, and clone/share it within the node as needed.
+    ///
+    /// **SharedAsLocal fallback.** When a binding's extension only
+    /// registered a shared variant, `require_local` falls through to
+    /// the shared entry and routes its output through the
+    /// capability's adapter. In that case there is only one
+    /// underlying produce closure, so `require_local` and
+    /// `require_shared` share a single one-shot guard \u2014 claiming
+    /// either accessor consumes the binding for both. A second call
+    /// returns [`Error::CapabilityAlreadyConsumed`].
+    ///
+    /// **Native dual.** When a binding's extension registered both a
+    /// native local and a native shared variant, the two are
+    /// distinct objects with independent guards: a node may claim
+    /// `require_local` and `require_shared` and receive both.
     ///
     /// # Errors
     ///
@@ -75,25 +86,54 @@ impl Capabilities {
         &self,
     ) -> Result<Rc<C::Local>, Error> {
         let id = TypeId::of::<C>();
+
+        // Native local path. `Cell::take()` is the one-shot guard.
+        if let Some(entry) = self.local.get(&id) {
+            let produce = entry
+                .produce
+                .take()
+                .ok_or_else(|| Error::CapabilityAlreadyConsumed {
+                    capability: C::name().to_owned(),
+                })?;
+            let rc_any = produce();
+            let trait_object = rc_any
+                .downcast_ref::<Rc<C::Local>>()
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "BUG: capability '{}': local entry type mismatch in registry",
+                        C::name(),
+                    )
+                });
+            entry.tracker_consumed.set(true);
+            return Ok(trait_object);
+        }
+
+        // SharedAsLocal fallback. The same `Cell::take()` on the
+        // shared entry is the binding's one-shot guard, so claiming
+        // the local-via-fallback accessor here naturally consumes
+        // the native shared accessor too — a subsequent
+        // `require_shared` returns [`Error::CapabilityAlreadyConsumed`].
         let entry = self
-            .local
+            .shared
             .get(&id)
             .ok_or_else(|| Error::CapabilityNotBound {
                 capability: C::name().to_owned(),
                 execution_model: "local",
             })?;
-        if entry.claimed.replace(true) {
-            return Err(Error::CapabilityAlreadyConsumed {
+        let produce = entry
+            .produce
+            .take()
+            .ok_or_else(|| Error::CapabilityAlreadyConsumed {
                 capability: C::name().to_owned(),
-            });
-        }
-        let rc_any = (entry.produce)();
+            })?;
+        let rc_any = (entry.adapt_as_local)(produce());
         let trait_object = rc_any
             .downcast_ref::<Rc<C::Local>>()
             .cloned()
             .unwrap_or_else(|| {
                 panic!(
-                    "BUG: capability '{}': local entry type mismatch in registry",
+                    "BUG: capability '{}': SharedAsLocal adapter type mismatch in registry",
                     C::name(),
                 )
             });
@@ -135,12 +175,13 @@ impl Capabilities {
                 capability: C::name().to_owned(),
                 execution_model: "shared",
             })?;
-        if entry.claimed.replace(true) {
-            return Err(Error::CapabilityAlreadyConsumed {
+        let produce = entry
+            .produce
+            .take()
+            .ok_or_else(|| Error::CapabilityAlreadyConsumed {
                 capability: C::name().to_owned(),
-            });
-        }
-        let trait_object = (entry.produce)()
+            })?;
+        let trait_object = produce()
             .downcast::<Box<C::Shared>>()
             .map(|b| *b)
             .unwrap_or_else(|_| {
@@ -174,7 +215,9 @@ impl Capabilities {
         &self,
     ) -> Result<Option<Rc<C::Local>>, Error> {
         let id = TypeId::of::<C>();
-        if !self.local.contains_key(&id) {
+        // Available either as a native local entry or as a
+        // SharedAsLocal fallback through the shared entry.
+        if !self.local.contains_key(&id) && !self.shared.contains_key(&id) {
             return Ok(None);
         }
         self.require_local::<C>().map(Some)

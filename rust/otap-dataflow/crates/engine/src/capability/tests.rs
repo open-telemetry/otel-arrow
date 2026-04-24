@@ -148,16 +148,30 @@ fn macro_shared_only_form() {
     (ec.register_local)("ext".into(), local_factory("unused"), &mut registry)
         .expect("register_local no-op");
 
+    // Native shared claim works.
     let caps = resolve(&registry);
     assert_eq!(
         caps.require_shared::<MacroTestCap>().unwrap().value(),
         "s-only"
     );
-    // Local consumers are served by the SharedAsLocal fallback.
+
+    // Fresh resolve: local consumers are served by the
+    // SharedAsLocal fallback, returning the same value.
+    let caps = resolve(&registry);
     assert_eq!(
         caps.require_local::<MacroTestCap>().unwrap().value(),
         "s-only"
     );
+
+    // Per-binding one-shot: claiming the local execution model via
+    // the SharedAsLocal fallback consumes the binding for the
+    // native shared execution model too.
+    let caps = resolve(&registry);
+    let _ = caps.require_local::<MacroTestCap>().unwrap();
+    assert!(matches!(
+        caps.require_shared::<MacroTestCap>(),
+        Err(crate::capability::registry::Error::CapabilityAlreadyConsumed { .. })
+    ));
 }
 
 #[test]
@@ -192,9 +206,13 @@ fn macro_dual_form() {
     (ec.register_local)("ext".into(), local_factory("l-dual"), &mut registry)
         .expect("register_local");
 
+    // Native dual: local and shared are *distinct* registrations
+    // (different concrete types) and therefore have independent
+    // one-shot guards. A single node may claim both — each yields
+    // the value of its own concrete type. The per-binding one-shot
+    // contract only collapses local and shared for the SharedAsLocal
+    // fallback path (where they back the same underlying object).
     let caps = resolve(&registry);
-    // Each side returns its own type's value — not a SharedAsLocal
-    // adapter over the shared instance.
     assert_eq!(
         caps.require_shared::<MacroTestCap>().unwrap().value(),
         "s-dual"
@@ -203,4 +221,12 @@ fn macro_dual_form() {
         caps.require_local::<MacroTestCap>().unwrap().value(),
         "l-dual"
     );
+
+    // Each execution model is still one-shot in isolation.
+    let caps = resolve(&registry);
+    let _ = caps.require_shared::<MacroTestCap>().unwrap();
+    assert!(matches!(
+        caps.require_shared::<MacroTestCap>(),
+        Err(crate::capability::registry::Error::CapabilityAlreadyConsumed { .. })
+    ));
 }

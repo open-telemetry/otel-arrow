@@ -28,9 +28,18 @@
 //! These limitations are fundamental to the type-erased `HashMap<TypeId, Entry>`
 //! registry design and the `SharedAsLocal` adapter delegation pattern:
 //!
-//! - **Trait-level generics / lifetimes** — `TypeId::of::<T>()` requires a
-//!   concrete monomorphized type; a generic registration struct cannot produce
-//!   a single `TypeId` for the registry.
+//! - **Trait-level generics or lifetime parameters** — e.g.
+//!   `#[capability] trait Foo<T>` or `#[capability] trait Bar<'a>`.
+//!   Method-level generics (one bullet up) *are* supported because the
+//!   trait object `dyn Foo` exists for the trait as a whole. Trait-level
+//!   parameters, by contrast, mean the trait isn't one type but a
+//!   *family* — `Foo<u32>`, `Foo<String>`, etc. — each with its own
+//!   `TypeId::of::<Foo<T>>()`. The registry keys entries by a single
+//!   `TypeId` per capability, so there is no monomorphized type for the
+//!   generated registration struct to advertise. Concretize the
+//!   parameter at the trait definition (e.g. work over `String` or a
+//!   sealed enum) or split the family into separate `#[capability]`
+//!   traits.
 //! - **Supertraits** (`trait Foo: Bar`) — the `SharedAsLocal` adapter only
 //!   delegates methods defined directly on the `#[capability]` trait. It cannot
 //!   auto-implement supertrait methods. Define all methods directly on the

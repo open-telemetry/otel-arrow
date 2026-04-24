@@ -689,13 +689,14 @@ fn test_optional_local_second_call_returns_already_consumed() {
 }
 
 #[test]
-fn test_fallback_local_and_shared_are_independently_claimable() {
+fn test_fallback_local_and_shared_share_one_shot_guard() {
     // SharedAsLocal fallback creates two per-node resolved entries
     // (one in `local_entries`, one in `shared_entries`) backed by the
-    // same shared registration. Each is independently one-shot, so a
-    // single node can claim both — each claim mints its own shared
-    // instance via the registered factory. The cross-node tracker
-    // still sees both as uses of the shared variant.
+    // same shared registration. They share a single per-binding
+    // `claimed` flag so the binding may be claimed at most once per
+    // node across all four accessors — claiming the local
+    // execution model (via the adapter) consumes the binding for
+    // the native shared execution model too, and vice versa.
     let mut reg = CapabilityRegistry::new();
     register_shared(&mut reg, "ext-a", "val");
 
@@ -709,10 +710,35 @@ fn test_fallback_local_and_shared_are_independently_claimable() {
     .unwrap();
 
     let local = caps.require_local::<TestCap>().unwrap();
-    let shared = caps.require_shared::<TestCap>().unwrap();
     assert_eq!(local.value(), "val");
+    match caps.require_shared::<TestCap>() {
+        Err(crate::error::Error::CapabilityAlreadyConsumed { capability }) => {
+            assert_eq!(capability, "test_cap");
+        }
+        Err(other) => panic!("expected CapabilityAlreadyConsumed, got {other:?}"),
+        Ok(_) => panic!("expected CapabilityAlreadyConsumed after fallback-local claim, got Ok"),
+    }
+
+    // Re-resolving on the same registry yields a fresh per-binding
+    // claim cell, and now the shared execution model can be claimed
+    // first while the fallback-local execution model is rejected.
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+    let shared = caps.require_shared::<TestCap>().unwrap();
     assert_eq!(shared.value(), "val");
-    assert!(tracker.unconsumed_shared().is_empty());
+    match caps.require_local::<TestCap>() {
+        Err(crate::error::Error::CapabilityAlreadyConsumed { capability }) => {
+            assert_eq!(capability, "test_cap");
+        }
+        Err(other) => panic!("expected CapabilityAlreadyConsumed, got {other:?}"),
+        Ok(_) => panic!("expected CapabilityAlreadyConsumed after native-shared claim, got Ok"),
+    }
 }
 
 // ── End-to-end: builder → bundle → register_into → resolve → require ────────
@@ -942,6 +968,110 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
 }
 
 // ── Envelope / error-shape regression tests ─────────────────────────────────
+
+/// `register_into` must reject a metadata-vs-bundle mismatch: when the
+/// `extension_capabilities!` macro advertises an execution model that the runtime
+/// `ExtensionBundle` does not contain, the call fails fast with
+/// `Error::InternalError` instead of silently skipping registration
+/// and letting the drift surface as a confusing
+/// "extension does not provide capability" `ConfigError` from
+/// `resolve_bindings`. The macro only checks the type-level trait
+/// bound; this guard catches the runtime bundle shape.
+#[test]
+fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
+    use crate::capability::ExtensionCapabilities;
+    use crate::config::ExtensionConfig;
+    use crate::extension::ExtensionWrapper;
+    use otap_df_config::extension::ExtensionUserConfig;
+    use std::sync::Arc;
+
+    let name: ExtensionId = "drifty".into();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        "urn:test:drifty".into(),
+        serde_json::Value::Null,
+    ));
+    let runtime_config = ExtensionConfig::new("drifty");
+
+    // Build a shared-only bundle (no local variant).
+    let bundle = ExtensionWrapper::builder(name.clone(), user_config, &runtime_config)
+        .passive()
+        .cloned()
+        .shared(SharedImpl("v"))
+        .build()
+        .expect("bundle builds");
+
+    // ExtensionCapabilities advertises BOTH sides as if the macro had
+    // been written with the dual form, even though the bundle only
+    // provides the shared variant. This is the drift the guard must
+    // catch.
+    let caps = ExtensionCapabilities {
+        shared: &["test_cap"],
+        local: &["test_cap"],
+        register_shared: |ext_id, factory, registry| {
+            registry.register_shared(
+                TypeId::of::<TestCap>(),
+                TestCap::shared_entry::<SharedImpl>(ext_id, factory),
+            )
+        },
+        register_local: |_ext_id, _factory, _registry| Ok(()),
+    };
+
+    let mut registry = CapabilityRegistry::new();
+    let err = bundle
+        .register_into(&caps, &mut registry)
+        .expect_err("register_into must reject metadata-vs-bundle drift");
+    match err {
+        Error::InternalError { message } => {
+            assert!(
+                message.contains("local") && message.contains("drifty"),
+                "InternalError message should name the extension and the missing execution model; got: {message}",
+            );
+        }
+        other => panic!("expected InternalError, got {other:?}"),
+    }
+
+    // Symmetric direction: shared advertised, bundle is local-only.
+    let local_only_name: ExtensionId = "drifty-local".into();
+    let local_only_user_config = Arc::new(ExtensionUserConfig::new(
+        "urn:test:drifty-local".into(),
+        serde_json::Value::Null,
+    ));
+    let local_only_runtime_config = ExtensionConfig::new("drifty-local");
+    let bundle = ExtensionWrapper::builder(
+        local_only_name,
+        local_only_user_config,
+        &local_only_runtime_config,
+    )
+    .passive()
+    .cloned()
+    .local(Rc::new(LocalImpl("v")))
+    .build()
+    .expect("bundle builds");
+
+    let caps = ExtensionCapabilities {
+        shared: &["test_cap"],
+        local: &["test_cap"],
+        register_shared: |_ext_id, _factory, _registry| Ok(()),
+        register_local: |ext_id, factory, registry| {
+            registry.register_local(
+                TypeId::of::<TestCap>(),
+                TestCap::local_entry::<LocalImpl>(ext_id, factory),
+            )
+        },
+    };
+    let err = bundle
+        .register_into(&caps, &mut registry)
+        .expect_err("register_into must reject metadata-vs-bundle drift");
+    match err {
+        Error::InternalError { message } => {
+            assert!(
+                message.contains("shared") && message.contains("drifty-local"),
+                "InternalError message should name the extension and the missing execution model; got: {message}",
+            );
+        }
+        other => panic!("expected InternalError, got {other:?}"),
+    }
+}
 
 /// The shared-side registry envelope must be `Box<Box<dyn C::Shared>>`
 /// erased as `Box<dyn Any + Send>`. `require_shared` downcasts the

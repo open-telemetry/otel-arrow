@@ -39,7 +39,7 @@ pub use storage::CapabilityRegistry;
 
 // ── Crate-internal re-exports ────────────────────────────────────────────────
 
-pub(crate) use entry::{LocalProduce, ResolvedLocalEntry, ResolvedSharedEntry};
+pub(crate) use entry::{ResolvedLocalEntry, ResolvedSharedEntry};
 // TODO(extension-system): wired by engine build phase in a follow-up PR;
 // until then only the test module imports it via `use super::*;`.
 #[allow(unused_imports)]

@@ -117,10 +117,10 @@ impl ActiveStage {
     where
         E: shared_ext::Extension + Clone + Send + 'static,
     {
-        debug_assert!(
-            self.parent.shared.is_none(),
-            "ExtensionBundleBuilder: .shared(...) called more than once",
-        );
+        if self.parent.shared.is_some() {
+            self.parent.record_duplicate("shared");
+            return self;
+        }
         let for_factory = extension.clone();
         self.parent.shared = Some(SharedDecomposed {
             extension: Some(Box::new(extension)),
@@ -138,10 +138,10 @@ impl ActiveStage {
     where
         E: local_ext::Extension + 'static,
     {
-        debug_assert!(
-            self.parent.local.is_none(),
-            "ExtensionBundleBuilder: .local(...) called more than once",
-        );
+        if self.parent.local.is_some() {
+            self.parent.record_duplicate("local");
+            return self;
+        }
         let for_factory = std::rc::Rc::clone(&extension);
         self.parent.local = Some(LocalDecomposed {
             extension: Some(extension),
@@ -207,10 +207,10 @@ impl PassiveClonedStage {
     where
         E: Clone + Send + 'static,
     {
-        debug_assert!(
-            self.parent.shared.is_none(),
-            "ExtensionBundleBuilder: .shared(...) called more than once",
-        );
+        if self.parent.shared.is_some() {
+            self.parent.record_duplicate("shared");
+            return self;
+        }
         self.parent.shared = Some(SharedDecomposed {
             extension: None,
             instance_factory: SharedInstanceFactory::new(move || {
@@ -228,10 +228,10 @@ impl PassiveClonedStage {
     where
         E: 'static,
     {
-        debug_assert!(
-            self.parent.local.is_none(),
-            "ExtensionBundleBuilder: .local(...) called more than once",
-        );
+        if self.parent.local.is_some() {
+            self.parent.record_duplicate("local");
+            return self;
+        }
         self.parent.local = Some(LocalDecomposed {
             extension: None,
             instance_factory: LocalInstanceFactory::new(move || {
@@ -271,10 +271,10 @@ impl PassiveConstructedStage {
         E: Send + 'static,
         F: Fn() -> E + Clone + Send + 'static,
     {
-        debug_assert!(
-            self.parent.shared.is_none(),
-            "ExtensionBundleBuilder: .shared(...) called more than once",
-        );
+        if self.parent.shared.is_some() {
+            self.parent.record_duplicate("shared");
+            return self;
+        }
         self.parent.shared = Some(SharedDecomposed {
             extension: None,
             instance_factory: SharedInstanceFactory::new(move || {
@@ -293,10 +293,10 @@ impl PassiveConstructedStage {
         E: 'static,
         F: Fn() -> std::rc::Rc<E> + Clone + 'static,
     {
-        debug_assert!(
-            self.parent.local.is_none(),
-            "ExtensionBundleBuilder: .local(...) called more than once",
-        );
+        if self.parent.local.is_some() {
+            self.parent.record_duplicate("local");
+            return self;
+        }
         self.parent.local = Some(LocalDecomposed {
             extension: None,
             instance_factory: LocalInstanceFactory::new(move || produce() as std::rc::Rc<dyn Any>),
@@ -327,6 +327,14 @@ pub struct ExtensionBundleBuilder {
     pub(super) runtime_config: ExtensionConfig,
     shared: Option<SharedDecomposed>,
     local: Option<LocalDecomposed>,
+    /// Accumulated misuse messages detected by typestate stages —
+    /// e.g. duplicate `.shared(...)` or `.local(...)` calls. The
+    /// fluent API can't return a `Result` from those methods without
+    /// breaking the chain, so stages append messages here and
+    /// [`Self::build`] surfaces them concatenated into a single
+    /// `InternalError`. Behavior is identical in debug and release
+    /// builds.
+    errors: Vec<String>,
 }
 
 impl ExtensionBundleBuilder {
@@ -343,7 +351,18 @@ impl ExtensionBundleBuilder {
             runtime_config,
             shared: None,
             local: None,
+            errors: Vec::new(),
         }
+    }
+
+    /// Record a duplicate execution-model registration error from a
+    /// typestate stage. All misuses are accumulated and surfaced
+    /// together by [`Self::build`].
+    fn record_duplicate(&mut self, execution_model: &'static str) {
+        self.errors.push(format!(
+            "ExtensionBundleBuilder: .{execution_model}(...) called more than once on extension '{}'",
+            self.name.as_ref(),
+        ));
     }
 
     /// Select the **Active** lifecycle for this extension bundle.
@@ -372,16 +391,25 @@ impl ExtensionBundleBuilder {
     /// # Errors
     ///
     /// Returns an error if:
+    /// - A typestate stage previously detected a duplicate
+    ///   `.shared(...)` or `.local(...)` call (the second call is a
+    ///   no-op and the misuse is surfaced here, deterministically in
+    ///   debug and release builds).
     /// - Neither `.shared(...)` nor `.local(...)` was registered via
     ///   the lifecycle stages.
     /// - Both variants use the same concrete type (dual registration
     ///   requires distinct local and shared implementations).
     pub fn build(self) -> Result<ExtensionBundle, Error> {
+        if !self.errors.is_empty() {
+            return Err(Error::InternalError {
+                message: self.errors.join("\n"),
+            });
+        }
         if let (Some(local), Some(shared)) = (&self.local, &self.shared) {
             if local.type_id == shared.type_id {
                 return Err(Error::InternalError {
                     message: "local and shared variants must use different concrete types; \
-                              register only one side for single-variant extensions"
+                              register only one execution model for single-variant extensions"
                         .into(),
                 });
             }

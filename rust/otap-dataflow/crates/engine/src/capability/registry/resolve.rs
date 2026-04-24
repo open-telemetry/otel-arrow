@@ -6,13 +6,12 @@
 //! [`Capabilities`] for consumption.
 
 use super::{
-    Capabilities, CapabilityRegistry, ConsumedTracker, Error, LocalProduce, ResolvedLocalEntry,
+    Capabilities, CapabilityRegistry, ConsumedTracker, Error, ResolvedLocalEntry,
     ResolvedSharedEntry,
 };
 use otap_df_config::ExtensionId;
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 /// Resolves a node's capability bindings against the registry.
 ///
@@ -108,13 +107,17 @@ pub(crate) fn resolve_bindings(
             )));
         }
 
-        // Resolve local entry: prefer a native local registration; else,
-        // if the extension registered a shared entry, invoke the
-        // capability's `SharedAsLocal` adapter to build a new local
-        // wrapper around this node's own clone of the shared instance.
-        let native_local = local_entry;
-
-        if let Some(local_entry) = native_local {
+        // Resolve local entry. Native local registrations get their
+        // own resolved entry; the SharedAsLocal fallback is *not*
+        // materialized here — instead, [`Capabilities::require_local`]
+        // falls through to the shared entry below and runs its
+        // `adapt_as_local` adapter at consumption time. This collapses
+        // the fallback's two former entries into one, so the
+        // per-binding one-shot guard is the shared entry's
+        // `Cell::take()`: claiming the local-via-fallback execution
+        // model naturally consumes the native shared execution model
+        // too.
+        if let Some(local_entry) = local_entry {
             let tracker_consumed = tracker.ensure_local_consumer_slot(
                 cap_type_id,
                 known_cap.name,
@@ -124,8 +127,7 @@ pub(crate) fn resolve_bindings(
             let prior = local_entries.insert(
                 cap_type_id,
                 ResolvedLocalEntry {
-                    produce: local_entry.produce.clone_box(),
-                    claimed: std::cell::Cell::new(false),
+                    produce: std::cell::Cell::new(Some(local_entry.produce.clone_box())),
                     tracker_consumed,
                 },
             );
@@ -134,56 +136,11 @@ pub(crate) fn resolve_bindings(
                 "resolve_bindings: duplicate local entry for capability '{cap_name_str}' \
                  - the config layer should prevent two bindings with the same capability name",
             );
-        } else if let Some(shared_entry) = shared_entry {
-            // SharedAsLocal fallback: defer the shared mint to the
-            // (single, one-shot) `require_local` call. The closure
-            // captures a refcounted handle to the shared produce
-            // closure plus the capability's `adapt_as_local` fn
-            // pointer, then on invocation produces a new shared
-            // instance and routes it through the adapter to yield a
-            // type-erased `Rc<dyn Any>` wrapping the local trait
-            // object.
-            let adapt = shared_entry.adapt_as_local;
-            let produce_shared: Rc<Box<dyn super::entry::SharedProduce>> =
-                Rc::new(shared_entry.produce.clone_box());
-            let local_produce: Box<dyn LocalProduce> = Box::new(move || adapt((*produce_shared)()));
-
-            // The extension only provided a shared variant — record
-            // the adapter consumer's cross-node consumption against
-            // the shared bucket. The `// Resolve shared entry` block
-            // below also calls `ensure_shared_consumer_slot` for
-            // this `(cap, ext)` pair; that method is get-or-insert,
-            // so both users share the same `Rc<Cell<bool>>` for
-            // tracker accounting. Per-node one-shot enforcement is
-            // tracked separately in each entry's `claimed` cell, so
-            // a node *can* claim both the local-via-shared and
-            // native-shared sides of a fallback binding.
-            let tracker_consumed = tracker.ensure_shared_consumer_slot(
-                cap_type_id,
-                known_cap.name,
-                shared_entry.extension_id.clone(),
-            );
-
-            let prior = local_entries.insert(
-                cap_type_id,
-                ResolvedLocalEntry {
-                    produce: local_produce,
-                    claimed: std::cell::Cell::new(false),
-                    tracker_consumed,
-                },
-            );
-            debug_assert!(
-                prior.is_none(),
-                "resolve_bindings: duplicate local entry for capability '{cap_name_str}' \
-                 (SharedAsLocal fallback)",
-            );
         }
 
-        // Resolve shared entry. If the SharedAsLocal fallback above
-        // already called `ensure_shared_consumer_slot` for this
-        // `(cap, ext)` pair, this call is a no-op lookup that returns
-        // the same cell — get-or-insert idempotency keeps the two
-        // users pointing at one slot.
+        // Resolve shared entry. Used both as the native shared
+        // binding and as the SharedAsLocal fallback target when no
+        // native local entry exists.
         if let Some(shared_entry) = shared_entry {
             let tracker_consumed = tracker.ensure_shared_consumer_slot(
                 cap_type_id,
@@ -194,9 +151,9 @@ pub(crate) fn resolve_bindings(
             let prior = shared_entries.insert(
                 cap_type_id,
                 ResolvedSharedEntry {
-                    produce: shared_entry.produce.clone_box(),
-                    claimed: std::cell::Cell::new(false),
+                    produce: std::cell::Cell::new(Some(shared_entry.produce.clone_box())),
                     tracker_consumed,
+                    adapt_as_local: shared_entry.adapt_as_local,
                 },
             );
             debug_assert!(
