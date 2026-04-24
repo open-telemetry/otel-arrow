@@ -2032,7 +2032,7 @@ mod test {
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
     use otap_df_opl::parser::OplParser;
-    use otap_df_pdata::otap::Logs;
+    use otap_df_pdata::otap::{Logs, Traces};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
@@ -2050,6 +2050,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
+        to_traces_data,
     };
 
     use crate::pipeline::test::{
@@ -6185,5 +6186,59 @@ mod test {
             r#"logs | where contains(attributes["haystack"], attributes["needle"])"#,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_check_signal_types() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![])
+                .finish(),
+        ];
+
+        let query = "signals | where is Log";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let logs_input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        let logs_ouptut = pipeline.execute(logs_input.clone()).await.unwrap();
+
+        assert_eq!(logs_input, logs_ouptut);
+
+        let traces_input = otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(vec![
+            Span::default(),
+        ])));
+        let traces_ouptut = pipeline.execute(traces_input).await.unwrap();
+
+        // assert it returns empty traces
+        assert_eq!(traces_ouptut, OtapArrowRecords::Traces(Traces::default()));
+    }
+
+    #[tokio::test]
+    async fn test_filter_check_signal_type_inverted() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![])
+                .finish(),
+        ];
+
+        let query = "signals | where not(is Log)";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let logs_input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        let logs_ouptut = pipeline.execute(logs_input).await.unwrap();
+
+        // assert it returns empty traces
+        assert_eq!(logs_ouptut, OtapArrowRecords::Logs(Logs::default()));
+
+        let traces_input = otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(vec![
+            Span::default(),
+        ])));
+        let traces_ouptut = pipeline.execute(traces_input.clone()).await.unwrap();
+
+        assert_eq!(traces_input, traces_ouptut);
     }
 }
