@@ -9,8 +9,8 @@ use crate::args::{
 use crate::commands::fetch::fetch_logs;
 use crate::commands::filters::group_event_filters;
 use crate::commands::output::{
-    bundle_metadata, emit_group_shutdown, emit_read, group_shutdown_stream_output,
-    operation_options, validate_group_shutdown_output, write_bundle,
+    bundle_metadata, duration_to_secs_ceil, emit_group_shutdown, emit_read,
+    group_shutdown_stream_output, operation_options, validate_group_shutdown_output, write_bundle,
 };
 use crate::commands::watch::{watch_group_events, watch_groups_shutdown};
 use crate::error::CliError;
@@ -25,6 +25,7 @@ use crate::troubleshoot::{
 };
 use otap_df_admin_api::AdminClient;
 use otap_df_admin_api::telemetry::MetricsOptions;
+use serde::Serialize;
 use std::io::Write;
 
 /// Execute group-scoped commands.
@@ -156,6 +157,18 @@ pub(crate) async fn run(
         }
         GroupsCommand::Shutdown(args) => {
             validate_group_shutdown_output(args.output, args.watch)?;
+            if args.dry_run {
+                let report = GroupShutdownPreflight {
+                    mode: "preflight-only",
+                    operation: "groups.shutdown",
+                    server_validation: false,
+                    wait: args.wait,
+                    wait_timeout_secs: duration_to_secs_ceil(args.wait_timeout),
+                };
+                return emit_group_shutdown(stdout, args.output, &report, || {
+                    Ok(render_group_shutdown_preflight(&human_style, &report))
+                });
+            }
             let response = client
                 .groups()
                 .shutdown(&operation_options(args.wait, args.wait_timeout))
@@ -189,4 +202,34 @@ pub(crate) async fn run(
             }
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupShutdownPreflight {
+    mode: &'static str,
+    operation: &'static str,
+    server_validation: bool,
+    wait: bool,
+    wait_timeout_secs: u64,
+}
+
+fn render_group_shutdown_preflight(style: &HumanStyle, report: &GroupShutdownPreflight) -> String {
+    [
+        style.header("group shutdown dry-run"),
+        format!("{}: {}", style.label("mode"), report.mode),
+        format!("{}: {}", style.label("operation"), report.operation),
+        format!(
+            "{}: {}",
+            style.label("server_validation"),
+            report.server_validation
+        ),
+        format!("{}: {}", style.label("wait"), report.wait),
+        format!(
+            "{}: {}",
+            style.label("wait_timeout_secs"),
+            report.wait_timeout_secs
+        ),
+    ]
+    .join("\n")
 }

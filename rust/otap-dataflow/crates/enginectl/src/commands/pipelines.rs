@@ -30,6 +30,7 @@ use crate::troubleshoot::{
 };
 use otap_df_admin_api::AdminClient;
 use otap_df_admin_api::telemetry::MetricsOptions;
+use serde::Serialize;
 use std::io::Write;
 
 /// Execute pipeline-scoped commands.
@@ -344,6 +345,25 @@ pub(crate) async fn run(
                 step_timeout_secs: duration_to_secs_ceil(args.step_timeout),
                 drain_timeout_secs: duration_to_secs_ceil(args.drain_timeout),
             };
+            if args.dry_run {
+                let report = PipelineReconfigurePreflight {
+                    mode: "preflight-only",
+                    operation: "pipelines.reconfigure",
+                    server_validation: false,
+                    target: PipelineTargetReport {
+                        pipeline_group_id: args.target.pipeline_group_id.clone(),
+                        pipeline_id: args.target.pipeline_id.clone(),
+                    },
+                    config_source: args.file.display().to_string(),
+                    step_timeout_secs: request.step_timeout_secs,
+                    drain_timeout_secs: request.drain_timeout_secs,
+                    wait: args.wait,
+                    wait_timeout_secs: duration_to_secs_ceil(args.wait_timeout),
+                };
+                return emit_mutation(stdout, args.output, "preflight_only", &report, || {
+                    Ok(render_pipeline_reconfigure_preflight(&human_style, &report))
+                });
+            }
             let outcome = client
                 .pipelines()
                 .reconfigure(
@@ -404,6 +424,22 @@ pub(crate) async fn run(
         }
         PipelinesCommand::Shutdown(args) => {
             validate_mutation_output(args.output, args.watch)?;
+            if args.dry_run {
+                let report = PipelineShutdownPreflight {
+                    mode: "preflight-only",
+                    operation: "pipelines.shutdown",
+                    server_validation: false,
+                    target: PipelineTargetReport {
+                        pipeline_group_id: args.target.pipeline_group_id.clone(),
+                        pipeline_id: args.target.pipeline_id.clone(),
+                    },
+                    wait: args.wait,
+                    wait_timeout_secs: duration_to_secs_ceil(args.wait_timeout),
+                };
+                return emit_mutation(stdout, args.output, "preflight_only", &report, || {
+                    Ok(render_pipeline_shutdown_preflight(&human_style, &report))
+                });
+            }
             let outcome = client
                 .pipelines()
                 .shutdown(
@@ -542,4 +578,105 @@ pub(crate) async fn run(
             })
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineTargetReport {
+    pipeline_group_id: String,
+    pipeline_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineReconfigurePreflight {
+    mode: &'static str,
+    operation: &'static str,
+    server_validation: bool,
+    target: PipelineTargetReport,
+    config_source: String,
+    step_timeout_secs: u64,
+    drain_timeout_secs: u64,
+    wait: bool,
+    wait_timeout_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineShutdownPreflight {
+    mode: &'static str,
+    operation: &'static str,
+    server_validation: bool,
+    target: PipelineTargetReport,
+    wait: bool,
+    wait_timeout_secs: u64,
+}
+
+fn render_pipeline_reconfigure_preflight(
+    style: &HumanStyle,
+    report: &PipelineReconfigurePreflight,
+) -> String {
+    [
+        style.header("pipeline reconfigure dry-run"),
+        format!("{}: {}", style.label("mode"), report.mode),
+        format!("{}: {}", style.label("operation"), report.operation),
+        format!(
+            "{}: {}/{}",
+            style.label("target"),
+            report.target.pipeline_group_id,
+            report.target.pipeline_id
+        ),
+        format!("{}: {}", style.label("config_source"), report.config_source),
+        format!(
+            "{}: {}",
+            style.label("server_validation"),
+            report.server_validation
+        ),
+        format!(
+            "{}: {}",
+            style.label("step_timeout_secs"),
+            report.step_timeout_secs
+        ),
+        format!(
+            "{}: {}",
+            style.label("drain_timeout_secs"),
+            report.drain_timeout_secs
+        ),
+        format!("{}: {}", style.label("wait"), report.wait),
+        format!(
+            "{}: {}",
+            style.label("wait_timeout_secs"),
+            report.wait_timeout_secs
+        ),
+    ]
+    .join("\n")
+}
+
+fn render_pipeline_shutdown_preflight(
+    style: &HumanStyle,
+    report: &PipelineShutdownPreflight,
+) -> String {
+    [
+        style.header("pipeline shutdown dry-run"),
+        format!("{}: {}", style.label("mode"), report.mode),
+        format!("{}: {}", style.label("operation"), report.operation),
+        format!(
+            "{}: {}/{}",
+            style.label("target"),
+            report.target.pipeline_group_id,
+            report.target.pipeline_id
+        ),
+        format!(
+            "{}: {}",
+            style.label("server_validation"),
+            report.server_validation
+        ),
+        format!("{}: {}", style.label("wait"), report.wait),
+        format!(
+            "{}: {}",
+            style.label("wait_timeout_secs"),
+            report.wait_timeout_secs
+        ),
+    ]
+    .join("\n")
 }

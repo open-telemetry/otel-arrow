@@ -129,6 +129,18 @@ Agent-friendly one-shot snapshots can use an explicit dfctl envelope:
 dfctl engine status --output agent-json
 ```
 
+For automation-heavy sessions, `--agent` applies machine-safe defaults without
+changing command behavior:
+
+```bash
+dfctl --agent engine status
+DFCTL_AGENT_MODE=true dfctl telemetry logs watch --tail 20
+```
+
+Agent mode defaults one-shot commands to `agent-json`, watch commands to
+`ndjson`, errors to `agent-json`, and color to `never`. Explicit flags still
+win, so `dfctl --agent engine status --output json` emits plain JSON.
+
 ### Discover commands for automation and agents
 
 Use `dfctl commands` to list runnable commands in a compact human table:
@@ -147,7 +159,15 @@ dfctl commands --output json
 The JSON catalog uses `schemaVersion: dfctl-command-catalog/v1`. It includes
 `globalArguments` once at the top level and per-command `arguments`,
 `outputModes`, `examples`, `requiresAdminClient`, `interactive`, `longRunning`,
-and `mutation` fields.
+`mutation`, safety, schema, stdin, wait/watch, dry-run, and exit-code metadata.
+
+Discover output schemas without connecting to an engine:
+
+```bash
+dfctl schemas
+dfctl schemas --output json
+dfctl schemas dfctl.error.v1 --output json
+```
 
 ### Reconfigure a pipeline
 
@@ -162,6 +182,15 @@ Apply from stdin instead:
 ```bash
 cat pipeline.yaml | \
   dfctl pipelines reconfigure "$GROUP" "$PIPE" --file - --output json
+```
+
+Validate the local request shape without starting a rollout:
+
+```bash
+dfctl pipelines reconfigure "$GROUP" "$PIPE" \
+  --file pipeline.yaml \
+  --dry-run \
+  --output json
 ```
 
 If you want incremental progress instead of a single final result:
@@ -181,6 +210,7 @@ Watch a known rollout or shutdown operation:
 dfctl pipelines rollouts get "$GROUP" "$PIPE" rollout-1
 dfctl pipelines rollouts watch "$GROUP" "$PIPE" rollout-1
 
+dfctl pipelines shutdown "$GROUP" "$PIPE" --dry-run --output json
 dfctl pipelines shutdown "$GROUP" "$PIPE" --watch
 dfctl pipelines shutdowns get "$GROUP" "$PIPE" shutdown-1
 dfctl pipelines shutdowns watch "$GROUP" "$PIPE" shutdown-1
@@ -321,6 +351,24 @@ $CTL pipelines status "$GROUP" "$PIPE" --output json \
 
 ## Output and Color
 
+Choose the output format based on the consumer:
+
+- `human`: terminal-oriented text with optional color and tables. Use it for
+  interactive use, not as a stable parsing contract.
+- `json`: direct machine-readable command payload as one pretty-printed JSON
+  document. Use it for scripts, `jq`, and CI snapshots.
+- `yaml`: direct command payload as one YAML document. Use it for saved files,
+  inspection, and hand editing.
+- `agent-json`: direct payload wrapped in a `dfctl/v1` envelope with
+  `schemaVersion`, `type`, `resource`, `generatedAt`, and `data`. Use it when
+  an agent needs a uniform response shape and provenance.
+- `ndjson`: incremental stream output with one compact JSON object per line.
+  Use it for watch commands, shell pipelines, and long-running automation.
+
+`agent-json` is not a different JSON encoding. It is JSON plus a stable
+`dfctl` envelope around the same command data. `ndjson` is separate because a
+long-running stream cannot be represented as one finite JSON document.
+
 One-shot commands support:
 
 - `--output human`
@@ -341,6 +389,16 @@ Long-running `watch` commands support:
 
 Mutation commands support `human`, `json`, `yaml`, `agent-json`, and `ndjson`.
 Use `--output ndjson` together with `--watch`.
+
+`--agent` is a global shortcut for automation-safe defaults:
+
+- one-shot read and mutation commands default to `--output agent-json`
+- watch and stream commands default to `--output ndjson`
+- runtime errors default to `--error-format agent-json`
+- human color defaults to `--color never`
+
+Set `DFCTL_AGENT_MODE=true` to apply the same defaults through the environment.
+Pass explicit `--output`, `--error-format`, or `--color` flags to override them.
 
 Human-readable output also supports:
 
@@ -409,5 +467,3 @@ Exit codes:
   [docs/admin/enginectl.md](../../docs/admin/enginectl.md)
 - Live rollout and shutdown behavior:
   [docs/admin/live-reconfiguration.md](../../docs/admin/live-reconfiguration.md)
-- Remaining CLI best-practice backlog:
-  [docs/admin/dfctl-cli-improvement-plan.md](../../docs/admin/dfctl-cli-improvement-plan.md)

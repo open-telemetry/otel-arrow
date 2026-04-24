@@ -12,6 +12,7 @@ pub(crate) mod filters;
 pub(crate) mod groups;
 pub(crate) mod output;
 pub(crate) mod pipelines;
+pub(crate) mod schemas;
 pub(crate) mod telemetry;
 pub(crate) mod watch;
 

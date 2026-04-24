@@ -1,8 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use clap::parser::ValueSource;
+use clap::{
+    ArgAction, ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
+};
 use clap_complete::Shell;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -14,6 +18,17 @@ use std::time::Duration;
 )]
 /// Top-level parsed CLI arguments for `dfctl`.
 pub struct Cli {
+    /// Enable automation-safe defaults for output, errors, and colors.
+    #[arg(
+        long,
+        env = "DFCTL_AGENT_MODE",
+        global = true,
+        action = ArgAction::SetTrue,
+        default_value_t = false,
+        value_parser = clap::value_parser!(bool)
+    )]
+    pub agent: bool,
+
     /// Shared connection and transport configuration.
     #[command(flatten)]
     pub connection: ConnectionArgs,
@@ -46,6 +61,46 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// Parses command-line arguments and applies agent-mode defaults.
+    #[must_use]
+    pub fn parse_effective() -> Self {
+        let matches = Self::command().get_matches();
+        Self::from_arg_matches_with_effective_defaults(&matches).unwrap_or_else(|err| err.exit())
+    }
+
+    /// Parses supplied arguments and applies agent-mode defaults.
+    pub fn try_parse_effective_from<I, T>(itr: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let matches = Self::command().try_get_matches_from(itr)?;
+        Self::from_arg_matches_with_effective_defaults(&matches)
+    }
+
+    fn from_arg_matches_with_effective_defaults(matches: &ArgMatches) -> Result<Self, clap::Error> {
+        let error_format_is_default =
+            matches.value_source("error_format") == Some(ValueSource::DefaultValue);
+        let color_is_default = matches.value_source("color") == Some(ValueSource::DefaultValue);
+        let output_is_default =
+            leaf_value_source(matches, "output") == Some(ValueSource::DefaultValue);
+        let mut cli = Self::from_arg_matches(matches)?;
+
+        if cli.agent {
+            if error_format_is_default {
+                cli.error_format = ErrorFormat::AgentJson;
+            }
+            if color_is_default {
+                cli.color = ColorChoice::Never;
+            }
+            if output_is_default {
+                cli.command.apply_agent_output_default();
+            }
+        }
+
+        Ok(cli)
+    }
+
     /// Returns true when the parsed command should launch the interactive UI.
     #[must_use]
     pub const fn is_ui(&self) -> bool {
@@ -63,6 +118,14 @@ impl Cli {
     pub const fn error_format(&self) -> ErrorFormat {
         self.error_format
     }
+}
+
+fn leaf_value_source(matches: &ArgMatches, id: &str) -> Option<ValueSource> {
+    let mut current = matches;
+    while let Some((_, subcommand)) = current.subcommand() {
+        current = subcommand;
+    }
+    current.value_source(id)
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -169,12 +232,112 @@ pub struct ConnectionArgs {
 pub enum Command {
     Completions(CompletionArgs),
     Commands(CommandsArgs),
+    Schemas(SchemasArgs),
     Config(ConfigArgs),
     Ui(UiArgs),
     Engine(EngineArgs),
     Groups(GroupsArgs),
     Pipelines(PipelinesArgs),
     Telemetry(TelemetryArgs),
+}
+
+impl Command {
+    fn apply_agent_output_default(&mut self) {
+        match self {
+            Command::Completions(_) | Command::Ui(_) => {}
+            Command::Commands(args) => args.output.output = ReadOutput::AgentJson,
+            Command::Schemas(args) => args.output.output = ReadOutput::AgentJson,
+            Command::Config(args) => match &mut args.command {
+                ConfigCommand::View(output) => output.output = ReadOutput::AgentJson,
+            },
+            Command::Engine(args) => match &mut args.command {
+                EngineCommand::Status(output)
+                | EngineCommand::Livez(output)
+                | EngineCommand::Readyz(output) => output.output = ReadOutput::AgentJson,
+            },
+            Command::Groups(args) => apply_group_agent_output_default(args),
+            Command::Pipelines(args) => apply_pipeline_agent_output_default(args),
+            Command::Telemetry(args) => apply_telemetry_agent_output_default(args),
+        }
+    }
+}
+
+fn apply_group_agent_output_default(args: &mut GroupsArgs) {
+    match &mut args.command {
+        GroupsCommand::Describe(output)
+        | GroupsCommand::Status(output)
+        | GroupsCommand::Diagnose(GroupDiagnoseArgs {
+            command: GroupDiagnoseCommand::Shutdown(GroupDiagnoseShutdownArgs { output, .. }),
+        }) => output.output = ReadOutput::AgentJson,
+        GroupsCommand::Events(events) => match &mut events.command {
+            GroupEventsCommand::Get(args) => args.output.output = ReadOutput::AgentJson,
+            GroupEventsCommand::Watch(args) => args.output.output = StreamOutput::Ndjson,
+        },
+        GroupsCommand::Bundle(args) => args.output = BundleOutput::AgentJson,
+        GroupsCommand::Shutdown(args) => {
+            args.output = if args.watch {
+                GroupShutdownOutput::Ndjson
+            } else {
+                GroupShutdownOutput::AgentJson
+            };
+        }
+    }
+}
+
+fn apply_pipeline_agent_output_default(args: &mut PipelinesArgs) {
+    match &mut args.command {
+        PipelinesCommand::Get(args)
+        | PipelinesCommand::Describe(args)
+        | PipelinesCommand::Status(args)
+        | PipelinesCommand::Livez(args)
+        | PipelinesCommand::Readyz(args) => args.output.output = ReadOutput::AgentJson,
+        PipelinesCommand::Events(events) => match &mut events.command {
+            PipelineEventsCommand::Get(args) => args.output.output = ReadOutput::AgentJson,
+            PipelineEventsCommand::Watch(args) => args.output.output = StreamOutput::Ndjson,
+        },
+        PipelinesCommand::Diagnose(diagnose) => match &mut diagnose.command {
+            PipelineDiagnoseCommand::Rollout(args) => args.output.output = ReadOutput::AgentJson,
+            PipelineDiagnoseCommand::Shutdown(args) => args.output.output = ReadOutput::AgentJson,
+        },
+        PipelinesCommand::Bundle(args) => args.output = BundleOutput::AgentJson,
+        PipelinesCommand::Reconfigure(args) => {
+            args.output = if args.watch {
+                MutationOutput::Ndjson
+            } else {
+                MutationOutput::AgentJson
+            };
+        }
+        PipelinesCommand::Shutdown(args) => {
+            args.output = if args.watch {
+                MutationOutput::Ndjson
+            } else {
+                MutationOutput::AgentJson
+            };
+        }
+        PipelinesCommand::Rollouts(args) => match &mut args.command {
+            RolloutCommand::Get(args) => args.output.output = ReadOutput::AgentJson,
+            RolloutCommand::Watch(args) => args.output.output = StreamOutput::Ndjson,
+        },
+        PipelinesCommand::RolloutStatus(args) => args.output.output = ReadOutput::AgentJson,
+        PipelinesCommand::Shutdowns(args) => match &mut args.command {
+            ShutdownCommand::Get(args) => args.output.output = ReadOutput::AgentJson,
+            ShutdownCommand::Watch(args) => args.output.output = StreamOutput::Ndjson,
+        },
+        PipelinesCommand::ShutdownStatus(args) => args.output.output = ReadOutput::AgentJson,
+    }
+}
+
+fn apply_telemetry_agent_output_default(args: &mut TelemetryArgs) {
+    match &mut args.command {
+        TelemetryCommand::Logs(args) => match &mut args.command {
+            LogsCommand::Get(args) => args.output.output = ReadOutput::AgentJson,
+            LogsCommand::Watch(args) => args.output.output = StreamOutput::Ndjson,
+        },
+        TelemetryCommand::Metrics(args) => match &mut args.command {
+            MetricsCommand::Get(args) => args.output.output = ReadOutput::AgentJson,
+            MetricsCommand::Watch(args) => args.output.output = StreamOutput::Ndjson,
+        },
+    }
 }
 
 #[derive(Args, Debug, Clone)]
@@ -203,6 +366,14 @@ pub struct CompletionInstallArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct CommandsArgs {
+    #[command(flatten)]
+    pub output: ReadOutputArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SchemasArgs {
+    pub name: Option<String>,
+
     #[command(flatten)]
     pub output: ReadOutputArgs,
 }
@@ -529,6 +700,9 @@ pub struct ShutdownLookupArgs {
 #[derive(Args, Debug, Clone)]
 pub struct GroupShutdownArgs {
     #[arg(long, default_value_t = false, conflicts_with = "watch")]
+    pub dry_run: bool,
+
+    #[arg(long, default_value_t = false, conflicts_with = "watch")]
     pub wait: bool,
 
     #[arg(long, value_parser = parse_duration_arg, default_value = "60s")]
@@ -551,6 +725,9 @@ pub struct ReconfigureArgs {
 
     #[arg(long, value_name = "PATH", required = true)]
     pub file: PathBuf,
+
+    #[arg(long, default_value_t = false, conflicts_with = "watch")]
+    pub dry_run: bool,
 
     #[arg(long, value_parser = parse_duration_arg, default_value = "60s")]
     pub step_timeout: Duration,
@@ -578,6 +755,9 @@ pub struct ReconfigureArgs {
 pub struct PipelineShutdownArgs {
     #[command(flatten)]
     pub target: PipelineTargetArgs,
+
+    #[arg(long, default_value_t = false, conflicts_with = "watch")]
+    pub dry_run: bool,
 
     #[arg(long, default_value_t = false, conflicts_with = "watch")]
     pub wait: bool,
@@ -1031,6 +1211,92 @@ mod tests {
         }
     }
 
+    /// Scenario: an automation client enables agent mode without per-command
+    /// output flags.
+    /// Guarantees: effective parsing switches default data, error, and color
+    /// modes to automation-safe values while preserving the selected command.
+    #[test]
+    fn agent_mode_applies_effective_defaults() {
+        let cli = Cli::try_parse_effective_from(["dfctl", "--agent", "engine", "status"])
+            .expect("agent command should parse");
+
+        assert!(cli.agent);
+        assert_eq!(cli.error_format, ErrorFormat::AgentJson);
+        assert_eq!(cli.color, ColorChoice::Never);
+        match cli.command {
+            Command::Engine(EngineArgs {
+                command: EngineCommand::Status(output),
+            }) => assert_eq!(output.output, ReadOutput::AgentJson),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    /// Scenario: an automation client enables agent mode but also passes
+    /// explicit output, error, and color flags.
+    /// Guarantees: explicit command-line flags retain precedence over agent
+    /// defaults.
+    #[test]
+    fn agent_mode_preserves_explicit_flags() {
+        let cli = Cli::try_parse_effective_from([
+            "dfctl",
+            "--agent",
+            "--error-format",
+            "text",
+            "--color",
+            "always",
+            "engine",
+            "status",
+            "--output",
+            "json",
+        ])
+        .expect("agent command should parse");
+
+        assert_eq!(cli.error_format, ErrorFormat::Text);
+        assert_eq!(cli.color, ColorChoice::Always);
+        match cli.command {
+            Command::Engine(EngineArgs {
+                command: EngineCommand::Status(output),
+            }) => assert_eq!(output.output, ReadOutput::Json),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    /// Scenario: agent mode is used with a long-running watch command.
+    /// Guarantees: effective parsing selects newline-delimited JSON instead of
+    /// the human stream renderer.
+    #[test]
+    fn agent_mode_defaults_watch_to_ndjson() {
+        let cli = Cli::try_parse_effective_from(["dfctl", "--agent", "telemetry", "logs", "watch"])
+            .expect("watch command should parse");
+
+        match cli.command {
+            Command::Telemetry(TelemetryArgs {
+                command:
+                    TelemetryCommand::Logs(LogsArgs {
+                        command: LogsCommand::Watch(args),
+                    }),
+            }) => assert_eq!(args.output.output, StreamOutput::Ndjson),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    /// Scenario: an agent discovers output schemas without resolving an admin
+    /// endpoint.
+    /// Guarantees: the schemas command parses as a local read-style command.
+    #[test]
+    fn schemas_command_parses_name_and_output() {
+        let cli = Cli::try_parse_from(["dfctl", "schemas", "dfctl.error.v1", "--output", "json"])
+            .expect("schemas command should parse");
+
+        match cli.command {
+            Command::Schemas(args) => {
+                assert_eq!(args.name.as_deref(), Some("dfctl.error.v1"));
+                assert_eq!(args.output.output, ReadOutput::Json);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
     /// Scenario: a polling interval is configured as zero.
     /// Guarantees: the parser rejects intervals that would spin or panic in
     /// long-running watch and TUI loops.
@@ -1047,6 +1313,25 @@ mod tests {
     #[test]
     fn groups_shutdown_watch_conflicts_with_wait() {
         let result = Cli::try_parse_from(["dfctl", "groups", "shutdown", "--wait", "--watch"]);
+
+        assert!(result.is_err());
+    }
+
+    /// Scenario: a high-impact mutation is checked in preflight mode while
+    /// also requesting stream output.
+    /// Guarantees: clap rejects dry-run/watch combinations because dry-run
+    /// does not create a long-running operation to watch.
+    #[test]
+    fn pipeline_shutdown_dry_run_conflicts_with_watch() {
+        let result = Cli::try_parse_from([
+            "dfctl",
+            "pipelines",
+            "shutdown",
+            "tenant-a",
+            "ingest",
+            "--dry-run",
+            "--watch",
+        ]);
 
         assert!(result.is_err());
     }

@@ -136,6 +136,23 @@ async fn config_view_json_reports_resolved_connection() {
     assert_eq!(output["tls"]["enabled"], true);
 }
 
+/// Scenario: an automation client asks for a single output schema by name.
+/// Guarantees: schema discovery is local-only and returns a versioned schema
+/// document without contacting an admin endpoint.
+#[tokio::test]
+async fn schemas_named_schema_outputs_json_document() {
+    let cli = Cli::try_parse_from(["dfctl", "schemas", "dfctl.error.v1", "--output", "json"])
+        .expect("parse");
+
+    let mut stdout = Vec::new();
+    run(cli, &mut stdout).await.expect("run");
+
+    let output: serde_json::Value = serde_json::from_slice(&stdout).expect("json");
+    assert_eq!(output["schemaVersion"], "dfctl-schema-document/v1");
+    assert_eq!(output["name"], "dfctl.error.v1");
+    assert_eq!(output["schema"]["title"], "dfctl structured error");
+}
+
 /// Scenario: a human invokes a command with repeated verbose flags.
 /// Guarantees: diagnostics are written to stderr and keep stdout reserved for
 /// the command result.
@@ -465,6 +482,76 @@ async fn reconfigure_sends_wait_query_and_request_body() {
 
     let mut stdout = Vec::new();
     run(cli, &mut stdout).await.expect("run");
+}
+
+/// Scenario: a pipeline reconfigure is checked with client-side dry-run.
+/// Guarantees: the CLI parses and validates the supplied config, emits a
+/// structured preflight-only outcome, and does not require a live operation.
+#[tokio::test]
+async fn reconfigure_dry_run_emits_preflight_outcome() {
+    let server = MockServer::start().await;
+    let dir = tempdir().expect("tempdir");
+    let file_path = dir.path().join("pipeline.yaml");
+    fs::write(
+        &file_path,
+        serde_yaml::to_string(&pipeline_config()).expect("yaml"),
+    )
+    .expect("write");
+
+    let cli = Cli::try_parse_from([
+        "dfctl",
+        "--url",
+        &server.uri(),
+        "pipelines",
+        "reconfigure",
+        "tenant-a",
+        "ingest",
+        "--file",
+        file_path.to_str().expect("path"),
+        "--dry-run",
+        "--output",
+        "json",
+    ])
+    .expect("parse");
+
+    let mut stdout = Vec::new();
+    run(cli, &mut stdout).await.expect("run");
+
+    let output: serde_json::Value = serde_json::from_slice(&stdout).expect("json");
+    assert_eq!(output["outcome"], "preflight_only");
+    assert_eq!(output["data"]["mode"], "preflight-only");
+    assert_eq!(output["data"]["operation"], "pipelines.reconfigure");
+    assert_eq!(output["data"]["serverValidation"], false);
+    assert_eq!(output["data"]["target"]["pipelineGroupId"], "tenant-a");
+}
+
+/// Scenario: a pipeline shutdown is checked with client-side dry-run.
+/// Guarantees: the CLI emits a mutation-shaped preflight response and avoids
+/// creating a shutdown operation.
+#[tokio::test]
+async fn shutdown_dry_run_emits_preflight_outcome() {
+    let server = MockServer::start().await;
+    let cli = Cli::try_parse_from([
+        "dfctl",
+        "--url",
+        &server.uri(),
+        "pipelines",
+        "shutdown",
+        "tenant-a",
+        "ingest",
+        "--dry-run",
+        "--output",
+        "json",
+    ])
+    .expect("parse");
+
+    let mut stdout = Vec::new();
+    run(cli, &mut stdout).await.expect("run");
+
+    let output: serde_json::Value = serde_json::from_slice(&stdout).expect("json");
+    assert_eq!(output["outcome"], "preflight_only");
+    assert_eq!(output["data"]["operation"], "pipelines.shutdown");
+    assert_eq!(output["data"]["serverValidation"], false);
 }
 
 /// Scenario: the user watches a rollout resource in NDJSON mode and the first

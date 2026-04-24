@@ -6,6 +6,11 @@
 use crate::Cli;
 use crate::args::CommandsArgs;
 use crate::commands::output::emit_read;
+use crate::commands::schemas::{
+    AGENT_ENVELOPE_SCHEMA, COMMAND_CATALOG_SCHEMA, DIAGNOSE_REPORT_SCHEMA, ERROR_SCHEMA,
+    JSON_SCHEMA_SCHEMA, MUTATION_OUTCOME_SCHEMA, SCHEMA_CATALOG_SCHEMA, STREAM_EVENT_SCHEMA,
+    SUPPORT_BUNDLE_SCHEMA,
+};
 use crate::error::CliError;
 use crate::style::HumanStyle;
 use clap::builder::ValueRange;
@@ -74,6 +79,8 @@ fn collect_command(
         .filter(|argument| !argument.global)
         .collect::<Vec<_>>();
     let output_modes = output_modes(&arguments);
+    let default_output = default_output(&arguments);
+    let agent_default_output = agent_default_output(path, &output_modes);
     let command_line = command_line(path);
     let runnable = leaf
         || arguments
@@ -86,6 +93,7 @@ fn collect_command(
     };
 
     commands.push(CommandEntry {
+        id: command_id(path),
         name: command.get_name().to_string(),
         path: path.clone(),
         command_line,
@@ -100,6 +108,18 @@ fn collect_command(
         long_running: is_long_running(path),
         mutation: is_mutation(path),
         output_modes,
+        default_output,
+        agent_default_output,
+        output_schema: if runnable { output_schema(path) } else { None },
+        stream_schema: if runnable { stream_schema(path) } else { None },
+        error_schema: error_schema(path),
+        stdin: stdin_support(path),
+        safety: safety(path),
+        idempotent: is_idempotent(path),
+        supports_dry_run: supports_dry_run(&arguments),
+        supports_wait: supports_flag(&arguments, "wait"),
+        supports_watch: supports_flag(&arguments, "watch"),
+        exit_codes: exit_codes(path),
         arguments: arguments.clone(),
         examples,
     });
@@ -233,6 +253,43 @@ fn output_modes(arguments: &[ArgumentEntry]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn default_output(arguments: &[ArgumentEntry]) -> Option<String> {
+    arguments
+        .iter()
+        .find(|argument| argument.long.as_deref() == Some("output"))
+        .and_then(|argument| argument.default_values.first().cloned())
+}
+
+fn agent_default_output(path: &[String], output_modes: &[String]) -> Option<String> {
+    if output_modes.is_empty() {
+        return None;
+    }
+    if is_long_running(path) && output_modes.iter().any(|mode| mode == "ndjson") {
+        return Some("ndjson".to_string());
+    }
+    if output_modes.iter().any(|mode| mode == "agent-json") {
+        return Some("agent-json".to_string());
+    }
+    if output_modes.iter().any(|mode| mode == "json") {
+        return Some("json".to_string());
+    }
+    output_modes.first().cloned()
+}
+
+fn supports_flag(arguments: &[ArgumentEntry], long: &str) -> bool {
+    arguments
+        .iter()
+        .any(|argument| argument.long.as_deref() == Some(long))
+}
+
+fn supports_dry_run(arguments: &[ArgumentEntry]) -> bool {
+    supports_flag(arguments, "dry-run")
+}
+
+fn command_id(path: &[String]) -> String {
+    format!("dfctl.{}", path.join(".").replace('-', "_"))
+}
+
 fn command_line(path: &[String]) -> String {
     format!("{BIN_NAME} {}", path.join(" "))
 }
@@ -314,6 +371,10 @@ fn curated_examples(path: &[String]) -> Vec<String> {
         .as_slice()
     {
         ["commands"] => vec!["dfctl commands --output json".to_string()],
+        ["schemas"] => vec![
+            "dfctl schemas --output json".to_string(),
+            "dfctl schemas dfctl.error.v1 --output json".to_string(),
+        ],
         ["completions"] => vec!["dfctl completions bash".to_string()],
         ["completions", "install"] => vec!["dfctl completions install zsh".to_string()],
         ["config", "view"] => vec!["dfctl config view --output json".to_string()],
@@ -416,7 +477,7 @@ fn dedupe(values: Vec<String>) -> Vec<String> {
 fn requires_admin_client(path: &[String]) -> bool {
     !matches!(
         path.first().map(String::as_str),
-        Some("completions" | "commands" | "config")
+        Some("completions" | "commands" | "schemas" | "config")
     )
 }
 
@@ -439,6 +500,106 @@ fn is_mutation(path: &[String]) -> bool {
             | ["pipelines", "reconfigure"]
             | ["pipelines", "shutdown"]
     )
+}
+
+fn output_schema(path: &[String]) -> Option<&'static str> {
+    match path
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["commands"] => Some(COMMAND_CATALOG_SCHEMA),
+        ["schemas"] => Some(SCHEMA_CATALOG_SCHEMA),
+        ["schemas", _] => Some(JSON_SCHEMA_SCHEMA),
+        ["groups", "bundle"] | ["pipelines", "bundle"] => Some(SUPPORT_BUNDLE_SCHEMA),
+        ["groups", "diagnose", _] | ["pipelines", "diagnose", _] => Some(DIAGNOSE_REPORT_SCHEMA),
+        ["groups", "shutdown"] | ["pipelines", "reconfigure"] | ["pipelines", "shutdown"] => {
+            Some(MUTATION_OUTCOME_SCHEMA)
+        }
+        _ if is_long_running(path) => None,
+        _ if has_read_output(path) => Some(AGENT_ENVELOPE_SCHEMA),
+        _ => None,
+    }
+}
+
+fn stream_schema(path: &[String]) -> Option<&'static str> {
+    if is_long_running(path) {
+        Some(STREAM_EVENT_SCHEMA)
+    } else {
+        None
+    }
+}
+
+fn error_schema(path: &[String]) -> Option<&'static str> {
+    if !path.is_empty() {
+        Some(ERROR_SCHEMA)
+    } else {
+        None
+    }
+}
+
+fn has_read_output(path: &[String]) -> bool {
+    !matches!(path.first().map(String::as_str), Some("completions" | "ui"))
+}
+
+fn stdin_support(path: &[String]) -> StdinSupport {
+    if matches!(
+        path.iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["pipelines", "reconfigure"]
+    ) {
+        StdinSupport::Optional
+    } else {
+        StdinSupport::None
+    }
+}
+
+fn safety(path: &[String]) -> SafetyLevel {
+    match path
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["groups", "shutdown"] | ["pipelines", "reconfigure"] | ["pipelines", "shutdown"] => {
+            SafetyLevel::HighImpact
+        }
+        ["completions", "install"] => SafetyLevel::LowImpact,
+        _ => SafetyLevel::Read,
+    }
+}
+
+fn is_idempotent(path: &[String]) -> bool {
+    match safety(path) {
+        SafetyLevel::Read => true,
+        SafetyLevel::LowImpact => true,
+        SafetyLevel::HighImpact | SafetyLevel::Destructive => false,
+    }
+}
+
+fn exit_codes(path: &[String]) -> Vec<ExitCodeEntry> {
+    if requires_admin_client(path) {
+        vec![
+            ExitCodeEntry::new(0, "success"),
+            ExitCodeEntry::new(2, "invalid CLI usage"),
+            ExitCodeEntry::new(3, "requested admin resource was not found"),
+            ExitCodeEntry::new(4, "admin API rejected the request"),
+            ExitCodeEntry::new(5, "accepted operation failed or timed out"),
+            ExitCodeEntry::new(
+                6,
+                "configuration, I/O, transport, decode, or internal error",
+            ),
+        ]
+    } else {
+        vec![
+            ExitCodeEntry::new(0, "success"),
+            ExitCodeEntry::new(2, "invalid CLI usage"),
+            ExitCodeEntry::new(6, "configuration or I/O error"),
+        ]
+    }
 }
 
 fn format_action(action: &ArgAction) -> String {
@@ -580,6 +741,7 @@ struct CommandCatalog {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CommandEntry {
+    id: String,
     name: String,
     path: Vec<String>,
     command_line: String,
@@ -594,8 +756,52 @@ struct CommandEntry {
     long_running: bool,
     mutation: bool,
     output_modes: Vec<String>,
+    default_output: Option<String>,
+    agent_default_output: Option<String>,
+    output_schema: Option<&'static str>,
+    stream_schema: Option<&'static str>,
+    error_schema: Option<&'static str>,
+    stdin: StdinSupport,
+    safety: SafetyLevel,
+    idempotent: bool,
+    supports_dry_run: bool,
+    supports_wait: bool,
+    supports_watch: bool,
+    exit_codes: Vec<ExitCodeEntry>,
     arguments: Vec<ArgumentEntry>,
     examples: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
+enum StdinSupport {
+    None,
+    Optional,
+    Required,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
+enum SafetyLevel {
+    Read,
+    LowImpact,
+    HighImpact,
+    Destructive,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExitCodeEntry {
+    code: u8,
+    meaning: &'static str,
+}
+
+impl ExitCodeEntry {
+    const fn new(code: u8, meaning: &'static str) -> Self {
+        Self { code, meaning }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -672,6 +878,12 @@ mod tests {
                 .iter()
                 .any(|command| command.path == ["completions", "install"])
         );
+        assert!(
+            catalog
+                .commands
+                .iter()
+                .any(|command| command.path == ["schemas"])
+        );
     }
 
     /// Scenario: command metadata is generated from clap argument definitions.
@@ -697,6 +909,14 @@ mod tests {
             pipeline_get.output_modes,
             vec!["human", "json", "yaml", "agent-json"]
         );
+        assert_eq!(pipeline_get.id, "dfctl.pipelines.get");
+        assert_eq!(pipeline_get.default_output.as_deref(), Some("human"));
+        assert_eq!(
+            pipeline_get.agent_default_output.as_deref(),
+            Some("agent-json")
+        );
+        assert_eq!(pipeline_get.output_schema, Some(AGENT_ENVELOPE_SCHEMA));
+        assert_eq!(pipeline_get.error_schema, Some(ERROR_SCHEMA));
         assert!(!pipeline_get.examples.is_empty());
     }
 
@@ -720,6 +940,31 @@ mod tests {
         assert!(!commands.requires_admin_client);
         assert!(logs_watch.requires_admin_client);
         assert!(logs_watch.long_running);
+        assert_eq!(logs_watch.agent_default_output.as_deref(), Some("ndjson"));
+        assert_eq!(logs_watch.stream_schema, Some(STREAM_EVENT_SCHEMA));
         assert_eq!(logs_watch.output_modes, vec!["human", "ndjson"]);
+    }
+
+    /// Scenario: mutation commands are inspected before an agent decides
+    /// whether they can be safely run unattended.
+    /// Guarantees: the catalog marks high-impact commands, dry-run support,
+    /// wait/watch support, stdin support, and non-idempotent behavior.
+    #[test]
+    fn catalog_marks_mutation_safety_and_preflight_metadata() {
+        let catalog = build_catalog();
+        let reconfigure = catalog
+            .commands
+            .iter()
+            .find(|command| command.path == ["pipelines", "reconfigure"])
+            .expect("pipeline reconfigure command");
+
+        assert!(reconfigure.mutation);
+        assert_eq!(reconfigure.safety, SafetyLevel::HighImpact);
+        assert_eq!(reconfigure.stdin, StdinSupport::Optional);
+        assert!(!reconfigure.idempotent);
+        assert!(reconfigure.supports_dry_run);
+        assert!(reconfigure.supports_wait);
+        assert!(reconfigure.supports_watch);
+        assert_eq!(reconfigure.output_schema, Some(MUTATION_OUTCOME_SCHEMA));
     }
 }

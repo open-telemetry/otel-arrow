@@ -3,11 +3,10 @@
 
 //! Binary entrypoint for the `dfctl` OTAP Dataflow Engine admin CLI.
 
-use clap::Parser;
 use std::io::{self, IsTerminal, Write};
 
 fn main() -> std::process::ExitCode {
-    let cli = otap_df_enginectl::Cli::parse();
+    let cli = otap_df_enginectl::Cli::parse_effective();
     let error_format = cli.error_format();
     let stdout_is_terminal = io::stdout().is_terminal();
     if cli.is_ui() {

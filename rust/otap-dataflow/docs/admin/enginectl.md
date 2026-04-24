@@ -15,6 +15,7 @@ It is intended to be:
 dfctl completions <shell>
 dfctl completions install <shell>
 dfctl commands
+dfctl schemas [schema-name]
 dfctl config view
 dfctl engine status|livez|readyz
 dfctl groups describe|status|shutdown
@@ -67,6 +68,24 @@ dfctl --profile-file ./dfctl-profile.yaml config view --output json
 
 ## Output Modes
 
+Choose the output format based on the consumer:
+
+- `human`: terminal-oriented text with optional color and tables. Use it for
+  interactive use, not as a stable parsing contract.
+- `json`: direct machine-readable command payload as one pretty-printed JSON
+  document. Use it for scripts, `jq`, and CI snapshots.
+- `yaml`: direct command payload as one YAML document. Use it for saved files,
+  inspection, and hand editing.
+- `agent-json`: direct payload wrapped in a `dfctl/v1` envelope with
+  `schemaVersion`, `type`, `resource`, `generatedAt`, and `data`. Use it when
+  an agent needs a uniform response shape and provenance.
+- `ndjson`: incremental stream output with one compact JSON object per line.
+  Use it for watch commands, shell pipelines, and long-running automation.
+
+`agent-json` is not a different JSON encoding. It is JSON plus a stable
+`dfctl` envelope around the same command data. `ndjson` is separate because a
+long-running stream cannot be represented as one finite JSON document.
+
 One-shot commands support:
 
 - `--output human`
@@ -86,6 +105,16 @@ and `--output agent-json` for single responses. Use `--output ndjson` with
 Bundle commands support `--output json`, `--output yaml`, and
 `--output agent-json`.
 
+Use `--agent` or `DFCTL_AGENT_MODE=true` when running in automation-heavy
+contexts. Agent mode changes defaults only:
+
+- one-shot read and mutation commands default to `--output agent-json`
+- watch commands default to `--output ndjson`
+- runtime errors default to `--error-format agent-json`
+- human color defaults to `--color never`
+
+Explicit `--output`, `--error-format`, and `--color` flags always win.
+
 ## Command Catalog
 
 `dfctl commands` emits a human-readable table of runnable commands. It is local
@@ -96,7 +125,8 @@ dfctl commands
 ```
 
 Use JSON for scripts and agents that need to discover command paths,
-arguments, aliases, output modes, examples, and execution hints:
+arguments, aliases, output modes, examples, schemas, safety level, stdin
+support, dry-run support, and execution hints:
 
 ```bash
 dfctl commands --output json
@@ -104,8 +134,15 @@ dfctl commands --output json
 
 The catalog is generated from the clap command tree and uses
 `schemaVersion: dfctl-command-catalog/v1`. Top-level `globalArguments` apply to
-all commands. Each command entry includes local `arguments`, `outputModes`,
-`examples`, `requiresAdminClient`, `interactive`, `longRunning`, and `mutation`.
+all commands.
+
+Discover output schemas without connecting to the admin API:
+
+```bash
+dfctl schemas
+dfctl schemas --output json
+dfctl schemas dfctl.error.v1 --output json
+```
 
 ## Shell Completions
 
@@ -197,6 +234,15 @@ dfctl pipelines reconfigure tenant-a ingest \
   --wait
 ```
 
+Validate a local reconfigure request without creating a rollout:
+
+```bash
+dfctl pipelines reconfigure tenant-a ingest \
+  --file pipeline.yaml \
+  --dry-run \
+  --output json
+```
+
 Submit a pipeline update and keep watching rollout progress:
 
 ```bash
@@ -261,6 +307,7 @@ dfctl pipelines bundle tenant-a ingest --file pipeline-bundle.json
 Watch coordinated group shutdown progress:
 
 ```bash
+dfctl groups shutdown --dry-run --output json
 dfctl groups shutdown --watch
 ```
 
