@@ -5,7 +5,7 @@
 
 use crate::client::{AdminBackend, HttpAdminClientSettings};
 use crate::endpoint::{AdminAuth, AdminEndpoint, AdminScheme};
-use crate::{Error, engine, operations, pipeline_groups, pipelines, telemetry};
+use crate::{Error, engine, groups, operations, pipelines, telemetry};
 use async_trait::async_trait;
 use reqwest::{Certificate, ClientBuilder, Identity, Method, Url};
 use serde::de::DeserializeOwned;
@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 struct RawRequest {
     method: Method,
     url: Url,
+    body: Option<Vec<u8>>,
 }
 
 struct RawResponse {
@@ -50,7 +51,7 @@ impl HttpBackend {
         expected_statuses: &[u16],
     ) -> Result<(u16, T), Error> {
         let (status, body) = self
-            .request_raw(method, segments, query, expected_statuses)
+            .request_raw(method, segments, query, None, expected_statuses)
             .await?;
         Ok((status, self.decode_json(&body)?))
     }
@@ -63,7 +64,7 @@ impl HttpBackend {
         expected_statuses: &[u16],
     ) -> Result<pipelines::ProbeResult, Error> {
         let (status_code, body) = self
-            .request_raw(method, segments, query, expected_statuses)
+            .request_raw(method, segments, query, None, expected_statuses)
             .await?;
         let status = match status_code {
             200 => pipelines::ProbeStatus::Ok,
@@ -81,6 +82,7 @@ impl HttpBackend {
         method: Method,
         segments: &[&str],
         query: &[(&str, String)],
+        body: Option<Vec<u8>>,
         expected_statuses: &[u16],
     ) -> Result<(u16, Vec<u8>), Error> {
         let mut url = self.endpoint.url_for_segments(segments.iter().copied())?;
@@ -95,6 +97,7 @@ impl HttpBackend {
             .send(RawRequest {
                 method: method.clone(),
                 url,
+                body,
             })
             .await?;
 
@@ -111,11 +114,17 @@ impl HttpBackend {
     }
 
     async fn send(&self, request: RawRequest) -> Result<RawResponse, Error> {
-        let RawRequest { method, url } = request;
-        let builder = self.client.request(method, url.clone());
+        let RawRequest { method, url, body } = request;
+        let mut builder = self.client.request(method, url.clone());
 
         match self.auth {
             AdminAuth::None => {}
+        }
+
+        if let Some(body) = body {
+            builder = builder
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body);
         }
 
         let response = builder.send().await.map_err(|err| Error::Transport {
@@ -145,6 +154,11 @@ impl HttpBackend {
             details: err.to_string(),
         })
     }
+
+    fn decode_operation_error(&self, status: u16, body: &[u8]) -> Result<Error, Error> {
+        let error = self.decode_json::<operations::OperationError>(body)?;
+        Ok(Error::AdminOperation { status, error })
+    }
 }
 
 #[async_trait]
@@ -167,30 +181,130 @@ impl AdminBackend for HttpBackend {
             .map(|(_, body)| body)
     }
 
-    async fn pipeline_groups_status(&self) -> Result<pipeline_groups::Status, Error> {
-        self.request_json(
-            Method::GET,
-            &["api", "v1", "pipeline-groups", "status"],
-            &[],
-            &[200],
-        )
-        .await
-        .map(|(_, body)| body)
+    async fn groups_status(&self) -> Result<groups::Status, Error> {
+        self.request_json(Method::GET, &["api", "v1", "groups", "status"], &[], &[200])
+            .await
+            .map(|(_, body)| body)
     }
 
-    async fn pipeline_groups_shutdown(
+    async fn groups_shutdown(
         &self,
         options: &operations::OperationOptions,
-    ) -> Result<pipeline_groups::ShutdownResponse, Error> {
+    ) -> Result<groups::ShutdownResponse, Error> {
         let query = options.to_query_pairs();
         self.request_json(
             Method::POST,
-            &["api", "v1", "pipeline-groups", "shutdown"],
+            &["api", "v1", "groups", "shutdown"],
             &query,
             &[200, 202, 500, 504],
         )
         .await
         .map(|(_, body)| body)
+    }
+
+    async fn pipeline_details(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+    ) -> Result<Option<pipelines::PipelineDetails>, Error> {
+        let (status, body) = self
+            .request_raw(
+                Method::GET,
+                &[
+                    "api",
+                    "v1",
+                    "groups",
+                    pipeline_group_id,
+                    "pipelines",
+                    pipeline_id,
+                ],
+                &[],
+                None,
+                &[200, 404],
+            )
+            .await?;
+        if status == 404 {
+            return Ok(None);
+        }
+        self.decode_json(&body).map(Some)
+    }
+
+    async fn pipeline_reconfigure(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        request: &pipelines::ReconfigureRequest,
+        options: &operations::OperationOptions,
+    ) -> Result<pipelines::ReconfigureOutcome, Error> {
+        let query = options.to_query_pairs();
+        let (status, body) = self
+            .request_raw(
+                Method::PUT,
+                &[
+                    "api",
+                    "v1",
+                    "groups",
+                    pipeline_group_id,
+                    "pipelines",
+                    pipeline_id,
+                ],
+                &query,
+                Some(
+                    serde_json::to_vec(request).map_err(|err| Error::ClientConfig {
+                        details: format!("failed to encode reconfigure request: {err}"),
+                    })?,
+                ),
+                &[200, 202, 404, 409, 422, 500, 504],
+            )
+            .await?;
+
+        match status {
+            200 => self
+                .decode_json(&body)
+                .map(pipelines::ReconfigureOutcome::Completed),
+            202 => self
+                .decode_json(&body)
+                .map(pipelines::ReconfigureOutcome::Accepted),
+            409 => match self.decode_json::<pipelines::RolloutStatus>(&body) {
+                Ok(status) => Ok(pipelines::ReconfigureOutcome::Failed(status)),
+                Err(_) => Err(self.decode_operation_error(status, &body)?),
+            },
+            504 => self
+                .decode_json(&body)
+                .map(pipelines::ReconfigureOutcome::TimedOut),
+            404 | 422 | 500 => Err(self.decode_operation_error(status, &body)?),
+            _ => unreachable!("request_raw should have filtered unexpected statuses"),
+        }
+    }
+
+    async fn pipeline_rollout_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        rollout_id: &str,
+    ) -> Result<Option<pipelines::RolloutStatus>, Error> {
+        let (status, body) = self
+            .request_raw(
+                Method::GET,
+                &[
+                    "api",
+                    "v1",
+                    "groups",
+                    pipeline_group_id,
+                    "pipelines",
+                    pipeline_id,
+                    "rollouts",
+                    rollout_id,
+                ],
+                &[],
+                None,
+                &[200, 404],
+            )
+            .await?;
+        if status == 404 {
+            return Ok(None);
+        }
+        self.decode_json(&body).map(Some)
     }
 
     async fn pipeline_status(
@@ -203,7 +317,7 @@ impl AdminBackend for HttpBackend {
             &[
                 "api",
                 "v1",
-                "pipeline-groups",
+                "groups",
                 pipeline_group_id,
                 "pipelines",
                 pipeline_id,
@@ -226,7 +340,7 @@ impl AdminBackend for HttpBackend {
             &[
                 "api",
                 "v1",
-                "pipeline-groups",
+                "groups",
                 pipeline_group_id,
                 "pipelines",
                 pipeline_id,
@@ -248,7 +362,7 @@ impl AdminBackend for HttpBackend {
             &[
                 "api",
                 "v1",
-                "pipeline-groups",
+                "groups",
                 pipeline_group_id,
                 "pipelines",
                 pipeline_id,
@@ -258,6 +372,80 @@ impl AdminBackend for HttpBackend {
             &[200, 503],
         )
         .await
+    }
+
+    async fn pipeline_shutdown(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        options: &operations::OperationOptions,
+    ) -> Result<pipelines::ShutdownOutcome, Error> {
+        let query = options.to_query_pairs();
+        let (status, body) = self
+            .request_raw(
+                Method::POST,
+                &[
+                    "api",
+                    "v1",
+                    "groups",
+                    pipeline_group_id,
+                    "pipelines",
+                    pipeline_id,
+                    "shutdown",
+                ],
+                &query,
+                None,
+                &[200, 202, 404, 409, 422, 500, 504],
+            )
+            .await?;
+
+        match status {
+            200 => self
+                .decode_json(&body)
+                .map(pipelines::ShutdownOutcome::Completed),
+            202 => self
+                .decode_json(&body)
+                .map(pipelines::ShutdownOutcome::Accepted),
+            409 => match self.decode_json::<pipelines::ShutdownStatus>(&body) {
+                Ok(status) => Ok(pipelines::ShutdownOutcome::Failed(status)),
+                Err(_) => Err(self.decode_operation_error(status, &body)?),
+            },
+            504 => self
+                .decode_json(&body)
+                .map(pipelines::ShutdownOutcome::TimedOut),
+            404 | 422 | 500 => Err(self.decode_operation_error(status, &body)?),
+            _ => unreachable!("request_raw should have filtered unexpected statuses"),
+        }
+    }
+
+    async fn pipeline_shutdown_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        shutdown_id: &str,
+    ) -> Result<Option<pipelines::ShutdownStatus>, Error> {
+        let (status, body) = self
+            .request_raw(
+                Method::GET,
+                &[
+                    "api",
+                    "v1",
+                    "groups",
+                    pipeline_group_id,
+                    "pipelines",
+                    pipeline_id,
+                    "shutdowns",
+                    shutdown_id,
+                ],
+                &[],
+                None,
+                &[200, 404],
+            )
+            .await?;
+        if status == 404 {
+            return Ok(None);
+        }
+        self.decode_json(&body).map(Some)
     }
 
     async fn telemetry_logs(
@@ -270,6 +458,7 @@ impl AdminBackend for HttpBackend {
                 Method::GET,
                 &["api", "v1", "telemetry", "logs"],
                 &query_pairs,
+                None,
                 &[200, 404],
             )
             .await?;
@@ -533,15 +722,16 @@ fn ensure_crypto_provider() -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::config::tls::{TlsClientConfig, TlsConfig};
-    use crate::{AdminClient, engine, operations, pipeline_groups, pipelines, telemetry};
+    use crate::{AdminClient, engine, groups, operations, pipelines, telemetry};
     use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
     use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+    use serde_json::json;
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(server: &MockServer) -> AdminClient {
@@ -550,6 +740,18 @@ mod tests {
             .http(HttpAdminClientSettings::new(endpoint))
             .build()
             .expect("client should build")
+    }
+
+    fn minimal_pipeline_json() -> serde_json::Value {
+        json!({
+            "type": "otap",
+            "nodes": {
+                "recv": {
+                    "type": "receiver:fake",
+                    "config": {}
+                }
+            }
+        })
     }
 
     async fn start_https_json_server(
@@ -682,25 +884,29 @@ mod tests {
         assert_eq!(response.status, engine::ProbeStatus::Failed);
     }
 
+    /// Scenario: the SDK calls the group shutdown endpoint with wait/query
+    /// options and the server returns a non-200 success body.
+    /// Guarantees: the HTTP backend targets `/api/v1/groups/shutdown`,
+    /// forwards the query parameters, and still decodes the accepted response.
     #[tokio::test]
-    async fn pipeline_groups_shutdown_accepts_query_and_non_200_success_shapes() {
+    async fn groups_shutdown_accepts_query_and_non_200_success_shapes() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v1/pipeline-groups/shutdown"))
+            .and(path("/api/v1/groups/shutdown"))
             .and(query_param("wait", "true"))
             .and(query_param("timeout_secs", "30"))
-            .respond_with(ResponseTemplate::new(202).set_body_json(
-                pipeline_groups::ShutdownResponse {
-                    status: pipeline_groups::ShutdownStatus::Accepted,
+            .respond_with(
+                ResponseTemplate::new(202).set_body_json(groups::ShutdownResponse {
+                    status: groups::ShutdownStatus::Accepted,
                     errors: None,
                     duration_ms: None,
-                },
-            ))
+                }),
+            )
             .mount(&server)
             .await;
 
         let response = client(&server)
-            .pipeline_groups()
+            .groups()
             .shutdown(&operations::OperationOptions {
                 wait: true,
                 timeout_secs: 30,
@@ -708,22 +914,47 @@ mod tests {
             .await
             .expect("shutdown should decode");
 
-        assert_eq!(response.status, pipeline_groups::ShutdownStatus::Accepted);
+        assert_eq!(response.status, groups::ShutdownStatus::Accepted);
+    }
+
+    /// Scenario: a caller requests group status through the public SDK.
+    /// Guarantees: the HTTP backend uses the `/api/v1/groups/status` route
+    /// instead of the older pipeline-groups path and decodes the payload.
+    #[tokio::test]
+    async fn groups_status_uses_groups_route() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/groups/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(groups::Status {
+                generated_at: "2026-01-01T00:00:00Z".to_string(),
+                pipelines: Default::default(),
+            }))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .groups()
+            .status()
+            .await
+            .expect("group status should decode");
+        assert_eq!(response.generated_at, "2026-01-01T00:00:00Z");
     }
 
     #[tokio::test]
     async fn pipeline_status_decodes_optional_payload() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(
-                "/api/v1/pipeline-groups/default/pipelines/main/status",
-            ))
+            .and(path("/api/v1/groups/default/pipelines/main/status"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(Some(pipelines::Status {
                     conditions: vec![],
                     total_cores: 1,
                     running_cores: 1,
                     cores: Default::default(),
+                    instances: None,
+                    active_generation: None,
+                    serving_generations: None,
+                    rollout: None,
                 })),
             )
             .mount(&server)
@@ -738,11 +969,307 @@ mod tests {
         assert!(response.is_some());
     }
 
+    /// Scenario: the server returns a committed pipeline details payload for an
+    /// existing logical pipeline.
+    /// Guarantees: the SDK surfaces that payload as `Some(...)` rather than
+    /// treating it as an optional or missing resource.
+    #[tokio::test]
+    async fn pipeline_details_returns_some_on_200() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/groups/default/pipelines/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "activeGeneration": 3,
+                "pipeline": minimal_pipeline_json(),
+                "rollout": {
+                    "rolloutId": "rollout-3",
+                    "state": "running",
+                    "targetGeneration": 3,
+                    "startedAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:01Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .details("default", "main")
+            .await
+            .expect("pipeline details should decode");
+
+        assert!(response.is_some());
+    }
+
+    /// Scenario: a caller submits an asynchronous reconfigure request through
+    /// the public SDK.
+    /// Guarantees: the backend serializes the request body and query options
+    /// correctly and maps an accepted rollout response to `Accepted`.
+    #[tokio::test]
+    async fn pipeline_reconfigure_encodes_request_and_decodes_accepted() {
+        let server = MockServer::start().await;
+        let request = pipelines::ReconfigureRequest {
+            pipeline: serde_json::from_value(minimal_pipeline_json())
+                .expect("fixture pipeline should deserialize"),
+            step_timeout_secs: 45,
+            drain_timeout_secs: 30,
+        };
+        Mock::given(method("PUT"))
+            .and(path("/api/v1/groups/default/pipelines/main"))
+            .and(query_param("wait", "false"))
+            .and(query_param("timeout_secs", "120"))
+            .and(body_json(
+                serde_json::to_value(&request).expect("request should serialize"),
+            ))
+            .respond_with(ResponseTemplate::new(202).set_body_json(json!({
+                "rolloutId": "rollout-3",
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "action": "replace",
+                "state": "running",
+                "targetGeneration": 3,
+                "previousGeneration": 2,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:01Z",
+                "cores": []
+            })))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .reconfigure(
+                "default",
+                "main",
+                &request,
+                &operations::OperationOptions {
+                    wait: false,
+                    timeout_secs: 120,
+                },
+            )
+            .await
+            .expect("reconfigure should decode");
+
+        match response {
+            pipelines::ReconfigureOutcome::Accepted(status) => {
+                assert_eq!(status.rollout_id, "rollout-3");
+                assert_eq!(status.state, pipelines::PipelineRolloutState::Running);
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    /// Scenario: a waited reconfigure request reaches a terminal failed rollout
+    /// and the server reports that state with a 409 status body.
+    /// Guarantees: the backend treats this as an operation outcome, not a typed
+    /// request rejection, and returns `ReconfigureOutcome::Failed`.
+    #[tokio::test]
+    async fn pipeline_reconfigure_decodes_failed_outcome_from_409_status_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/v1/groups/default/pipelines/main"))
+            .and(query_param("wait", "true"))
+            .and(query_param("timeout_secs", "60"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "rolloutId": "rollout-4",
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "action": "replace",
+                "state": "failed",
+                "targetGeneration": 4,
+                "previousGeneration": 3,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:10Z",
+                "failureReason": "candidate failed admission",
+                "cores": []
+            })))
+            .mount(&server)
+            .await;
+
+        let request = pipelines::ReconfigureRequest {
+            pipeline: serde_json::from_value(minimal_pipeline_json())
+                .expect("fixture pipeline should deserialize"),
+            step_timeout_secs: 60,
+            drain_timeout_secs: 60,
+        };
+
+        let response = client(&server)
+            .pipelines()
+            .reconfigure(
+                "default",
+                "main",
+                &request,
+                &operations::OperationOptions {
+                    wait: true,
+                    timeout_secs: 60,
+                },
+            )
+            .await
+            .expect("failed outcome should decode");
+
+        match response {
+            pipelines::ReconfigureOutcome::Failed(status) => {
+                assert_eq!(status.rollout_id, "rollout-4");
+                assert_eq!(status.state, pipelines::PipelineRolloutState::Failed);
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    /// Scenario: the server rejects a reconfigure request before any rollout
+    /// work starts and returns a structured operation error body.
+    /// Guarantees: the backend preserves that rejection as
+    /// `Error::AdminOperation` so callers can distinguish it from transport
+    /// failures and terminal rollout outcomes.
+    #[tokio::test]
+    async fn pipeline_reconfigure_decodes_admin_operation_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/v1/groups/default/pipelines/main"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "kind": "invalid_request",
+                "message": "topic runtime mutation is not supported"
+            })))
+            .mount(&server)
+            .await;
+
+        let request = pipelines::ReconfigureRequest {
+            pipeline: serde_json::from_value(minimal_pipeline_json())
+                .expect("fixture pipeline should deserialize"),
+            step_timeout_secs: 60,
+            drain_timeout_secs: 60,
+        };
+
+        let err = client(&server)
+            .pipelines()
+            .reconfigure(
+                "default",
+                "main",
+                &request,
+                &operations::OperationOptions::default(),
+            )
+            .await
+            .expect_err("request rejection should be typed");
+
+        match err {
+            Error::AdminOperation { status, error } => {
+                assert_eq!(status, 422);
+                assert_eq!(error.kind, operations::OperationErrorKind::InvalidRequest);
+                assert_eq!(
+                    error.message.as_deref(),
+                    Some("topic runtime mutation is not supported")
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    /// Scenario: a caller polls a rollout id that no longer exists or was never
+    /// created.
+    /// Guarantees: the backend maps HTTP 404 to `Ok(None)` for rollout status
+    /// lookups instead of treating it as an SDK error.
+    #[tokio::test]
+    async fn pipeline_rollout_status_returns_none_on_404() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/v1/groups/default/pipelines/main/rollouts/rollout-9",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .rollout_status("default", "main", "rollout-9")
+            .await
+            .expect("rollout status should decode");
+
+        assert!(response.is_none());
+    }
+
+    /// Scenario: a caller waits on pipeline shutdown and the server times out
+    /// the wait while returning the latest shutdown snapshot.
+    /// Guarantees: the backend decodes that response as
+    /// `ShutdownOutcome::TimedOut` and preserves the embedded status.
+    #[tokio::test]
+    async fn pipeline_shutdown_decodes_timed_out_outcome() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/groups/default/pipelines/main/shutdown"))
+            .and(query_param("wait", "true"))
+            .and(query_param("timeout_secs", "30"))
+            .respond_with(ResponseTemplate::new(504).set_body_json(json!({
+                "shutdownId": "shutdown-2",
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "state": "running",
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:30Z",
+                "cores": []
+            })))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .shutdown(
+                "default",
+                "main",
+                &operations::OperationOptions {
+                    wait: true,
+                    timeout_secs: 30,
+                },
+            )
+            .await
+            .expect("shutdown outcome should decode");
+
+        match response {
+            pipelines::ShutdownOutcome::TimedOut(status) => {
+                assert_eq!(status.shutdown_id, "shutdown-2");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    /// Scenario: a caller polls a known pipeline shutdown operation by id.
+    /// Guarantees: the backend decodes the returned shutdown snapshot and
+    /// surfaces it as `Some(...)`.
+    #[tokio::test]
+    async fn pipeline_shutdown_status_returns_some_on_200() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/v1/groups/default/pipelines/main/shutdowns/shutdown-2",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "shutdownId": "shutdown-2",
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "state": "succeeded",
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:05Z",
+                "cores": []
+            })))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .shutdown_status("default", "main", "shutdown-2")
+            .await
+            .expect("shutdown status should decode");
+
+        assert!(response.is_some());
+    }
+
     #[tokio::test]
     async fn pipeline_livez_maps_failed_probe_and_message() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/pipeline-groups/default/pipelines/main/livez"))
+            .and(path("/api/v1/groups/default/pipelines/main/livez"))
             .respond_with(ResponseTemplate::new(500).set_body_string("NOT OK"))
             .mount(&server)
             .await;
@@ -760,7 +1287,7 @@ mod tests {
     async fn pipeline_livez_maps_ok_probe_without_message() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/pipeline-groups/default/pipelines/main/livez"))
+            .and(path("/api/v1/groups/default/pipelines/main/livez"))
             .respond_with(ResponseTemplate::new(200).set_body_string(""))
             .mount(&server)
             .await;
@@ -779,9 +1306,7 @@ mod tests {
     async fn pipeline_readyz_maps_service_unavailable_to_failed_probe() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(
-                "/api/v1/pipeline-groups/default/pipelines/main/readyz",
-            ))
+            .and(path("/api/v1/groups/default/pipelines/main/readyz"))
             .respond_with(ResponseTemplate::new(503).set_body_string("NOT OK"))
             .mount(&server)
             .await;
@@ -800,7 +1325,7 @@ mod tests {
     async fn pipeline_probe_unexpected_status_is_remote_status() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/pipeline-groups/default/pipelines/main/livez"))
+            .and(path("/api/v1/groups/default/pipelines/main/livez"))
             .respond_with(ResponseTemplate::new(418).set_body_string("teapot"))
             .mount(&server)
             .await;
