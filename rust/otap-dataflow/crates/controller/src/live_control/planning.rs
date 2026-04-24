@@ -60,58 +60,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         }
     }
 
-    /// Compares two resolved pipelines while ignoring resource-policy differences.
-    pub(super) fn runtime_shape_matches_ignoring_resources(
-        current: &ResolvedPipelineConfig,
-        candidate: &ResolvedPipelineConfig,
-    ) -> Result<bool, ControlPlaneError> {
-        if current.role != candidate.role {
-            return Ok(false);
-        }
-
-        let mut current_pipeline =
-            serde_json::to_value(&current.pipeline).map_err(|err| ControlPlaneError::Internal {
-                message: err.to_string(),
-            })?;
-        let mut candidate_pipeline = serde_json::to_value(&candidate.pipeline).map_err(|err| {
-            ControlPlaneError::Internal {
-                message: err.to_string(),
-            }
-        })?;
-        if let serde_json::Value::Object(map) = &mut current_pipeline {
-            let _ = map.remove("policies");
-        }
-        if let serde_json::Value::Object(map) = &mut candidate_pipeline {
-            let _ = map.remove("policies");
-        }
-
-        Ok(current_pipeline == candidate_pipeline
-            && current.policies.channel_capacity == candidate.policies.channel_capacity
-            && current.policies.health == candidate.policies.health
-            && current.policies.telemetry == candidate.policies.telemetry
-            && current.policies.transport_headers == candidate.policies.transport_headers)
-    }
-
-    /// Compares two resolved pipelines for exact runtime equivalence.
-    pub(super) fn resolved_pipeline_matches(
-        current: &ResolvedPipelineConfig,
-        candidate: &ResolvedPipelineConfig,
-    ) -> Result<bool, ControlPlaneError> {
-        let current_pipeline =
-            serde_json::to_value(&current.pipeline).map_err(|err| ControlPlaneError::Internal {
-                message: err.to_string(),
-            })?;
-        let candidate_pipeline = serde_json::to_value(&candidate.pipeline).map_err(|err| {
-            ControlPlaneError::Internal {
-                message: err.to_string(),
-            }
-        })?;
-
-        Ok(current.role == candidate.role
-            && current_pipeline == candidate_pipeline
-            && current.policies == candidate.policies)
-    }
-
     /// Builds the effective runtime topic profile map used to reject broker mutations.
     pub(super) fn pipeline_topic_profiles(
         config: &OtelDataflowSpec,
@@ -331,13 +279,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             let identical_update = current_assigned_cores == target_assigned_cores
                 && active_runtime_state.current_generation_cores == target_assigned_cores
                 && !active_runtime_state.has_foreign_active_generations
-                && Self::resolved_pipeline_matches(&record.resolved, &resolved_pipeline)?;
+                && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_assigned_cores != target_assigned_cores
                 && !active_runtime_state.has_foreign_active_generations
-                && Self::runtime_shape_matches_ignoring_resources(
-                    &record.resolved,
-                    &resolved_pipeline,
-                )?;
+                && record
+                    .resolved
+                    .runtime_shape_matches_ignoring_resources(&resolved_pipeline);
             if identical_update {
                 RolloutAction::NoOp
             } else if resize_only {
