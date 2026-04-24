@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use data_engine_recordset::RecordSetEngineDiagnosticLevel;
 use data_engine_recordset_otlp_bridge::{
     BridgeDiagnosticOptions, BridgeError, BridgeOptions, BridgePipeline,
-    parse_kql_query_into_pipeline,
+    parse_kql_logs_query_into_pipeline,
     process_protobuf_otlp_export_logs_service_request_using_pipeline,
 };
 use linkme::distributed_slice;
@@ -53,7 +53,7 @@ impl RecordsetKqlProcessor {
         config: RecordsetKqlProcessorConfig,
     ) -> Result<Self, ConfigError> {
         let parsed_bridge_options = Self::parse_bridge_options(&config.bridge_options)?;
-        let pipeline = parse_kql_query_into_pipeline(
+        let pipeline = parse_kql_logs_query_into_pipeline(
             &config.query,
             Some(Self::apply_bridge_options_defaults(parsed_bridge_options)),
         )
@@ -245,7 +245,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                         Ok(v) => v,
                                     };
 
-                                match parse_kql_query_into_pipeline(
+                                match parse_kql_logs_query_into_pipeline(
                                     &new_config.query,
                                     Some(Self::apply_bridge_options_defaults(
                                         parsed_bridge_options,

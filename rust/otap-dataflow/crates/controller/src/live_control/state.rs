@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared state types for the live-control runtime.
 //!
 //! This module intentionally contains mostly data and small conversion helpers.
