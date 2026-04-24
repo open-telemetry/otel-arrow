@@ -3,6 +3,7 @@
 
 //! Error types for the public admin SDK.
 
+use crate::operations::OperationError;
 use thiserror::Error;
 
 /// Endpoint validation and URL construction errors.
@@ -87,6 +88,19 @@ pub enum Error {
     Decode {
         /// Decode failure details.
         details: String,
+    },
+
+    /// The server rejected a live admin operation request before work started.
+    ///
+    /// This wraps a typed [`OperationError`] for request-level rejections such
+    /// as not found, conflict, or invalid request. Use the operation outcome
+    /// enums for requests that were accepted and later failed or timed out.
+    #[error("admin operation rejected with status {status}: {error:?}")]
+    AdminOperation {
+        /// HTTP status code.
+        status: u16,
+        /// Typed control-plane rejection details.
+        error: OperationError,
     },
 
     /// Remote endpoint returned an unexpected HTTP status.
