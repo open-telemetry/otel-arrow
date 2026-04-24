@@ -35,22 +35,27 @@ fn generate_native_keys_attr_batch(
     key_gen: impl Fn(usize) -> String,
 ) -> RecordBatch {
     let mut keys_arr = StringBuilder::new();
+    let mut parent_ids = Vec::new();
     for i in 0..num_rows {
         let attr_key = key_gen(i);
         keys_arr.append_value(attr_key);
+        parent_ids.push((i % 10) as u16);
     }
     let keys_arr = keys_arr.finish();
+    let parent_ids = UInt16Array::from(parent_ids);
 
     let type_arr = UInt8Array::from_iter_values(std::iter::repeat_n(
         AttributeValueType::Empty as u8,
         keys_arr.len(),
     ));
+
     RecordBatch::try_new(
         Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
         ])),
-        vec![Arc::new(type_arr), Arc::new(keys_arr)],
+        vec![Arc::new(parent_ids), Arc::new(type_arr), Arc::new(keys_arr)],
     )
     .expect("expect no error")
 }
@@ -62,18 +67,24 @@ fn generate_dict_keys_attribute_batch(
 ) -> RecordBatch {
     let mut keys_dict_values_arr = StringBuilder::new();
     let mut keys_dict_keys_arr = PrimitiveBuilder::<UInt16Type>::new();
+    let mut parent_ids = Vec::new();
     for i in 0..num_keys {
         let attr_key = key_gen(i);
         keys_dict_values_arr.append_value(attr_key);
         keys_dict_keys_arr.append_value_n(i as u16, rows_per_key);
+        for j in 0..rows_per_key {
+            parent_ids.push(((i * rows_per_key + j) % 10) as u16);
+        }
     }
 
     let keys_arr = DictionaryArray::new(
         keys_dict_keys_arr.finish(),
         Arc::new(keys_dict_values_arr.finish()),
     );
+    let parent_ids = UInt16Array::from(parent_ids);
 
     let schema = Arc::new(Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(
             consts::ATTRIBUTE_KEY,
@@ -85,8 +96,11 @@ fn generate_dict_keys_attribute_batch(
         AttributeValueType::Empty as u8,
         keys_arr.len(),
     ));
-    RecordBatch::try_new(schema, vec![Arc::new(type_arr), Arc::new(keys_arr)])
-        .expect("expect no error")
+    RecordBatch::try_new(
+        schema,
+        vec![Arc::new(parent_ids), Arc::new(type_arr), Arc::new(keys_arr)],
+    )
+    .expect("expect no error")
 }
 
 fn bench_transform_attributes(c: &mut Criterion) {

@@ -1899,17 +1899,90 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
 
 /// Check whether any of the rename target (new) keys exist in the attribute keys column.
 /// This is a cheap pre-check used to decide if we need to materialize delta-encoded parent_ids.
+///
+/// Uses the optimized `find_matching_key_ranges` (raw offset/values buffer scan) instead of
+/// the `eq` compute kernel to avoid the overhead that kernel adds for scalar comparison.
 fn rename_has_target_key_in_column(key_col: &ArrayRef, rename: &RenameTransform) -> Result<bool> {
-    for new_key in rename.map.values() {
-        let scalar = StringArray::new_scalar(new_key);
-        let mask = eq(key_col, &scalar).map_err(|e| Error::UnexpectedRecordBatchState {
-            reason: format!("eq kernel failed on attribute keys: {e}"),
-        })?;
-        if mask.true_count() > 0 {
-            return Ok(true);
+    let (array_len, values_buf, offsets) = match key_col.data_type() {
+        DataType::Utf8 => {
+            let str_arr = key_col
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                    reason: "expected Utf8 key column".into(),
+                })?;
+            (
+                str_arr.len(),
+                str_arr.values().clone(),
+                str_arr.offsets().clone(),
+            )
         }
+        DataType::Dictionary(_, _) => {
+            // For dictionary-encoded keys, check the dictionary values directly.
+            let dict_values = extract_dict_string_values(key_col)?;
+            (
+                dict_values.len(),
+                dict_values.values().clone(),
+                dict_values.offsets().clone(),
+            )
+        }
+        other => {
+            return Err(Error::UnexpectedRecordBatchState {
+                reason: format!("unsupported key column type for collision check: {other:?}"),
+            });
+        }
+    };
+    let result = find_matching_key_ranges(
+        array_len,
+        &values_buf,
+        &offsets,
+        &rename.replacement_bytes,
+        KeyTransformRangeType::Delete, // range_type doesn't matter, we only check total_matches
+    )?;
+    Ok(result.total_matches > 0)
+}
+
+/// Extract the string values array from a dictionary-encoded key column.
+/// Works with both UInt8 and UInt16 dictionary key types.
+fn extract_dict_string_values(key_col: &ArrayRef) -> Result<&StringArray> {
+    match key_col.data_type() {
+        DataType::Dictionary(key_type, _) => match key_type.as_ref() {
+            DataType::UInt8 => {
+                let dict = key_col
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                        reason: "expected Dict<UInt8, _> key column".into(),
+                    })?;
+                dict.values()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                        reason: "expected Utf8 dictionary values".into(),
+                    })
+            }
+            DataType::UInt16 => {
+                let dict = key_col
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                        reason: "expected Dict<UInt16, _> key column".into(),
+                    })?;
+                dict.values()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                        reason: "expected Utf8 dictionary values".into(),
+                    })
+            }
+            other => Err(Error::UnexpectedRecordBatchState {
+                reason: format!("unsupported dictionary key type: {other:?}"),
+            }),
+        },
+        other => Err(Error::UnexpectedRecordBatchState {
+            reason: format!("expected Dictionary key column, got: {other:?}"),
+        }),
     }
-    Ok(false)
 }
 
 /// Downcast the `parent_id` column to the appropriate `PrimitiveArray` type and
@@ -1977,12 +2050,12 @@ fn dispatch_find_rename_collisions(
 /// row with key `y` whose `parent_id` also has a row with key `x` would become a
 /// duplicate.
 ///
-/// Generic over `K` so the caller can pass the parent_id column as a typed
-/// `&PrimitiveArray<K>` directly, avoiding per-row type dispatch.
-///
-/// Uses the arrow `eq` kernel for key matching and `BitSliceIterator` for efficient
-/// iteration over matching rows. [`IdBitmap`] allocation is reused across rename
-/// entries.
+/// Optimized to:
+/// 1. Check new_key (target) first — collisions are rare, so we exit early when
+///    the target key doesn't exist in the column.
+/// 2. Use `find_matching_key_ranges` (raw offset/values buffer scan) instead of
+///    the arrow `eq` compute kernel, which has significant per-call overhead.
+/// 3. Only populate the `IdBitmap` after confirming both old and new keys exist.
 fn find_rename_collisions_to_delete_ranges<K: ArrowPrimitiveType>(
     num_rows: usize,
     key_col: &ArrayRef,
@@ -1992,22 +2065,121 @@ fn find_rename_collisions_to_delete_ranges<K: ArrowPrimitiveType>(
 where
     K::Native: Into<u64>,
 {
+    if num_rows == 0 || rename.map.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Extract the raw offset/values buffers from the key column.
+    // For dictionary-encoded keys, we run find_matching_key_ranges on dictionary values
+    // (as the mentor noted: "it only works on the offset/values buffer from the arrow
+    // string arrays ... if dictionary encoded, we can only run this on the dictionary
+    // values"), then map back through dict keys to row indices.
+    let (array_len, values_buf, offsets, dict_keys_opt) = match key_col.data_type() {
+        DataType::Utf8 => {
+            let str_arr = key_col
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                    reason: "expected Utf8 key column".into(),
+                })?;
+            (
+                str_arr.len(),
+                str_arr.values().clone(),
+                str_arr.offsets().clone(),
+                None::<Vec<usize>>,
+            )
+        }
+        DataType::Dictionary(_, _) => {
+            let dict_values = extract_dict_string_values(key_col)?;
+            let offsets = dict_values.offsets().clone();
+            let values_buf = dict_values.values().clone();
+            let dict_keys: Vec<usize> = match key_col.data_type() {
+                DataType::Dictionary(k, _) => match k.as_ref() {
+                    DataType::UInt8 => key_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .expect("checked type")
+                        .keys()
+                        .values()
+                        .iter()
+                        .map(|v| *v as usize)
+                        .collect(),
+                    DataType::UInt16 => key_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .expect("checked type")
+                        .keys()
+                        .values()
+                        .iter()
+                        .map(|v| *v as usize)
+                        .collect(),
+                    _ => unreachable!("unsupported dict key type"),
+                },
+                _ => unreachable!("checked dictionary type"),
+            };
+            (dict_values.len(), values_buf, offsets, Some(dict_keys))
+        }
+        other => {
+            return Err(Error::UnexpectedRecordBatchState {
+                reason: format!("unsupported key column type for collision detection: {other:?}"),
+            });
+        }
+    };
+
     let mut ranges = Vec::new();
     let mut source_parents = IdBitmap::new();
 
-    for (old_key, new_key) in &rename.map {
+    for (rename_idx, (_old_key, _new_key)) in rename.map.iter().enumerate() {
+        let old_key_bytes = &rename.target_bytes[rename_idx];
+        let new_key_bytes = &rename.replacement_bytes[rename_idx];
+
+        // Step 1: Check if new_key exists using find_matching_key_ranges.
+        // Collisions are rare, so exiting early here is the biggest win.
+        let new_key_result = find_matching_key_ranges(
+            array_len,
+            &values_buf,
+            &offsets,
+            std::slice::from_ref(new_key_bytes),
+            KeyTransformRangeType::Delete,
+        )?;
+        if new_key_result.total_matches == 0 {
+            continue;
+        }
+
+        // Step 2: Check if old_key exists and collect parent_ids for old_key rows.
+        let old_key_result = find_matching_key_ranges(
+            array_len,
+            &values_buf,
+            &offsets,
+            std::slice::from_ref(old_key_bytes),
+            KeyTransformRangeType::Delete,
+        )?;
+        if old_key_result.total_matches == 0 {
+            continue;
+        }
+
         source_parents.clear();
 
-        let old_key_mask = eq(key_col, &StringArray::new_scalar(old_key)).map_err(|e| {
-            Error::UnexpectedRecordBatchState {
-                reason: format!("eq kernel failed for old_key: {e}"),
+        if let Some(ref dict_keys) = dict_keys_opt {
+            // Dictionary-encoded: old_key_result ranges refer to dict value indices.
+            // Map back through dict_keys to find actual rows.
+            for range in &old_key_result.ranges {
+                for dict_val_idx in range.start()..range.end() {
+                    for (row, dk) in dict_keys.iter().enumerate() {
+                        if *dk == dict_val_idx {
+                            let pid: u64 = parent_ids.value(row).into();
+                            source_parents.insert(pid as u32);
+                        }
+                    }
+                }
             }
-        })?;
-
-        for (start, end) in BitSliceIterator::new(old_key_mask.values().inner(), 0, num_rows) {
-            for i in start..end {
-                let pid: u64 = parent_ids.value(i).into();
-                source_parents.insert(pid as u32);
+        } else {
+            // Native StringArray: ranges are row indices directly.
+            for range in &old_key_result.ranges {
+                for i in range.start()..range.end() {
+                    let pid: u64 = parent_ids.value(i).into();
+                    source_parents.insert(pid as u32);
+                }
             }
         }
 
@@ -2015,34 +2187,65 @@ where
             continue;
         }
 
-        let new_key_mask = eq(key_col, &StringArray::new_scalar(new_key)).map_err(|e| {
-            Error::UnexpectedRecordBatchState {
-                reason: format!("eq kernel failed for new_key: {e}"),
-            }
-        })?;
-
-        let mut range_start: Option<usize> = None;
-        for (start, end) in BitSliceIterator::new(new_key_mask.values().inner(), 0, num_rows) {
-            for i in start..end {
-                let pid: u64 = parent_ids.value(i).into();
-                if source_parents.contains(pid as u32) {
-                    if range_start.is_none() {
-                        range_start = Some(i);
+        // Step 3: Find rows with new_key whose parent_id collides.
+        if let Some(ref dict_keys) = dict_keys_opt {
+            let mut range_start: Option<usize> = None;
+            for new_range in &new_key_result.ranges {
+                for dict_val_idx in new_range.start()..new_range.end() {
+                    for (row, dk) in dict_keys.iter().enumerate() {
+                        if *dk == dict_val_idx {
+                            let pid: u64 = parent_ids.value(row).into();
+                            if source_parents.contains(pid as u32) {
+                                if range_start.is_none() {
+                                    range_start = Some(row);
+                                }
+                                continue;
+                            }
+                        }
+                        if let Some(s) = range_start.take() {
+                            ranges.push(KeyTransformRange {
+                                range: s..row,
+                                idx: None,
+                                range_type: KeyTransformRangeType::Delete,
+                            });
+                        }
                     }
-                } else if let Some(s) = range_start.take() {
-                    ranges.push(KeyTransformRange {
-                        range: s..i,
-                        idx: None,
-                        range_type: KeyTransformRangeType::Delete,
-                    });
                 }
             }
             if let Some(s) = range_start.take() {
                 ranges.push(KeyTransformRange {
-                    range: s..end,
+                    range: s..num_rows,
                     idx: None,
                     range_type: KeyTransformRangeType::Delete,
                 });
+            }
+        } else {
+            // Native StringArray: ranges are row indices.
+            let mut range_start: Option<usize> = None;
+            for new_range in &new_key_result.ranges {
+                for i in new_range.start()..new_range.end() {
+                    let pid: u64 = parent_ids.value(i).into();
+                    if source_parents.contains(pid as u32) {
+                        if range_start.is_none() {
+                            range_start = Some(i);
+                        }
+                        continue;
+                    }
+                    if let Some(s) = range_start.take() {
+                        ranges.push(KeyTransformRange {
+                            range: s..i,
+                            idx: None,
+                            range_type: KeyTransformRangeType::Delete,
+                        });
+                    }
+                }
+                if let Some(s) = range_start.take() {
+                    ranges.push(KeyTransformRange {
+                        range: s..new_range.end(),
+                        idx: None,
+                        range_type: KeyTransformRangeType::Delete,
+                    });
+                }
             }
         }
     }
