@@ -36,11 +36,12 @@ use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, l
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
+use otap_df_config::SignalType;
 use otap_df_pdata::arrays::MaybeDictArrayAccessor;
 use otap_df_pdata::otap::filter::{ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
+use otap_df_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 pub mod optimize;
 
@@ -157,7 +158,7 @@ impl<T> From<T> for Composite<T> {
 /// to evaluating the expression which may involve realigning data from sub-expressions using the
 /// expression evaluation's join mechanics.
 ///
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
     pub source_filter: Option<Expr>,
@@ -174,14 +175,17 @@ pub struct FilterPlan {
     /// This uses the same expression evaluation infrastructure as `set` expressions, including
     /// support for joins across data scopes.
     pub expr_filter: Option<ScopedLogicalExpr>,
+
+    /// filter will be applied to check if an element of the stream passing through the filter is
+    /// this type
+    pub element_type_filter: Option<ElementTypeFilter>,
 }
 
 impl From<Expr> for FilterPlan {
     fn from(expr: Expr) -> Self {
         Self {
             source_filter: Some(expr),
-            attribute_filter: None,
-            expr_filter: None,
+            ..Default::default()
         }
     }
 }
@@ -189,9 +193,8 @@ impl From<Expr> for FilterPlan {
 impl From<AttributesFilterPlan> for FilterPlan {
     fn from(attrs_filter: AttributesFilterPlan) -> Self {
         Self {
-            source_filter: None,
             attribute_filter: Some(attrs_filter.into()),
-            expr_filter: None,
+            ..Default::default()
         }
     }
 }
@@ -199,9 +202,17 @@ impl From<AttributesFilterPlan> for FilterPlan {
 impl From<Composite<AttributesFilterPlan>> for FilterPlan {
     fn from(attrs_filter: Composite<AttributesFilterPlan>) -> Self {
         Self {
-            source_filter: None,
             attribute_filter: Some(attrs_filter),
-            expr_filter: None,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<ElementTypeFilter> for FilterPlan {
+    fn from(element_type_filter: ElementTypeFilter) -> Self {
+        Self {
+            element_type_filter: Some(element_type_filter),
+            ..Default::default()
         }
     }
 }
@@ -210,9 +221,8 @@ impl FilterPlan {
     /// Create a FilterPlan that uses the general expression evaluation path.
     fn from_expr(expr: ScopedLogicalExpr) -> Self {
         Self {
-            source_filter: None,
-            attribute_filter: None,
             expr_filter: Some(expr),
+            ..Default::default()
         }
     }
 }
@@ -443,6 +453,15 @@ impl FilterPlan {
         right_expr: &ScalarExpression,
         functions: &[PipelineFunction],
     ) -> Result<Self> {
+        // try as filter on the type of signal passing through the filter. These filters can be
+        // quickly evaluated without any expression evaluation by checking the signal type of the
+        // batch itself
+        if let Some(element_type_filter) =
+            Self::try_as_type_check(left_expr, binary_op, right_expr)?
+        {
+            return Ok(element_type_filter);
+        }
+
         let planner = ExprLogicalPlanner::default();
         let left = planner.plan_scalar_expr(left_expr, functions)?;
         let right = planner.plan_scalar_expr(right_expr, functions)?;
@@ -450,6 +469,59 @@ impl FilterPlan {
         // build the comparison expression using the expr system's scoping logic
         let expr = Self::build_scoped_comparison_expr(left, binary_op, right)?;
         Ok(FilterPlan::from_expr(expr))
+    }
+
+    /// Try to plan as a filter checks if either an element of the stream or a signal is some type
+    fn try_as_type_check(
+        left_expr: &ScalarExpression,
+        binary_op: Operator,
+        right_expr: &ScalarExpression,
+    ) -> Result<Option<Self>> {
+        match (left_expr, binary_op, right_expr) {
+            (
+                ScalarExpression::GetType(get_type_expr),
+                Operator::Eq,
+                ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
+            ) => {
+                let source_value_accessor = match get_type_expr.get_value() {
+                    ScalarExpression::Source(source_scalar_expr) => {
+                        source_scalar_expr.get_value_accessor()
+                    }
+                    _ => {
+                        // the source for the get type expression isn't something that we can check
+                        // determine to statically be the identifier of a type, defer to expression
+                        // evaluation for this filter
+                        return Ok(None);
+                    }
+                };
+
+                if !source_value_accessor.has_selectors() {
+                    // since the source accessor has no selectors, it means we're checking the type
+                    // of elements of the stream for this pipeline. We'll try to determine if the
+                    // type name is a stream type that is handled by this query engine ...
+                    let type_name = typename_expr.get_value();
+                    let stream_element_type =
+                        StreamElementType::from_str(type_name).ok_or_else(|| {
+                            Error::InvalidPipelineError {
+                                cause: format!("Unknown stream type name {type_name}"),
+                                query_location: Some(right_expr.get_query_location().clone()),
+                            }
+                        })?;
+
+                    Ok(Some(FilterPlan::from(ElementTypeFilter::new(
+                        stream_element_type,
+                    ))))
+                } else {
+                    // TODO - we will support this soon
+                    Err(Error::NotYetSupportedError {
+                        message:
+                            "Checking if a field of stream element is a type is not yet supported"
+                                .into(),
+                    })
+                }
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Build a `ScopedLogicalExpr` that performs a boolean comparison (eq, gt, etc.) on the
@@ -920,6 +992,7 @@ impl ToExec for FilterPlan {
         Ok(FilterExec {
             predicate: physical_expr,
             attributes_filter: attrs_filter,
+            element_type_filter: self.element_type_filter.clone(),
             expr_predicate,
             missing_attrs_pass,
         })
@@ -1008,6 +1081,39 @@ impl Composite<AttributesFilterPlan> {
     }
 }
 
+/// Filter representing a predicate that checks whether an element of the stream being filtered is
+/// some type
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElementTypeFilter {
+    is_type: StreamElementType,
+}
+
+impl ElementTypeFilter {
+    fn new(stream_type: StreamElementType) -> Self {
+        Self {
+            is_type: stream_type,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum StreamElementType {
+    Log,
+    Metric,
+    Span,
+}
+
+impl StreamElementType {
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "Log" => Some(Self::Log),
+            "Metric" => Some(Self::Metric),
+            "Span" => Some(Self::Span),
+            _ => None,
+        }
+    }
+}
+
 fn to_physical_exprs(
     expr: &Expr,
     record_batch: &RecordBatch,
@@ -1037,6 +1143,10 @@ pub struct FilterExec {
     /// row not to pass the filter, unless this is true which it should be set it as for filters/
     /// like `attributes["x"] == null`
     missing_attrs_pass: bool,
+
+    /// filter will be applied to check if an element of the stream passing through the filter is
+    /// this type
+    pub element_type_filter: Option<ElementTypeFilter>,
 }
 
 impl From<AdaptivePhysicalExprExec> for FilterExec {
@@ -1045,6 +1155,7 @@ impl From<AdaptivePhysicalExprExec> for FilterExec {
             predicate: Some(predicate),
             attributes_filter: None,
             expr_predicate: None,
+            element_type_filter: None,
             missing_attrs_pass: false,
         }
     }
@@ -1069,6 +1180,23 @@ impl FilterExec {
                 });
             }
         };
+
+        // if only certain signal types are supposed to pass this filter, check the signal type
+        if let Some(element_type_filter) = &self.element_type_filter {
+            let signal_type = otap_batch.signal_type();
+            let is_valid_signal_type = match element_type_filter.is_type {
+                StreamElementType::Log => signal_type == SignalType::Logs,
+                StreamElementType::Span => signal_type == SignalType::Traces,
+                StreamElementType::Metric => signal_type == SignalType::Metrics,
+            };
+
+            if !is_valid_signal_type {
+                return Ok(BooleanArray::new(
+                    BooleanBuffer::new_unset(root_rb.num_rows()),
+                    None,
+                ));
+            }
+        }
 
         // evaluate predicate on the root batch
         let mut selection_vec = self
@@ -1904,7 +2032,7 @@ mod test {
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
     use otap_df_opl::parser::OplParser;
-    use otap_df_pdata::otap::Logs;
+    use otap_df_pdata::otap::{Logs, Traces};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
@@ -1922,6 +2050,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
+        to_traces_data,
     };
 
     use crate::pipeline::test::{
@@ -6057,5 +6186,59 @@ mod test {
             r#"logs | where contains(attributes["haystack"], attributes["needle"])"#,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_check_signal_types() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![])
+                .finish(),
+        ];
+
+        let query = "signals | where is Log";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let logs_input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        let logs_ouptut = pipeline.execute(logs_input.clone()).await.unwrap();
+
+        assert_eq!(logs_input, logs_ouptut);
+
+        let traces_input = otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(vec![
+            Span::default(),
+        ])));
+        let traces_ouptut = pipeline.execute(traces_input).await.unwrap();
+
+        // assert it returns empty traces
+        assert_eq!(traces_ouptut, OtapArrowRecords::Traces(Traces::default()));
+    }
+
+    #[tokio::test]
+    async fn test_filter_check_signal_type_inverted() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![])
+                .finish(),
+        ];
+
+        let query = "signals | where not(is Log)";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let logs_input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        let logs_ouptut = pipeline.execute(logs_input).await.unwrap();
+
+        // assert it returns empty traces
+        assert_eq!(logs_ouptut, OtapArrowRecords::Logs(Logs::default()));
+
+        let traces_input = otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(vec![
+            Span::default(),
+        ])));
+        let traces_ouptut = pipeline.execute(traces_input.clone()).await.unwrap();
+
+        assert_eq!(traces_input, traces_ouptut);
     }
 }
