@@ -85,7 +85,7 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     if let Some(key) = attr_arrays.attr_key.str_at(index) {
-        result_buf.encode_string(KEY_VALUE_KEY, key);
+        result_buf.encode_string(KEY_VALUE_KEY, key)?;
     }
 
     if let Some(value_type) = attr_arrays.anyval_arrays.attr_type.value_at(index) {
@@ -117,15 +117,15 @@ pub(crate) fn encode_any_value(
                 .as_ref()
                 .and_then(|col| col.str_at(index))
                 .unwrap_or_default();
-            result_buf.encode_string(ANY_VALUE_STRING_VALUE, val);
+            result_buf.encode_string(ANY_VALUE_STRING_VALUE, val)?;
         }
         AttributeValueType::Bool => {
             // TODO handle case when bool column is missing we correct the default value handling
             // https://github.com/open-telemetry/otel-arrow/issues/1449
             if let Some(attr_bool) = &attr_arrays.attr_bool {
                 if let Some(val) = attr_bool.value_at(index) {
-                    result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
-                    result_buf.encode_varint(val as u64)
+                    result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
+                    result_buf.encode_varint(val as u64)?;
                 }
             }
         }
@@ -135,8 +135,8 @@ pub(crate) fn encode_any_value(
                 .as_ref()
                 .and_then(|col| col.value_at(index))
                 .unwrap_or_default();
-            result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
         AttributeValueType::Double => {
             let val = attr_arrays
@@ -144,8 +144,8 @@ pub(crate) fn encode_any_value(
                 .as_ref()
                 .and_then(|col| col.value_at(index))
                 .unwrap_or_default();
-            result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
         AttributeValueType::Bytes => {
             let val = attr_arrays
@@ -153,7 +153,7 @@ pub(crate) fn encode_any_value(
                 .as_ref()
                 .and_then(|col| col.slice_at(index))
                 .unwrap_or_default();
-            result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, val);
+            result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, val)?;
         }
         AttributeValueType::Map | AttributeValueType::Slice => {
             if let Some(ser_bytes) = &attr_arrays.attr_ser {
@@ -185,7 +185,7 @@ mod test {
     use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue};
 
     #[test]
-    fn test_default_anyvalue_encoded_when_column_missing() {
+    fn test_default_anyvalue_encoded_when_column_missing() -> Result<()> {
         // append a bunch of "default" values
         let mut rb_builder = AnyValuesRecordsBuilder::new();
         rb_builder.append_str(b"");
@@ -244,5 +244,7 @@ mod test {
         ];
 
         assert_eq!(results, expected);
+
+        Ok(())
     }
 }

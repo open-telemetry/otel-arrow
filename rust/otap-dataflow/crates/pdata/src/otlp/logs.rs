@@ -335,7 +335,7 @@ impl LogsProtoBytesEncoder {
         // encode schema url
         if let Some(col) = &logs_data_arrays.resource_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val);
+                result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val)?;
             }
         }
 
@@ -397,7 +397,7 @@ impl LogsProtoBytesEncoder {
         // encode schema url
         if let Some(col) = &logs_data_arrays.log_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val);
+                result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val)?;
             }
         }
 
@@ -418,21 +418,21 @@ impl LogsProtoBytesEncoder {
 
         if let Some(col) = log_arrays.time_unix_nano {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64);
-                result_buf.extend_from_slice(&val.to_le_bytes());
+                result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+                result_buf.extend_from_slice(&val.to_le_bytes())?;
             }
         }
 
         if let Some(col) = &log_arrays.severity_number {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
-                result_buf.encode_varint(val as u64);
+                result_buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT)?;
+                result_buf.encode_varint(val as u64)?;
             }
         }
 
         if let Some(col) = &log_arrays.severity_text {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val);
+                result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val)?;
             }
         }
 
@@ -470,41 +470,41 @@ impl LogsProtoBytesEncoder {
         if let Some(col) = log_arrays.dropped_attributes_count {
             if let Some(val) = col.value_at(index) {
                 result_buf
-                    .encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
-                result_buf.encode_varint(val as u64);
+                    .encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+                result_buf.encode_varint(val as u64)?;
             }
         }
 
         if let Some(col) = &log_arrays.flags {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32);
-                result_buf.extend_from_slice(&val.to_le_bytes());
+                result_buf.encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32)?;
+                result_buf.extend_from_slice(&val.to_le_bytes())?;
             }
         }
 
         if let Some(col) = &log_arrays.trace_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val);
+                result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val)?;
             }
         }
 
         if let Some(col) = &log_arrays.span_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val);
+                result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val)?;
             }
         }
 
         if let Some(col) = log_arrays.observed_time_unix_nano {
             if let Some(val) = col.value_at(index) {
                 result_buf
-                    .encode_field_tag(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, wire_types::FIXED64);
-                result_buf.extend_from_slice(&val.to_le_bytes());
+                    .encode_field_tag(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, wire_types::FIXED64)?;
+                result_buf.extend_from_slice(&val.to_le_bytes())?;
             }
         }
 
         if let Some(col) = &log_arrays.event_name {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(LOG_RECORD_EVENT_NAME, val);
+                result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
             }
         }
 

@@ -8,11 +8,11 @@ use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
 use bytes::Bytes;
+use otap_df_pdata::otlp::common::EncodeResult;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBufferInline};
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
-use otap_df_pdata::proto_encode_len_delimited_small;
 use std::collections::HashMap;
 use std::time::SystemTime;
 use tracing::Level;
@@ -47,29 +47,33 @@ impl<'buf, const INLINE: usize> DirectLogRecordEncoder<'buf, INLINE> {
             .unwrap_or(0);
 
         // Encode time_unix_nano (field 1, fixed64)
-        self.buf
+        let _ = self
+            .buf
             .encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64);
-        self.buf.extend_from_slice(&timestamp_ns.to_le_bytes());
+        let _ = self.buf.extend_from_slice(&timestamp_ns.to_le_bytes());
 
         // Encode severity_number (field 2, varint)
         let severity = level_to_severity_number(record.callsite().level());
-        self.buf
+        let _ = self
+            .buf
             .encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
-        self.buf.encode_varint(severity as u64);
+        let _ = self.buf.encode_varint(severity as u64);
 
         // Note we skip encoding severity_text (field 3, string)
 
         // Encode event_name (field 12, string) - format: "target::name (file:line)"
-        encode_event_name(self.buf, record.callsite());
+        let _ = encode_event_name(self.buf, record.callsite());
 
         // Pre-encoded body and attributes.
-        self.buf.extend_from_slice(&record.body_attrs_bytes);
+        let _ = self.buf.extend_from_slice(&record.body_attrs_bytes);
 
         // Encode dropped_attributes_count (field 7, varint) if any were dropped.
         if record.dropped_attributes_count > 0 {
-            self.buf
+            let _ = self
+                .buf
                 .encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
-            self.buf
+            let _ = self
+                .buf
                 .encode_varint(record.dropped_attributes_count as u64);
         }
 
@@ -82,102 +86,95 @@ impl<'buf, const INLINE: usize> DirectLogRecordEncoder<'buf, INLINE> {
 fn encode_event_name<const INLINE: usize>(
     buf: &mut ProtoBufferInline<INLINE>,
     callsite: SavedCallsite,
-) {
-    proto_encode_len_delimited_small!(
-        LOG_RECORD_EVENT_NAME,
-        {
-            super::formatter::write_event_name_to(buf, &callsite);
-        },
-        buf
-    );
+) -> EncodeResult {
+    buf.encode_len_delimited(LOG_RECORD_EVENT_NAME, |buf| {
+        super::formatter::write_event_name_to(buf, &callsite);
+        Ok(())
+    })
 }
 
 /// Visitor that directly encodes tracing fields to protobuf.
 pub struct DirectFieldVisitor<'buf, const INLINE: usize = 0> {
     buf: &'buf mut ProtoBufferInline<INLINE>,
+    dropped_count: u32,
 }
 
 impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     /// Create a new DirectFieldVisitor that writes to the provided buffer.
     pub const fn new(buf: &'buf mut ProtoBufferInline<INLINE>) -> Self {
-        Self { buf }
+        Self {
+            buf,
+            dropped_count: 0,
+        }
+    }
+
+    /// Returns the number of fields dropped due to size limits.
+    #[must_use]
+    pub const fn dropped_count(&self) -> u32 {
+        self.dropped_count
     }
 
     /// Encode a string attribute into a buffer.
     #[inline]
-    fn encode_string_attribute_to(buf: &mut ProtoBufferInline<INLINE>, key: &str, value: &str) {
-        proto_encode_len_delimited_small!(
-            LOG_RECORD_ATTRIBUTES,
-            {
-                buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_small!(
-                    KEY_VALUE_VALUE,
-                    { buf.encode_string(ANY_VALUE_STRING_VALUE, value) },
-                    buf
-                );
-            },
-            buf
-        );
+    fn encode_string_attribute_to(
+        buf: &mut ProtoBufferInline<INLINE>,
+        key: &str,
+        value: &str,
+    ) -> EncodeResult {
+        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+            buf.encode_string(KEY_VALUE_KEY, key)?;
+            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
+                buf.encode_string(ANY_VALUE_STRING_VALUE, value)
+            })
+        })
     }
 
     /// Encode an i64 attribute into a buffer.
     #[inline]
-    fn encode_int_attribute_to(buf: &mut ProtoBufferInline<INLINE>, key: &str, value: i64) {
-        proto_encode_len_delimited_small!(
-            LOG_RECORD_ATTRIBUTES,
-            {
-                buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_small!(
-                    KEY_VALUE_VALUE,
-                    {
-                        buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-                        buf.encode_varint(value as u64);
-                    },
-                    buf
-                );
-            },
-            buf
-        );
+    fn encode_int_attribute_to(
+        buf: &mut ProtoBufferInline<INLINE>,
+        key: &str,
+        value: i64,
+    ) -> EncodeResult {
+        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+            buf.encode_string(KEY_VALUE_KEY, key)?;
+            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
+                buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+                buf.encode_varint(value as u64)
+            })
+        })
     }
 
     /// Encode a bool attribute into a buffer.
     #[inline]
-    fn encode_bool_attribute_to(buf: &mut ProtoBufferInline<INLINE>, key: &str, value: bool) {
-        proto_encode_len_delimited_small!(
-            LOG_RECORD_ATTRIBUTES,
-            {
-                buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_small!(
-                    KEY_VALUE_VALUE,
-                    {
-                        buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
-                        buf.encode_varint(u64::from(value));
-                    },
-                    buf
-                );
-            },
-            buf
-        );
+    fn encode_bool_attribute_to(
+        buf: &mut ProtoBufferInline<INLINE>,
+        key: &str,
+        value: bool,
+    ) -> EncodeResult {
+        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+            buf.encode_string(KEY_VALUE_KEY, key)?;
+            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
+                buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
+                buf.encode_varint(u64::from(value))
+            })
+        })
     }
 
     /// Encode a double attribute into a buffer.
     #[inline]
-    fn encode_double_attribute_to(buf: &mut ProtoBufferInline<INLINE>, key: &str, value: f64) {
-        proto_encode_len_delimited_small!(
-            LOG_RECORD_ATTRIBUTES,
-            {
-                buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_small!(
-                    KEY_VALUE_VALUE,
-                    {
-                        buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
-                        buf.extend_from_slice(&value.to_le_bytes());
-                    },
-                    buf
-                );
-            },
-            buf
-        );
+    fn encode_double_attribute_to(
+        buf: &mut ProtoBufferInline<INLINE>,
+        key: &str,
+        value: f64,
+    ) -> EncodeResult {
+        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+            buf.encode_string(KEY_VALUE_KEY, key)?;
+            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
+                buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
+                buf.extend_from_slice(&value.to_le_bytes())
+            })
+        })
     }
 
     /// Encode a Debug attribute into a buffer.
@@ -186,19 +183,11 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
         buf: &mut ProtoBufferInline<INLINE>,
         key: &str,
         value: &dyn std::fmt::Debug,
-    ) {
-        proto_encode_len_delimited_small!(
-            LOG_RECORD_ATTRIBUTES,
-            {
-                buf.encode_string(KEY_VALUE_KEY, key);
-                proto_encode_len_delimited_small!(
-                    KEY_VALUE_VALUE,
-                    { encode_debug_string(buf, value) },
-                    buf
-                );
-            },
-            buf
-        );
+    ) -> EncodeResult {
+        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+            buf.encode_string(KEY_VALUE_KEY, key)?;
+            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| encode_debug_string(buf, value))
+        })
     }
 
     /// Encode the body as a string. Empty strings are skipped.
@@ -207,21 +196,17 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
         if value.is_empty() {
             return;
         }
-        proto_encode_len_delimited_small!(
-            LOG_RECORD_BODY,
-            { self.buf.encode_string(ANY_VALUE_STRING_VALUE, value) },
-            self.buf
-        );
+        let _ = self.buf.encode_len_delimited(LOG_RECORD_BODY, |buf| {
+            buf.encode_string(ANY_VALUE_STRING_VALUE, value)
+        });
     }
 
     /// Encode the body from a Debug value without allocation.
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
-        proto_encode_len_delimited_small!(
-            LOG_RECORD_BODY,
-            { encode_debug_string(self.buf, value) },
-            self.buf
-        );
+        let _ = self
+            .buf
+            .encode_len_delimited(LOG_RECORD_BODY, |buf| encode_debug_string(buf, value));
     }
 }
 
@@ -231,15 +216,12 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
 fn encode_debug_string<const INLINE: usize>(
     buf: &mut ProtoBufferInline<INLINE>,
     value: &dyn std::fmt::Debug,
-) {
+) -> EncodeResult {
     use std::io::Write;
-    proto_encode_len_delimited_small!(
-        ANY_VALUE_STRING_VALUE,
-        {
-            let _ = write!(buf, "{:?}", value);
-        },
-        buf
-    );
+    buf.encode_len_delimited(ANY_VALUE_STRING_VALUE, |buf| {
+        let _ = write!(buf, "{:?}", value);
+        Ok(())
+    })
 }
 
 impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLINE> {
@@ -247,36 +229,54 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
         if field.name() == "message" {
             return;
         }
-        let _ = self
+        if self
             .buf
-            .try_encode(|b| DirectFieldVisitor::encode_double_attribute_to(b, field.name(), value));
+            .try_encode(|b| DirectFieldVisitor::encode_double_attribute_to(b, field.name(), value))
+            .is_err()
+        {
+            self.dropped_count += 1;
+        }
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
         if field.name() == "message" {
             return;
         }
-        let _ = self
+        if self
             .buf
-            .try_encode(|b| DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value));
+            .try_encode(|b| DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value))
+            .is_err()
+        {
+            self.dropped_count += 1;
+        }
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
         if field.name() == "message" {
             return;
         }
-        let _ = self.buf.try_encode(|b| {
-            DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value as i64)
-        });
+        if self
+            .buf
+            .try_encode(|b| {
+                DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value as i64)
+            })
+            .is_err()
+        {
+            self.dropped_count += 1;
+        }
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         if field.name() == "message" {
             return;
         }
-        let _ = self
+        if self
             .buf
-            .try_encode(|b| DirectFieldVisitor::encode_bool_attribute_to(b, field.name(), value));
+            .try_encode(|b| DirectFieldVisitor::encode_bool_attribute_to(b, field.name(), value))
+            .is_err()
+        {
+            self.dropped_count += 1;
+        }
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
@@ -284,9 +284,13 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
             self.encode_body_string(value);
             return;
         }
-        let _ = self
+        if self
             .buf
-            .try_encode(|b| DirectFieldVisitor::encode_string_attribute_to(b, field.name(), value));
+            .try_encode(|b| DirectFieldVisitor::encode_string_attribute_to(b, field.name(), value))
+            .is_err()
+        {
+            self.dropped_count += 1;
+        }
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -294,9 +298,13 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
             self.encode_body_debug(value);
             return;
         }
-        let _ = self
+        if self
             .buf
-            .try_encode(|b| DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value));
+            .try_encode(|b| DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value))
+            .is_err()
+        {
+            self.dropped_count += 1;
+        }
     }
 }
 
@@ -323,20 +331,17 @@ where
     I: Iterator<Item = (&'a opentelemetry::Key, &'a opentelemetry::Value)>,
 {
     // ResourceLogs.resource (field 1, Resource message)
-    proto_encode_len_delimited_small!(
-        RESOURCE_LOGS_RESOURCE,
-        {
-            // Encode each attribute as a KeyValue
-            for (key, value) in attrs {
-                encode_resource_attribute(buf, key.as_str(), value);
-            }
-        },
-        buf
-    );
+    let _: EncodeResult = buf.encode_len_delimited(RESOURCE_LOGS_RESOURCE, |buf| {
+        // Encode each attribute as a KeyValue
+        for (key, value) in attrs {
+            encode_resource_attribute(buf, key.as_str(), value)?;
+        }
+        Ok(())
+    });
 
     // ResourceLogs.schema_url (field 3, string)
     if let Some(url) = schema_url {
-        buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, url);
+        let _ = buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, url);
     }
 }
 
@@ -350,43 +355,40 @@ pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> Bytes
 
 /// Encode a single resource attribute as a KeyValue message.
 #[inline]
-fn encode_resource_attribute(buf: &mut ProtoBuffer, key: &str, value: &opentelemetry::Value) {
+fn encode_resource_attribute(
+    buf: &mut ProtoBuffer,
+    key: &str,
+    value: &opentelemetry::Value,
+) -> EncodeResult {
     use opentelemetry::Value;
 
-    proto_encode_len_delimited_small!(
-        RESOURCE_ATTRIBUTES,
-        {
-            buf.encode_string(KEY_VALUE_KEY, key);
-            proto_encode_len_delimited_small!(
-                KEY_VALUE_VALUE,
-                {
-                    match value {
-                        Value::String(s) => {
-                            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str());
-                        }
-                        Value::Bool(b) => {
-                            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
-                            buf.encode_varint(u64::from(*b));
-                        }
-                        Value::I64(i) => {
-                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-                            buf.encode_varint(*i as u64);
-                        }
-                        Value::F64(f) => {
-                            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
-                            buf.extend_from_slice(&f.to_le_bytes());
-                        }
-                        _ => {
-                            // TODO: share the encoding logic used somewhere else, somehow.
-                            crate::raw_error!("cannot encode SDK resource value", value = ?value);
-                        }
-                    }
-                },
-                buf
-            );
-        },
-        buf
-    );
+    buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |buf| {
+        buf.encode_string(KEY_VALUE_KEY, key)?;
+        buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
+            match value {
+                Value::String(s) => {
+                    buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str())?;
+                }
+                Value::Bool(b) => {
+                    buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
+                    buf.encode_varint(u64::from(*b))?;
+                }
+                Value::I64(i) => {
+                    buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+                    buf.encode_varint(*i as u64)?;
+                }
+                Value::F64(f) => {
+                    buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
+                    buf.extend_from_slice(&f.to_le_bytes())?;
+                }
+                _ => {
+                    // TODO: share the encoding logic used somewhere else, somehow.
+                    crate::raw_error!("cannot encode SDK resource value", value = ?value);
+                }
+            }
+            Ok(())
+        })
+    })
 }
 
 // Field numbers for ExportLogsServiceRequest and related messages
@@ -455,7 +457,7 @@ fn encode_scope_attribute(
     key: &str,
     value: &crate::attributes::AttributeValue,
 ) {
-    encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value);
+    let _ = encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value);
 }
 
 /// Encode a KeyValue message wrapped in the given outer field tag.
@@ -469,62 +471,54 @@ fn encode_key_value(
     outer_field: u64,
     key: &str,
     value: &crate::attributes::AttributeValue,
-) {
-    proto_encode_len_delimited_small!(
-        outer_field,
-        {
-            buf.encode_string(KEY_VALUE_KEY, key);
-            proto_encode_len_delimited_small!(
-                KEY_VALUE_VALUE,
-                {
-                    encode_any_value(buf, value);
-                },
-                buf
-            );
-        },
-        buf
-    );
+) -> EncodeResult {
+    buf.encode_len_delimited(outer_field, |buf| {
+        buf.encode_string(KEY_VALUE_KEY, key)?;
+        buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| encode_any_value(buf, value))
+    })
 }
 
 /// Encode an `AttributeValue` as an OTLP AnyValue (the inner value without key wrapping).
 #[inline]
-fn encode_any_value(buf: &mut ProtoBuffer, value: &crate::attributes::AttributeValue) {
+fn encode_any_value(
+    buf: &mut ProtoBuffer,
+    value: &crate::attributes::AttributeValue,
+) -> EncodeResult {
     use crate::attributes::AttributeValue;
 
     match value {
         AttributeValue::String(s) => {
-            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str());
+            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str())?;
         }
         AttributeValue::Boolean(b) => {
-            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
-            buf.encode_varint(u64::from(*b));
+            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
+            buf.encode_varint(u64::from(*b))?;
         }
         AttributeValue::Int(i) => {
-            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-            buf.encode_varint(*i as u64);
+            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+            buf.encode_varint(*i as u64)?;
         }
         AttributeValue::UInt(u) => {
-            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-            buf.encode_varint(*u);
+            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+            buf.encode_varint(*u)?;
         }
         AttributeValue::Double(f) => {
-            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
-            buf.extend_from_slice(&f.to_le_bytes());
+            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
+            buf.extend_from_slice(&f.to_le_bytes())?;
         }
         AttributeValue::Map(m) => {
             // Encode as kvlist: AnyValue.kvlist_value (field 6) containing
             // KeyValueList with repeated KeyValue entries (field 1).
-            proto_encode_len_delimited_small!(
-                ANY_VALUE_KVLIST_VALUE,
-                {
-                    for (k, v) in m {
-                        encode_key_value(buf, KEY_VALUE_LIST_VALUES, k, v);
-                    }
-                },
-                buf
-            );
+            buf.encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |buf| {
+                for (k, v) in m {
+                    encode_key_value(buf, KEY_VALUE_LIST_VALUES, k, v)?;
+                }
+                Ok(())
+            })?;
         }
     }
+
+    Ok(())
 }
 
 /// Encode a LogEvent as a complete ExportLogsServiceRequest.
@@ -541,47 +535,30 @@ pub fn encode_export_logs_request(
     buf.clear();
 
     // ExportLogsServiceRequest.resource_logs (field 1, repeated ResourceLogs)
-    proto_encode_len_delimited_small!(
-        EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
-        {
-            // ResourceLogs.resource (field 1, Resource message)
-            // Copy pre-encoded resource bytes directly
-            buf.extend_from_slice(resource_bytes);
+    let _: EncodeResult = buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
+        // ResourceLogs.resource (field 1, Resource message)
+        // Copy pre-encoded resource bytes directly
+        buf.extend_from_slice(resource_bytes)?;
 
-            // ResourceLogs.scope_logs (field 2, repeated ScopeLogs)
-            proto_encode_len_delimited_small!(
-                RESOURCE_LOGS_SCOPE_LOGS,
-                {
-                    // ScopeLogs.scope (field 1, InstrumentationScope message)
-                    // Encode scope with attributes from entity context
-                    proto_encode_len_delimited_small!(
-                        SCOPE_LOG_SCOPE,
-                        {
-                            // For each entity key in the log context, append its pre-encoded attributes
-                            for entity_key in event.record.context.iter() {
-                                let scope_bytes = scope_cache.get_or_encode(*entity_key);
-                                buf.extend_from_slice(&scope_bytes);
-                            }
-                        },
-                        buf
-                    );
+        // ResourceLogs.scope_logs (field 2, repeated ScopeLogs)
+        buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
+            // ScopeLogs.scope (field 1, InstrumentationScope message)
+            buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
+                for entity_key in event.record.context.iter() {
+                    let scope_bytes = scope_cache.get_or_encode(*entity_key);
+                    buf.extend_from_slice(&scope_bytes)?;
+                }
+                Ok(())
+            })?;
 
-                    // ScopeLogs.log_records (field 2, repeated LogRecord)
-                    proto_encode_len_delimited_small!(
-                        SCOPE_LOGS_LOG_RECORDS,
-                        {
-                            // Encode the LogRecord fields
-                            let mut encoder = DirectLogRecordEncoder::new(buf);
-                            let _ = encoder.encode_log_record(event.time, &event.record);
-                        },
-                        buf
-                    );
-                },
-                buf
-            );
-        },
-        buf
-    );
+            // ScopeLogs.log_records (field 2, repeated LogRecord)
+            buf.encode_len_delimited(SCOPE_LOGS_LOG_RECORDS, |buf| {
+                let mut encoder = DirectLogRecordEncoder::new(buf);
+                let _ = encoder.encode_log_record(event.time, &event.record);
+                Ok(())
+            })
+        })
+    });
 }
 
 #[cfg(test)]

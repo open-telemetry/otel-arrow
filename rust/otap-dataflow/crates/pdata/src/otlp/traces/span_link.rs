@@ -69,19 +69,19 @@ pub fn encode_span_link(
 ) -> Result<()> {
     if let Some(col) = &link_arrays.trace_id {
         if let Some(val) = col.slice_at(index) {
-            result_buf.encode_bytes(SPAN_LINK_TRACE_ID, val);
+            result_buf.encode_bytes(SPAN_LINK_TRACE_ID, val)?;
         }
     }
 
     if let Some(col) = &link_arrays.span_id {
         if let Some(val) = col.slice_at(index) {
-            result_buf.encode_bytes(SPAN_LINK_SPAN_ID, val);
+            result_buf.encode_bytes(SPAN_LINK_SPAN_ID, val)?;
         }
     }
 
     if let Some(col) = &link_arrays.trace_state {
         if let Some(val) = col.str_at(index) {
-            result_buf.encode_string(SPAN_LINK_TRACE_STATE, val);
+            result_buf.encode_string(SPAN_LINK_TRACE_STATE, val)?;
         }
     }
 
@@ -100,15 +100,15 @@ pub fn encode_span_link(
 
     if let Some(col) = &link_arrays.dropped_attributes_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SPAN_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf.encode_field_tag(SPAN_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
     }
 
     if let Some(col) = &link_arrays.flags {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SPAN_LINK_FLAGS, wire_types::FIXED32);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(SPAN_LINK_FLAGS, wire_types::FIXED32)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 

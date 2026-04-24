@@ -189,50 +189,51 @@ pub(crate) fn proto_encode_exp_hist_data_point(
 
     if let Some(col) = exp_hist_dp_arrays.start_time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf
+                .encode_field_tag(EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = exp_hist_dp_arrays.time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = exp_hist_dp_arrays.histogram_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_COUNT, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_COUNT, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = exp_hist_dp_arrays.histogram_sum {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_SUM, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_SUM, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = exp_hist_dp_arrays.exp_histogram_scale {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_SCALE, wire_types::VARINT);
-            result_buf.encode_sint32(val);
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_SCALE, wire_types::VARINT)?;
+            result_buf.encode_sint32(val)?;
         }
     }
 
     if let Some(col) = exp_hist_dp_arrays.exp_histogram_zero_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_COUNT, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_COUNT, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(bucket_arrays) = exp_hist_dp_arrays.exp_histogram_positive.as_ref() {
         proto_encode_len_delimited_unknown_size!(
             EXP_HISTOGRAM_DP_POSITIVE,
-            proto_encode_buckets(index, bucket_arrays, result_buf),
+            proto_encode_buckets(index, bucket_arrays, result_buf)?,
             result_buf
         )
     }
@@ -240,7 +241,7 @@ pub(crate) fn proto_encode_exp_hist_data_point(
     if let Some(bucket_arrays) = exp_hist_dp_arrays.exp_histogram_negative.as_ref() {
         proto_encode_len_delimited_unknown_size!(
             EXP_HISTOGRAM_DP_NEGATIVE,
-            proto_encode_buckets(index, bucket_arrays, result_buf),
+            proto_encode_buckets(index, bucket_arrays, result_buf)?,
             result_buf
         );
     }
@@ -267,29 +268,29 @@ pub(crate) fn proto_encode_exp_hist_data_point(
 
     if let Some(col) = exp_hist_dp_arrays.flags {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_FLAGS, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_FLAGS, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
     }
 
     if let Some(col) = exp_hist_dp_arrays.histogram_min {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MIN, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MIN, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = exp_hist_dp_arrays.histogram_max {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MAX, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_MAX, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = exp_hist_dp_arrays.zero_threshold {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_THRESHOLD, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXP_HISTOGRAM_DP_ZERO_THRESHOLD, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
@@ -300,10 +301,10 @@ fn proto_encode_buckets(
     index: usize,
     buckets_arrays: &PositiveNegativeArrayAccess<'_>,
     result_buf: &mut ProtoBuffer,
-) {
+) -> Result<()> {
     if let Some(val) = buckets_arrays.offset_array.value_at(index) {
-        result_buf.encode_field_tag(EXP_HISTOGRAM_BUCKET_OFFSET, wire_types::VARINT);
-        result_buf.encode_sint32(val);
+        result_buf.encode_field_tag(EXP_HISTOGRAM_BUCKET_OFFSET, wire_types::VARINT)?;
+        result_buf.encode_sint32(val)?;
     }
 
     if buckets_arrays.bucket_count.list.is_valid(index) {
@@ -320,8 +321,10 @@ fn proto_encode_buckets(
             values
                 .iter()
                 .flatten()
-                .for_each(|val| result_buf.encode_varint(val)),
+                .try_for_each(|val| result_buf.encode_varint(val))?,
             result_buf
         );
     }
+
+    Ok(())
 }

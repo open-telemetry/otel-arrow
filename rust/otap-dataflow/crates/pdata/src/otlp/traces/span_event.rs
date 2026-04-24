@@ -59,14 +59,14 @@ pub fn encode_span_event(
 ) -> Result<()> {
     if let Some(col) = &event_arrays.time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SPAN_EVENT_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(SPAN_EVENT_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = &event_arrays.name {
         if let Some(val) = col.str_at(index) {
-            result_buf.encode_string(SPAN_EVENT_NAME, val);
+            result_buf.encode_string(SPAN_EVENT_NAME, val)?;
         }
     }
 
@@ -85,8 +85,9 @@ pub fn encode_span_event(
 
     if let Some(col) = &event_arrays.dropped_attributes_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf
+                .encode_field_tag(SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
     }
 

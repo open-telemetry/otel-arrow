@@ -135,6 +135,7 @@ impl SavedCallsite {
 pub struct StackLogRecord {
     buf: ProtoBufferInline<ENCODE_INLINE>,
     callsite_id: Identifier,
+    dropped_count: u32,
 }
 
 impl StackLogRecord {
@@ -142,13 +143,16 @@ impl StackLogRecord {
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
         let mut buf = ProtoBufferInline::<ENCODE_INLINE>::with_inline();
+        let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
             event.record(&mut visitor);
+            dropped_count = visitor.dropped_count();
         }
         Self {
             buf,
             callsite_id: event.metadata().callsite(),
+            dropped_count,
         }
     }
 
@@ -158,7 +162,7 @@ impl StackLogRecord {
         BorrowedLogRecord {
             body_attrs_bytes: self.buf.as_ref(),
             callsite: SavedCallsite::new(self.callsite_id.0.metadata()),
-            dropped_attributes_count: self.buf.dropped(),
+            dropped_attributes_count: self.dropped_count,
         }
     }
 
@@ -166,7 +170,7 @@ impl StackLogRecord {
     #[must_use]
     pub fn into_record(self, context: LogContext) -> LogRecord {
         LogRecord {
-            dropped_attributes_count: self.buf.dropped() as u16,
+            dropped_attributes_count: self.dropped_count as u16,
             body_attrs_bytes: self.buf.into_bytes(),
             callsite_id: self.callsite_id,
             context,
@@ -194,14 +198,16 @@ impl LogRecord {
         let metadata = event.metadata();
 
         let mut buf = ProtoBufferInline::<INLINE>::with_inline();
+        let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
             event.record(&mut visitor);
+            dropped_count = visitor.dropped_count();
         }
 
         Self {
             callsite_id: metadata.callsite(),
-            dropped_attributes_count: buf.dropped() as u16,
+            dropped_attributes_count: dropped_count as u16,
             body_attrs_bytes: buf.into_bytes(),
             context,
         }

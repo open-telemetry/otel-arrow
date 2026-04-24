@@ -83,15 +83,15 @@ pub(crate) fn proto_encode_number_data_point(
 
     if let Some(col) = number_dp_arrays.start_time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(NUMBER_DP_START_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(NUMBER_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = number_dp_arrays.time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(NUMBER_DP_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(NUMBER_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
@@ -99,16 +99,16 @@ pub(crate) fn proto_encode_number_data_point(
     if let Some(col) = number_dp_arrays.double_value {
         if let Some(val) = col.value_at(index) {
             value_is_double = true;
-            result_buf.encode_field_tag(NUMBER_DP_AS_DOUBLE, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(NUMBER_DP_AS_DOUBLE, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if !value_is_double {
         if let Some(col) = number_dp_arrays.int_value {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(NUMBER_DP_AS_INT, wire_types::FIXED64);
-                result_buf.extend_from_slice(&val.to_le_bytes());
+                result_buf.encode_field_tag(NUMBER_DP_AS_INT, wire_types::FIXED64)?;
+                result_buf.extend_from_slice(&val.to_le_bytes())?;
             }
         }
     }
@@ -135,8 +135,8 @@ pub(crate) fn proto_encode_number_data_point(
 
     if let Some(col) = number_dp_arrays.flags {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(NUMBER_DP_FLAGS, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf.encode_field_tag(NUMBER_DP_FLAGS, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
     }
 

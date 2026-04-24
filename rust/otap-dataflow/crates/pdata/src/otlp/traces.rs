@@ -279,7 +279,7 @@ impl TracesProtoBytesEncoder {
         // encode the schema url
         if let Some(col) = &traces_data_arrays.resource_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(RESOURCE_SPANS_SCHEMA_URL, val);
+                result_buf.encode_string(RESOURCE_SPANS_SCHEMA_URL, val)?;
             }
         }
 
@@ -342,7 +342,7 @@ impl TracesProtoBytesEncoder {
         // encode the schema url
         if let Some(col) = &traces_data_arrays.span_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SCOPE_SPANS_SCHEMA_URL, val);
+                result_buf.encode_string(SCOPE_SPANS_SCHEMA_URL, val)?;
             }
         }
 
@@ -363,59 +363,60 @@ impl TracesProtoBytesEncoder {
 
         if let Some(col) = &span_arrays.trace_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(SPAN_TRACE_ID, val);
+                result_buf.encode_bytes(SPAN_TRACE_ID, val)?;
             }
         }
 
         if let Some(col) = &span_arrays.span_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(SPAN_SPAN_ID, val);
+                result_buf.encode_bytes(SPAN_SPAN_ID, val)?;
             }
         }
 
         if let Some(col) = &span_arrays.trace_state {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SPAN_TRACE_STATE, val);
+                result_buf.encode_string(SPAN_TRACE_STATE, val)?;
             }
         }
 
         if let Some(col) = &span_arrays.parent_span_id {
             if let Some(val) = col.slice_at(index) {
-                result_buf.encode_bytes(SPAN_PARENT_SPAN_ID, val);
+                result_buf.encode_bytes(SPAN_PARENT_SPAN_ID, val)?;
             }
         }
 
         if let Some(col) = &span_arrays.flags {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_FLAGS, wire_types::FIXED32);
-                result_buf.extend_from_slice(&val.to_le_bytes());
+                result_buf.encode_field_tag(SPAN_FLAGS, wire_types::FIXED32)?;
+                result_buf.extend_from_slice(&val.to_le_bytes())?;
             }
         }
 
         if let Some(col) = &span_arrays.name {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SPAN_NAME, val);
+                result_buf.encode_string(SPAN_NAME, val)?;
             }
         }
 
         if let Some(col) = &span_arrays.kind {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_KIND, wire_types::VARINT);
-                result_buf.encode_varint(val as u64);
+                result_buf.encode_field_tag(SPAN_KIND, wire_types::VARINT)?;
+                result_buf.encode_varint(val as u64)?;
             }
         }
 
         if let Some(col) = &span_arrays.start_time_unix_nano {
             if let Some(start_time) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_START_TIME_UNIX_NANO, wire_types::FIXED64);
-                result_buf.extend_from_slice(&start_time.to_le_bytes());
+                result_buf.encode_field_tag(SPAN_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+                result_buf.extend_from_slice(&start_time.to_le_bytes())?;
 
                 // encode end time from start + duration
                 if let Some(col) = &span_arrays.duration_time_unix_nano {
                     if let Some(duration) = col.value_at(index) {
                         let end_time = start_time + duration;
-                        result_buf.encode_field_tag(SPAN_END_TIME_UNIX_NANO, wire_types::FIXED64);
-                        result_buf.extend_from_slice(&end_time.to_le_bytes());
+                        result_buf
+                            .encode_field_tag(SPAN_END_TIME_UNIX_NANO, wire_types::FIXED64)?;
+                        result_buf.extend_from_slice(&end_time.to_le_bytes())?;
                     }
                 }
             }
@@ -437,8 +438,8 @@ impl TracesProtoBytesEncoder {
 
         if let Some(col) = span_arrays.dropped_attributes_count {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT);
-                result_buf.encode_varint(val as u64);
+                result_buf.encode_field_tag(SPAN_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+                result_buf.encode_varint(val as u64)?;
             }
         }
 
@@ -465,8 +466,8 @@ impl TracesProtoBytesEncoder {
 
         if let Some(col) = span_arrays.dropped_events_count {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_DROPPED_EVENTS_COUNT, wire_types::VARINT);
-                result_buf.encode_varint(val as u64);
+                result_buf.encode_field_tag(SPAN_DROPPED_EVENTS_COUNT, wire_types::VARINT)?;
+                result_buf.encode_varint(val as u64)?;
             }
         }
 
@@ -493,8 +494,8 @@ impl TracesProtoBytesEncoder {
 
         if let Some(col) = span_arrays.dropped_links_count {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_DROPPED_LINKS_COUNT, wire_types::VARINT);
-                result_buf.encode_varint(val as u64);
+                result_buf.encode_field_tag(SPAN_DROPPED_LINKS_COUNT, wire_types::VARINT)?;
+                result_buf.encode_varint(val as u64)?;
             }
         }
 
@@ -502,7 +503,7 @@ impl TracesProtoBytesEncoder {
             if status.status.is_valid(index) {
                 proto_encode_len_delimited_unknown_size!(
                     SPAN_STATUS,
-                    self.encode_span_status(index, status, result_buf),
+                    self.encode_span_status(index, status, result_buf)?,
                     result_buf
                 );
             }
@@ -518,19 +519,21 @@ impl TracesProtoBytesEncoder {
         index: usize,
         status_arrays: &SpanStatusArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) {
+    ) -> Result<()> {
         if let Some(col) = &status_arrays.message {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SPAN_STATUS_MESSAGE, val);
+                result_buf.encode_string(SPAN_STATUS_MESSAGE, val)?;
             }
         }
 
         if let Some(col) = &status_arrays.code {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(SPAN_STATUS_CODE, wire_types::VARINT);
-                result_buf.encode_varint(val as u64);
+                result_buf.encode_field_tag(SPAN_STATUS_CODE, wire_types::VARINT)?;
+                result_buf.encode_varint(val as u64)?;
             }
         }
+
+        Ok(())
     }
 }
 

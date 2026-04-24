@@ -550,7 +550,7 @@ impl MetricsProtoBytesEncoder {
         // encode schema url
         if let Some(col) = &metrics_data_arrays.resource_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(RESOURCE_METRICS_SCHEMA_URL, val);
+                result_buf.encode_string(RESOURCE_METRICS_SCHEMA_URL, val)?;
             }
         }
 
@@ -614,7 +614,7 @@ impl MetricsProtoBytesEncoder {
         // encode the schema url
         if let Some(col) = &metrics_data_arrays.metrics_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SCOPE_METRICS_SCHEMA_URL, val);
+                result_buf.encode_string(SCOPE_METRICS_SCHEMA_URL, val)?;
             }
         }
 
@@ -634,18 +634,18 @@ impl MetricsProtoBytesEncoder {
         let metrics_arrays = &metrics_data_arrays.metrics_arrays;
 
         if let Some(val) = metrics_arrays.name.str_at(index) {
-            result_buf.encode_string(METRIC_NAME, val);
+            result_buf.encode_string(METRIC_NAME, val)?;
         }
 
         if let Some(col) = &metrics_arrays.description {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(METRIC_DESCRIPTION, val);
+                result_buf.encode_string(METRIC_DESCRIPTION, val)?;
             }
         }
 
         if let Some(col) = &metrics_arrays.unit {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(METRIC_UNIT, val);
+                result_buf.encode_string(METRIC_UNIT, val)?;
             }
         }
 
@@ -757,13 +757,13 @@ impl MetricsProtoBytesEncoder {
                 if metric_type == MetricType::Sum {
                     if let Some(aggregation_temporality) = aggregation_temporality {
                         result_buf
-                            .encode_field_tag(SUM_AGGREGATION_TEMPORALITY, wire_types::VARINT);
-                        result_buf.encode_varint(aggregation_temporality as u64);
+                            .encode_field_tag(SUM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
+                        result_buf.encode_varint(aggregation_temporality as u64)?;
                     }
 
                     if let Some(is_monotonic) = is_monotonic {
-                        result_buf.encode_field_tag(SUM_IS_MONOTONIC, wire_types::VARINT);
-                        result_buf.encode_varint(is_monotonic as u64);
+                        result_buf.encode_field_tag(SUM_IS_MONOTONIC, wire_types::VARINT)?;
+                        result_buf.encode_varint(is_monotonic as u64)?;
                     }
                 }
             }
@@ -793,8 +793,8 @@ impl MetricsProtoBytesEncoder {
                 }
                 if let Some(aggregation_temporality) = aggregation_temporality {
                     result_buf
-                        .encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT);
-                    result_buf.encode_varint(aggregation_temporality as u64);
+                        .encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
+                    result_buf.encode_varint(aggregation_temporality as u64)?;
                 }
             }
             MetricType::ExponentialHistogram => {
@@ -822,8 +822,8 @@ impl MetricsProtoBytesEncoder {
                 }
                 if let Some(aggregation_temporality) = aggregation_temporality {
                     result_buf
-                        .encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT);
-                    result_buf.encode_varint(aggregation_temporality as u64);
+                        .encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
+                    result_buf.encode_varint(aggregation_temporality as u64)?;
                 }
             }
             MetricType::Summary => {

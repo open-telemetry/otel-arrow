@@ -133,29 +133,29 @@ pub(crate) fn proto_encode_summary_data_point(
 
     if let Some(col) = summary_dp_arrays.start_time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_START_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(SUMMARY_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = summary_dp_arrays.time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(SUMMARY_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = summary_dp_arrays.summary_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_COUNT, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(SUMMARY_DP_COUNT, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = summary_dp_arrays.summary_sum {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_SUM, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(SUMMARY_DP_SUM, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
@@ -168,7 +168,7 @@ pub(crate) fn proto_encode_summary_data_point(
             for i in start..end {
                 proto_encode_len_delimited_unknown_size!(
                     SUMMARY_DP_QUANTILE_VALUES,
-                    proto_encode_value_quantile(i as usize, quantile_arrays, result_buf),
+                    proto_encode_value_quantile(i as usize, quantile_arrays, result_buf)?,
                     result_buf
                 );
             }
@@ -177,8 +177,8 @@ pub(crate) fn proto_encode_summary_data_point(
 
     if let Some(col) = summary_dp_arrays.flags {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_FLAGS, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf.encode_field_tag(SUMMARY_DP_FLAGS, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
     }
 
@@ -189,14 +189,16 @@ pub(crate) fn proto_encode_value_quantile(
     index: usize,
     quantile_arrays: &QuantileArrays<'_>,
     result_buf: &mut ProtoBuffer,
-) {
+) -> Result<()> {
     if let Some(val) = quantile_arrays.quantile_array.value_at(index) {
-        result_buf.encode_field_tag(VALUE_AT_QUANTILE_QUANTILE, wire_types::FIXED64);
-        result_buf.extend_from_slice(&val.to_le_bytes());
+        result_buf.encode_field_tag(VALUE_AT_QUANTILE_QUANTILE, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
 
     if let Some(val) = quantile_arrays.value_array.value_at(index) {
-        result_buf.encode_field_tag(VALUE_AT_QUANTILE_VALUE, wire_types::FIXED64);
-        result_buf.extend_from_slice(&val.to_le_bytes());
+        result_buf.encode_field_tag(VALUE_AT_QUANTILE_VALUE, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
     }
+
+    Ok(())
 }

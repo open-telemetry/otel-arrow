@@ -219,6 +219,9 @@ pub enum Error {
         message: String,
     },
 
+    #[error("buffer full")]
+    Dropped,
+
     #[error("Format error: {}", error)]
     Format { error: String },
 
@@ -239,4 +242,10 @@ pub enum Error {
         found: SignalType,
         expected: SignalType,
     },
+}
+
+impl From<crate::otlp::common::Dropped> for Error {
+    fn from(_: crate::otlp::common::Dropped) -> Self {
+        Error::Dropped
+    }
 }
