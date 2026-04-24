@@ -500,17 +500,21 @@ underlying collection layer exposes those counters.
 
 This receiver requires all of the following on the host:
 
-- Linux kernel built with `CONFIG_USER_EVENTS=y`
+- Linux kernel **6.4 or later**, built with `CONFIG_USER_EVENTS=y`
 - tracefs available, typically under `/sys/kernel/tracing`
 - permission to read tracefs metadata
 - permission to use `perf_event_open` for the configured tracepoints
 
-Kernel support is distro/config dependent. Recent kernels document
-`user_events` under Linux tracing, but the feature is usable only when the
-running kernel was built with `CONFIG_USER_EVENTS` and exposes
-`user_events_data` / `user_events_status` in tracefs. Some distributions enable
-this by default (for example, Ubuntu releases with newer kernels), while others
-may require a custom kernel config.
+`user_events` was merged in Linux 6.4; earlier kernels do not expose
+`user_events_data` / `user_events_status` in tracefs. Distro support also
+depends on whether `CONFIG_USER_EVENTS` is enabled in the shipped kernel.
+Distributions that ship it enabled by default:
+
+- **Ubuntu 23.10** and later
+- **Azure Linux 3.0** and later
+
+Other distributions may work on any 6.4+ kernel built with
+`CONFIG_USER_EVENTS=y`, but this is not exhaustively verified.
 
 The exact permission model depends on the host kernel and security settings.
 
