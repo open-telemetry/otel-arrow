@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Background rollout and shutdown execution.
 //!
 //! The planning module records accepted operations and spawns workers; this

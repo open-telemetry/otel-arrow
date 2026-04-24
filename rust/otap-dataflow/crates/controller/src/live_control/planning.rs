@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Request planning, operation recording, and worker spawning.
 //!
 //! Planning converts admin requests into explicit candidate plans while holding

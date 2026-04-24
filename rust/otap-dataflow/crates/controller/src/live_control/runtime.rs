@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Runtime-instance launch, shutdown, and exit reporting.
 //!
 //! This module owns the boundary between controller state and actual pipeline
@@ -296,14 +299,24 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
         deployed_key: &DeployedPipelineKey,
         deadline: Instant,
     ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
-            if let Some(exit) = self.instance_exit(deployed_key) {
-                return match exit {
-                    RuntimeInstanceExit::Success => Ok(()),
-                    RuntimeInstanceExit::Error(error) => Err(error.message),
-                };
+            if let Some(instance) = state.runtime_instances.get(deployed_key) {
+                match &instance.lifecycle {
+                    RuntimeInstanceLifecycle::Active => {}
+                    RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Success) => {
+                        return Ok(());
+                    }
+                    RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(error)) => {
+                        return Err(error.message.clone());
+                    }
+                }
             }
-            if Instant::now() >= deadline {
+
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(format!(
                     "timed out waiting for pipeline {}:{} core={} generation={} to drain",
                     deployed_key.pipeline_group_id.as_ref(),
@@ -311,8 +324,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     deployed_key.core_id,
                     deployed_key.deployment_generation
                 ));
-            }
-            thread::sleep(Duration::from_millis(50));
+            };
+
+            // Runtime registration and exit reporting both publish through this
+            // mutex/condvar pair, so exit waits can sleep until real controller
+            // state changes instead of polling every 50ms.
+            let (next_state, _) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
         }
     }
 
