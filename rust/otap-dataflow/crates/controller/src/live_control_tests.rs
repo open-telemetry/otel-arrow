@@ -2370,7 +2370,12 @@ fn terminal_operation_history_expires_after_ttl() {
     let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
     let rollout_id = "rollout-old".to_owned();
     let shutdown_id = "shutdown-old".to_owned();
-    let expired_at = Instant::now() - TERMINAL_OPERATION_RETENTION_TTL - Duration::from_secs(1);
+    let prune_now = Instant::now()
+        .checked_add(TERMINAL_OPERATION_RETENTION_TTL + Duration::from_secs(2))
+        .expect("synthetic prune deadline should be representable");
+    let expired_at = prune_now
+        .checked_sub(TERMINAL_OPERATION_RETENTION_TTL + Duration::from_secs(1))
+        .expect("synthetic completed_at should be representable");
 
     {
         let mut state = runtime
@@ -2395,6 +2400,11 @@ fn terminal_operation_history_expires_after_ttl() {
             .entry(pipeline_key.clone())
             .or_default()
             .push_back(shutdown_id.clone());
+
+        // Use a synthetic future `now` here instead of relying on
+        // `Instant::now() - ttl`, which can underflow on Windows near the
+        // monotonic clock origin.
+        ControllerRuntime::<()>::prune_terminal_operation_history_locked(&mut state, prune_now);
     }
 
     assert!(runtime.rollout_status_snapshot(&rollout_id).is_none());
