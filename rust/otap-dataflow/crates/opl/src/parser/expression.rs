@@ -205,9 +205,6 @@ pub(crate) fn parse_type_check_expression(
     let type_check_rule_query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
 
-    // Determine what to do based on the number of rules here. The rule syntax is defined as:
-    // rel_expression? ~ (type_check_op ~ type_name)?
-
     match inner_rules.len() {
         // If there is one rule, it's simply a relative expression.
         1 => {
@@ -244,12 +241,20 @@ pub(crate) fn parse_type_check_expression(
         // If there are three rules, we have an expression like (<field> is <Type>) meaning we're
         // checking that some field on the stream element is some type
         3 => {
-            todo!()
+            // TODO - we will support this soon
+            Err(ParserError::SyntaxNotSupported(
+                type_check_rule_query_location,
+                "Checking if a field of stream element is a type is not yet supported".into(),
+            ))
         }
 
-        other_len => {
-            todo!("handle other len {other_len:?}")
-        }
+        other_len => Err(ParserError::SyntaxError(
+            type_check_rule_query_location,
+            format!(
+                "Invalid number of expressions in type_check_expression. \
+                Found {other_len}, expected 1, 2 or 3"
+            ),
+        )),
     }
 }
 
