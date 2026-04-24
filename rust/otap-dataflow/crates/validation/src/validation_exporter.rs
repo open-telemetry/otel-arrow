@@ -233,16 +233,13 @@ impl Exporter<OtapPdata> for ValidationExporter {
                             if node_index == self.suv_index {
                                 self.suv_msgs.push((msg, time_elapsed));
                                 self.suv_transport_headers.push(transport_headers);
-                                // self.validate_and_record();
                                 time = Instant::now();
                             } else if self.control_indices.contains(&node_index) {
                                 self.control_msgs.push(msg);
-                                // self.validate_and_record();
                             }
                         } else if self.control_indices.is_empty() {
                             self.suv_msgs.push((msg, time_elapsed));
                             self.suv_transport_headers.push(transport_headers);
-                            // self.validate_and_record();
                             time = Instant::now();
                         } else {
                             otel_error!("validation.missing.source");
