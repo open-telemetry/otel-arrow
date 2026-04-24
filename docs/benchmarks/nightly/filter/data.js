@@ -1,204 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776999403384,
+  "lastUpdate": 1777057641991,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "albertlockett",
-            "username": "albertlockett",
-            "email": "a.lockett@f5.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "532cc7dfa1a3ef24a3544b3af1419ccaeab71714",
-          "message": "Columnar query engine expression evaluation: simple arithmetic (#2126)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nAdds a module to the columnar query engine with the ability evaluate\nsimple arithmetic expressions on OTAP record batches. For example, it\ncould evaluate expressions such as `severity_number + attributes[\"x\"] *\n2`.\n\nNote that the expression evaluation isn't yet integrated into any\n`PipelineStage` implementation, but the intention is that this can soon\nbe used to implement more advanced filtering, attribute insertion,\ncolumn updates and so on.\n\nWhile on the surface, this isolated simple arithmetic not appear\nterribly useful, the main/important contributions in this PR are to lay\ndown some foundations for future expression evaluation:\n\n**Transparent joins in the expression tree**\nThis PR adds is the ability to evaluate a set of DataFusion expressions\nwhile transparently joining data from different record batches as the\nexpression evaluates.\n\nFor example, consider we had `severity_number * 2 + attributes[\"x\"] +\nattributes[\"y\"]`, we'd need to first evaluate:\n- 1. `severity_number * 2`\n- 2. `attributes where key = \"x\"`, then select the value column based on\nthe type\n- 3. `attributes where key = \"y\"`, then select the value column based on\nthe type,\n\nThen we need to join these three expressions on the ID/parent ID\nrelationship, then perform the additions.\n\nThis PR builds the expression tree in such a way that it can manage\nwhere these joins need to happen on either side of a binary expression,\nand it performs the joins automatically during expression evaluation\nwhile keeping track of the ID scope/row order of the current data at\neach stage.\n\n**Type evaluation and coercion**\n\nWhile planning the expression, the planner attempts to keep track of\nwhat are the possible types that the expression could produce if it were\nto successfully evaluate. When it detects invalid types, it is able to\nproduce an error indicating an invalid expression.\n\nFor example, we'd be able to detect at planning time that `severity_text\n+ 2` is invalid, because text can't be added to a number.\n\nFor expressions where we can't determine that the types are invalid at\nplanning time, it will be determined and runtime and an error will be\nproduced when the expression evaluates on some batch. For example\n`attributes[\"x\"] + 2`, it's unknown whether `attributes[\"x\"]` is an\nint64, so it's assumed that the expression will produce an int64, and if\n`attributes[\"x\"]` is found not to be this type, an ExecutionError will\nbe produced.\n\nThe planner automatically coerces integer types when necessary.\nCurrently when adding two integers, they will be coerced into the\nlargest type that could contain the value, while keeping the signed-ness\nof one side. For example, uint8 + int32 will produce an int32. I realize\nthis type of automatic integer coercion is probably controversial, so in\nthe future I'm happy to get rid of this in favour of forcing explicit\ncasting if that is preferred.\n\n**Missing data / null propagation**\n\nWhen one side of an expression is null, for the purposes of arithmetic\nthe expression will evaluate to null. This includes the case of null\nvalues, missing attributes, missing columns, and missing optional record\nbatches.\n\nFor example: `attributes[\"x\"] + 2` would evaluate as null if the\nattribtues record batch was not present, there were no attributes with\n`key == \"x\"`, or the attributes where `key==\"x\"` had type empty, and so\non.\n\n**Relocated the projection code**\n\nAdds a new module called `pipeline::project` which has the projection\ncode that was previously inside the filter module. We need to project\nthe input record batches into a known schema to evaluate the\nexpressions, and also consider the expression evaluation to result in a\n`null` if the projection could evaluate due to missing data.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Relates to https://github.com/open-telemetry/otel-arrow/issues/2058\n\n## How are these changes tested?\n\nThere are 64 new unit tests covering these changes\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\nNo\n\n\n## Future work/followups:\nThere are many, but most pressing are:\n- Other types of expression evaluation, including string expressions,\nunary math expressions, function invocation and bridging this with the\nfiltering code (for expressions that produce boolean arrays).\n- Integrating expression evaluation with various pipeline stages\nincluding those which set attributes, set values, and filtering\n- OPL Parser support for the type of expressions we're able to evaluate\n\n---------\n\nCo-authored-by: Laurent Quérel <laurent.querel@gmail.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-02-28T00:22:00Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/532cc7dfa1a3ef24a3544b3af1419ccaeab71714"
-        },
-        "date": 1772247054033,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 100,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 0.33690577032525343,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 1.9276764392241712,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 58.48815104166667,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 67.9375,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 19999.74600322576,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.000762,
-            "unit": "seconds",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2166.0172663439835,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 80486.4114333156,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 95.73332977294922,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 30.12896767862664,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 35.997489066831875,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 578.7321614583333,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 827.4140625,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 104997.53955765636,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 4479.895021126671,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001406,
-            "unit": "seconds",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 40679.82479367548,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2121860.1570187407,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 95.734375,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 32.0061171010179,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 34.04505673324044,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 23.401953125,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 25.265625,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 106664.62226140665,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 4549.912793338128,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00115,
-            "unit": "seconds",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 73991.55689097555,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2124483.032549317,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -20752,6 +20556,88 @@ window.BENCHMARK_DATA = {
             "value": 2534198.7667410434,
             "unit": "bytes/sec",
             "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Laurent Quérel",
+            "username": "lquerel",
+            "email": "l.querel@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5507512bea4dd9e53a8ae74d1f5cd3a85b875d2c",
+          "message": "Add live pipeline reconfiguration and shutdown control to the admin API (#2618)\n\n## Change Summary\n\nThis PR adds live pipeline lifecycle control to the OTAP Dataflow Engine\nadmin API.\n\nThe controller now runs as a resident runtime manager and supports\nin-memory pipeline operations on a running engine:\n\n- create a new pipeline in an existing group\n- replace an existing pipeline with a health-gated serial rolling\ncutover\n- resize a pipeline when only the effective core allocation changes\n- detect identical updates and return a successful `noop` result\n- shut down an individual logical pipeline and track shutdown progress\n\nThe PR also adds rollout and shutdown status resources, extends runtime\nand observed-state tracking with deployment generations so overlapping\ninstances remain distinguishable, updates the Rust admin SDK with typed\nlive-control methods/outcomes, and documents the feature.\n\n## Design Decisions\n\nThis PR keeps live reconfiguration scoped to one logical pipeline at a\ntime, keyed by `(group, pipeline)`. Reconfiguration mutations go through\none declarative endpoint, `PUT /api/v1/groups/{group}/pipelines/{id}`,\nwhile pipeline shutdown remains a separate operation through `POST\n/api/v1/groups/{group}/pipelines/{id}/shutdown`.\n\nThe controller classifies each reconfiguration request as `create`,\n`noop`, `resize`, or `replace` instead of exposing separate start,\nscale, and update APIs.\n\nTopology and node-configuration changes use a serial rolling cutover\nwith overlap: start the new instance on one core, wait for `Admitted`\nand `Ready`, then drain the old instance on that core. This preserves\ncontinuity while fitting the existing runtime model, without requiring a\nfull second serving fleet or a separate traffic-switching layer.\n\nPure core-allocation changes use a dedicated internal resize path so\nscale up/down only starts or stops the delta cores and leaves unchanged\ncores running.\n\nRuntime mutations remain intentionally narrow. This PR keeps changes in\nmemory only and rejects updates that would require topic-broker\nreconfiguration or broader engine/group-level policy mutation. Runtime\nconfig persistence remains out of scope.\n\nOperations are explicit and observable through rollout and shutdown ids.\nTerminal operation history is intentionally bounded in memory, so old\nrollout/shutdown ids may eventually return `404` or `Ok(None)` from the\nSDK after retention pruning.\n\nObserved status is deployment-generation-aware. During overlapping\nrollouts, `/status.instances` preserves old and new runtime instances,\nwhile aggregate readiness/liveness still uses the selected serving\ngeneration per core. After controller work completes, superseded\nobserved instances are compacted so status memory does not grow\nunbounded across rollouts.\n\nThe controller also hardens lifecycle cleanup around live operations:\nworker panics are converted into terminal rollout/shutdown failure\nstates, runtime exits are reported through supervised bookkeeping, and\nshutdown drain completion waits for upstream closure rather than queue\nemptiness alone.\n\n## What issue does this PR close?\n\n* Closes #2617\n\n## How are these changes tested?\n\nCommands run:\n\n- `cargo xtask check`\n\nAutomated coverage includes:\n\n- rollout planning for create, replace, resize, scale up/down, noop,\ntopic-mutation rejection, and conflict handling\n- rollout execution success/failure paths, rollback behavior, worker\npanic cleanup, and bounded operation retention\n- per-pipeline shutdown planning, progress tracking, conflict handling,\ntimeout behavior, and worker panic cleanup\n- observed-state generation selection, overlap-aware\n`/status.instances`, compaction of superseded generations, and\nshutdown-terminal status behavior\n- admin HTTP handlers for reconfigure, rollout status, shutdown,\nshutdown status, operation errors, wait timeouts, and missing retained\noperation ids\n- Rust admin SDK decoding for typed reconfigure/shutdown outcomes,\noperation rejection errors, pipeline details/status, and\nrollout/shutdown polling\n- engine shutdown-drain behavior where downstream nodes wait for\nupstream channel closure before completing shutdown drain\n- route/doc compatibility checks through the full workspace validation\nsuite\n\nManual validation covered:\n\n- creating a new pipeline through the admin API\n- replacing a pipeline with a topology/config change\n- resizing a pipeline by changing only core allocation\n- submitting an identical config and observing a noop rollout\n- shutting down a pipeline and observing shutdown tracking/status\n- checking generation-aware status during overlapping rollout behavior\n\n## Are there any user-facing changes?\n\nYes.\n\n- The admin API now supports live pipeline create/update/resize/noop via\n`PUT /api/v1/groups/{group}/pipelines/{id}`.\n- Pipeline shutdown is available via `POST\n/api/v1/groups/{group}/pipelines/{id}/shutdown`.\n- Rollout and shutdown progress can be queried through dedicated status\nendpoints.\n- New pipeline-scoped admin routes are under `/api/v1/groups/...`.\n- Pipeline status payloads now include deployment-generation-aware\ninstance data and rollout metadata while preserving the existing\naggregate status shape.\n- Terminal rollout and shutdown ids are retained only within a bounded\nin-memory window.\n- The Rust admin SDK now exposes typed clients, request options,\noperation outcomes, and error models for live reconfiguration and\nshutdown.\n- Operator documentation was added in\n`rust/otap-dataflow/docs/admin/live-reconfiguration.md`.\n- Support for the existing WebSocket log stream endpoint\n`/api/v1/telemetry/logs/stream` is preserved/restored in this branch.",
+          "timestamp": "2026-04-24T05:43:29Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5507512bea4dd9e53a8ae74d1f5cd3a85b875d2c"
+        },
+        "date": 1777057641306,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.7005615234375,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 62.7498523282274,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 63.264002483122525,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 15.977734375,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 16.5546875,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98326.53405350354,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3244.2256617954868,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.004149,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 136787.88229115456,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2541169.0769504756,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
           }
         ]
       }
