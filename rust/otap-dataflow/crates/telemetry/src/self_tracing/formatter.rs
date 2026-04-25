@@ -279,6 +279,8 @@ impl StyledBufWriter<'_> {
     /// - If has_event_name and no body but attrs present: print ":" (attrs add " [")
     /// - Body prints directly
     /// - Attributes print " [...]" before themselves
+    /// - If `dropped_attributes_count` is non-zero, a " (N dropped)" suffix is
+    ///   appended to make truncations/drops visible to operators.
     fn write_body_and_attrs<V: LogRecordView>(&mut self, record: &V, has_event_name: bool) {
         let body = record.body();
         let mut attrs = record.attributes().peekable();
@@ -289,9 +291,10 @@ impl StyledBufWriter<'_> {
             .as_ref()
             .is_some_and(|v| v.as_string().is_none_or(|s| !s.is_empty()));
         let has_attrs = attrs.peek().is_some();
+        let dropped = record.dropped_attributes_count();
 
         // Print separator after event_name if there's content following
-        if has_event_name && (has_body || has_attrs) {
+        if has_event_name && (has_body || has_attrs || dropped > 0) {
             if has_body {
                 let _ = self.write_all(b": ");
             } else {
@@ -307,6 +310,11 @@ impl StyledBufWriter<'_> {
 
         // Write attributes if present (with leading " [")
         self.write_attrs(attrs);
+
+        // Surface dropped-attribute count if present.
+        if dropped > 0 {
+            let _ = write!(self, " ({dropped} dropped)");
+        }
     }
 
     /// Write attributes from any AttributeView iterator to buffer.

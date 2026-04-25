@@ -210,22 +210,32 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     }
 
     /// Encode the body as a string. Empty strings are skipped.
+    ///
+    /// Wrapped in `try_encode` so that any partial wire bytes written before
+    /// hitting the buffer's limit are rolled back. Otherwise an unpatched
+    /// length placeholder + leftover content bytes would corrupt subsequent
+    /// fields (e.g. `dropped_attributes_count`) appended to the buffer later.
     #[inline]
     pub fn encode_body_string(&mut self, value: &str) {
         if value.is_empty() {
             return;
         }
-        let _ = self.buf.encode_len_delimited(LOG_RECORD_BODY, |buf| {
-            buf.encode_string(ANY_VALUE_STRING_VALUE, value)
+        let _ = self.buf.try_encode(|buf| {
+            buf.encode_len_delimited(LOG_RECORD_BODY, |buf| {
+                buf.encode_string(ANY_VALUE_STRING_VALUE, value)
+            })
         });
     }
 
     /// Encode the body from a Debug value without allocation.
+    ///
+    /// Wrapped in `try_encode` so partial bytes are rolled back on overflow;
+    /// see [`Self::encode_body_string`] for rationale.
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
-        let _ = self
-            .buf
-            .encode_len_delimited(LOG_RECORD_BODY, |buf| encode_debug_string(buf, value));
+        let _ = self.buf.try_encode(|buf| {
+            buf.encode_len_delimited(LOG_RECORD_BODY, |buf| encode_debug_string(buf, value))
+        });
     }
 }
 
