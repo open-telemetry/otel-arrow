@@ -9,6 +9,116 @@ It is intended to be:
 - explicit and deterministic for shell scripts
 - machine-friendly for agent-style automation
 
+## Design Principles
+
+`dfctl` is designed as the operator-facing control surface for the admin API.
+These principles guide command design, output contracts, and TUI behavior:
+
+- The public `otap-df-admin-api` SDK is the source of truth. The CLI should
+  expose SDK capabilities directly and avoid duplicating protocol logic.
+- Local and remote engines should have the same user experience. Target URL,
+  TLS, profile, and environment resolution should be consistent for every
+  command.
+- Automation and interactive use are both first-class. Scripts and agents need
+  stable machine-readable output, while humans need readable tables, color,
+  diagnostics, and a useful TUI.
+- Output contracts must be explicit. `human`, `json`, `yaml`, `agent-json`,
+  and `ndjson` exist for different consumers and should not require scraping
+  terminal help text.
+- Long-running operations need live feedback. Rollouts, shutdowns, log streams,
+  metric streams, and TUI refreshes should show ongoing progress clearly.
+- Operational clarity is more important than raw API dumps. Status, readiness,
+  diagnosis, vitals, logs, metrics, and object details should be shaped around
+  what an operator needs to understand quickly.
+- Mutations should be safe by default. Shutdown, scale, reconfigure, and
+  redeploy flows should support confirmation, dry-run or preflight checks,
+  wait or watch modes, and clear failure reporting where possible.
+- The TUI should complement the CLI, not replace it. Interactive screens should
+  help users inspect objects, run actions, and learn the equivalent
+  non-interactive command.
+- Agent readiness is part of the CLI contract. Command catalog metadata,
+  schemas, stable errors, examples, and safety metadata should make commands
+  discoverable without human-only parsing.
+- Extensibility and maintainability matter. Commands, renderers, TUI panes,
+  recipes, and tests should stay modular enough to expose new admin SDK
+  features without large rewrites.
+- Troubleshooting should gather evidence before guessing. Composite views,
+  diagnoses, events, logs, metrics, and bundles should help operators correlate
+  failures across admin endpoints.
+- User-interface polish is valuable when it preserves function. Color, tables,
+  mouse support, command palettes, detail panes, and activity indicators should
+  improve usability without weakening scriptability or layout stability.
+- Tests should document behavior. CLI contracts and TUI rendering tests should
+  describe the scenario and the guarantee they protect.
+
+## Security and Privacy
+
+`dfctl` is an operational tool and can expose sensitive engine, pipeline, and
+telemetry data. The current implementation has several guardrails, but support
+bundles and telemetry outputs are not redacted by default.
+
+### What Is Already In Place
+
+- Connection setup supports HTTPS, custom CA files, system CA selection, mTLS
+  client certificates and keys, and the explicit `--insecure-skip-verify`
+  escape hatch.
+- TLS-enabled builds require one configured Rustls crypto provider before the
+  admin SDK client is used.
+- `config view` reports whether a client private key is configured, but does
+  not print the private key path.
+- The TUI equivalent-command overlay redacts the client private key path as
+  `<client-key-file>` and labels the generated command as redacted.
+- Support bundles written with `--file` are created with owner-only `0600`
+  permissions on Unix.
+- Client-side diagnostics use stderr, preserving stdout for command output and
+  reducing accidental mixing between machine-readable data and diagnostics.
+- Machine-readable outputs do not include ANSI escape sequences, even when
+  color is forced for human output.
+- Human renderers and TUI row builders neutralize terminal control sequences in
+  engine-provided text before writing them to a terminal.
+- Mutating commands expose dry-run or preflight paths, and the command catalog
+  marks high-impact commands plus dry-run, wait, watch, stdin, and idempotency
+  metadata for automation clients.
+
+### How This Is Tested
+
+The current test suite covers the security and privacy guardrails above through
+the following scenarios:
+
+- `config_view_json_reports_resolved_connection` verifies local config
+  resolution and client-key path redaction.
+- `build_command_context_redacts_client_key_path` verifies TUI equivalent
+  command redaction for private key paths.
+- `terminal_safe_strips_escape_sequences` verifies terminal control sequence
+  neutralization.
+- `metrics_json_output_ignores_color_setting` verifies machine-readable output
+  stays ANSI-free even when color is forced.
+- `verbose_config_view_writes_diagnostics_to_stderr` verifies diagnostics stay
+  on stderr while stdout remains command output.
+- `reconfigure_dry_run_emits_preflight_outcome` and
+  `shutdown_dry_run_emits_preflight_outcome` verify mutation preflight output.
+- `catalog_marks_mutation_safety_and_preflight_metadata` verifies command
+  catalog safety, dry-run, wait, watch, stdin, and idempotency metadata.
+
+### Known Security and Privacy Gaps
+
+- Support bundles, logs, metrics, diagnosis evidence, and pipeline
+  configuration are not redacted today and may contain sensitive telemetry or
+  operational data.
+- There is no `--redact`, `--include-sensitive`, or field-level redaction
+  policy for bundle or telemetry output.
+- The support bundle schema does not include sensitivity classification or
+  redaction metadata.
+- Unix private bundle file permissions are implemented, but there is no direct
+  regression test for the `0600` file mode and no equivalent Windows ACL
+  hardening guarantee.
+- Enginectl tests cover TLS option resolution, but not end-to-end TLS or mTLS
+  handshake behavior.
+- Errors and diagnostics may include server-provided messages; there is no
+  centralized secret scanner or redactor for arbitrary remote error text.
+- `--insecure-skip-verify` is explicit, but the CLI does not add an additional
+  human warning beyond the flag name and resolved config output.
+
 ## Command Overview
 
 ```text

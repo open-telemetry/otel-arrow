@@ -74,7 +74,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 use tempfile::Builder;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 pub(crate) use self::refresh::build_command_context;
 
@@ -107,38 +107,34 @@ pub(crate) async fn run_ui(
     let refresh_in_flight = Arc::new(AtomicBool::new(false));
 
     let mut refresh = tokio::time::interval(args.refresh_interval);
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let _ = refresh.tick().await;
+    let mut activity_tick = tokio::time::interval(Duration::from_millis(120));
+    activity_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let _ = activity_tick.tick().await;
 
     let result = loop {
         session.draw(&mut app)?;
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break Ok(()),
+            _ = activity_tick.tick(), if app.is_activity_active() => {
+                app.advance_activity_frame();
+            }
             _ = refresh.tick() => {
-                spawn_refresh_task(
-                    client.clone(),
-                    app.clone(),
-                    args.clone(),
-                    tx.clone(),
-                    refresh_in_flight.clone(),
-                );
+                request_refresh(client, &mut app, &args, &tx, &refresh_in_flight);
             }
             Some(event) = rx.recv() => {
                 match event {
                     UiEvent::RefreshComplete(refreshed) => {
                         apply_refreshed_app(&mut app, *refreshed);
+                        app.end_activity();
                     }
                     UiEvent::Terminal(event) => {
                         match handle_event(event, &mut app) {
                             EventOutcome::Quit => break Ok(()),
                             EventOutcome::Refresh => {
-                                spawn_refresh_task(
-                                    client.clone(),
-                                    app.clone(),
-                                    args.clone(),
-                                    tx.clone(),
-                                    refresh_in_flight.clone(),
-                                );
+                                request_refresh(client, &mut app, &args, &tx, &refresh_in_flight);
                             }
                             EventOutcome::OpenPipelineEditor { group_id, pipeline_id } => {
                                 if let Err(err) = stage_pipeline_editor_draft(
@@ -155,13 +151,7 @@ pub(crate) async fn run_ui(
                                 {
                                     app.last_error = Some(err.to_string());
                                 }
-                                spawn_refresh_task(
-                                    client.clone(),
-                                    app.clone(),
-                                    args.clone(),
-                                    tx.clone(),
-                                    refresh_in_flight.clone(),
-                                );
+                                request_refresh(client, &mut app, &args, &tx, &refresh_in_flight);
                             }
                             EventOutcome::Execute(action) => {
                                 if let Err(err) =
@@ -169,13 +159,7 @@ pub(crate) async fn run_ui(
                                 {
                                     app.last_error = Some(err.to_string());
                                 }
-                                spawn_refresh_task(
-                                    client.clone(),
-                                    app.clone(),
-                                    args.clone(),
-                                    tx.clone(),
-                                    refresh_in_flight.clone(),
-                                );
+                                request_refresh(client, &mut app, &args, &tx, &refresh_in_flight);
                             }
                             EventOutcome::Continue => {}
                         }
@@ -192,18 +176,36 @@ pub(crate) async fn run_ui(
     result
 }
 
+fn request_refresh(
+    client: &AdminClient,
+    app: &mut AppState,
+    args: &UiArgs,
+    tx: &mpsc::Sender<UiEvent>,
+    refresh_in_flight: &Arc<AtomicBool>,
+) {
+    if spawn_refresh_task(
+        client.clone(),
+        app.clone(),
+        args.clone(),
+        tx.clone(),
+        refresh_in_flight.clone(),
+    ) {
+        app.begin_activity();
+    }
+}
+
 fn spawn_refresh_task(
     client: AdminClient,
     mut app: AppState,
     args: UiArgs,
     tx: mpsc::Sender<UiEvent>,
     refresh_in_flight: Arc<AtomicBool>,
-) {
+) -> bool {
     if refresh_in_flight
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_err()
     {
-        return;
+        return false;
     }
 
     let _handle = tokio::spawn(async move {
@@ -211,6 +213,7 @@ fn spawn_refresh_task(
         refresh_in_flight.store(false, Ordering::Relaxed);
         let _ = tx.send(UiEvent::RefreshComplete(Box::new(app))).await;
     });
+    true
 }
 
 fn apply_refreshed_app(app: &mut AppState, refreshed: AppState) {
@@ -234,6 +237,7 @@ fn apply_refreshed_app(app: &mut AppState, refreshed: AppState) {
     let detail_scroll = app.detail_scroll;
     let terminal_size = app.terminal_size;
     let command_context = app.command_context.clone();
+    let activity_indicator = app.activity_indicator.clone();
 
     *app = refreshed;
     app.view = view;
@@ -248,6 +252,7 @@ fn apply_refreshed_app(app: &mut AppState, refreshed: AppState) {
     app.detail_scroll = detail_scroll;
     app.terminal_size = terminal_size;
     app.command_context = command_context;
+    app.activity_indicator = activity_indicator;
 }
 
 #[cfg(test)]

@@ -6,6 +6,27 @@ It is built on top of the public Rust SDK `otap-df-admin-api`, but end users
 should think in terms of the installed `dfctl` command. The Rust package name
 for this crate remains `otap-df-enginectl`.
 
+## Design Goals
+
+`dfctl` is intended to be the practical control surface for local and remote
+OTAP Dataflow Engine instances:
+
+- expose the public admin SDK without inventing a parallel protocol
+- keep local and remote engine workflows consistent
+- provide stable machine-readable output for scripts, CI, and agents
+- provide readable tables, color, diagnostics, and a TUI for humans
+- make long-running operations observable with watch streams and progress
+  feedback
+- keep mutation flows safe through confirmation, dry-run or preflight checks,
+  and clear failure reporting where possible
+- keep commands, renderers, TUI panes, and tests modular enough to evolve with
+  the admin API
+
+For the full design principles, see
+[docs/admin/enginectl.md](../../docs/admin/enginectl.md#design-principles).
+For security and privacy behavior, see
+[docs/admin/enginectl.md](../../docs/admin/enginectl.md#security-and-privacy).
+
 ## Before You Start
 
 - The default admin target is `http://127.0.0.1:8085`.

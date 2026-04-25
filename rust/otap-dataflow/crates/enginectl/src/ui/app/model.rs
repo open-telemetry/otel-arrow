@@ -759,6 +759,12 @@ pub(crate) struct EnginePipelineItem {
     pub(crate) rollout: String,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ActivityIndicator {
+    pub(crate) active: bool,
+    pub(crate) frame: u16,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AppState {
     pub(crate) view: View,
@@ -783,6 +789,7 @@ pub(crate) struct AppState {
     pub(crate) engine_readyz: Option<engine::ProbeResponse>,
     pub(crate) engine_vitals: EngineVitals,
     pub(crate) command_context: UiCommandContext,
+    pub(crate) activity_indicator: ActivityIndicator,
     pub(crate) pipelines: PipelinePaneState,
     pub(crate) groups: GroupPaneState,
     pub(crate) engine: EnginePaneState,

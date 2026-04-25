@@ -83,18 +83,62 @@ pub(super) fn draw_top_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 pub(super) fn draw_title_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let line = Line::from(vec![
-        Span::styled("Open", open_brand_style(app.color_enabled)),
-        Span::styled("Telemetry", telemetry_brand_style(app.color_enabled)),
+    let mut spans = brand_spans(app);
+    spans.extend([
         Span::styled(" - Rust Dataflow Engine", title_style(app.color_enabled)),
         Span::styled("  |  ", separator_style(app.color_enabled)),
         Span::styled("target ", muted_style(app.color_enabled)),
         Span::styled(app.target_url(), target_style(app.color_enabled)),
     ]);
+    let line = Line::from(spans);
     let title = Paragraph::new(line)
         .alignment(Alignment::Left)
         .style(page_style(app.color_enabled));
     frame.render_widget(title, area);
+}
+
+pub(super) fn brand_spans(app: &AppState) -> Vec<Span<'static>> {
+    if !app.color_enabled || !app.is_activity_active() {
+        return vec![
+            Span::styled("Open", open_brand_style(app.color_enabled)),
+            Span::styled("Telemetry", telemetry_brand_style(app.color_enabled)),
+        ];
+    }
+
+    "OpenTelemetry"
+        .chars()
+        .enumerate()
+        .map(|(index, character)| {
+            Span::styled(
+                character.to_string(),
+                shimmering_brand_style(index, app.activity_frame()),
+            )
+        })
+        .collect()
+}
+
+fn shimmering_brand_style(index: usize, frame: u16) -> Style {
+    let base_style = if index < "Open".len() {
+        open_brand_style(true)
+    } else {
+        telemetry_brand_style(true)
+    };
+    let brand_len = "OpenTelemetry".len();
+    let cycle_len = brand_len + 4;
+    let center = (usize::from(frame) % cycle_len) as isize - 2;
+    let distance = (index as isize - center).unsigned_abs();
+
+    match distance {
+        0 => base_style
+            .fg(Color::Rgb(238, 250, 255))
+            .bg(Color::Rgb(35, 72, 86))
+            .add_modifier(Modifier::BOLD),
+        1 => base_style
+            .fg(Color::Rgb(170, 231, 232))
+            .add_modifier(Modifier::BOLD),
+        2 => base_style.fg(Color::Rgb(113, 177, 211)),
+        _ => base_style,
+    }
 }
 
 pub(super) fn draw_engine_vitals_panel(

@@ -117,6 +117,36 @@ fn title_bar_and_command_overlay_render() {
     assert!(rendered.contains("https://admin.example.com:8443/engine-a"));
 }
 
+/// Scenario: activity is in progress while the title bar is rendered.
+/// Guarantees: the shimmer splits the brand into fixed-position character
+/// spans without changing the visible OpenTelemetry label text.
+#[test]
+fn active_brand_shimmer_preserves_label_text() {
+    let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+    assert_eq!(chrome::brand_spans(&app).len(), 2);
+
+    app.begin_activity();
+    app.advance_activity_frame();
+    app.advance_activity_frame();
+
+    let active_spans = chrome::brand_spans(&app);
+    let label = active_spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    assert_eq!(label, "OpenTelemetry");
+    assert_eq!(active_spans.len(), "OpenTelemetry".len());
+    assert!(
+        active_spans
+            .iter()
+            .any(|span| span.style != open_brand_style(true)
+                && span.style != telemetry_brand_style(true))
+    );
+
+    app.end_activity();
+    assert_eq!(chrome::brand_spans(&app).len(), 2);
+}
+
 /// Scenario: the header renders a fresh engine-vitals snapshot.
 /// Guarantees: the condensed vitals rail shows CPU, RSS, and pressure
 /// values without reintroducing the removed dedicated panel title.

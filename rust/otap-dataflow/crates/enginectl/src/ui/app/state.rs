@@ -30,6 +30,7 @@ impl AppState {
             engine_readyz: None,
             engine_vitals: EngineVitals::default(),
             command_context: UiCommandContext::local_default(logs_tail),
+            activity_indicator: ActivityIndicator::default(),
             pipelines: PipelinePaneState::default(),
             groups: GroupPaneState::default(),
             engine: EnginePaneState::new(),
@@ -416,6 +417,29 @@ impl AppState {
 
     pub(crate) fn target_url(&self) -> &str {
         &self.command_context.target_url
+    }
+
+    pub(crate) fn begin_activity(&mut self) {
+        self.activity_indicator.active = true;
+    }
+
+    pub(crate) fn end_activity(&mut self) {
+        self.activity_indicator.active = false;
+        self.activity_indicator.frame = 0;
+    }
+
+    pub(crate) fn is_activity_active(&self) -> bool {
+        self.activity_indicator.active
+    }
+
+    pub(crate) fn activity_frame(&self) -> u16 {
+        self.activity_indicator.frame
+    }
+
+    pub(crate) fn advance_activity_frame(&mut self) {
+        if self.activity_indicator.active {
+            self.activity_indicator.frame = self.activity_indicator.frame.wrapping_add(1);
+        }
     }
 
     pub(crate) fn active_header(&self) -> Option<&DetailHeader> {
