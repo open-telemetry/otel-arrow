@@ -14,7 +14,6 @@ use crate::proto::consts::field_num::metrics::{
     EXEMPLAR_TIME_UNIX_NANO, EXEMPLAR_TRACE_ID,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray, UInt32Array};
 
@@ -73,11 +72,9 @@ pub(crate) fn proto_encode_exemplar(
         if let Some(id) = exemplar_arrays.id.value_at(index) {
             let attr_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attr_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    EXEMPLAR_FILTERED_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(EXEMPLAR_FILTERED_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }

@@ -14,7 +14,6 @@ use crate::proto::consts::field_num::common::{
     ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
 /// Common methods for Key-Value list and Array values.
@@ -93,11 +92,9 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
             // TODO try to compute the length of the value here. This would probably be
             // straight forward for most types for all cases except map/slice, and even then
             // we could maybe guess order of magnitude by looking at the CBOR representation
-            proto_encode_len_delimited_unknown_size!(
-                KEY_VALUE_VALUE,
-                encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(KEY_VALUE_VALUE, |result_buf| {
+                encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf)
+            })?;
         }
     }
 
@@ -226,11 +223,12 @@ mod test {
         for i in 0..rb.num_rows() {
             if let Some(value_type) = any_val_arrays.attr_type.value_at(i) {
                 if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-                    proto_encode_len_delimited_unknown_size!(
-                        1, // the values field in ArrayValue message
-                        encode_any_value(&any_val_arrays, i, value_type, &mut protobuf).unwrap(),
-                        &mut protobuf
-                    );
+                    protobuf
+                        .encode_len_delimited(
+                            1, // the values field in ArrayValue message
+                            |protobuf| encode_any_value(&any_val_arrays, i, value_type, protobuf),
+                        )
+                        .unwrap();
                 }
             }
         }

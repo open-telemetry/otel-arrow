@@ -21,7 +21,6 @@ use crate::{
         },
         wire_types,
     },
-    proto_encode_len_delimited_unknown_size,
     schema::consts,
 };
 
@@ -74,11 +73,9 @@ pub fn encode_span_event(
         if let Some(id) = event_arrays.id.value_at(index) {
             let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    SPAN_EVENT_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(SPAN_EVENT_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }

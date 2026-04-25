@@ -9,7 +9,6 @@ use crate::proto::consts::field_num::common::{
     KEY_VALUE_KEY, KEY_VALUE_LIST_VALUES, KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 
 /// Decode bytes from a serialized attribute into protobuf bytes value.
 ///
@@ -50,18 +49,14 @@ fn proto_encode_cbor_value(value: &ciborium::Value, result_buf: &mut ProtoBuffer
             result_buf.encode_varint(int_val)?;
         }
         ciborium::Value::Array(list_val) => {
-            proto_encode_len_delimited_unknown_size!(
-                ANY_VALUE_ARRAY_VALUE,
-                proto_encode_array_values(list_val, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(ANY_VALUE_ARRAY_VALUE, |result_buf| {
+                proto_encode_array_values(list_val, result_buf)
+            })?;
         }
         ciborium::Value::Map(kv_list_val) => {
-            proto_encode_len_delimited_unknown_size!(
-                ANY_VALUE_KVLIST_VALUE,
-                proto_encode_cbor_kv_list(kv_list_val, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |result_buf| {
+                proto_encode_cbor_kv_list(kv_list_val, result_buf)
+            })?;
         }
         other => {
             return Err(Error::UnsupportedSerializedAttributeValue {
@@ -78,11 +73,9 @@ fn proto_encode_array_values(
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     for v in list_val {
-        proto_encode_len_delimited_unknown_size!(
-            ARRAY_VALUE_VALUES,
-            proto_encode_cbor_value(v, result_buf)?,
-            result_buf
-        );
+        result_buf.encode_len_delimited(ARRAY_VALUE_VALUES, |result_buf| {
+            proto_encode_cbor_value(v, result_buf)
+        })?;
     }
 
     Ok(())
@@ -93,11 +86,9 @@ fn proto_encode_cbor_kv_list(
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     for (k, v) in kv_list {
-        proto_encode_len_delimited_unknown_size!(
-            KEY_VALUE_LIST_VALUES,
-            proto_encode_cbor_kv(k, v, result_buf)?,
-            result_buf
-        );
+        result_buf.encode_len_delimited(KEY_VALUE_LIST_VALUES, |result_buf| {
+            proto_encode_cbor_kv(k, v, result_buf)
+        })?;
     }
 
     Ok(())
@@ -122,11 +113,9 @@ fn proto_encode_cbor_kv(
         }
     }
 
-    proto_encode_len_delimited_unknown_size!(
-        KEY_VALUE_VALUE,
-        proto_encode_cbor_value(value, result_buf)?,
-        result_buf
-    );
+    result_buf.encode_len_delimited(KEY_VALUE_VALUE, |result_buf| {
+        proto_encode_cbor_value(value, result_buf)
+    })?;
 
     Ok(())
 }

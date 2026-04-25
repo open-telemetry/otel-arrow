@@ -15,7 +15,6 @@ use crate::proto::consts::field_num::metrics::{
     VALUE_AT_QUANTILE_QUANTILE, VALUE_AT_QUANTILE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
     Array, ArrayRef, Float64Array, ListArray, RecordBatch, StructArray, TimestampNanosecondArray,
@@ -122,11 +121,9 @@ pub(crate) fn proto_encode_summary_data_point(
         if let Some(id) = summary_dp_arrays.id.value_at(index) {
             let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    SUMMARY_DP_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(SUMMARY_DP_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }
@@ -166,11 +163,9 @@ pub(crate) fn proto_encode_summary_data_point(
             let end = value_offsets[index + 1];
 
             for i in start..end {
-                proto_encode_len_delimited_unknown_size!(
-                    SUMMARY_DP_QUANTILE_VALUES,
-                    proto_encode_value_quantile(i as usize, quantile_arrays, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(SUMMARY_DP_QUANTILE_VALUES, |result_buf| {
+                    proto_encode_value_quantile(i as usize, quantile_arrays, result_buf)
+                })?;
             }
         }
     }

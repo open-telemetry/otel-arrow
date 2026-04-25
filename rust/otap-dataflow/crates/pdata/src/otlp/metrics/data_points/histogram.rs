@@ -17,7 +17,6 @@ use crate::proto::consts::field_num::metrics::{
     HISTOGRAM_DP_TIME_UNIX_NANO,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
     Array, ArrayRef, Float64Array, ListArray, PrimitiveArray, RecordBatch,
@@ -153,11 +152,9 @@ pub(crate) fn proto_encode_histogram_data_point(
         if let Some(id) = hist_dp_arrays.id.value_at(index) {
             let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    HISTOGRAM_DP_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(HISTOGRAM_DP_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }
@@ -243,17 +240,15 @@ pub(crate) fn proto_encode_histogram_data_point(
             let exemplar_index_iter =
                 ChildIndexIter::new(id, &exemplar_arrays.parent_id, exemplar_cursor);
             for exemplar_index in exemplar_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    HISTOGRAM_DP_EXEMPLARS,
+                result_buf.encode_len_delimited(HISTOGRAM_DP_EXEMPLARS, |result_buf| {
                     proto_encode_exemplar(
                         exemplar_index,
                         exemplar_arrays,
                         exemplar_attr_arrays,
                         exemplar_attrs_cursor,
-                        result_buf
-                    )?,
-                    result_buf
-                );
+                        result_buf,
+                    )
+                })?;
             }
         }
     }

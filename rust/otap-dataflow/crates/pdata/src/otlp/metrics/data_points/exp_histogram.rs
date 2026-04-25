@@ -20,7 +20,6 @@ use crate::proto::consts::field_num::metrics::{
     EXP_HISTOGRAM_DP_ZERO_THRESHOLD,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
     Array, ArrayRef, Float64Array, Int32Array, ListArray, RecordBatch, StructArray,
@@ -178,11 +177,9 @@ pub(crate) fn proto_encode_exp_hist_data_point(
         if let Some(id) = exp_hist_dp_arrays.id.value_at(index) {
             let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    EXP_HISTOGRAM_DP_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }
@@ -231,19 +228,15 @@ pub(crate) fn proto_encode_exp_hist_data_point(
     }
 
     if let Some(bucket_arrays) = exp_hist_dp_arrays.exp_histogram_positive.as_ref() {
-        proto_encode_len_delimited_unknown_size!(
-            EXP_HISTOGRAM_DP_POSITIVE,
-            proto_encode_buckets(index, bucket_arrays, result_buf)?,
-            result_buf
-        )
+        result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_POSITIVE, |result_buf| {
+            proto_encode_buckets(index, bucket_arrays, result_buf)
+        })?
     }
 
     if let Some(bucket_arrays) = exp_hist_dp_arrays.exp_histogram_negative.as_ref() {
-        proto_encode_len_delimited_unknown_size!(
-            EXP_HISTOGRAM_DP_NEGATIVE,
-            proto_encode_buckets(index, bucket_arrays, result_buf)?,
-            result_buf
-        );
+        result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_NEGATIVE, |result_buf| {
+            proto_encode_buckets(index, bucket_arrays, result_buf)
+        })?;
     }
 
     if let Some(exemplar_arrays) = exemplar_arrays {
@@ -251,17 +244,15 @@ pub(crate) fn proto_encode_exp_hist_data_point(
             let exemplar_index_iter =
                 ChildIndexIter::new(id, &exemplar_arrays.parent_id, exemplar_cursor);
             for exemplar_index in exemplar_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    EXP_HISTOGRAM_DP_EXEMPLARS,
+                result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_EXEMPLARS, |result_buf| {
                     proto_encode_exemplar(
                         exemplar_index,
                         exemplar_arrays,
                         exemplar_attr_arrays,
                         exemplar_attrs_cursor,
-                        result_buf
-                    )?,
-                    result_buf
-                );
+                        result_buf,
+                    )
+                })?;
             }
         }
     }
@@ -316,14 +307,12 @@ fn proto_encode_buckets(
         // encode using "packed" encoding for repeated primitive
         // https://protobuf.dev/programming-guides/encoding/#repeated
 
-        proto_encode_len_delimited_unknown_size!(
-            EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS,
+        result_buf.encode_len_delimited(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, |result_buf| {
             values
                 .iter()
                 .flatten()
-                .try_for_each(|val| result_buf.encode_varint(val))?,
-            result_buf
-        );
+                .try_for_each(|val| result_buf.encode_varint(val))
+        })?;
     }
 
     Ok(())

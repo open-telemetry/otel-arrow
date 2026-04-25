@@ -27,7 +27,6 @@ use crate::proto::consts::field_num::logs::{
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
 use super::attributes::AttributeValueType;
@@ -245,11 +244,9 @@ impl ProtoBytesEncoder for LogsProtoBytesEncoder {
 
         // encode all `ResourceLog`s for this `LogsData`
         loop {
-            proto_encode_len_delimited_unknown_size!(
-                LOGS_DATA_RESOURCE,
-                self.encode_resource_log(&logs_data_arrays, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(LOGS_DATA_RESOURCE, |result_buf| {
+                self.encode_resource_log(&logs_data_arrays, result_buf)
+            })?;
 
             if self.root_cursor.finished() {
                 break;
@@ -291,17 +288,15 @@ impl LogsProtoBytesEncoder {
         };
 
         // encode the `Resource`
-        proto_encode_len_delimited_unknown_size!(
-            LOGS_DATA_RESOURCE,
+        result_buf.encode_len_delimited(LOGS_DATA_RESOURCE, |result_buf| {
             proto_encode_resource(
                 index,
                 &logs_data_arrays.resource_arrays,
                 logs_data_arrays.resource_attrs.as_ref(),
                 &mut self.resource_attrs_cursor,
-                result_buf
-            )?,
-            result_buf
-        );
+                result_buf,
+            )
+        })?;
 
         // encode all `ScopeLog`s for this `ResourceLog`
         let resource_id = logs_data_arrays
@@ -310,11 +305,9 @@ impl LogsProtoBytesEncoder {
             .and_then(|arr| arr.value_at(index));
 
         loop {
-            proto_encode_len_delimited_unknown_size!(
-                RESOURCE_LOGS_SCOPE_LOGS,
-                self.encode_scope_logs(logs_data_arrays, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |result_buf| {
+                self.encode_scope_logs(logs_data_arrays, result_buf)
+            })?;
 
             // break when we've reached the end of the record batch
             if self.root_cursor.finished() {
@@ -352,17 +345,15 @@ impl LogsProtoBytesEncoder {
             None => return Ok(()), // no more rows to visit
         };
         // encode the `InstrumentationScope`
-        proto_encode_len_delimited_unknown_size!(
-            SCOPE_LOG_SCOPE,
+        result_buf.encode_len_delimited(SCOPE_LOG_SCOPE, |result_buf| {
             proto_encode_instrumentation_scope(
                 index,
                 &logs_data_arrays.scope_arrays,
                 logs_data_arrays.scope_attrs.as_ref(),
                 &mut self.scope_attrs_cursor,
-                result_buf
-            )?,
-            result_buf
-        );
+                result_buf,
+            )
+        })?;
 
         // encode all `LogRecord`s for this `ScopeLog`
         let scope_id = logs_data_arrays
@@ -371,11 +362,9 @@ impl LogsProtoBytesEncoder {
             .and_then(|arr| arr.value_at(index));
 
         loop {
-            proto_encode_len_delimited_unknown_size!(
-                SCOPE_LOGS_LOG_RECORDS,
-                self.encode_log_record(logs_data_arrays, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(SCOPE_LOGS_LOG_RECORDS, |result_buf| {
+                self.encode_log_record(logs_data_arrays, result_buf)
+            })?;
 
             // break if we've reached the end of the record batch
             if self.root_cursor.finished() {
@@ -441,11 +430,9 @@ impl LogsProtoBytesEncoder {
                 let anyval_arrays = &log_body_arrays.anyval_arrays;
                 if let Some(value_type) = anyval_arrays.attr_type.value_at(index) {
                     if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-                        proto_encode_len_delimited_unknown_size!(
-                            LOG_RECORD_BODY,
-                            encode_any_value(anyval_arrays, index, value_type, result_buf)?,
-                            result_buf
-                        );
+                        result_buf.encode_len_delimited(LOG_RECORD_BODY, |result_buf| {
+                            encode_any_value(anyval_arrays, index, value_type, result_buf)
+                        })?;
                     }
                 }
             }
@@ -457,11 +444,9 @@ impl LogsProtoBytesEncoder {
                     let attrs_index_iter =
                         ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
                     for attr_index in attrs_index_iter {
-                        proto_encode_len_delimited_unknown_size!(
-                            LOG_RECORD_ATTRIBUTES,
-                            encode_key_value(log_attrs, attr_index, result_buf)?,
-                            result_buf
-                        );
+                        result_buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |result_buf| {
+                            encode_key_value(log_attrs, attr_index, result_buf)
+                        })?;
                     }
                 }
             }

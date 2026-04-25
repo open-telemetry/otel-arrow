@@ -16,7 +16,6 @@ use crate::proto::consts::field_num::resource::{
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::common::v1::{AnyValue, any_value::Value};
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
     Array, ArrowPrimitiveType, BooleanArray, Float64Array, PrimitiveArray, RecordBatch,
@@ -69,11 +68,9 @@ pub(crate) fn proto_encode_resource(
             for attr_index in
                 ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
             {
-                proto_encode_len_delimited_unknown_size!(
-                    RESOURCE_ATTRIBUTES,
-                    encode_key_value(attrs_arrays, attr_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs_arrays, attr_index, result_buf)
+                })?;
             }
         }
     }
@@ -213,11 +210,10 @@ pub(crate) fn proto_encode_instrumentation_scope(
             for attr_index in
                 ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
             {
-                proto_encode_len_delimited_unknown_size!(
-                    INSTRUMENTATION_SCOPE_ATTRIBUTES,
-                    encode_key_value(attr_arrays, attr_index, result_buf)?,
-                    result_buf
-                );
+                result_buf
+                    .encode_len_delimited(INSTRUMENTATION_SCOPE_ATTRIBUTES, |result_buf| {
+                        encode_key_value(attr_arrays, attr_index, result_buf)
+                    })?;
             }
         }
     }
@@ -769,6 +765,9 @@ impl<const INLINE: usize> std::io::Write for ProtoBufferInline<INLINE> {
 ///
 /// An optional fourth argument specifies how many bytes to reserve for the length placeholder.
 /// An N-byte placeholder supports sizes up to 2^(8*n-1) bytes: 1=127, 2=16KiB, 3=2MiB, 4=256MiB
+///
+/// Prefer [`ProtoBufferInline::encode_len_delimited`] which auto-selects the
+/// placeholder width. This macro is retained only for tests that need explicit control.
 #[macro_export]
 macro_rules! proto_encode_len_delimited_of_size {
     ($field_tag: expr, $encode_fn:expr, $buf:expr, $placeholder_bytes:literal) => {{
@@ -783,31 +782,6 @@ macro_rules! proto_encode_len_delimited_of_size {
             len_start_pos,
         );
     }};
-}
-
-/// Deprecated form of helper proto_encode_len_delimited_of_size with 4 byte placeholder.
-/// Callers should use the _small or _large variations directly.
-#[macro_export]
-macro_rules! proto_encode_len_delimited_unknown_size {
-    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{ $crate::proto_encode_len_delimited_large!($field_tag, $encode_fn, $buf) }};
-}
-
-/// 2-byte placeholder for messages up to 16KiB.
-///
-/// Use this for encoding into small, bounded buffers.
-/// See [`proto_encode_len_delimited_of_size!`] for details.
-#[macro_export]
-macro_rules! proto_encode_len_delimited_small {
-    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{ $crate::proto_encode_len_delimited_of_size!($field_tag, $encode_fn, $buf, 2) }};
-}
-
-/// 4-byte placeholder for messages up to 256MiB.
-///
-/// Use this for encoding into arbitrary-size messages.
-/// See [`proto_encode_len_delimited_of_size!`] for details.
-#[macro_export]
-macro_rules! proto_encode_len_delimited_large {
-    ($field_tag: expr, $encode_fn:expr, $buf:expr) => {{ $crate::proto_encode_len_delimited_of_size!($field_tag, $encode_fn, $buf, 4) }};
 }
 
 /// Write an `N`-byte length placeholder for later patching.
@@ -1542,23 +1516,25 @@ mod test {
         use crate::otlp::common::{EncodeResult, ProtoBuffer};
 
         fn encode_large(buf: &mut ProtoBuffer) -> EncodeResult {
-            proto_encode_len_delimited_large!(
+            proto_encode_len_delimited_of_size!(
                 1,
                 {
                     buf.encode_string(1, "hello")?;
                 },
-                buf
+                buf,
+                4
             );
             Ok(())
         }
 
         fn encode_small(buf: &mut ProtoBuffer) -> EncodeResult {
-            proto_encode_len_delimited_small!(
+            proto_encode_len_delimited_of_size!(
                 1,
                 {
                     buf.encode_string(1, "hello")?;
                 },
-                buf
+                buf,
+                2
             );
             Ok(())
         }
@@ -1569,7 +1545,7 @@ mod test {
         let mut buf_small = ProtoBuffer::new();
         encode_small(&mut buf_small).unwrap();
 
-        // The _small variant should be exactly 2 bytes shorter.
+        // The 2-byte variant should be exactly 2 bytes shorter than the 4-byte variant.
         assert_eq!(buf_large.len() - buf_small.len(), 2);
 
         // Both should decode to valid protobuf with the same payload.
@@ -1577,5 +1553,35 @@ mod test {
         // large: 1 byte tag + 4 byte len + payload
         // small: 1 byte tag + 2 byte len + payload
         assert_eq!(&buf_large.as_ref()[5..], &buf_small.as_ref()[3..]);
+    }
+
+    #[test]
+    fn test_encode_len_delimited_auto_width() {
+        use crate::otlp::common::{ProtoBufferInline, Result};
+
+        // A small inline buffer (127 bytes) should use a 1-byte placeholder.
+        let mut buf = ProtoBufferInline::<127>::with_inline();
+        buf.encode_len_delimited(1, |buf: &mut ProtoBufferInline<127>| -> Result<()> {
+            Ok(buf.encode_string(1, "hi")?)
+        })
+        .unwrap();
+        // tag(1) + placeholder(1) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 6
+        assert_eq!(buf.len(), 6);
+
+        // A 128-byte inline buffer should use a 2-byte placeholder (128 >= 2^7).
+        let mut buf = ProtoBufferInline::<128>::with_inline();
+        buf.encode_len_delimited(1, |buf: &mut ProtoBufferInline<128>| -> Result<()> {
+            Ok(buf.encode_string(1, "hi")?)
+        })
+        .unwrap();
+        // tag(1) + placeholder(2) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 7
+        assert_eq!(buf.len(), 7);
+
+        // A default (256MiB limit) buffer should use a 4-byte placeholder.
+        let mut buf = ProtoBufferInline::<0>::new();
+        buf.encode_len_delimited(1, |buf| -> Result<()> { Ok(buf.encode_string(1, "hi")?) })
+            .unwrap();
+        // tag(1) + placeholder(4) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 9
+        assert_eq!(buf.len(), 9);
     }
 }

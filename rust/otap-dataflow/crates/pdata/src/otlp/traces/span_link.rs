@@ -21,7 +21,6 @@ use crate::{
         },
         wire_types,
     },
-    proto_encode_len_delimited_unknown_size,
     schema::consts,
 };
 
@@ -89,11 +88,9 @@ pub fn encode_span_link(
         if let Some(id) = link_arrays.id.value_at(index) {
             let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    SPAN_LINK_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(SPAN_LINK_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }
