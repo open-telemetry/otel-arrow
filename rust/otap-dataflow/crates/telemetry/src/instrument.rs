@@ -102,6 +102,7 @@ impl AddAssign<u64> for Counter<u64> {
 
 impl AddAssign<f64> for Counter<f64> {
     fn add_assign(&mut self, rhs: f64) {
+        debug_assert!(rhs >= 0.0, "Counter += called with negative value: {rhs}");
         self.0 += rhs;
     }
 }
@@ -144,6 +145,7 @@ impl Counter<f64> {
     /// Adds `v` to the counter.
     #[inline]
     pub fn add(&mut self, v: f64) {
+        debug_assert!(v >= 0.0, "Counter::add called with negative value: {v}");
         self.0 += v;
     }
 }
@@ -504,6 +506,10 @@ impl Mmsc {
     /// Records a single observation, updating min/max/sum/count.
     #[inline]
     pub fn record(&mut self, value: f64) {
+        debug_assert!(
+            value >= 0.0,
+            "Mmsc::record called with negative value: {value}"
+        );
         if value < self.min {
             self.min = value;
         }
@@ -693,17 +699,28 @@ mod tests {
         assert_eq!(snap.count, 0);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
-    fn test_mmsc_negative_values() {
+    #[should_panic(expected = "Mmsc::record called with negative value")]
+    fn test_mmsc_record_rejects_negative() {
         let mut mmsc = Mmsc::default();
-        mmsc.record(-5.0);
-        mmsc.record(-10.0);
         mmsc.record(-1.0);
-        let snap = mmsc.get();
-        assert_eq!(snap.min, -10.0);
-        assert_eq!(snap.max, -1.0);
-        assert_eq!(snap.sum, -16.0);
-        assert_eq!(snap.count, 3);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Counter::add called with negative value")]
+    fn test_counter_f64_add_rejects_negative() {
+        let mut counter = Counter::new(0.0f64);
+        counter.add(-1.0);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Counter += called with negative value")]
+    fn test_counter_f64_add_assign_rejects_negative() {
+        let mut counter = Counter::new(0.0f64);
+        counter += -1.0;
     }
 
     #[test]

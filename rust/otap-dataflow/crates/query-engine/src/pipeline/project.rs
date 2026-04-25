@@ -17,6 +17,8 @@ use datafusion::scalar::ScalarValue;
 
 use crate::error::Result;
 
+pub mod anyval;
+
 #[derive(Default)]
 pub struct ProjectionOptions {
     /// Whether or not to downcast dictionary arrays to the native type. Some types of expressions,
