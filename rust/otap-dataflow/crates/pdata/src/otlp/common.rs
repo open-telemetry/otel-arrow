@@ -624,6 +624,33 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
         self.extend_from_slice(val)
     }
 
+    /// Encode a string field, truncating with a suffix if it won't fit.
+    ///
+    /// Returns:
+    /// - `Ok(false)` if the full string was written.
+    /// - `Ok(true)` if the value was truncated (with `[...]` suffix appended).
+    /// - `Err(Dropped)` if even a minimum truncated form would not fit;
+    ///   the buffer is left unchanged in this case.
+    pub fn encode_string_truncating(
+        &mut self,
+        field_tag: u64,
+        val: &str,
+    ) -> std::result::Result<bool, Dropped> {
+        let start = self.buffer.len();
+        match self.encode_string_bounded(field_tag, val) {
+            Ok(()) => Ok(false),
+            Err(Dropped) => {
+                if self.buffer.len() == start {
+                    // Nothing was written; hard fail.
+                    Err(Dropped)
+                } else {
+                    // Truncated bytes have been written; report truncation.
+                    Ok(true)
+                }
+            }
+        }
+    }
+
     /// Take the encoded bytes, returning them as `Bytes`, and reserve the original capacity.
     /// This lets callers reuse the same buffer (growth preserved) without a second temporary.
     pub fn take_into_bytes(&mut self) -> (Bytes, usize) {
@@ -683,6 +710,67 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
         let len = self.len() - len_start_pos - N;
         patch_len_placeholder::<N, _>(self, len, len_start_pos);
         Ok(())
+    }
+
+    /// Like [`encode_len_delimited`], but always patches the length placeholder
+    /// even if the inner closure returns `Err`.
+    ///
+    /// This is intended for nested truncating encoders that may write partial
+    /// content and signal truncation via `Err`. The caller is responsible for
+    /// arranging that any "hard failure" (where no useful bytes were written)
+    /// is rolled back at an outer transaction boundary via [`try_encode`].
+    ///
+    /// If writing the field tag or placeholder itself fails, no length is
+    /// patched (there is no placeholder to patch) and the error is returned.
+    pub fn encode_len_delimited_partial<E: From<Dropped>>(
+        &mut self,
+        field_tag: u64,
+        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        match self.placeholder_width() {
+            1 => self.encode_len_delimited_partial_with::<1, E, _>(field_tag, f),
+            2 => self.encode_len_delimited_partial_with::<2, E, _>(field_tag, f),
+            3 => self.encode_len_delimited_partial_with::<3, E, _>(field_tag, f),
+            _ => self.encode_len_delimited_partial_with::<4, E, _>(field_tag, f),
+        }
+    }
+
+    fn encode_len_delimited_partial_with<
+        const N: usize,
+        E: From<Dropped>,
+        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
+    >(
+        &mut self,
+        field_tag: u64,
+        f: F,
+    ) -> std::result::Result<(), E> {
+        self.encode_field_tag(field_tag, wire_types::LEN)?;
+        let len_start_pos = self.len();
+        self.extend_from_slice(&make_len_placeholder::<N>())?;
+        let result = f(self);
+        let len = self.len() - len_start_pos - N;
+        patch_len_placeholder::<N, _>(self, len, len_start_pos);
+        result
+    }
+
+    /// Run a closure with a temporarily reduced limit.
+    ///
+    /// The buffer's `limit` is set to `min(current_limit, len() + max_remaining)`
+    /// for the duration of the closure, and restored afterward. This lets
+    /// callers cap how many bytes a single nested encoding may consume,
+    /// without touching the underlying buffer's outer limit.
+    #[inline]
+    pub fn with_max_remaining<R>(
+        &mut self,
+        max_remaining: usize,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let saved = self.limit;
+        let scoped = self.buffer.len().saturating_add(max_remaining).min(saved);
+        self.limit = scoped;
+        let result = f(self);
+        self.limit = saved;
+        result
     }
 
     /// Ensure the underlying buffer has at least the requested capacity.

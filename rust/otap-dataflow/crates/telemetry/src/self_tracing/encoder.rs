@@ -8,7 +8,7 @@ use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
 use bytes::Bytes;
-use otap_df_pdata::otlp::common::EncodeResult;
+use otap_df_pdata::otlp::common::{Dropped, EncodeResult};
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBufferInline};
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
@@ -114,19 +114,38 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
         self.dropped_count
     }
 
-    /// Encode a string attribute into a buffer.
+    /// Encode a string attribute, truncating the value if it doesn't fit.
+    ///
+    /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
+    /// value was truncated (with a `[...]` suffix), or `Err(Dropped)` if even
+    /// a truncated form would not fit. On `Err`, the buffer is left in a state
+    /// that is invalid for OTLP (an unfinished partial KeyValue may have been
+    /// written), so callers must invoke this within a [`ProtoBufferInline::try_encode`]
+    /// transaction so the partial bytes are rolled back.
     #[inline]
-    fn encode_string_attribute_to(
+    fn encode_string_attribute_truncating_to(
         buf: &mut ProtoBufferInline<INLINE>,
         key: &str,
         value: &str,
-    ) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+    ) -> Result<bool, Dropped> {
+        let mut truncated = false;
+        // Use _partial variants so the wrapper length placeholders are patched
+        // even when the inner truncating encoder writes partial bytes (it
+        // signals truncation to the caller via the captured `truncated` flag,
+        // not via Err, so wrappers complete cleanly).
+        buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                buf.encode_string(ANY_VALUE_STRING_VALUE, value)
+            buf.encode_len_delimited_partial(KEY_VALUE_VALUE, |buf| {
+                match buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value) {
+                    Ok(was_truncated) => {
+                        truncated = was_truncated;
+                        Ok(())
+                    }
+                    Err(Dropped) => Err(Dropped),
+                }
             })
-        })
+        })?;
+        Ok(truncated)
     }
 
     /// Encode an i64 attribute into a buffer.
@@ -224,16 +243,29 @@ fn encode_debug_string<const INLINE: usize>(
     })
 }
 
+/// Compute the per-attribute budget: at most half of remaining space, but
+/// at least 1 byte (to ensure a chance of a tag byte being written and
+/// triggering an atomic drop). Intentionally halves for every attribute,
+/// including the last — this keeps the policy single-pass without requiring
+/// pre-counting the field set, while still preventing one large value from
+/// consuming the entire remaining buffer.
+#[inline]
+fn attr_budget<const INLINE: usize>(buf: &ProtoBufferInline<INLINE>) -> usize {
+    buf.remaining().div_ceil(2)
+}
+
 impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLINE> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         if field.name() == "message" {
             return;
         }
-        if self
-            .buf
-            .try_encode(|b| DirectFieldVisitor::encode_double_attribute_to(b, field.name(), value))
-            .is_err()
-        {
+        let budget = attr_budget(self.buf);
+        let fit = self.buf.with_max_remaining(budget, |buf| {
+            buf.try_encode(|b| {
+                DirectFieldVisitor::encode_double_attribute_to(b, field.name(), value)
+            })
+        });
+        if fit.is_err() {
             self.dropped_count += 1;
         }
     }
@@ -242,11 +274,11 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
         if field.name() == "message" {
             return;
         }
-        if self
-            .buf
-            .try_encode(|b| DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value))
-            .is_err()
-        {
+        let budget = attr_budget(self.buf);
+        let fit = self.buf.with_max_remaining(budget, |buf| {
+            buf.try_encode(|b| DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value))
+        });
+        if fit.is_err() {
             self.dropped_count += 1;
         }
     }
@@ -255,13 +287,13 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
         if field.name() == "message" {
             return;
         }
-        if self
-            .buf
-            .try_encode(|b| {
+        let budget = attr_budget(self.buf);
+        let fit = self.buf.with_max_remaining(budget, |buf| {
+            buf.try_encode(|b| {
                 DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value as i64)
             })
-            .is_err()
-        {
+        });
+        if fit.is_err() {
             self.dropped_count += 1;
         }
     }
@@ -270,11 +302,11 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
         if field.name() == "message" {
             return;
         }
-        if self
-            .buf
-            .try_encode(|b| DirectFieldVisitor::encode_bool_attribute_to(b, field.name(), value))
-            .is_err()
-        {
+        let budget = attr_budget(self.buf);
+        let fit = self.buf.with_max_remaining(budget, |buf| {
+            buf.try_encode(|b| DirectFieldVisitor::encode_bool_attribute_to(b, field.name(), value))
+        });
+        if fit.is_err() {
             self.dropped_count += 1;
         }
     }
@@ -284,12 +316,30 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
             self.encode_body_string(value);
             return;
         }
-        if self
-            .buf
-            .try_encode(|b| DirectFieldVisitor::encode_string_attribute_to(b, field.name(), value))
-            .is_err()
-        {
-            self.dropped_count += 1;
+        let budget = attr_budget(self.buf);
+        let key = field.name();
+        let mut truncated = false;
+        // Attempt the encoding (with truncation as needed) within the scoped
+        // budget, transactionally so a hard failure rolls back any partial
+        // KeyValue bytes. Truncation status is reported via the captured
+        // `truncated` flag rather than via Err, so the transaction commits.
+        let fit = self.buf.with_max_remaining(budget, |buf| {
+            buf.try_encode(|b| {
+                truncated =
+                    DirectFieldVisitor::encode_string_attribute_truncating_to(b, key, value)?;
+                Ok::<(), Dropped>(())
+            })
+        });
+        match (fit, truncated) {
+            (Ok(()), false) => {} // Fully encoded.
+            (Ok(()), true) => {
+                // Truncated; bytes were preserved.
+                self.dropped_count += 1;
+            }
+            (Err(Dropped), _) => {
+                // Hard failure; everything rolled back.
+                self.dropped_count += 1;
+            }
         }
     }
 
@@ -298,11 +348,13 @@ impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLIN
             self.encode_body_debug(value);
             return;
         }
-        if self
-            .buf
-            .try_encode(|b| DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value))
-            .is_err()
-        {
+        let budget = attr_budget(self.buf);
+        let fit = self.buf.with_max_remaining(budget, |buf| {
+            buf.try_encode(|b| {
+                DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value)
+            })
+        });
+        if fit.is_err() {
             self.dropped_count += 1;
         }
     }
@@ -792,4 +844,165 @@ mod tests {
 
         assert_eq!(expected, decoded);
     }
+
+    /// Verify the fair-budget halving policy for string attributes.
+    ///
+    /// With a 256-byte inline buffer and 4 attributes whose values are 1000
+    /// bytes each, every attribute should consume roughly half of whatever
+    /// remained, leaving each successive value smaller than the previous.
+    /// All four values are truncated, so `dropped_attributes_count` is 4.
+    #[test]
+    fn record_str_halves_remaining_budget_across_attributes() {
+        use crate::self_tracing::encoder::DirectFieldVisitor;
+        use otap_df_pdata::otlp::ProtoBufferInline;
+        use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
+        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use prost::Message;
+        use tracing::field::Visit;
+
+        const INLINE: usize = 256;
+        let big = "x".repeat(1000);
+
+        let meta = &BUDGET_TEST_METADATA;
+        let fields = meta.fields();
+        let a = fields.field("a").unwrap();
+        let b = fields.field("b").unwrap();
+        let c = fields.field("c").unwrap();
+        let d = fields.field("d").unwrap();
+
+        // Drive the visitor directly with each (field, value) pair, which is
+        // what `event.record(visitor)` does internally.
+        let mut buf = ProtoBufferInline::<INLINE>::with_inline();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_str(&a, big.as_str());
+        visitor.record_str(&b, big.as_str());
+        visitor.record_str(&c, big.as_str());
+        visitor.record_str(&d, big.as_str());
+        let dropped = visitor.dropped_count();
+
+        // All four values should be truncated.
+        assert_eq!(dropped, 4, "expected 4 truncated attributes");
+
+        // Buffer should not exceed the inline limit.
+        assert!(
+            buf.len() <= INLINE,
+            "buffer len {} exceeds INLINE {}",
+            buf.len(),
+            INLINE
+        );
+
+        // Decode each attribute as a KeyValue (field tag = LOG_RECORD_ATTRIBUTES = 6,
+        // wire type LEN). Walk the buffer manually.
+        let bytes = buf.as_ref().to_vec();
+        let mut cursor = bytes.as_slice();
+        let mut decoded: Vec<(String, String)> = Vec::new();
+        while !cursor.is_empty() {
+            let (tag, n) = read_varint(cursor);
+            cursor = &cursor[n..];
+            let field_num = tag >> 3;
+            let wire_type = tag & 0x7;
+            assert_eq!(wire_type, wire_types::LEN, "expected LEN wire type");
+            assert_eq!(field_num, LOG_RECORD_ATTRIBUTES, "expected ATTRIBUTES tag");
+            let (len, n) = read_varint(cursor);
+            cursor = &cursor[n..];
+            let len = len as usize;
+            let kv_bytes = &cursor[..len];
+            cursor = &cursor[len..];
+            let kv = ProtoKeyValue::decode(kv_bytes).unwrap();
+            let val = kv
+                .value
+                .as_ref()
+                .and_then(|v| v.value.as_ref())
+                .map(|v| match v {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
+                    _ => panic!("expected string value"),
+                })
+                .unwrap();
+            decoded.push((kv.key, val));
+        }
+
+        assert_eq!(decoded.len(), 4, "expected 4 decoded attributes");
+
+        // Each value should end with the truncation suffix.
+        let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
+        for (k, v) in &decoded {
+            assert!(
+                v.ends_with(suffix),
+                "attribute {k} value should end with {suffix}, got len {}",
+                v.len()
+            );
+        }
+
+        // Each successive value should be smaller (halving budget). We compare
+        // value lengths rather than exact sizes to avoid brittleness.
+        let lens: Vec<usize> = decoded.iter().map(|(_, v)| v.len()).collect();
+        assert!(
+            lens.windows(2).all(|w| w[0] > w[1]),
+            "expected strictly decreasing value lengths, got {lens:?}"
+        );
+
+        // Sanity-check the rough magnitudes from the user's spec
+        // (~100 / ~50 / ~25 / ~10), accommodating overhead variation.
+        // Observed: ~[118, 55, 23, 7].
+        assert!(
+            lens[0] > 60 && lens[0] < 140,
+            "1st value len {} out of expected range",
+            lens[0]
+        );
+        assert!(
+            lens[1] > 25 && lens[1] < 80,
+            "2nd value len {} out of expected range",
+            lens[1]
+        );
+        assert!(
+            lens[2] > 10 && lens[2] < 50,
+            "3rd value len {} out of expected range",
+            lens[2]
+        );
+        // Last value may be just the suffix (~5 bytes) up to ~25 bytes.
+        assert!(
+            lens[3] >= suffix.len() && lens[3] < 30,
+            "4th value len {} out of expected range",
+            lens[3]
+        );
+    }
+
+    /// Read an unsigned varint, returning (value, bytes_consumed).
+    fn read_varint(bytes: &[u8]) -> (u64, usize) {
+        let mut value = 0u64;
+        let mut shift = 0;
+        for (i, &b) in bytes.iter().enumerate() {
+            value |= ((b & 0x7f) as u64) << shift;
+            if b & 0x80 == 0 {
+                return (value, i + 1);
+            }
+            shift += 7;
+        }
+        panic!("truncated varint");
+    }
+
+    static BUDGET_TEST_CALLSITE: BudgetTestCallsite = BudgetTestCallsite;
+
+    struct BudgetTestCallsite;
+
+    impl tracing::Callsite for BudgetTestCallsite {
+        fn set_interest(&self, _: tracing::subscriber::Interest) {}
+        fn metadata(&self) -> &tracing::Metadata<'_> {
+            &BUDGET_TEST_METADATA
+        }
+    }
+
+    static BUDGET_TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
+        "budget_test",
+        "otap-df-telemetry",
+        Level::INFO,
+        Some(file!()),
+        Some(line!()),
+        Some(module_path!()),
+        tracing::field::FieldSet::new(
+            &["a", "b", "c", "d"],
+            tracing::callsite::Identifier(&BUDGET_TEST_CALLSITE),
+        ),
+        tracing::metadata::Kind::EVENT,
+    );
 }
