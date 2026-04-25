@@ -294,6 +294,28 @@ fn pipeline_config_recipe_points_to_get_and_editor_flow() {
     );
 }
 
+/// Scenario: the pipeline Details tab generates an equivalent CLI recipe.
+/// Guarantees: the recipe includes both the rich describe command and the
+/// lower-level status command that back the object-inspection view.
+#[test]
+fn pipeline_details_recipe_includes_describe_and_status() {
+    let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+    app.pipeline_selected = Some("tenant-a:ingest".to_string());
+    app.pipeline_tab = PipelineTab::Details;
+
+    let recipe = app.current_command_recipe();
+
+    assert_eq!(recipe.commands.len(), 2);
+    assert_eq!(
+        recipe.commands[0].command,
+        "dfctl --url http://127.0.0.1:8085 pipelines describe tenant-a ingest"
+    );
+    assert_eq!(
+        recipe.commands[1].command,
+        "dfctl --url http://127.0.0.1:8085 pipelines status tenant-a ingest"
+    );
+}
+
 /// Scenario: the groups summary pane generates an equivalent CLI recipe for
 /// a selected group.
 /// Guarantees: the recipe calls out that the UI scope is client-side while

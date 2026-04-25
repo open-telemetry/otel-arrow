@@ -24,6 +24,7 @@ fn handle_mouse_event(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
         || app.action_menu().is_some()
         || app.show_help()
         || app.show_command_overlay()
+        || app.show_command_palette()
     {
         return EventOutcome::Continue;
     }
@@ -166,6 +167,10 @@ pub(super) fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcom
         return handle_action_menu_key(key, app);
     }
 
+    if app.show_command_palette() {
+        return handle_command_palette_key(key, app);
+    }
+
     if app.show_command_overlay() {
         return match key.code {
             KeyCode::Char('q') => EventOutcome::Quit,
@@ -241,6 +246,10 @@ pub(super) fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcom
         }
         KeyCode::Char('c') => {
             app.toggle_command_overlay();
+            EventOutcome::Continue
+        }
+        KeyCode::Char(':') => {
+            app.open_command_palette();
             EventOutcome::Continue
         }
         KeyCode::Char('a') => {
@@ -336,6 +345,111 @@ pub(super) fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcom
     }
 }
 
+fn handle_command_palette_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    match key.code {
+        KeyCode::Esc => {
+            app.hide_modal();
+            EventOutcome::Continue
+        }
+        KeyCode::Backspace => {
+            app.pop_palette_input();
+            EventOutcome::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+            app.move_palette_selection(-1);
+            EventOutcome::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
+            app.move_palette_selection(1);
+            EventOutcome::Continue
+        }
+        KeyCode::Enter => app
+            .selected_palette_action()
+            .map_or(EventOutcome::Continue, |action| {
+                execute_palette_action(action, app)
+            }),
+        KeyCode::Char(character)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            app.push_palette_input(character);
+            EventOutcome::Continue
+        }
+        _ => EventOutcome::Continue,
+    }
+}
+
+fn execute_palette_action(action: PaletteAction, app: &mut AppState) -> EventOutcome {
+    match action {
+        PaletteAction::SwitchView(view) => {
+            app.hide_modal();
+            app.select_view(view);
+            EventOutcome::Refresh
+        }
+        PaletteAction::SelectPipelineTab(tab) => {
+            app.hide_modal();
+            app.select_view(View::Pipelines);
+            app.pipeline_tab = tab;
+            app.focus = FocusArea::Detail;
+            app.reset_scroll();
+            EventOutcome::Refresh
+        }
+        PaletteAction::SelectGroupTab(tab) => {
+            app.hide_modal();
+            app.select_view(View::Groups);
+            app.group_tab = tab;
+            app.focus = FocusArea::Detail;
+            app.reset_scroll();
+            EventOutcome::Refresh
+        }
+        PaletteAction::SelectEngineTab(tab) => {
+            app.hide_modal();
+            app.select_view(View::Engine);
+            app.engine_tab = tab;
+            app.focus = FocusArea::Detail;
+            app.reset_scroll();
+            EventOutcome::Refresh
+        }
+        PaletteAction::Focus(focus) => {
+            app.hide_modal();
+            app.focus = focus;
+            app.reset_scroll();
+            EventOutcome::Continue
+        }
+        PaletteAction::OpenHelp => {
+            app.modal = UiModal::Help;
+            EventOutcome::Continue
+        }
+        PaletteAction::OpenFilter => {
+            app.start_filter_input();
+            EventOutcome::Continue
+        }
+        PaletteAction::OpenCommandOverlay => {
+            app.modal = UiModal::Command;
+            EventOutcome::Continue
+        }
+        PaletteAction::OpenActionMenu => {
+            app.hide_modal();
+            if !app.open_action_menu() {
+                app.last_error =
+                    Some("no actions are available for the current selection".to_string());
+            }
+            EventOutcome::Continue
+        }
+        PaletteAction::ClearFilter => {
+            app.clear_filter();
+            EventOutcome::Refresh
+        }
+        PaletteAction::Refresh => {
+            app.hide_modal();
+            EventOutcome::Refresh
+        }
+        PaletteAction::Quit => EventOutcome::Quit,
+        PaletteAction::Execute(action) => execute_selected_ui_action(app, action),
+    }
+}
+
 fn handle_action_menu_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     match key.code {
         KeyCode::Esc | KeyCode::Char('a') => {
@@ -374,38 +488,42 @@ fn handle_action_menu_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
                 .filter(|entry| entry.enabled)
                 .map(|entry| entry.action.clone());
 
-            match selected {
-                Some(UiAction::PipelineEditAndRedeploy {
-                    group_id,
-                    pipeline_id,
-                }) => {
-                    app.hide_modal();
-                    EventOutcome::OpenPipelineEditor {
-                        group_id,
-                        pipeline_id,
-                    }
-                }
-                Some(UiAction::PipelineSetCoreCount {
-                    group_id,
-                    pipeline_id,
-                    current_cores,
-                }) => {
-                    app.open_scale_editor(group_id, pipeline_id, current_cores);
-                    EventOutcome::Continue
-                }
-                Some(action @ UiAction::PipelineShutdown { .. })
-                | Some(action @ UiAction::GroupShutdown { .. }) => {
-                    app.open_shutdown_confirm(action);
-                    EventOutcome::Continue
-                }
-                Some(action) => {
-                    app.hide_modal();
-                    EventOutcome::Execute(action)
-                }
-                None => EventOutcome::Continue,
-            }
+            selected.map_or(EventOutcome::Continue, |action| {
+                execute_selected_ui_action(app, action)
+            })
         }
         _ => EventOutcome::Continue,
+    }
+}
+
+fn execute_selected_ui_action(app: &mut AppState, action: UiAction) -> EventOutcome {
+    match action {
+        UiAction::PipelineEditAndRedeploy {
+            group_id,
+            pipeline_id,
+        } => {
+            app.hide_modal();
+            EventOutcome::OpenPipelineEditor {
+                group_id,
+                pipeline_id,
+            }
+        }
+        UiAction::PipelineSetCoreCount {
+            group_id,
+            pipeline_id,
+            current_cores,
+        } => {
+            app.open_scale_editor(group_id, pipeline_id, current_cores);
+            EventOutcome::Continue
+        }
+        action @ UiAction::PipelineShutdown { .. } | action @ UiAction::GroupShutdown { .. } => {
+            app.open_shutdown_confirm(action);
+            EventOutcome::Continue
+        }
+        action => {
+            app.hide_modal();
+            EventOutcome::Execute(action)
+        }
     }
 }
 

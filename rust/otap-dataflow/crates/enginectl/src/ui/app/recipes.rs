@@ -242,6 +242,34 @@ impl AppState {
                 )],
                 note: None,
             },
+            PipelineTab::Details => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!("Inspect detailed state for pipeline {group_id}/{pipeline_id}."),
+                commands: vec![
+                    command_line(
+                        "describe",
+                        self.command(vec![
+                            "pipelines".to_string(),
+                            "describe".to_string(),
+                            group_id.clone(),
+                            pipeline_id.clone(),
+                        ]),
+                    ),
+                    command_line(
+                        "status",
+                        self.command(vec![
+                            "pipelines".to_string(),
+                            "status".to_string(),
+                            group_id.clone(),
+                            pipeline_id.clone(),
+                        ]),
+                    ),
+                ],
+                note: Some(
+                    "The Details tab combines status, probes, and operation ids into one client-side view."
+                        .to_string(),
+                ),
+            },
             PipelineTab::Config => {
                 let mut commands = vec![command_line(
                     "get config",
@@ -546,6 +574,17 @@ impl AppState {
                     "The UI summary is scoped to group {group_id} client-side. The CLI command is fleet-wide."
                 )),
             },
+            GroupTab::Details => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: format!("Inspect detailed state for group {group_id}."),
+                commands: vec![command_line(
+                    "describe groups",
+                    self.command(vec!["groups".to_string(), "describe".to_string()]),
+                )],
+                note: Some(format!(
+                    "The Details tab is scoped to group {group_id} client-side. The CLI command is fleet-wide."
+                )),
+            },
             GroupTab::Events => CommandRecipe {
                 title: "Equivalent CLI".to_string(),
                 description: format!("Watch normalized events for group {group_id}."),
@@ -695,6 +734,38 @@ impl AppState {
                 ],
                 note: None,
             },
+            EngineTab::Details => CommandRecipe {
+                title: "Equivalent CLI".to_string(),
+                description: "Inspect detailed engine state and probes.".to_string(),
+                commands: vec![
+                    command_line(
+                        "status",
+                        self.command(vec!["engine".to_string(), "status".to_string()]),
+                    ),
+                    command_line(
+                        "livez",
+                        self.command(vec!["engine".to_string(), "livez".to_string()]),
+                    ),
+                    command_line(
+                        "readyz",
+                        self.command(vec!["engine".to_string(), "readyz".to_string()]),
+                    ),
+                    command_line(
+                        "metrics",
+                        self.command(vec![
+                            "telemetry".to_string(),
+                            "metrics".to_string(),
+                            "get".to_string(),
+                            "--shape".to_string(),
+                            "compact".to_string(),
+                        ]),
+                    ),
+                ],
+                note: Some(
+                    "The Details tab combines engine status, probes, and compact vitals client-side."
+                        .to_string(),
+                ),
+            },
             EngineTab::Logs => CommandRecipe {
                 title: "Equivalent CLI".to_string(),
                 description: "Watch retained engine logs.".to_string(),
@@ -741,7 +812,7 @@ impl AppState {
         shell_join(parts)
     }
 
-    fn build_action_menu(&self) -> Option<ActionMenuState> {
+    pub(super) fn build_action_menu(&self) -> Option<ActionMenuState> {
         match self.view {
             View::Pipelines => self.build_pipeline_action_menu(),
             View::Groups => self.build_group_action_menu(),

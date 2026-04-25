@@ -98,6 +98,30 @@ pub(super) fn draw_pipeline_summary(
     );
 }
 
+pub(super) fn draw_object_details_pane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    pane: &ObjectDetailsPane,
+    app: &AppState,
+) {
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(5), Constraint::Min(8)])
+        .split(area);
+    draw_stat_cards(frame, sections[0], &pane.stats, app.color_enabled);
+    draw_object_detail_table(
+        frame,
+        sections[1],
+        &pane.rows,
+        app.color_enabled,
+        usize::from(app.detail_scroll),
+        None,
+    );
+    if pane.rows.is_empty() {
+        draw_empty_overlay(frame, sections[1], &pane.empty_message, app.color_enabled);
+    }
+}
+
 pub(super) fn draw_group_summary(
     frame: &mut Frame<'_>,
     area: Rect,

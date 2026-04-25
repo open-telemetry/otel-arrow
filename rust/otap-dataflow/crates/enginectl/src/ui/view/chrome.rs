@@ -27,6 +27,9 @@ pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     if app.show_command_overlay() {
         draw_command_overlay(frame, area, app);
     }
+    if let Some(palette) = app.command_palette() {
+        draw_command_palette_overlay(frame, area, palette, app);
+    }
     if let Some(menu) = app.action_menu() {
         draw_action_menu_overlay(frame, area, menu, app);
     }
@@ -352,6 +355,9 @@ pub(super) fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState
     match app.view {
         View::Pipelines => match app.pipeline_tab {
             PipelineTab::Summary => draw_pipeline_summary(frame, area, &app.pipelines.summary, app),
+            PipelineTab::Details => {
+                draw_object_details_pane(frame, area, &app.pipelines.details, app)
+            }
             PipelineTab::Config => draw_config_pane(frame, area, &app.pipelines.config, app),
             PipelineTab::Events => draw_events_pane(frame, area, &app.pipelines.events, app),
             PipelineTab::Logs => draw_logs_pane(frame, area, &app.pipelines.logs, app),
@@ -365,6 +371,7 @@ pub(super) fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState
         },
         View::Groups => match app.group_tab {
             GroupTab::Summary => draw_group_summary(frame, area, &app.groups.summary, app),
+            GroupTab::Details => draw_object_details_pane(frame, area, &app.groups.details, app),
             GroupTab::Events => draw_events_pane(frame, area, &app.groups.events, app),
             GroupTab::Logs => draw_logs_pane(frame, area, &app.groups.logs, app),
             GroupTab::Metrics => draw_metrics_pane(frame, area, &app.groups.metrics, app),
@@ -374,6 +381,7 @@ pub(super) fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState
         },
         View::Engine => match app.engine_tab {
             EngineTab::Summary => draw_engine_summary(frame, area, &app.engine.summary, app),
+            EngineTab::Details => draw_object_details_pane(frame, area, &app.engine.details, app),
             EngineTab::Logs => draw_logs_pane(frame, area, &app.engine.logs, app),
             EngineTab::Metrics => draw_metrics_pane(frame, area, &app.engine.metrics, app),
         },

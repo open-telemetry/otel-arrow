@@ -22,12 +22,13 @@ pub(crate) use self::layout::tab_regions;
 pub(crate) use self::layout::{compute_ui_layout, state_table_row_hit_index, tab_hit_index};
 
 use super::app::{
-    ActionMenuState, AppState, BundlePane, ConditionRow, ConfigPane, CoreRow, DetailHeader,
-    DiagnosisPane, EngineSummaryPane, EngineTab, EngineVitals, EventPane, EvidenceRow, FindingRow,
-    FocusArea, GroupShutdownPane, GroupShutdownRow, GroupSummaryPane, GroupTab, LogFeedState,
-    LogRow, MetricRow, MetricsPane, OperationPane, OperationRow, PipelineInventoryRow,
-    PipelineSummaryPane, PipelineTab, ProbeFailureRow, ScaleEditorState, ShutdownConfirmState,
-    StatCard, StatusChip, TimelineRow, Tone, View,
+    ActionMenuState, AppState, BundlePane, CommandPaletteState, ConditionRow, ConfigPane, CoreRow,
+    DetailHeader, DiagnosisPane, EngineSummaryPane, EngineTab, EngineVitals, EventPane,
+    EvidenceRow, FindingRow, FocusArea, GroupShutdownPane, GroupShutdownRow, GroupSummaryPane,
+    GroupTab, LogFeedState, LogRow, MetricRow, MetricsPane, ObjectDetailRow, ObjectDetailsPane,
+    OperationPane, OperationRow, PipelineInventoryRow, PipelineSummaryPane, PipelineTab,
+    ProbeFailureRow, ScaleEditorState, ShutdownConfirmState, StatCard, StatusChip, TimelineRow,
+    Tone, View,
 };
 use ratatui::{
     Frame,

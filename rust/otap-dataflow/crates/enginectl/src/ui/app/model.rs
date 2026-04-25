@@ -88,9 +88,42 @@ pub(crate) enum UiModal {
     Help,
     Filter,
     Command,
+    CommandPalette(CommandPaletteState),
     ActionMenu(ActionMenuState),
     ConfirmShutdown(ShutdownConfirmState),
     ScaleEditor(ScaleEditorState),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PaletteAction {
+    SwitchView(View),
+    SelectPipelineTab(PipelineTab),
+    SelectGroupTab(GroupTab),
+    SelectEngineTab(EngineTab),
+    Focus(FocusArea),
+    OpenHelp,
+    OpenFilter,
+    OpenCommandOverlay,
+    OpenActionMenu,
+    ClearFilter,
+    Refresh,
+    Quit,
+    Execute(UiAction),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CommandPaletteEntry {
+    pub(crate) label: String,
+    pub(crate) detail: String,
+    pub(crate) keywords: String,
+    pub(crate) action: PaletteAction,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CommandPaletteState {
+    pub(crate) input: String,
+    pub(crate) selected: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -185,6 +218,7 @@ pub(crate) struct ActiveGroupShutdown {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PipelineTab {
     Summary,
+    Details,
     Config,
     Events,
     Logs,
@@ -196,8 +230,9 @@ pub(crate) enum PipelineTab {
 }
 
 impl PipelineTab {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Summary,
+        Self::Details,
         Self::Config,
         Self::Events,
         Self::Logs,
@@ -211,6 +246,7 @@ impl PipelineTab {
     pub(crate) const fn title(self) -> &'static str {
         match self {
             Self::Summary => "Summary",
+            Self::Details => "Details",
             Self::Config => "Config",
             Self::Events => "Events",
             Self::Logs => "Logs",
@@ -226,6 +262,7 @@ impl PipelineTab {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum GroupTab {
     Summary,
+    Details,
     Events,
     Logs,
     Metrics,
@@ -235,8 +272,9 @@ pub(crate) enum GroupTab {
 }
 
 impl GroupTab {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Summary,
+        Self::Details,
         Self::Events,
         Self::Logs,
         Self::Metrics,
@@ -248,6 +286,7 @@ impl GroupTab {
     pub(crate) const fn title(self) -> &'static str {
         match self {
             Self::Summary => "Summary",
+            Self::Details => "Details",
             Self::Events => "Events",
             Self::Logs => "Logs",
             Self::Metrics => "Metrics",
@@ -261,16 +300,18 @@ impl GroupTab {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EngineTab {
     Summary,
+    Details,
     Logs,
     Metrics,
 }
 
 impl EngineTab {
-    pub(crate) const ALL: [Self; 3] = [Self::Summary, Self::Logs, Self::Metrics];
+    pub(crate) const ALL: [Self; 4] = [Self::Summary, Self::Details, Self::Logs, Self::Metrics];
 
     pub(crate) const fn title(self) -> &'static str {
         match self {
             Self::Summary => "Summary",
+            Self::Details => "Details",
             Self::Logs => "Logs",
             Self::Metrics => "Metrics",
         }
@@ -426,6 +467,22 @@ pub(crate) struct ProbeFailureRow {
     pub(crate) tone: Tone,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ObjectDetailRow {
+    pub(crate) field: String,
+    pub(crate) value: String,
+    pub(crate) detail: String,
+    pub(crate) tone: Tone,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ObjectDetailsPane {
+    pub(crate) header: Option<DetailHeader>,
+    pub(crate) stats: Vec<StatCard>,
+    pub(crate) rows: Vec<ObjectDetailRow>,
+    pub(crate) empty_message: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PipelineSummaryPane {
     pub(crate) header: Option<DetailHeader>,
@@ -554,6 +611,7 @@ pub(crate) struct PipelinePaneState {
     pub(crate) config_yaml: Option<String>,
     pub(crate) config_draft: Option<PipelineConfigDraft>,
     pub(crate) summary: PipelineSummaryPane,
+    pub(crate) details: ObjectDetailsPane,
     pub(crate) config: ConfigPane,
     pub(crate) events: EventPane,
     pub(crate) logs: LogFeedState,
@@ -573,6 +631,7 @@ impl PipelinePaneState {
         self.config_yaml = None;
         self.config_draft = None;
         self.summary = PipelineSummaryPane::default();
+        self.details = ObjectDetailsPane::default();
         self.config = ConfigPane::default();
         self.events = EventPane::default();
         self.logs.reset(format!("pipeline:{target_key}"));
@@ -591,6 +650,7 @@ impl PipelinePaneState {
         self.config_yaml = None;
         self.config_draft = None;
         self.summary = PipelineSummaryPane::default();
+        self.details = ObjectDetailsPane::default();
         self.config = ConfigPane::default();
         self.events = EventPane::default();
         self.logs.clear();
@@ -607,6 +667,7 @@ pub(crate) struct GroupPaneState {
     pub(crate) group_id: Option<String>,
     pub(crate) active_shutdown: Option<ActiveGroupShutdown>,
     pub(crate) summary: GroupSummaryPane,
+    pub(crate) details: ObjectDetailsPane,
     pub(crate) events: EventPane,
     pub(crate) logs: LogFeedState,
     pub(crate) metrics: MetricsPane,
@@ -626,6 +687,7 @@ impl GroupPaneState {
             self.active_shutdown = None;
         }
         self.summary = GroupSummaryPane::default();
+        self.details = ObjectDetailsPane::default();
         self.events = EventPane::default();
         self.logs.reset(format!("group:{group_id}"));
         self.metrics = MetricsPane::default();
@@ -638,6 +700,7 @@ impl GroupPaneState {
         self.group_id = None;
         self.active_shutdown = None;
         self.summary = GroupSummaryPane::default();
+        self.details = ObjectDetailsPane::default();
         self.events = EventPane::default();
         self.logs.clear();
         self.metrics = MetricsPane::default();
@@ -650,6 +713,7 @@ impl GroupPaneState {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EnginePaneState {
     pub(crate) summary: EngineSummaryPane,
+    pub(crate) details: ObjectDetailsPane,
     pub(crate) logs: LogFeedState,
     pub(crate) metrics: MetricsPane,
 }

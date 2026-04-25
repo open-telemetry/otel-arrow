@@ -37,6 +37,8 @@ pub(super) fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState)
         Span::raw(" filter  "),
         Span::styled("a", key_style(app.color_enabled)),
         Span::raw(" actions  "),
+        Span::styled(":", key_style(app.color_enabled)),
+        Span::raw(" palette  "),
         Span::styled("c", key_style(app.color_enabled)),
         Span::raw(" command"),
     ];
@@ -75,6 +77,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppStat
         Line::from("e: events  l: logs  m: metrics  d: diagnose  b: bundle"),
         Line::from("o: rollout tab (pipelines view)"),
         Line::from("a: open context actions for the current selection"),
+        Line::from(": open searchable command palette"),
         Line::from("c: show equivalent CLI for the current pane"),
         Line::from("Config tab: e edit, Enter redeploy staged draft, d discard draft"),
         Line::from("r: refresh immediately"),
@@ -144,6 +147,79 @@ pub(super) fn draw_command_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppS
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);
     frame.render_widget(command, overlay);
+}
+
+pub(super) fn draw_command_palette_overlay(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    palette: &CommandPaletteState,
+    app: &AppState,
+) {
+    let overlay = centered_rect(72, 66, area);
+    let entries = app.filtered_palette_entries();
+    let selected = palette.selected.min(entries.len().saturating_sub(1));
+    let visible = entries
+        .iter()
+        .enumerate()
+        .skip(selected.saturating_sub(5))
+        .take(10)
+        .collect::<Vec<_>>();
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Command Palette",
+            title_style(app.color_enabled),
+        )),
+        Line::from(Span::styled(
+            "Type to filter commands, views, tabs, and current-selection actions.",
+            muted_style(app.color_enabled),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", key_style(app.color_enabled)),
+            Span::raw(palette.input.clone()),
+        ]),
+        Line::from(""),
+    ];
+
+    if visible.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No commands match the current filter.",
+            muted_style(app.color_enabled),
+        )));
+    } else {
+        for (index, entry) in visible {
+            let prefix = if index == selected { "▶ " } else { "  " };
+            let label_style = if !entry.enabled {
+                muted_style(app.color_enabled)
+            } else if index == selected {
+                selected_style(app.color_enabled)
+            } else {
+                header_style(app.color_enabled)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}{}", entry.label),
+                label_style,
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("   {}", entry.detail),
+                muted_style(app.color_enabled),
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Enter runs the selected command. Esc closes. Up/Down or j/k changes selection.",
+        muted_style(app.color_enabled),
+    )));
+
+    let widget = Paragraph::new(lines)
+        .block(block_with_title("Palette", false, app.color_enabled))
+        .style(panel_style(app.color_enabled))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, overlay);
+    frame.render_widget(widget, overlay);
 }
 
 pub(super) fn draw_filter_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {

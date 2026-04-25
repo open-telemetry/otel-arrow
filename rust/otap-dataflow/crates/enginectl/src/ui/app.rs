@@ -7,6 +7,8 @@
 mod helpers;
 #[path = "app/model.rs"]
 mod model;
+#[path = "app/palette.rs"]
+mod palette;
 #[path = "app/recipes.rs"]
 mod recipes;
 #[path = "app/state.rs"]

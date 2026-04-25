@@ -105,7 +105,7 @@ fn detail_focus_uses_h_and_l_to_cycle_tabs() {
         &mut app,
     );
     assert_eq!(outcome, EventOutcome::Refresh);
-    assert_eq!(app.pipeline_tab, PipelineTab::Config);
+    assert_eq!(app.pipeline_tab, PipelineTab::Details);
 
     let outcome = handle_key_event(
         KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
@@ -230,8 +230,12 @@ fn mouse_click_on_detail_tabs_switches_focus_and_tab() {
     app.focus = FocusArea::List;
     let layout = compute_ui_layout(Rect::new(0, 0, 140, 40)).expect("layout should exist");
     let titles = app.current_tab_titles();
+    let metrics_index = titles
+        .iter()
+        .position(|title| *title == "Metrics")
+        .expect("metrics tab should exist");
     let metrics_tab = view::tab_regions(layout.detail_tabs, &titles)
-        .get(4)
+        .get(metrics_index)
         .copied()
         .expect("metrics tab region should exist");
 
@@ -248,6 +252,58 @@ fn mouse_click_on_detail_tabs_switches_focus_and_tab() {
     assert_eq!(outcome, EventOutcome::Refresh);
     assert_eq!(app.pipeline_tab, PipelineTab::Metrics);
     assert_eq!(app.focus, FocusArea::Detail);
+}
+
+/// Scenario: the operator opens the command palette and filters for the
+/// pipeline Details tab.
+/// Guarantees: executing the filtered palette item switches to the Pipelines
+/// view, focuses the detail pane, and selects the new object-details tab.
+#[test]
+fn command_palette_filters_and_switches_to_pipeline_details() {
+    let mut app = AppState::new(UiStartView::Groups, true, 200);
+
+    let outcome = handle_key_event(
+        KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE),
+        &mut app,
+    );
+    assert_eq!(outcome, EventOutcome::Continue);
+    assert!(app.show_command_palette());
+
+    for character in "pipeline details".chars() {
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            &mut app,
+        );
+        assert_eq!(outcome, EventOutcome::Continue);
+    }
+
+    let outcome = handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+
+    assert_eq!(outcome, EventOutcome::Refresh);
+    assert_eq!(app.view, View::Pipelines);
+    assert_eq!(app.pipeline_tab, PipelineTab::Details);
+    assert_eq!(app.focus, FocusArea::Detail);
+    assert!(!app.show_command_palette());
+}
+
+/// Scenario: the command palette is filtered to a current-selection
+/// destructive action.
+/// Guarantees: selecting the pipeline shutdown action opens the existing
+/// confirmation flow rather than executing immediately.
+#[test]
+fn command_palette_pipeline_shutdown_action_uses_confirmation() {
+    let mut app = AppState::new(UiStartView::Pipelines, true, 200);
+    app.pipeline_selected = Some("tenant-a:ingest".to_string());
+    app.open_command_palette();
+
+    for character in "action shutdown".chars() {
+        app.push_palette_input(character);
+    }
+
+    let outcome = handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+
+    assert_eq!(outcome, EventOutcome::Continue);
+    assert!(app.shutdown_confirm().is_some());
 }
 
 /// Scenario: the operator clicks a different row in the pipeline list.

@@ -125,7 +125,11 @@ fn leaf_value_source(matches: &ArgMatches, id: &str) -> Option<ValueSource> {
     while let Some((_, subcommand)) = current.subcommand() {
         current = subcommand;
     }
-    current.value_source(id)
+    current
+        .ids()
+        .any(|candidate| candidate.as_str() == id)
+        .then(|| current.value_source(id))
+        .flatten()
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -1158,6 +1162,19 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    /// Scenario: the interactive UI command is parsed through the effective
+    /// parser used by the real binary entrypoint.
+    /// Guarantees: agent-default output detection ignores commands without an
+    /// `--output` argument instead of asking clap for an unknown argument id.
+    #[test]
+    fn ui_effective_parse_ignores_missing_output_arg() {
+        let cli = Cli::try_parse_effective_from(["dfctl", "ui"])
+            .expect("ui command should parse through the effective parser");
+
+        assert!(cli.is_ui());
+        assert!(!cli.agent);
     }
 
     /// Scenario: an operator requests shell completion generation.

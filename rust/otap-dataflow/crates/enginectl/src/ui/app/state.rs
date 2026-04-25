@@ -422,6 +422,7 @@ impl AppState {
         match self.view {
             View::Pipelines => match self.pipeline_tab {
                 PipelineTab::Summary => self.pipelines.summary.header.as_ref(),
+                PipelineTab::Details => self.pipelines.details.header.as_ref(),
                 PipelineTab::Config => self.pipelines.config.header.as_ref(),
                 PipelineTab::Events => self.pipelines.events.header.as_ref(),
                 PipelineTab::Logs => self.pipelines.logs.header.as_ref(),
@@ -433,6 +434,7 @@ impl AppState {
             },
             View::Groups => match self.group_tab {
                 GroupTab::Summary => self.groups.summary.header.as_ref(),
+                GroupTab::Details => self.groups.details.header.as_ref(),
                 GroupTab::Events => self.groups.events.header.as_ref(),
                 GroupTab::Logs => self.groups.logs.header.as_ref(),
                 GroupTab::Metrics => self.groups.metrics.header.as_ref(),
@@ -442,6 +444,7 @@ impl AppState {
             },
             View::Engine => match self.engine_tab {
                 EngineTab::Summary => self.engine.summary.header.as_ref(),
+                EngineTab::Details => self.engine.details.header.as_ref(),
                 EngineTab::Logs => self.engine.logs.header.as_ref(),
                 EngineTab::Metrics => self.engine.metrics.header.as_ref(),
             },

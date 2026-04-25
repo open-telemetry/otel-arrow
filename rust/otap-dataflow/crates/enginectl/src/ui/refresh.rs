@@ -191,6 +191,12 @@ async fn refresh_pipelines_view(
     );
 
     app.pipelines.summary = build_pipeline_summary_pane(&describe, header.clone());
+    app.pipelines.details = build_pipeline_details_pane(
+        &describe,
+        header.clone(),
+        rollout_status.as_ref(),
+        shutdown_status.as_ref(),
+    );
     app.pipelines.events = EventPane {
         header: Some(add_header_chip(
             header.clone(),
@@ -206,6 +212,7 @@ async fn refresh_pipelines_view(
 
     match app.pipeline_tab {
         PipelineTab::Summary
+        | PipelineTab::Details
         | PipelineTab::Config
         | PipelineTab::Events
         | PipelineTab::Rollout
@@ -359,6 +366,7 @@ async fn refresh_groups_view(
     );
 
     app.groups.summary = build_group_summary_pane(&group_id, &describe, header.clone());
+    app.groups.details = build_group_details_pane(&group_id, &describe, header.clone());
     let events = extract_events_from_group_status(
         &subset,
         Some(&EventFilters {
@@ -376,7 +384,7 @@ async fn refresh_groups_view(
     };
 
     match app.group_tab {
-        GroupTab::Summary | GroupTab::Events | GroupTab::Shutdown => {}
+        GroupTab::Summary | GroupTab::Details | GroupTab::Events | GroupTab::Shutdown => {}
         GroupTab::Logs => {
             refresh_log_feed(
                 client,
@@ -491,9 +499,11 @@ async fn refresh_engine_view(
 
     let header = engine_header(&status, &livez, &readyz);
     app.engine.summary = build_engine_summary_pane(&status, &livez, &readyz, header.clone());
+    app.engine.details =
+        build_engine_details_pane(&status, &livez, &readyz, &app.engine_vitals, header.clone());
 
     match app.engine_tab {
-        EngineTab::Summary => {}
+        EngineTab::Summary | EngineTab::Details => {}
         EngineTab::Logs => {
             refresh_log_feed(
                 client,

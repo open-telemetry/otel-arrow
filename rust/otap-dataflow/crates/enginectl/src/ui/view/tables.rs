@@ -557,6 +557,49 @@ pub(super) fn draw_probe_failures(
     );
 }
 
+pub(super) fn draw_object_detail_table(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    rows: &[ObjectDetailRow],
+    color_enabled: bool,
+    offset: usize,
+    limit: Option<usize>,
+) {
+    let table_rows = slice(rows, offset, limit, area.height.saturating_sub(3) as usize)
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            Row::new(vec![
+                Cell::from(Span::styled(row.field.clone(), header_style(color_enabled))),
+                Cell::from(Span::styled(
+                    row.value.clone(),
+                    tone_style(row.tone, color_enabled),
+                )),
+                Cell::from(row.detail.clone()),
+            ])
+            .style(stripe_style(index, color_enabled))
+        })
+        .collect::<Vec<_>>();
+    draw_table_block(
+        frame,
+        area,
+        table_rows,
+        vec![
+            "field".to_string(),
+            "value".to_string(),
+            "detail".to_string(),
+        ],
+        [
+            Constraint::Length(22),
+            Constraint::Length(28),
+            Constraint::Fill(1),
+        ],
+        "Object Details",
+        Some("No object details are available."),
+        color_enabled,
+    );
+}
+
 pub(super) fn draw_state_table<const N: usize>(
     frame: &mut Frame<'_>,
     area: Rect,

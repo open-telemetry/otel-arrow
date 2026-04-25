@@ -7,6 +7,7 @@ mod actions;
 mod app;
 mod editor;
 mod input;
+mod object_details;
 mod panes;
 mod refresh;
 mod rows;
@@ -18,12 +19,13 @@ use self::app::{
     AppState, BundlePane, ConditionRow, ConfigPane, CoreRow, DetailHeader, DiagnosisPane,
     EngineSummaryPane, EngineTab, EngineVitals, EventPane, EvidenceRow, FindingRow, FocusArea,
     GroupShutdownPane, GroupShutdownRow, GroupSummaryPane, GroupTab, LogFeedState, LogRow,
-    MetricRow, MetricsPane, OperationPane, OperationRow, PipelineInventoryRow, PipelineSummaryPane,
-    PipelineTab, ProbeFailureRow, StatCard, StatusChip, TimelineRow, Tone, UiAction,
-    UiCommandContext, View,
+    MetricRow, MetricsPane, ObjectDetailRow, ObjectDetailsPane, OperationPane, OperationRow,
+    PaletteAction, PipelineInventoryRow, PipelineSummaryPane, PipelineTab, ProbeFailureRow,
+    StatCard, StatusChip, TimelineRow, Tone, UiAction, UiCommandContext, UiModal, View,
 };
 use self::editor::stage_pipeline_editor_draft;
 use self::input::handle_event;
+use self::object_details::*;
 use self::panes::*;
 use self::refresh::refresh_view;
 use self::rows::*;
