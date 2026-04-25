@@ -4,6 +4,7 @@
 //! Top-level chrome and primary view dispatch for the TUI.
 
 use super::*;
+use crate::BIN_NAME;
 
 pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     let area = frame.area();
@@ -58,7 +59,7 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 pub(super) fn draw_resize_required(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let message = Paragraph::new(format!(
-        "dfctl ui needs at least {MIN_TERMINAL_WIDTH}x{MIN_TERMINAL_HEIGHT}\ncurrent size: {}x{}\n\nResize the terminal and try again.",
+        "{BIN_NAME} ui needs at least {MIN_TERMINAL_WIDTH}x{MIN_TERMINAL_HEIGHT}\ncurrent size: {}x{}\n\nResize the terminal and try again.",
         area.width, area.height
     ))
     .block(block_with_title(

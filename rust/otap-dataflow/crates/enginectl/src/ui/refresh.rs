@@ -4,6 +4,7 @@
 //! Refresh, polling, and UI command-context helpers.
 
 use super::*;
+use crate::BIN_NAME;
 
 pub(crate) fn build_command_context(
     settings: &HttpAdminClientSettings,
@@ -11,7 +12,11 @@ pub(crate) fn build_command_context(
     args: &UiArgs,
 ) -> UiCommandContext {
     let target_url = canonical_target_url(&settings.endpoint);
-    let mut prefix_args = vec!["dfctl".to_string(), "--url".to_string(), target_url.clone()];
+    let mut prefix_args = vec![
+        BIN_NAME.to_string(),
+        "--url".to_string(),
+        target_url.clone(),
+    ];
     let mut sensitive_args_redacted = false;
     let defaults = HttpAdminClientSettings::new(settings.endpoint.clone());
 

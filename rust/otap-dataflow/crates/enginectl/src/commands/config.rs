@@ -3,6 +3,7 @@
 
 //! Commands that inspect client-side `dfctl` configuration.
 
+use crate::BIN_NAME;
 use crate::args::{ConfigArgs, ConfigCommand};
 use crate::commands::output::emit_read;
 use crate::config::{ResolvedConnection, ResolvedConnectionView};
@@ -28,7 +29,7 @@ pub(crate) fn run(
 
 fn render_config_view(style: &HumanStyle, view: &ResolvedConnectionView) -> String {
     let mut lines = Vec::new();
-    lines.push(style.header("dfctl configuration"));
+    lines.push(style.header(format!("{BIN_NAME} configuration")));
     lines.push(format!("{}: {}", style.label("target"), view.url));
     lines.push(format!(
         "{}: {}",

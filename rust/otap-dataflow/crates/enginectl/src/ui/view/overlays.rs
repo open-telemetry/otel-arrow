@@ -4,6 +4,7 @@
 //! Modal overlays and the status bar for the TUI.
 
 use super::*;
+use crate::BIN_NAME;
 
 pub(super) fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let age = app
@@ -88,7 +89,11 @@ pub(super) fn draw_help_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppStat
         Line::from("q: quit"),
     ];
     let help = Paragraph::new(lines)
-        .block(block_with_title("dfctl ui help", false, app.color_enabled))
+        .block(block_with_title(
+            &format!("{BIN_NAME} ui help"),
+            false,
+            app.color_enabled,
+        ))
         .style(panel_style(app.color_enabled))
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, overlay);

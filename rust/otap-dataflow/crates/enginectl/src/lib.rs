@@ -16,6 +16,10 @@ mod ui;
 
 pub use args::{Cli, ErrorFormat};
 
+/// Installed command name used in help, completions, generated command
+/// metadata, diagnostics, and TUI command hints.
+pub const BIN_NAME: &str = "dfctl";
+
 pub(crate) use commands::fetch::{fetch_logs, fetch_pipeline_describe};
 pub(crate) use commands::output::bundle_metadata;
 pub(crate) use pipeline_config_io::{
@@ -80,9 +84,9 @@ pub async fn run_with_terminal_and_diagnostics(
     };
 
     if matches!(command, Command::Ui(_)) && !stdout_is_terminal {
-        return Err(CliError::invalid_usage(
-            "`dfctl ui` requires an interactive terminal",
-        ));
+        return Err(CliError::invalid_usage(format!(
+            "`{BIN_NAME} ui` requires an interactive terminal"
+        )));
     }
 
     let human_style = HumanStyle::resolve(color, stdout_is_terminal);
@@ -137,7 +141,7 @@ fn write_diagnostics(
         return Ok(());
     }
 
-    writeln!(stderr, "dfctl: target={}", resolved.display_url())?;
+    writeln!(stderr, "{BIN_NAME}: target={}", resolved.display_url())?;
     if verbose > 1 {
         let settings = &resolved.settings;
         let request_timeout = settings
@@ -150,7 +154,7 @@ fn write_diagnostics(
             .unwrap_or_else(|| "none".to_string());
         writeln!(
             stderr,
-            "dfctl: connect_timeout={} request_timeout={} tcp_nodelay={} tcp_keepalive={}",
+            "{BIN_NAME}: connect_timeout={} request_timeout={} tcp_nodelay={} tcp_keepalive={}",
             humantime::format_duration(settings.connect_timeout),
             request_timeout,
             settings.tcp_nodelay,

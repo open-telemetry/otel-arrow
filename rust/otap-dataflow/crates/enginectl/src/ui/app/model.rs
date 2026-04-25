@@ -4,6 +4,7 @@
 //! Core UI data models and pane state types.
 
 use super::*;
+use crate::BIN_NAME;
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -54,7 +55,7 @@ impl UiCommandContext {
         Self {
             target_url: "http://127.0.0.1:8085".to_string(),
             prefix_args: vec![
-                "dfctl".to_string(),
+                BIN_NAME.to_string(),
                 "--url".to_string(),
                 "http://127.0.0.1:8085".to_string(),
             ],

@@ -3,6 +3,7 @@
 
 //! Versioned machine-readable schema discovery for `dfctl` outputs.
 
+use crate::BIN_NAME;
 use crate::args::SchemasArgs;
 use crate::commands::output::emit_read;
 use crate::error::CliError;
@@ -85,57 +86,63 @@ fn schema_entries() -> Vec<SchemaEntry> {
             name: AGENT_ENVELOPE_SCHEMA,
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             description: "Agent-oriented envelope used by --output agent-json.",
-            examples: vec!["dfctl --agent engine status"],
+            examples: vec![command_example("--agent engine status")],
         },
         SchemaEntry {
             name: STREAM_EVENT_SCHEMA,
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             description: "NDJSON event envelope used by watch and stream commands.",
-            examples: vec!["dfctl --agent telemetry logs watch --tail 10"],
+            examples: vec![command_example("--agent telemetry logs watch --tail 10")],
         },
         SchemaEntry {
             name: ERROR_SCHEMA,
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             description: "Structured stderr error report used by --error-format json and agent-json.",
-            examples: vec!["dfctl --agent engine status 2>error.json"],
+            examples: vec![command_example("--agent engine status 2>error.json")],
         },
         SchemaEntry {
             name: COMMAND_CATALOG_SCHEMA,
             output_schema_version: "dfctl-command-catalog/v1",
             description: "Machine-readable command tree emitted by dfctl commands.",
-            examples: vec!["dfctl commands --output json"],
+            examples: vec![command_example("commands --output json")],
         },
         SchemaEntry {
             name: MUTATION_OUTCOME_SCHEMA,
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             description: "Structured outcome emitted by mutation commands.",
-            examples: vec!["dfctl --agent pipelines shutdown default ingest"],
+            examples: vec![command_example("--agent pipelines shutdown default ingest")],
         },
         SchemaEntry {
             name: DIAGNOSE_REPORT_SCHEMA,
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             description: "Diagnostic report emitted by diagnose commands.",
-            examples: vec!["dfctl --agent pipelines diagnose rollout default ingest"],
+            examples: vec![command_example(
+                "--agent pipelines diagnose rollout default ingest",
+            )],
         },
         SchemaEntry {
             name: SUPPORT_BUNDLE_SCHEMA,
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             description: "Support bundle emitted by group and pipeline bundle commands.",
-            examples: vec!["dfctl --agent pipelines bundle default ingest"],
+            examples: vec![command_example("--agent pipelines bundle default ingest")],
         },
         SchemaEntry {
             name: SCHEMA_CATALOG_SCHEMA,
             output_schema_version: CATALOG_SCHEMA_VERSION,
             description: "Schema catalog emitted by dfctl schemas.",
-            examples: vec!["dfctl schemas --output json"],
+            examples: vec![command_example("schemas --output json")],
         },
         SchemaEntry {
             name: JSON_SCHEMA_SCHEMA,
             output_schema_version: DOCUMENT_SCHEMA_VERSION,
             description: "Schema document wrapper emitted by dfctl schemas <name>.",
-            examples: vec!["dfctl schemas dfctl.error.v1 --output json"],
+            examples: vec![command_example("schemas dfctl.error.v1 --output json")],
         },
     ]
+}
+
+fn command_example(args: &str) -> String {
+    format!("{BIN_NAME} {args}")
 }
 
 fn schema_for(name: &str) -> Value {
@@ -239,7 +246,7 @@ fn command_catalog_schema() -> Value {
     schema["properties"] = json!({
         "schemaVersion": { "const": "dfctl-command-catalog/v1" },
         "generatedAt": { "type": "string", "format": "date-time" },
-        "binary": { "const": "dfctl" },
+        "binary": { "const": BIN_NAME },
         "version": { "type": "string" },
         "globalArguments": { "type": "array", "items": { "type": "object" } },
         "commands": { "type": "array", "items": { "type": "object" } }
@@ -352,7 +359,7 @@ fn render_catalog(style: &HumanStyle, catalog: &SchemaCatalog) -> String {
         .join("\n");
 
     [
-        style.header("dfctl schemas"),
+        style.header(format!("{BIN_NAME} schemas")),
         format!("{}: {}", style.label("schema"), catalog.schema_version),
         format!("{}: {}", style.label("count"), catalog.schemas.len()),
         String::new(),
@@ -364,7 +371,7 @@ fn render_catalog(style: &HumanStyle, catalog: &SchemaCatalog) -> String {
         ),
         rows,
         String::new(),
-        "Use `dfctl schemas <name> --output json` to inspect one schema.".to_string(),
+        format!("Use `{BIN_NAME} schemas <name> --output json` to inspect one schema."),
     ]
     .join("\n")
 }
@@ -398,7 +405,7 @@ struct SchemaEntry {
     name: &'static str,
     output_schema_version: &'static str,
     description: &'static str,
-    examples: Vec<&'static str>,
+    examples: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

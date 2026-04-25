@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::BIN_NAME;
 use clap::parser::ValueSource;
 use clap::{
     ArgAction, ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
@@ -12,7 +13,7 @@ use std::time::Duration;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "dfctl",
+    name = BIN_NAME,
     version,
     about = "Control CLI for the OTAP Dataflow Engine admin API"
 )]

@@ -3,17 +3,15 @@
 
 //! Shell completion generation and user-local installation helpers.
 
-use crate::Cli;
 use crate::args::{CompletionArgs, CompletionCommand, CompletionInstallArgs};
 use crate::error::CliError;
+use crate::{BIN_NAME, Cli};
 use clap::CommandFactory;
 use clap_complete::Shell;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-
-const BIN_NAME: &str = "dfctl";
 
 pub(crate) fn run(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), CliError> {
     match args.command {
@@ -24,9 +22,9 @@ pub(crate) fn run(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), Cl
 
 fn generate(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), CliError> {
     let shell = args.shell.ok_or_else(|| {
-        CliError::invalid_usage(
-            "missing shell; use `dfctl completions <shell>` or `dfctl completions install <shell>`",
-        )
+        CliError::invalid_usage(format!(
+            "missing shell; use `{BIN_NAME} completions <shell>` or `{BIN_NAME} completions install <shell>`"
+        ))
     })?;
 
     let mut command = Cli::command();
@@ -104,7 +102,7 @@ fn activation_note(shell: Shell, dir: &Path, path: &Path) -> Option<String> {
         Shell::Zsh => Some(format!(
             "If zsh does not load it, add this to .zshrc: fpath=({dir} $fpath); autoload -Uz compinit; compinit"
         )),
-        Shell::Elvish => Some("Load it from rc.elv with: use dfctl".to_string()),
+        Shell::Elvish => Some(format!("Load it from rc.elv with: use {BIN_NAME}")),
         Shell::PowerShell => Some(format!(
             "Load it from your PowerShell profile with: . {path}"
         )),
@@ -180,7 +178,7 @@ mod tests {
         )
         .expect("install completions");
 
-        let path = dir.path().join("dfctl.fish");
+        let path = dir.path().join(format!("{BIN_NAME}.fish"));
         assert!(path.exists());
         let output = String::from_utf8(stdout).expect("stdout");
         assert!(output.contains(path.to_str().expect("path")));

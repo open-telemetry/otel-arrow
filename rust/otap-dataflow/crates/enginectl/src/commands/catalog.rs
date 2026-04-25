@@ -36,7 +36,6 @@
 //! long-running commands are classified correctly, and high-impact mutations
 //! expose safety, dry-run, wait/watch, stdin, and schema metadata.
 
-use crate::Cli;
 use crate::args::CommandsArgs;
 use crate::commands::output::emit_read;
 use crate::commands::schemas::{
@@ -46,6 +45,7 @@ use crate::commands::schemas::{
 };
 use crate::error::CliError;
 use crate::style::HumanStyle;
+use crate::{BIN_NAME, Cli};
 use clap::builder::ValueRange;
 use clap::{Arg, ArgAction, Command as ClapCommand, CommandFactory};
 use serde::Serialize;
@@ -54,7 +54,6 @@ use std::io::Write;
 use std::time::SystemTime;
 
 const SCHEMA_VERSION: &str = "dfctl-command-catalog/v1";
-const BIN_NAME: &str = "dfctl";
 
 /// Runs `dfctl commands` and emits either a compact human table or the full
 /// machine-readable catalog, depending on the selected output mode.
@@ -345,7 +344,7 @@ fn supports_dry_run(arguments: &[ArgumentEntry]) -> bool {
 
 /// Builds a stable, dot-separated command identifier.
 fn command_id(path: &[String]) -> String {
-    format!("dfctl.{}", path.join(".").replace('-', "_"))
+    format!("{BIN_NAME}.{}", path.join(".").replace('-', "_"))
 }
 
 /// Builds the shortest command-line prefix for a command path.
@@ -435,89 +434,128 @@ fn curated_examples(path: &[String]) -> Vec<String> {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["commands"] => vec!["dfctl commands --output json".to_string()],
+        ["commands"] => vec![command_example("commands --output json")],
         ["schemas"] => vec![
-            "dfctl schemas --output json".to_string(),
-            "dfctl schemas dfctl.error.v1 --output json".to_string(),
+            command_example("schemas --output json"),
+            command_example("schemas dfctl.error.v1 --output json"),
         ],
-        ["completions"] => vec!["dfctl completions bash".to_string()],
-        ["completions", "install"] => vec!["dfctl completions install zsh".to_string()],
-        ["config", "view"] => vec!["dfctl config view --output json".to_string()],
-        ["ui"] => vec!["dfctl ui --start-view pipelines".to_string()],
-        ["engine", "status"] => vec!["dfctl engine status --output json".to_string()],
-        ["engine", "livez"] => vec!["dfctl engine livez".to_string()],
-        ["engine", "readyz"] => vec!["dfctl engine readyz".to_string()],
-        ["groups", "status"] => vec!["dfctl groups status".to_string()],
-        ["groups", "describe"] => vec!["dfctl groups describe".to_string()],
-        ["groups", "events", "get"] => vec!["dfctl groups events get --tail 20".to_string()],
+        ["completions"] => vec![command_example("completions bash")],
+        ["completions", "install"] => vec![command_example("completions install zsh")],
+        ["config", "view"] => vec![command_example("config view --output json")],
+        ["ui"] => vec![command_example("ui --start-view pipelines")],
+        ["engine", "status"] => vec![command_example("engine status --output json")],
+        ["engine", "livez"] => vec![command_example("engine livez")],
+        ["engine", "readyz"] => vec![command_example("engine readyz")],
+        ["groups", "status"] => vec![command_example("groups status")],
+        ["groups", "describe"] => vec![command_example("groups describe")],
+        ["groups", "events", "get"] => vec![command_example("groups events get --tail 20")],
         ["groups", "events", "watch"] => {
-            vec!["dfctl groups events watch --kind error --tail 20".to_string()]
+            vec![command_example(
+                "groups events watch --kind error --tail 20",
+            )]
         }
-        ["groups", "diagnose", "shutdown"] => vec!["dfctl groups diagnose shutdown".to_string()],
-        ["groups", "bundle"] => vec!["dfctl groups bundle --file bundle.json".to_string()],
-        ["groups", "shutdown"] => vec!["dfctl groups shutdown --watch".to_string()],
-        ["pipelines", "get"] => vec!["dfctl pipelines get tenant-a ingest".to_string()],
+        ["groups", "diagnose", "shutdown"] => vec![command_example("groups diagnose shutdown")],
+        ["groups", "bundle"] => vec![command_example("groups bundle --file bundle.json")],
+        ["groups", "shutdown"] => vec![command_example("groups shutdown --watch")],
+        ["pipelines", "get"] => vec![command_example("pipelines get tenant-a ingest")],
         ["pipelines", "describe"] => {
-            vec!["dfctl pipelines describe tenant-a ingest".to_string()]
+            vec![command_example("pipelines describe tenant-a ingest")]
         }
         ["pipelines", "status"] => {
-            vec!["dfctl pipelines status tenant-a ingest --output json".to_string()]
+            vec![command_example(
+                "pipelines status tenant-a ingest --output json",
+            )]
         }
-        ["pipelines", "livez"] => vec!["dfctl pipelines livez tenant-a ingest".to_string()],
-        ["pipelines", "readyz"] => vec!["dfctl pipelines readyz tenant-a ingest".to_string()],
+        ["pipelines", "livez"] => vec![command_example("pipelines livez tenant-a ingest")],
+        ["pipelines", "readyz"] => vec![command_example("pipelines readyz tenant-a ingest")],
         ["pipelines", "events", "get"] => {
-            vec!["dfctl pipelines events get tenant-a ingest --tail 20".to_string()]
+            vec![command_example(
+                "pipelines events get tenant-a ingest --tail 20",
+            )]
         }
         ["pipelines", "events", "watch"] => {
-            vec!["dfctl pipelines events watch tenant-a ingest --kind error --tail 20".to_string()]
+            vec![command_example(
+                "pipelines events watch tenant-a ingest --kind error --tail 20",
+            )]
         }
         ["pipelines", "diagnose", "rollout"] => {
-            vec!["dfctl pipelines diagnose rollout tenant-a ingest".to_string()]
+            vec![command_example(
+                "pipelines diagnose rollout tenant-a ingest",
+            )]
         }
         ["pipelines", "diagnose", "shutdown"] => {
-            vec!["dfctl pipelines diagnose shutdown tenant-a ingest".to_string()]
+            vec![command_example(
+                "pipelines diagnose shutdown tenant-a ingest",
+            )]
         }
         ["pipelines", "bundle"] => {
-            vec!["dfctl pipelines bundle tenant-a ingest --file bundle.json".to_string()]
+            vec![command_example(
+                "pipelines bundle tenant-a ingest --file bundle.json",
+            )]
         }
-        ["pipelines", "reconfigure"] => vec![
-            "dfctl pipelines reconfigure tenant-a ingest --file pipeline.yaml --wait".to_string(),
-        ],
+        ["pipelines", "reconfigure"] => vec![command_example(
+            "pipelines reconfigure tenant-a ingest --file pipeline.yaml --wait",
+        )],
         ["pipelines", "shutdown"] => {
-            vec!["dfctl pipelines shutdown tenant-a ingest --watch".to_string()]
+            vec![command_example(
+                "pipelines shutdown tenant-a ingest --watch",
+            )]
         }
         ["pipelines", "rollouts", "get"] => {
-            vec!["dfctl pipelines rollouts get tenant-a ingest rollout-1".to_string()]
+            vec![command_example(
+                "pipelines rollouts get tenant-a ingest rollout-1",
+            )]
         }
         ["pipelines", "rollouts", "watch"] => {
-            vec!["dfctl pipelines rollouts watch tenant-a ingest rollout-1".to_string()]
+            vec![command_example(
+                "pipelines rollouts watch tenant-a ingest rollout-1",
+            )]
         }
         ["pipelines", "rollout-status"] => {
-            vec!["dfctl pipelines rollout-status tenant-a ingest rollout-1".to_string()]
+            vec![command_example(
+                "pipelines rollout-status tenant-a ingest rollout-1",
+            )]
         }
         ["pipelines", "shutdowns", "get"] => {
-            vec!["dfctl pipelines shutdowns get tenant-a ingest shutdown-1".to_string()]
+            vec![command_example(
+                "pipelines shutdowns get tenant-a ingest shutdown-1",
+            )]
         }
         ["pipelines", "shutdowns", "watch"] => {
-            vec!["dfctl pipelines shutdowns watch tenant-a ingest shutdown-1".to_string()]
+            vec![command_example(
+                "pipelines shutdowns watch tenant-a ingest shutdown-1",
+            )]
         }
         ["pipelines", "shutdown-status"] => {
-            vec!["dfctl pipelines shutdown-status tenant-a ingest shutdown-1".to_string()]
+            vec![command_example(
+                "pipelines shutdown-status tenant-a ingest shutdown-1",
+            )]
         }
         ["telemetry", "logs", "get"] => {
-            vec!["dfctl telemetry logs get --limit 50 --output json".to_string()]
+            vec![command_example(
+                "telemetry logs get --limit 50 --output json",
+            )]
         }
         ["telemetry", "logs", "watch"] => {
-            vec!["dfctl telemetry logs watch --tail 50".to_string()]
+            vec![command_example("telemetry logs watch --tail 50")]
         }
         ["telemetry", "metrics", "get"] => {
-            vec!["dfctl telemetry metrics get --shape compact --output json".to_string()]
+            vec![command_example(
+                "telemetry metrics get --shape compact --output json",
+            )]
         }
         ["telemetry", "metrics", "watch"] => {
-            vec!["dfctl telemetry metrics watch --shape compact --output ndjson".to_string()]
+            vec![command_example(
+                "telemetry metrics watch --shape compact --output ndjson",
+            )]
         }
         _ => Vec::new(),
     }
+}
+
+/// Builds a curated command example from the shared binary name.
+fn command_example(args: &str) -> String {
+    format!("{BIN_NAME} {args}")
 }
 
 /// Returns the best display placeholder for an argument value.
@@ -709,7 +747,7 @@ fn render_human(style: &HumanStyle, catalog: &CommandCatalog) -> String {
         .collect::<Vec<_>>();
 
     let lines = [
-        style.header("dfctl command catalog"),
+        style.header(format!("{BIN_NAME} command catalog")),
         format!("{}: {}", style.label("schema"), catalog.schema_version),
         format!("{}: {}", style.label("commands"), catalog.commands.len()),
         String::new(),
@@ -722,7 +760,7 @@ fn render_human(style: &HumanStyle, catalog: &CommandCatalog) -> String {
             rows,
         ),
         String::new(),
-        "Use `dfctl commands --output json` for the machine-readable catalog.".to_string(),
+        format!("Use `{BIN_NAME} commands --output json` for the machine-readable catalog."),
     ];
     lines.join("\n")
 }
@@ -1073,7 +1111,7 @@ mod tests {
             pipeline_get.output_modes,
             vec!["human", "json", "yaml", "agent-json"]
         );
-        assert_eq!(pipeline_get.id, "dfctl.pipelines.get");
+        assert_eq!(pipeline_get.id, format!("{BIN_NAME}.pipelines.get"));
         assert_eq!(pipeline_get.default_output.as_deref(), Some("human"));
         assert_eq!(
             pipeline_get.agent_default_output.as_deref(),

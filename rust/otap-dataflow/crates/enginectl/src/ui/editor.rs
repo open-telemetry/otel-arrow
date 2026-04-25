@@ -4,6 +4,7 @@
 //! External-editor integration for live pipeline config editing.
 
 use super::*;
+use crate::BIN_NAME;
 
 pub(super) async fn stage_pipeline_editor_draft(
     client: &AdminClient,
@@ -91,8 +92,9 @@ fn run_editor_command(
     pipeline_id: &str,
 ) -> Result<String, CliError> {
     let editor = resolve_editor_command()?;
+    let file_prefix = format!("{BIN_NAME}-pipeline-");
     let mut file = Builder::new()
-        .prefix("dfctl-pipeline-")
+        .prefix(&file_prefix)
         .suffix(".yaml")
         .tempfile()
         .map_err(|err| {
