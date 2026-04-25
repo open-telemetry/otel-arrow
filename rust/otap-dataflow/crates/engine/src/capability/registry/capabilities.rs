@@ -1,0 +1,262 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! [`Capabilities`] — the per-node consumer API for resolved capability
+//! bindings, with `require_*` and `optional_*` accessors.
+
+use super::{Error, ResolvedLocalEntry, ResolvedSharedEntry};
+use std::any::TypeId;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+/// Per-node capability bindings resolved from the
+/// [`CapabilityRegistry`](super::CapabilityRegistry).
+///
+/// Passed to node factories as `&Capabilities`. Provides type-safe
+/// access to extension capabilities via the [`ExtensionCapability`]
+/// sealed trait.
+///
+/// [`ExtensionCapability`]: crate::capability::ExtensionCapability
+pub struct Capabilities {
+    local: HashMap<TypeId, ResolvedLocalEntry>,
+    shared: HashMap<TypeId, ResolvedSharedEntry>,
+}
+
+impl Capabilities {
+    /// Creates a new `Capabilities` from resolved entries.
+    pub(crate) fn new(
+        local: HashMap<TypeId, ResolvedLocalEntry>,
+        shared: HashMap<TypeId, ResolvedSharedEntry>,
+    ) -> Self {
+        Capabilities { local, shared }
+    }
+
+    /// Creates an empty `Capabilities` (no bindings).
+    #[must_use]
+    pub fn empty() -> Self {
+        Capabilities {
+            local: HashMap::new(),
+            shared: HashMap::new(),
+        }
+    }
+
+    /// Resolve a **required** local capability.
+    ///
+    /// Returns `Rc<dyn C::Local>`. If the capability was registered by a
+    /// shared-only extension, the `SharedAsLocal` adapter is returned
+    /// transparently — the caller always gets a local trait object.
+    ///
+    /// # One-shot contract
+    ///
+    /// Each resolved entry is one-shot per node: a `require_local`
+    /// claim consumes the local entry, and a `require_shared` claim
+    /// consumes the shared entry. Node factories are expected to
+    /// call each accessor at most once at construction, store the
+    /// returned handle, and clone/share it within the node as needed.
+    ///
+    /// **SharedAsLocal fallback.** When a binding's extension only
+    /// registered a shared variant, `require_local` falls through to
+    /// the shared entry and routes its output through the
+    /// capability's adapter. In that case there is only one
+    /// underlying produce closure, so `require_local` and
+    /// `require_shared` share a single one-shot guard \u2014 claiming
+    /// either accessor consumes the binding for both. A second call
+    /// returns [`Error::CapabilityAlreadyConsumed`].
+    ///
+    /// **Native dual.** When a binding's extension registered both a
+    /// native local and a native shared variant, the two are
+    /// distinct objects with independent guards: a node may claim
+    /// `require_local` and `require_shared` and receive both.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::CapabilityNotBound`] if no extension is bound to this
+    ///   capability for this node. Either add the binding to the
+    ///   node's capability declaration or switch to
+    ///   [`Self::optional_local`].
+    /// - [`Error::CapabilityAlreadyConsumed`] if the capability was
+    ///   already claimed on this node.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a type-erasure downcast mismatch — this indicates a
+    /// registry bug (the `#[capability]` proc macro guarantees the
+    /// stored entry's concrete type matches `C::Local`).
+    pub fn require_local<C: crate::capability::ExtensionCapability>(
+        &self,
+    ) -> Result<Rc<C::Local>, Error> {
+        let id = TypeId::of::<C>();
+
+        // Native local path. `Cell::take()` is the one-shot guard.
+        if let Some(entry) = self.local.get(&id) {
+            let produce = entry
+                .produce
+                .take()
+                .ok_or_else(|| Error::CapabilityAlreadyConsumed {
+                    capability: C::name().to_owned(),
+                })?;
+            let rc_any = produce();
+            let trait_object = rc_any
+                .downcast_ref::<Rc<C::Local>>()
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "BUG: capability '{}': local entry type mismatch in registry",
+                        C::name(),
+                    )
+                });
+            entry.tracker_consumed.set(true);
+            return Ok(trait_object);
+        }
+
+        // SharedAsLocal fallback. The same `Cell::take()` on the
+        // shared entry is the binding's one-shot guard, so claiming
+        // the local-via-fallback accessor here naturally consumes
+        // the native shared accessor too — a subsequent
+        // `require_shared` returns [`Error::CapabilityAlreadyConsumed`].
+        let entry = self
+            .shared
+            .get(&id)
+            .ok_or_else(|| Error::CapabilityNotBound {
+                capability: C::name().to_owned(),
+                execution_model: "local",
+            })?;
+        let produce = entry
+            .produce
+            .take()
+            .ok_or_else(|| Error::CapabilityAlreadyConsumed {
+                capability: C::name().to_owned(),
+            })?;
+        let rc_any = (entry.adapt_as_local)(produce());
+        let trait_object = rc_any
+            .downcast_ref::<Rc<C::Local>>()
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "BUG: capability '{}': SharedAsLocal adapter type mismatch in registry",
+                    C::name(),
+                )
+            });
+        entry.tracker_consumed.set(true);
+        Ok(trait_object)
+    }
+
+    /// Resolve a **required** shared capability.
+    ///
+    /// Returns `Box<dyn C::Shared>` — the extension's shared
+    /// implementation produced for this node.
+    ///
+    /// # One-shot contract
+    ///
+    /// See [`Self::require_local`].
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::CapabilityNotBound`] if no extension is bound to this
+    ///   capability for this node. Either add the binding to the
+    ///   node's capability declaration or switch to
+    ///   [`Self::optional_shared`].
+    /// - [`Error::CapabilityAlreadyConsumed`] if the capability was
+    ///   already claimed on this node.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a type-erasure downcast mismatch — this indicates a
+    /// registry bug (the `#[capability]` proc macro guarantees the
+    /// stored entry's concrete type matches `C::Shared`).
+    pub fn require_shared<C: crate::capability::ExtensionCapability>(
+        &self,
+    ) -> Result<Box<C::Shared>, Error> {
+        let id = TypeId::of::<C>();
+        let entry = self
+            .shared
+            .get(&id)
+            .ok_or_else(|| Error::CapabilityNotBound {
+                capability: C::name().to_owned(),
+                execution_model: "shared",
+            })?;
+        let produce = entry
+            .produce
+            .take()
+            .ok_or_else(|| Error::CapabilityAlreadyConsumed {
+                capability: C::name().to_owned(),
+            })?;
+        let trait_object = produce()
+            .downcast::<Box<C::Shared>>()
+            .map(|b| *b)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "BUG: capability '{}': shared entry type mismatch in registry",
+                    C::name(),
+                )
+            });
+        entry.tracker_consumed.set(true);
+        Ok(trait_object)
+    }
+
+    /// Resolve an **optional** local capability.
+    ///
+    /// Returns `Ok(Some(_))` if bound, `Ok(None)` if the capability
+    /// was not configured for this node.
+    ///
+    /// # One-shot contract
+    ///
+    /// See [`Self::require_local`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CapabilityAlreadyConsumed`] if the capability
+    /// was already claimed on this node.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a type-erasure downcast mismatch (registry bug).
+    pub fn optional_local<C: crate::capability::ExtensionCapability>(
+        &self,
+    ) -> Result<Option<Rc<C::Local>>, Error> {
+        let id = TypeId::of::<C>();
+        // Available either as a native local entry or as a
+        // SharedAsLocal fallback through the shared entry.
+        if !self.local.contains_key(&id) && !self.shared.contains_key(&id) {
+            return Ok(None);
+        }
+        self.require_local::<C>().map(Some)
+    }
+
+    /// Resolve an **optional** shared capability.
+    ///
+    /// Returns `Ok(Some(_))` if bound, `Ok(None)` if the capability
+    /// was not configured for this node.
+    ///
+    /// # One-shot contract
+    ///
+    /// See [`Self::require_local`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CapabilityAlreadyConsumed`] if the capability
+    /// was already claimed on this node.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a type-erasure downcast mismatch (registry bug).
+    pub fn optional_shared<C: crate::capability::ExtensionCapability>(
+        &self,
+    ) -> Result<Option<Box<C::Shared>>, Error> {
+        let id = TypeId::of::<C>();
+        if !self.shared.contains_key(&id) {
+            return Ok(None);
+        }
+        self.require_shared::<C>().map(Some)
+    }
+}
+
+impl std::fmt::Debug for Capabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Entry values are type-erased; only the shape is printable.
+        f.debug_struct("Capabilities")
+            .field("local_bindings", &self.local.len())
+            .field("shared_bindings", &self.shared.len())
+            .finish()
+    }
+}
