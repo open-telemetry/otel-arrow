@@ -2,6 +2,39 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Generated command catalog for humans, scripts, and AI agents.
+//!
+//! `dfctl --help` is optimized for a person reading one command at a time. It
+//! is intentionally free-form text, localized around the selected subcommand,
+//! and does not provide stable fields for questions such as "does this command
+//! mutate state?", "which output modes are valid?", "can this command run
+//! without an admin connection?", or "which schema should an agent expect?".
+//! The command catalog fills that gap with a versioned, machine-readable view
+//! of the entire command tree.
+//!
+//! The catalog is generated from Clap's command model instead of being a
+//! second hand-written command list. Command paths, aliases, global arguments,
+//! local arguments, defaults, value ranges, environment variables, and possible
+//! values are read from `Cli::command()`. This keeps the structural part of the
+//! catalog synchronized when a new command or argument is added in `args.rs`.
+//!
+//! Some metadata is necessarily semantic and cannot be inferred reliably from
+//! Clap alone: whether a command is high-impact, whether it needs an admin
+//! client, which schema best describes its output, whether stdin is accepted,
+//! and which examples are useful. When adding a new command or subcommand:
+//!
+//! - define the command and arguments in `args.rs`;
+//! - decide whether it needs entries in `requires_admin_client`, `is_mutation`,
+//!   `stdin_support`, `safety`, `output_schema`, `stream_schema`, and
+//!   `curated_examples`;
+//! - extend catalog tests when the command introduces a new behavior category
+//!   or a new contract that agents should depend on.
+//!
+//! Drift detection is split accordingly. Structural drift is avoided by
+//! generating from Clap on every `dfctl commands` invocation. Semantic drift is
+//! covered by focused tests at the bottom of this module: they assert that known
+//! commands appear, aliases and output modes are visible, local and
+//! long-running commands are classified correctly, and high-impact mutations
+//! expose safety, dry-run, wait/watch, stdin, and schema metadata.
 
 use crate::Cli;
 use crate::args::CommandsArgs;
@@ -23,6 +56,8 @@ use std::time::SystemTime;
 const SCHEMA_VERSION: &str = "dfctl-command-catalog/v1";
 const BIN_NAME: &str = "dfctl";
 
+/// Runs `dfctl commands` and emits either a compact human table or the full
+/// machine-readable catalog, depending on the selected output mode.
 pub(crate) fn run(
     stdout: &mut dyn Write,
     human_style: HumanStyle,
@@ -34,6 +69,10 @@ pub(crate) fn run(
     })
 }
 
+/// Builds a complete catalog snapshot from the current Clap command tree.
+///
+/// This is intentionally recomputed instead of cached or generated at build
+/// time so the catalog always reflects the binary being executed.
 fn build_catalog() -> CommandCatalog {
     let mut root = Cli::command();
     root.build();
@@ -59,6 +98,10 @@ fn build_catalog() -> CommandCatalog {
     }
 }
 
+/// Recursively converts one Clap command and its children into catalog entries.
+///
+/// Non-leaf commands are included so agents can understand grouping nodes, but
+/// examples and output schemas are only attached when the command is runnable.
 fn collect_command(
     command: &ClapCommand,
     path: &mut Vec<String>,
@@ -130,6 +173,7 @@ fn collect_command(
     let _ = path.pop();
 }
 
+/// Returns all non-hidden, non-generated arguments Clap exposes for a command.
 fn visible_arguments(command: &ClapCommand) -> Vec<ArgumentEntry> {
     command
         .get_arguments()
@@ -139,6 +183,8 @@ fn visible_arguments(command: &ClapCommand) -> Vec<ArgumentEntry> {
         .collect()
 }
 
+/// Filters out Clap's generated help arguments so the catalog only describes
+/// arguments that are meaningful to invoke explicitly.
 fn is_generated_help_argument(argument: &Arg) -> bool {
     matches!(
         argument.get_action(),
@@ -146,6 +192,7 @@ fn is_generated_help_argument(argument: &Arg) -> bool {
     )
 }
 
+/// Converts a Clap argument into the stable argument shape exposed in JSON.
 fn argument_entry(argument: &Arg) -> ArgumentEntry {
     let action = argument.get_action();
     let value_range = argument.get_num_args().map(value_range_entry);
@@ -210,6 +257,7 @@ fn argument_entry(argument: &Arg) -> ArgumentEntry {
     }
 }
 
+/// Classifies a Clap argument into the simpler categories used by the catalog.
 fn argument_kind(argument: &Arg, action: &ArgAction) -> ArgumentKind {
     if argument.is_positional() {
         ArgumentKind::Positional
@@ -220,6 +268,7 @@ fn argument_kind(argument: &Arg, action: &ArgAction) -> ArgumentKind {
     }
 }
 
+/// Converts Clap's value-range model into a serializable min/max pair.
 fn value_range_entry(range: ValueRange) -> ValueRangeEntry {
     ValueRangeEntry {
         min: range.min_values(),
@@ -231,6 +280,8 @@ fn value_range_entry(range: ValueRange) -> ValueRangeEntry {
     }
 }
 
+/// Detects whether an argument may be provided more than once or with multiple
+/// values.
 fn is_multiple(argument: &Arg, action: &ArgAction) -> bool {
     matches!(action, &ArgAction::Append | &ArgAction::Count)
         || argument
@@ -239,6 +290,7 @@ fn is_multiple(argument: &Arg, action: &ArgAction) -> bool {
             .unwrap_or(false)
 }
 
+/// Extracts the supported values of a command-local `--output` argument.
 fn output_modes(arguments: &[ArgumentEntry]) -> Vec<String> {
     arguments
         .iter()
@@ -253,6 +305,7 @@ fn output_modes(arguments: &[ArgumentEntry]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Extracts the default value of a command-local `--output` argument.
 fn default_output(arguments: &[ArgumentEntry]) -> Option<String> {
     arguments
         .iter()
@@ -260,6 +313,8 @@ fn default_output(arguments: &[ArgumentEntry]) -> Option<String> {
         .and_then(|argument| argument.default_values.first().cloned())
 }
 
+/// Reports the output mode agent mode will select when the caller did not pass
+/// an explicit output flag.
 fn agent_default_output(path: &[String], output_modes: &[String]) -> Option<String> {
     if output_modes.is_empty() {
         return None;
@@ -276,24 +331,29 @@ fn agent_default_output(path: &[String], output_modes: &[String]) -> Option<Stri
     output_modes.first().cloned()
 }
 
+/// Returns true when a command exposes a command-local flag by long name.
 fn supports_flag(arguments: &[ArgumentEntry], long: &str) -> bool {
     arguments
         .iter()
         .any(|argument| argument.long.as_deref() == Some(long))
 }
 
+/// Returns true when the command exposes the common preflight flag.
 fn supports_dry_run(arguments: &[ArgumentEntry]) -> bool {
     supports_flag(arguments, "dry-run")
 }
 
+/// Builds a stable, dot-separated command identifier.
 fn command_id(path: &[String]) -> String {
     format!("dfctl.{}", path.join(".").replace('-', "_"))
 }
 
+/// Builds the shortest command-line prefix for a command path.
 fn command_line(path: &[String]) -> String {
     format!("{BIN_NAME} {}", path.join(" "))
 }
 
+/// Builds a compact usage string from catalog argument metadata.
 fn usage_for(path: &[String], local_arguments: &[ArgumentEntry], has_subcommands: bool) -> String {
     let mut parts = vec![command_line(path)];
     if local_arguments
@@ -319,6 +379,7 @@ fn usage_for(path: &[String], local_arguments: &[ArgumentEntry], has_subcommands
     parts.join(" ")
 }
 
+/// Builds examples from required arguments, curated examples, and output modes.
 fn examples_for(
     path: &[String],
     arguments: &[ArgumentEntry],
@@ -336,6 +397,8 @@ fn examples_for(
     dedupe(examples)
 }
 
+/// Creates a generic runnable command example from required options and
+/// positionals.
 fn baseline_example(path: &[String], arguments: &[ArgumentEntry]) -> String {
     let mut parts = vec![command_line(path)];
 
@@ -363,6 +426,8 @@ fn baseline_example(path: &[String], arguments: &[ArgumentEntry]) -> String {
     parts.join(" ")
 }
 
+/// Provides hand-curated examples for common commands where placeholders alone
+/// would not be useful enough for humans or agents.
 fn curated_examples(path: &[String]) -> Vec<String> {
     match path
         .iter()
@@ -455,6 +520,7 @@ fn curated_examples(path: &[String]) -> Vec<String> {
     }
 }
 
+/// Returns the best display placeholder for an argument value.
 fn value_placeholder(argument: &ArgumentEntry) -> String {
     argument
         .value_names
@@ -463,6 +529,7 @@ fn value_placeholder(argument: &ArgumentEntry) -> String {
         .unwrap_or_else(|| argument.id.to_ascii_uppercase().replace('-', "_"))
 }
 
+/// Removes duplicate examples while preserving the first occurrence order.
 fn dedupe(values: Vec<String>) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut deduped = Vec::new();
@@ -474,6 +541,7 @@ fn dedupe(values: Vec<String>) -> Vec<String> {
     deduped
 }
 
+/// Classifies commands that can run without resolving an admin endpoint.
 fn requires_admin_client(path: &[String]) -> bool {
     !matches!(
         path.first().map(String::as_str),
@@ -481,14 +549,17 @@ fn requires_admin_client(path: &[String]) -> bool {
     )
 }
 
+/// Classifies commands that take over the terminal for interactive operation.
 fn is_interactive(path: &[String]) -> bool {
     matches!(path.first().map(String::as_str), Some("ui"))
 }
 
+/// Classifies commands that keep running until completion or interruption.
 fn is_long_running(path: &[String]) -> bool {
     is_interactive(path) || path.iter().any(|part| part == "watch")
 }
 
+/// Classifies commands that can change local or remote state.
 fn is_mutation(path: &[String]) -> bool {
     matches!(
         path.iter()
@@ -502,6 +573,8 @@ fn is_mutation(path: &[String]) -> bool {
     )
 }
 
+/// Maps runnable commands to the stable schema name that best describes their
+/// one-shot output.
 fn output_schema(path: &[String]) -> Option<&'static str> {
     match path
         .iter()
@@ -523,6 +596,7 @@ fn output_schema(path: &[String]) -> Option<&'static str> {
     }
 }
 
+/// Maps long-running commands to the stable stream event schema.
 fn stream_schema(path: &[String]) -> Option<&'static str> {
     if is_long_running(path) {
         Some(STREAM_EVENT_SCHEMA)
@@ -531,6 +605,7 @@ fn stream_schema(path: &[String]) -> Option<&'static str> {
     }
 }
 
+/// Maps commands to the structured error schema they may emit on stderr.
 fn error_schema(path: &[String]) -> Option<&'static str> {
     if !path.is_empty() {
         Some(ERROR_SCHEMA)
@@ -539,10 +614,12 @@ fn error_schema(path: &[String]) -> Option<&'static str> {
     }
 }
 
+/// Returns true when a command follows the common read-output contract.
 fn has_read_output(path: &[String]) -> bool {
     !matches!(path.first().map(String::as_str), Some("completions" | "ui"))
 }
 
+/// Classifies whether a command reads data from stdin.
 fn stdin_support(path: &[String]) -> StdinSupport {
     if matches!(
         path.iter()
@@ -557,6 +634,7 @@ fn stdin_support(path: &[String]) -> StdinSupport {
     }
 }
 
+/// Classifies the expected operational impact of running a command.
 fn safety(path: &[String]) -> SafetyLevel {
     match path
         .iter()
@@ -572,6 +650,8 @@ fn safety(path: &[String]) -> SafetyLevel {
     }
 }
 
+/// Reports whether retrying a command is expected to be safe without changing
+/// remote state more than once.
 fn is_idempotent(path: &[String]) -> bool {
     match safety(path) {
         SafetyLevel::Read => true,
@@ -580,6 +660,7 @@ fn is_idempotent(path: &[String]) -> bool {
     }
 }
 
+/// Lists the documented process exit codes for a command.
 fn exit_codes(path: &[String]) -> Vec<ExitCodeEntry> {
     if requires_admin_client(path) {
         vec![
@@ -602,14 +683,17 @@ fn exit_codes(path: &[String]) -> Vec<ExitCodeEntry> {
     }
 }
 
+/// Normalizes Clap actions into simple strings for machine readers.
 fn format_action(action: &ArgAction) -> String {
     format!("{action:?}").to_ascii_lowercase()
 }
 
+/// Converts Clap's styled help text into plain text suitable for JSON output.
 fn styled_to_string(value: Option<&clap::builder::StyledStr>) -> Option<String> {
     value.map(ToString::to_string)
 }
 
+/// Renders the compact human view of the catalog.
 fn render_human(style: &HumanStyle, catalog: &CommandCatalog) -> String {
     let rows = catalog
         .commands
@@ -643,6 +727,7 @@ fn render_human(style: &HumanStyle, catalog: &CommandCatalog) -> String {
     lines.join("\n")
 }
 
+/// Produces the terse human hint column for one command row.
 fn command_hint(command: &CommandEntry) -> String {
     let mut hints = Vec::new();
     if !command.requires_admin_client {
@@ -664,6 +749,7 @@ fn command_hint(command: &CommandEntry) -> String {
     }
 }
 
+/// Renders an aligned text table while accounting for ANSI escape sequences.
 fn render_table(headers: &[String], rows: Vec<Vec<String>>) -> String {
     let mut widths = headers
         .iter()
@@ -693,6 +779,7 @@ fn render_table(headers: &[String], rows: Vec<Vec<String>>) -> String {
     rendered.join("\n")
 }
 
+/// Joins one table row using precomputed visible widths.
 fn join_row(cells: &[String], widths: &[usize]) -> String {
     cells
         .iter()
@@ -709,6 +796,7 @@ fn join_row(cells: &[String], widths: &[usize]) -> String {
         .join("  ")
 }
 
+/// Computes printable width after ignoring ANSI escape sequences.
 fn visible_width(text: &str) -> usize {
     let mut width = 0;
     let mut chars = text.chars().peekable();
@@ -727,70 +815,117 @@ fn visible_width(text: &str) -> usize {
     width
 }
 
+/// Top-level JSON document emitted by `dfctl commands --output json`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CommandCatalog {
+    /// Schema identifier for consumers that validate or version the catalog.
     schema_version: &'static str,
+    /// Timestamp indicating when this binary generated the catalog snapshot.
     generated_at: String,
+    /// Binary name used in generated command lines.
     binary: &'static str,
+    /// Cargo package version embedded in this binary.
     version: &'static str,
+    /// Global arguments inherited by commands, such as connection settings.
     global_arguments: Vec<ArgumentEntry>,
+    /// Flattened command tree, including grouping and runnable commands.
     commands: Vec<CommandEntry>,
 }
 
+/// One command or command-group entry in the flattened catalog.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CommandEntry {
+    /// Stable command identifier, derived from the command path.
     id: String,
+    /// Final command segment name.
     name: String,
+    /// Command path without the binary name.
     path: Vec<String>,
+    /// Runnable command prefix with the binary name.
     command_line: String,
+    /// Compact usage string derived from local arguments and subcommands.
     usage: String,
+    /// Short help text from Clap.
     about: Option<String>,
+    /// Long help text from Clap.
     long_about: Option<String>,
+    /// Alternate command names accepted by Clap.
     aliases: Vec<String>,
+    /// True when the command has no visible child subcommands.
     leaf: bool,
+    /// True when this entry can be directly invoked.
     runnable: bool,
+    /// True when the command resolves and calls an admin endpoint.
     requires_admin_client: bool,
+    /// True when the command owns the terminal interactively.
     interactive: bool,
+    /// True when the command can run until interrupted or terminal state.
     long_running: bool,
+    /// True when the command can change local or remote state.
     mutation: bool,
+    /// Supported output modes for commands with an `--output` argument.
     output_modes: Vec<String>,
+    /// Default output mode declared by Clap.
     default_output: Option<String>,
+    /// Output mode selected by `--agent` when no explicit mode is passed.
     agent_default_output: Option<String>,
+    /// Schema name for one-shot output, when available.
     output_schema: Option<&'static str>,
+    /// Schema name for streamed events, when available.
     stream_schema: Option<&'static str>,
+    /// Schema name for structured stderr errors.
     error_schema: Option<&'static str>,
+    /// Whether the command reads stdin.
     stdin: StdinSupport,
+    /// Operational impact classification.
     safety: SafetyLevel,
+    /// Whether repeat execution should be safe without duplicated side effects.
     idempotent: bool,
+    /// True when the command supports `--dry-run`.
     supports_dry_run: bool,
+    /// True when the command supports `--wait`.
     supports_wait: bool,
+    /// True when the command supports `--watch`.
     supports_watch: bool,
+    /// Documented process exit codes.
     exit_codes: Vec<ExitCodeEntry>,
+    /// Command-local arguments.
     arguments: Vec<ArgumentEntry>,
+    /// Example invocations.
     examples: Vec<String>,
 }
 
+/// Stdin contract for a command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(dead_code)]
 enum StdinSupport {
+    /// The command does not read stdin.
     None,
+    /// The command can read stdin when requested, usually via `--file -`.
     Optional,
+    /// The command requires stdin input.
     Required,
 }
 
+/// Safety classification for operator and agent decision-making.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(dead_code)]
 enum SafetyLevel {
+    /// Read-only command with no local or remote side effects.
     Read,
+    /// Local or low-risk side effect, such as installing completions.
     LowImpact,
+    /// Remote state mutation or operationally disruptive action.
     HighImpact,
+    /// Destructive action. Reserved for future commands with stronger risk.
     Destructive,
 }
 
+/// One documented process exit code.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExitCodeEntry {
@@ -799,52 +934,81 @@ struct ExitCodeEntry {
 }
 
 impl ExitCodeEntry {
+    /// Creates a static exit-code entry.
     const fn new(code: u8, meaning: &'static str) -> Self {
         Self { code, meaning }
     }
 }
 
+/// One command-local or global argument exposed in the catalog.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ArgumentEntry {
+    /// Clap argument id.
     id: String,
+    /// Simplified argument kind.
     kind: ArgumentKind,
+    /// Long flag name without leading dashes.
     long: Option<String>,
+    /// Short flag name without leading dash.
     short: Option<String>,
+    /// Alternate argument names accepted by Clap.
     aliases: Vec<String>,
+    /// Value names shown in help and usage.
     value_names: Vec<String>,
+    /// Enumerated possible values, when Clap exposes them.
     possible_values: Vec<PossibleValueEntry>,
+    /// Default values visible to callers.
     default_values: Vec<String>,
+    /// Environment variable name, when configured.
     env: Option<String>,
+    /// True when Clap requires this argument.
     required: bool,
+    /// True when this argument is inherited globally.
     global: bool,
+    /// True when the argument accepts multiple occurrences or values.
     multiple: bool,
+    /// Minimum and maximum number of values accepted.
     value_range: Option<ValueRangeEntry>,
+    /// Normalized Clap action name.
     action: String,
+    /// Argument help text.
     help: Option<String>,
+    /// Help heading, when Clap groups this argument.
     help_heading: Option<String>,
 }
 
+/// Simplified argument categories for catalog consumers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum ArgumentKind {
+    /// Boolean or count-like flag.
     Flag,
+    /// Named option that accepts one or more values.
     Option,
+    /// Positional argument.
     Positional,
 }
 
+/// One possible value for an enumerated argument.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PossibleValueEntry {
+    /// Canonical value name.
     name: String,
+    /// Alternate names accepted by Clap.
     aliases: Vec<String>,
+    /// Value-specific help text.
     help: Option<String>,
 }
 
+/// Serializable representation of Clap's value-count range.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ValueRangeEntry {
+    /// Minimum accepted value count.
     min: usize,
+    /// Maximum accepted value count, or `None` for unbounded.
     max: Option<usize>,
 }
 
