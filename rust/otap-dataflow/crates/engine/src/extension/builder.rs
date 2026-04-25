@@ -37,7 +37,16 @@
 //! |-----------------|----------------------------------------------------------------------------|
 //! | Lifecycle       | `.active()` / `.passive()`                                                 |
 //! | Instance policy | *(implicit Cloned for Active)* `.cloned()` / `.constructed()` *(Passive only)* |
-//! | Execution model | `.shared(...)` / `.local(...)` *(repeatable, register once each)*          |
+//! | Execution model | `.shared(...)` / `.local(...)` *(each registerable at most once)*           |
+//!
+//! **Per-axis typestate enforcement.** After selecting lifecycle (and, for
+//! Passive, instance policy), the typestate transitions through four
+//! per-axis stages: an empty stage that requires `.shared(...)` or
+//! `.local(...)`, a `*SharedStage` / `*LocalStage` that exposes only the
+//! complementary registration plus `.build()`, and a `*CompleteStage` that
+//! exposes only `.build()`. As a result, calling `.shared(...)` or
+//! `.local(...)` twice is a compile error, and calling `.build()` without
+//! registering at least one variant is a compile error too.
 //!
 //! **Why the lifecycle and policy are sealed per bundle.** "This
 //! extension has an event loop" or "this capability hands out a new
@@ -99,12 +108,27 @@ pub struct LocalDecomposed {
 }
 
 // ── Typestate builder stages ─────────────────────────────────────────────────
+//
+// Each lifecycle/instance-policy axis exposes four stages so the typestate
+// statically prevents duplicate `.shared(...)` / `.local(...)` registration
+// and statically requires at least one variant before `.build()`:
+//
+//   <Axis>Stage          (empty)         → .shared() / .local()
+//   <Axis>SharedStage    (shared set)    → .local() / .build()
+//   <Axis>LocalStage     (local set)     → .shared() / .build()
+//   <Axis>CompleteStage  (both set)      → .build()
+//
+// Shared field-mutation logic lives in private helpers on
+// `ExtensionBundleBuilder` to keep the per-stage methods thin.
+
+// ── Active lifecycle (shared/local stages) ───────────────────────────────────
 
 /// Lifecycle-selected: Active (engine drives an event loop).
 ///
-/// Instance policy is implicitly Cloned — factory is Passive-only.
-/// Call [`shared()`](Self::shared) and/or [`local()`](Self::local)
-/// (each at most once), then [`build()`](Self::build).
+/// Instance policy is implicitly Cloned — constructed-per-consumer is
+/// Passive-only. Call [`shared()`](Self::shared) or [`local()`](Self::local)
+/// to register the first variant; the typestate then forbids registering
+/// the same variant twice.
 #[doc(hidden)]
 pub struct ActiveStage {
     parent: ExtensionBundleBuilder,
@@ -113,44 +137,47 @@ pub struct ActiveStage {
 impl ActiveStage {
     /// Register the shared (Send) variant.
     #[must_use]
-    pub fn shared<E>(mut self, extension: E) -> Self
+    pub fn shared<E>(mut self, extension: E) -> ActiveSharedStage
     where
         E: shared_ext::Extension + Clone + Send + 'static,
     {
-        if self.parent.shared.is_some() {
-            self.parent.record_duplicate("shared");
-            return self;
+        self.parent.set_shared_active(extension);
+        ActiveSharedStage {
+            parent: self.parent,
         }
-        let for_factory = extension.clone();
-        self.parent.shared = Some(SharedDecomposed {
-            extension: Some(Box::new(extension)),
-            instance_factory: SharedInstanceFactory::new(move || {
-                Box::new(for_factory.clone()) as Box<dyn Any + Send>
-            }),
-            type_id: TypeId::of::<E>(),
-        });
-        self
     }
 
     /// Register the local (!Send) variant.
     #[must_use]
-    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> Self
+    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> ActiveLocalStage
     where
         E: local_ext::Extension + 'static,
     {
-        if self.parent.local.is_some() {
-            self.parent.record_duplicate("local");
-            return self;
+        self.parent.set_local_active(extension);
+        ActiveLocalStage {
+            parent: self.parent,
         }
-        let for_factory = std::rc::Rc::clone(&extension);
-        self.parent.local = Some(LocalDecomposed {
-            extension: Some(extension),
-            instance_factory: LocalInstanceFactory::new(move || {
-                std::rc::Rc::clone(&for_factory) as std::rc::Rc<dyn Any>
-            }),
-            type_id: TypeId::of::<E>(),
-        });
-        self
+    }
+}
+
+/// Active + shared registered. Awaiting optional `.local(...)` or `.build()`.
+#[doc(hidden)]
+pub struct ActiveSharedStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl ActiveSharedStage {
+    /// Register the local (!Send) variant alongside the previously-registered
+    /// shared variant.
+    #[must_use]
+    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> ActiveCompleteStage
+    where
+        E: local_ext::Extension + 'static,
+    {
+        self.parent.set_local_active(extension);
+        ActiveCompleteStage {
+            parent: self.parent,
+        }
     }
 
     /// Finalize the bundle.
@@ -163,10 +190,59 @@ impl ActiveStage {
     }
 }
 
+/// Active + local registered. Awaiting optional `.shared(...)` or `.build()`.
+#[doc(hidden)]
+pub struct ActiveLocalStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl ActiveLocalStage {
+    /// Register the shared (Send) variant alongside the previously-registered
+    /// local variant.
+    #[must_use]
+    pub fn shared<E>(mut self, extension: E) -> ActiveCompleteStage
+    where
+        E: shared_ext::Extension + Clone + Send + 'static,
+    {
+        self.parent.set_shared_active(extension);
+        ActiveCompleteStage {
+            parent: self.parent,
+        }
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+/// Active + both shared and local registered. Only `.build()` remains.
+#[doc(hidden)]
+pub struct ActiveCompleteStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl ActiveCompleteStage {
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+// ── Passive lifecycle (instance-policy selection) ────────────────────────────
+
 /// Lifecycle-selected: Passive (no event loop, capabilities only).
 ///
 /// Select the instance policy with [`cloned()`](Self::cloned) or
-/// [`factory()`](Self::factory) before registering sides.
+/// [`constructed()`](Self::constructed) before registering variants.
 #[doc(hidden)]
 pub struct PassiveStage {
     parent: ExtensionBundleBuilder,
@@ -193,53 +269,62 @@ impl PassiveStage {
     }
 }
 
-/// Passive + Cloned (clone-per-consumer) stage.
+// ── Passive + Cloned (shared/local stages) ───────────────────────────────────
+
+/// Passive + Cloned (clone-per-consumer) stage. Awaiting first
+/// `.shared(...)` or `.local(...)` registration.
 #[doc(hidden)]
 pub struct PassiveClonedStage {
     parent: ExtensionBundleBuilder,
 }
 
 impl PassiveClonedStage {
-    /// Register the shared (Send) variant. The extension will be
-    /// cloned per consumer via the clone-per-consumer factory.
+    /// Register the shared (Send) variant. Consumers receive
+    /// independent clones of the prototype.
     #[must_use]
-    pub fn shared<E>(mut self, extension: E) -> Self
+    pub fn shared<E>(mut self, extension: E) -> PassiveClonedSharedStage
     where
         E: Clone + Send + 'static,
     {
-        if self.parent.shared.is_some() {
-            self.parent.record_duplicate("shared");
-            return self;
+        self.parent.set_shared_cloned(extension);
+        PassiveClonedSharedStage {
+            parent: self.parent,
         }
-        self.parent.shared = Some(SharedDecomposed {
-            extension: None,
-            instance_factory: SharedInstanceFactory::new(move || {
-                Box::new(extension.clone()) as Box<dyn Any + Send>
-            }),
-            type_id: TypeId::of::<E>(),
-        });
-        self
     }
 
     /// Register the local (!Send) variant. Consumers receive
     /// `Rc::clone`s of the stored instance.
     #[must_use]
-    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> Self
+    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> PassiveClonedLocalStage
     where
         E: 'static,
     {
-        if self.parent.local.is_some() {
-            self.parent.record_duplicate("local");
-            return self;
+        self.parent.set_local_cloned(extension);
+        PassiveClonedLocalStage {
+            parent: self.parent,
         }
-        self.parent.local = Some(LocalDecomposed {
-            extension: None,
-            instance_factory: LocalInstanceFactory::new(move || {
-                std::rc::Rc::clone(&extension) as std::rc::Rc<dyn Any>
-            }),
-            type_id: TypeId::of::<E>(),
-        });
-        self
+    }
+}
+
+/// Passive + Cloned + shared registered. Awaiting optional `.local(...)` or
+/// `.build()`.
+#[doc(hidden)]
+pub struct PassiveClonedSharedStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveClonedSharedStage {
+    /// Register the local (!Send) variant alongside the previously-registered
+    /// shared variant.
+    #[must_use]
+    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> PassiveClonedCompleteStage
+    where
+        E: 'static,
+    {
+        self.parent.set_local_cloned(extension);
+        PassiveClonedCompleteStage {
+            parent: self.parent,
+        }
     }
 
     /// Finalize the bundle.
@@ -252,59 +337,168 @@ impl PassiveClonedStage {
     }
 }
 
-/// Passive + Constructed (constructed-per-consumer) stage.
+/// Passive + Cloned + local registered. Awaiting optional `.shared(...)` or
+/// `.build()`.
+#[doc(hidden)]
+pub struct PassiveClonedLocalStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveClonedLocalStage {
+    /// Register the shared (Send) variant alongside the previously-registered
+    /// local variant.
+    #[must_use]
+    pub fn shared<E>(mut self, extension: E) -> PassiveClonedCompleteStage
+    where
+        E: Clone + Send + 'static,
+    {
+        self.parent.set_shared_cloned(extension);
+        PassiveClonedCompleteStage {
+            parent: self.parent,
+        }
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+/// Passive + Cloned + both variants registered. Only `.build()` remains.
+#[doc(hidden)]
+pub struct PassiveClonedCompleteStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveClonedCompleteStage {
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+// ── Passive + Constructed (shared/local stages) ──────────────────────────────
+
+/// Passive + Constructed (constructed-per-consumer) stage. Awaiting first
+/// `.shared(...)` or `.local(...)` registration.
 #[doc(hidden)]
 pub struct PassiveConstructedStage {
     parent: ExtensionBundleBuilder,
 }
 
 impl PassiveConstructedStage {
-    /// Register the shared (Send) variant via a factory closure.
-    /// Each consumer receives a newly-constructed instance.
+    /// Register the shared (Send) variant via a factory closure. Each
+    /// consumer receives a newly-constructed instance.
     ///
     /// `F: Clone` is required so per-node factories can duplicate the
     /// closure; closures capturing `Clone` configuration (e.g.
     /// `Arc<Config>`, `String`) satisfy this automatically.
     #[must_use]
-    pub fn shared<E, F>(mut self, produce: F) -> Self
+    pub fn shared<E, F>(mut self, produce: F) -> PassiveConstructedSharedStage
     where
         E: Send + 'static,
         F: Fn() -> E + Clone + Send + 'static,
     {
-        if self.parent.shared.is_some() {
-            self.parent.record_duplicate("shared");
-            return self;
+        self.parent.set_shared_constructed::<E, F>(produce);
+        PassiveConstructedSharedStage {
+            parent: self.parent,
         }
-        self.parent.shared = Some(SharedDecomposed {
-            extension: None,
-            instance_factory: SharedInstanceFactory::new(move || {
-                Box::new(produce()) as Box<dyn Any + Send>
-            }),
-            type_id: TypeId::of::<E>(),
-        });
-        self
     }
 
-    /// Register the local (!Send) variant via a factory closure.
-    /// Each consumer receives a freshly-constructed instance.
+    /// Register the local (!Send) variant via a factory closure. Each
+    /// consumer receives a freshly-constructed instance.
     #[must_use]
-    pub fn local<E, F>(mut self, produce: F) -> Self
+    pub fn local<E, F>(mut self, produce: F) -> PassiveConstructedLocalStage
     where
         E: 'static,
         F: Fn() -> std::rc::Rc<E> + Clone + 'static,
     {
-        if self.parent.local.is_some() {
-            self.parent.record_duplicate("local");
-            return self;
+        self.parent.set_local_constructed::<E, F>(produce);
+        PassiveConstructedLocalStage {
+            parent: self.parent,
         }
-        self.parent.local = Some(LocalDecomposed {
-            extension: None,
-            instance_factory: LocalInstanceFactory::new(move || produce() as std::rc::Rc<dyn Any>),
-            type_id: TypeId::of::<E>(),
-        });
-        self
+    }
+}
+
+/// Passive + Constructed + shared registered. Awaiting optional `.local(...)`
+/// or `.build()`.
+#[doc(hidden)]
+pub struct PassiveConstructedSharedStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveConstructedSharedStage {
+    /// Register the local (!Send) variant alongside the previously-registered
+    /// shared variant.
+    #[must_use]
+    pub fn local<E, F>(mut self, produce: F) -> PassiveConstructedCompleteStage
+    where
+        E: 'static,
+        F: Fn() -> std::rc::Rc<E> + Clone + 'static,
+    {
+        self.parent.set_local_constructed::<E, F>(produce);
+        PassiveConstructedCompleteStage {
+            parent: self.parent,
+        }
     }
 
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+/// Passive + Constructed + local registered. Awaiting optional `.shared(...)`
+/// or `.build()`.
+#[doc(hidden)]
+pub struct PassiveConstructedLocalStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveConstructedLocalStage {
+    /// Register the shared (Send) variant alongside the previously-registered
+    /// local variant.
+    #[must_use]
+    pub fn shared<E, F>(mut self, produce: F) -> PassiveConstructedCompleteStage
+    where
+        E: Send + 'static,
+        F: Fn() -> E + Clone + Send + 'static,
+    {
+        self.parent.set_shared_constructed::<E, F>(produce);
+        PassiveConstructedCompleteStage {
+            parent: self.parent,
+        }
+    }
+
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
+/// Passive + Constructed + both variants registered. Only `.build()` remains.
+#[doc(hidden)]
+pub struct PassiveConstructedCompleteStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl PassiveConstructedCompleteStage {
     /// Finalize the bundle.
     ///
     /// # Errors
@@ -319,22 +513,16 @@ impl PassiveConstructedStage {
 
 /// Builder for [`ExtensionBundle`].
 ///
-/// At least one variant (local or shared) must be added before calling `build()`.
-/// Both variants can be provided for dual-mode extensions.
+/// The typestate stages reachable from this builder statically guarantee
+/// that at least one variant (local or shared) is registered before
+/// `.build()` becomes callable, and that neither `.shared(...)` nor
+/// `.local(...)` can be called twice on the same bundle.
 pub struct ExtensionBundleBuilder {
     pub(super) name: ExtensionId,
     pub(super) user_config: Arc<ExtensionUserConfig>,
     pub(super) runtime_config: ExtensionConfig,
     shared: Option<SharedDecomposed>,
     local: Option<LocalDecomposed>,
-    /// Accumulated misuse messages detected by typestate stages —
-    /// e.g. duplicate `.shared(...)` or `.local(...)` calls. The
-    /// fluent API can't return a `Result` from those methods without
-    /// breaking the chain, so stages append messages here and
-    /// [`Self::build`] surfaces them concatenated into a single
-    /// `InternalError`. Behavior is identical in debug and release
-    /// builds.
-    errors: Vec<String>,
 }
 
 impl ExtensionBundleBuilder {
@@ -351,18 +539,89 @@ impl ExtensionBundleBuilder {
             runtime_config,
             shared: None,
             local: None,
-            errors: Vec::new(),
         }
     }
 
-    /// Record a duplicate execution-model registration error from a
-    /// typestate stage. All misuses are accumulated and surfaced
-    /// together by [`Self::build`].
-    fn record_duplicate(&mut self, execution_model: &'static str) {
-        self.errors.push(format!(
-            "ExtensionBundleBuilder: .{execution_model}(...) called more than once on extension '{}'",
-            self.name.as_ref(),
-        ));
+    // ── Stage helpers (called by typestate stages) ──────────────────────────
+
+    fn set_shared_active<E>(&mut self, extension: E)
+    where
+        E: shared_ext::Extension + Clone + Send + 'static,
+    {
+        let for_factory = extension.clone();
+        self.shared = Some(SharedDecomposed {
+            extension: Some(Box::new(extension)),
+            instance_factory: SharedInstanceFactory::new(move || {
+                Box::new(for_factory.clone()) as Box<dyn Any + Send>
+            }),
+            type_id: TypeId::of::<E>(),
+        });
+    }
+
+    fn set_local_active<E>(&mut self, extension: std::rc::Rc<E>)
+    where
+        E: local_ext::Extension + 'static,
+    {
+        let for_factory = std::rc::Rc::clone(&extension);
+        self.local = Some(LocalDecomposed {
+            extension: Some(extension),
+            instance_factory: LocalInstanceFactory::new(move || {
+                std::rc::Rc::clone(&for_factory) as std::rc::Rc<dyn Any>
+            }),
+            type_id: TypeId::of::<E>(),
+        });
+    }
+
+    fn set_shared_cloned<E>(&mut self, extension: E)
+    where
+        E: Clone + Send + 'static,
+    {
+        self.shared = Some(SharedDecomposed {
+            extension: None,
+            instance_factory: SharedInstanceFactory::new(move || {
+                Box::new(extension.clone()) as Box<dyn Any + Send>
+            }),
+            type_id: TypeId::of::<E>(),
+        });
+    }
+
+    fn set_local_cloned<E>(&mut self, extension: std::rc::Rc<E>)
+    where
+        E: 'static,
+    {
+        self.local = Some(LocalDecomposed {
+            extension: None,
+            instance_factory: LocalInstanceFactory::new(move || {
+                std::rc::Rc::clone(&extension) as std::rc::Rc<dyn Any>
+            }),
+            type_id: TypeId::of::<E>(),
+        });
+    }
+
+    fn set_shared_constructed<E, F>(&mut self, produce: F)
+    where
+        E: Send + 'static,
+        F: Fn() -> E + Clone + Send + 'static,
+    {
+        self.shared = Some(SharedDecomposed {
+            extension: None,
+            instance_factory: SharedInstanceFactory::new(move || {
+                Box::new(produce()) as Box<dyn Any + Send>
+            }),
+            type_id: TypeId::of::<E>(),
+        });
+    }
+
+    fn set_local_constructed<E, F>(&mut self, produce: F)
+    where
+        E: 'static,
+        F: Fn() -> std::rc::Rc<E> + Clone + 'static,
+    {
+        self.local = Some(LocalDecomposed {
+            extension: None,
+            instance_factory: LocalInstanceFactory::new(move || produce() as std::rc::Rc<dyn Any>),
+            type_id: TypeId::of::<E>(),
+        });
     }
 
     /// Select the **Active** lifecycle for this extension bundle.
@@ -388,23 +647,17 @@ impl ExtensionBundleBuilder {
 
     /// Build the [`ExtensionBundle`].
     ///
+    /// At least one variant (local or shared) is statically guaranteed
+    /// to be registered by the typestate stages, and duplicate
+    /// registration is statically prevented. The remaining error
+    /// condition is a same-type dual registration.
+    ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - A typestate stage previously detected a duplicate
-    ///   `.shared(...)` or `.local(...)` call (the second call is a
-    ///   no-op and the misuse is surfaced here, deterministically in
-    ///   debug and release builds).
-    /// - Neither `.shared(...)` nor `.local(...)` was registered via
-    ///   the lifecycle stages.
-    /// - Both variants use the same concrete type (dual registration
-    ///   requires distinct local and shared implementations).
-    pub fn build(self) -> Result<ExtensionBundle, Error> {
-        if !self.errors.is_empty() {
-            return Err(Error::InternalError {
-                message: self.errors.join("\n"),
-            });
-        }
+    /// Returns an error if both variants use the same concrete type
+    /// (dual registration requires distinct local and shared
+    /// implementations).
+    pub(super) fn build(self) -> Result<ExtensionBundle, Error> {
         if let (Some(local), Some(shared)) = (&self.local, &self.shared) {
             if local.type_id == shared.type_id {
                 return Err(Error::InternalError {
@@ -462,6 +715,9 @@ impl ExtensionBundleBuilder {
         });
 
         if local.is_none() && shared.is_none() {
+            // Unreachable: typestate stages guarantee at least one variant is
+            // registered before `.build()` is callable. Kept as a defensive
+            // guard against future refactors.
             return Err(Error::InternalError {
                 message: "ExtensionBundle must have at least one variant (local or shared)".into(),
             });
