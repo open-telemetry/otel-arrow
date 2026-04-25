@@ -97,9 +97,13 @@ azure-monitor-exporter = [
 ]
 
 contrib-processors = [
+    "microsoft-common-schema-processor",
     "condense-attributes-processor",
     "recordset-kql-processor",
     "resource-validator-processor",
+]
+microsoft-common-schema-processor = [
+    "dep:chrono",
 ]
 condense-attributes-processor = []
 recordset-kql-processor = [

@@ -37,7 +37,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;
-use self::decoder::{DecodedUsereventsRecord, severity_fallback_from_tracepoint};
+use self::decoder::DecodedUsereventsRecord;
 use self::metrics::UsereventsReceiverMetrics;
 #[cfg(target_os = "linux")]
 use self::session::SessionInitError;
@@ -60,16 +60,28 @@ const DEFAULT_LATE_REGISTRATION_POLL: Duration = Duration::from_secs(1);
 
 /// URN for the Linux userevents receiver.
 ///
-/// Keep the receiver identity vendor-neutral. The current implementation only
-/// supports the Common Schema OTLP logs decoder, but the receiver is intended
-/// to support pluggable schema mappings in the future.
+/// The receiver identity is vendor-neutral: it collects Linux `user_events`
+/// and structurally decodes records into OTAP logs.
 pub const USEREVENTS_RECEIVER_URN: &str = "urn:otel:receiver:userevents";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FormatConfig {
+    /// Decode the sample using the Linux tracefs `format` metadata registered
+    /// for the tracepoint.
+    ///
+    /// This is the standard Linux user_events/tracepoint shape used by tools
+    /// such as perf and ftrace: field names, offsets, sizes, and C-like type
+    /// names come from tracefs, while values come from the raw sample bytes.
     #[default]
-    CommonSchemaOtelLogs,
+    Tracefs,
+    /// Decode the user payload as an EventHeader self-describing event.
+    ///
+    /// EventHeader is still decoded structurally and vendor-neutrally here: the
+    /// receiver flattens EventHeader structs into `Struct.field` attributes but
+    /// does not attach any meaning to names such as `PartA`, `PartB`, or
+    /// `PartC`. Schema-specific interpretation belongs in processors.
+    EventHeader,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -171,7 +183,6 @@ struct Config {
 
 struct UsereventsReceiver {
     subscriptions: Vec<SubscriptionConfig>,
-    subscription_severity_fallbacks: Vec<Option<(i32, &'static str)>>,
     session: SessionConfig,
     drain: DrainConfig,
     batching: BatchConfig,
@@ -193,10 +204,6 @@ impl UsereventsReceiver {
         })?;
 
         let subscriptions = Self::normalize_subscriptions(&config)?;
-        let subscription_severity_fallbacks = subscriptions
-            .iter()
-            .map(|subscription| severity_fallback_from_tracepoint(&subscription.tracepoint))
-            .collect();
         let session = config.session.clone().unwrap_or(SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
@@ -222,7 +229,6 @@ impl UsereventsReceiver {
 
         Ok(Self {
             subscriptions,
-            subscription_severity_fallbacks,
             session,
             drain,
             batching,
@@ -476,7 +482,6 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                                         let mut dropped_memory_pressure: u64 = 0;
                                         let dropped_no_subscription =
                                             drain_stats.dropped_no_subscription;
-                                        let mut cs_decode_fallbacks: u64 = 0;
                                         for raw in drained_records.drain(..) {
                                             if self.admission_state.should_shed_ingress() {
                                                 dropped_memory_pressure += 1;
@@ -485,19 +490,12 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
 
                                             let subscription_index = raw.subscription_index;
                                             let subscription = &self.subscriptions[subscription_index];
-                                            let severity_fallback =
-                                                self.subscription_severity_fallbacks[subscription_index];
 
-                                            let (decoded, cs_failed) =
-                                                DecodedUsereventsRecord::from_raw(
-                                                    subscription.tracepoint.as_str(),
-                                                    raw,
-                                                    &subscription.format,
-                                                    severity_fallback,
-                                                );
-                                            if cs_failed {
-                                                cs_decode_fallbacks += 1;
-                                            }
+                                            let decoded = DecodedUsereventsRecord::from_raw(
+                                                subscription.tracepoint.as_str(),
+                                                raw,
+                                                &subscription.format,
+                                            );
                                             builder.append(decoded);
                                             if builder.len() >= batch_cfg.max_size {
                                                 flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
@@ -520,9 +518,6 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                                             metrics
                                                 .dropped_no_subscription
                                                 .add(dropped_no_subscription);
-                                        }
-                                        if cs_decode_fallbacks > 0 {
-                                            metrics.cs_decode_fallbacks.add(cs_decode_fallbacks);
                                         }
                                     }
                                 }
@@ -613,7 +608,6 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                         let received_samples = drain_stats.received_samples;
                         let mut dropped_memory_pressure: u64 = 0;
                         let dropped_no_subscription = drain_stats.dropped_no_subscription;
-                        let mut cs_decode_fallbacks: u64 = 0;
                         for raw in drained_records.drain(..) {
                             if self.admission_state.should_shed_ingress() {
                                 dropped_memory_pressure += 1;
@@ -622,18 +616,12 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
 
                             let subscription_index = raw.subscription_index;
                             let subscription = &self.subscriptions[subscription_index];
-                            let severity_fallback =
-                                self.subscription_severity_fallbacks[subscription_index];
 
-                            let (decoded, cs_failed) = DecodedUsereventsRecord::from_raw(
+                            let decoded = DecodedUsereventsRecord::from_raw(
                                 subscription.tracepoint.as_str(),
                                 raw,
                                 &subscription.format,
-                                severity_fallback,
                             );
-                            if cs_failed {
-                                cs_decode_fallbacks += 1;
-                            }
                             builder.append(decoded);
                             if builder.len() >= batch_cfg.max_size {
                                 flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
@@ -652,9 +640,6 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                         }
                         if dropped_no_subscription > 0 {
                             metrics.dropped_no_subscription.add(dropped_no_subscription);
-                        }
-                        if cs_decode_fallbacks > 0 {
-                            metrics.cs_decode_fallbacks.add(cs_decode_fallbacks);
                         }
                     }
                 }
@@ -734,7 +719,7 @@ mod linux_integration_tests {
         };
         let subscriptions = vec![SubscriptionConfig {
             tracepoint,
-            format: FormatConfig::CommonSchemaOtelLogs,
+            format: FormatConfig::Tracefs,
         }];
 
         let session = UsereventsSession::open(&subscriptions, &config, 0)
@@ -751,7 +736,7 @@ mod config_tests {
     fn normalize_single_tracepoint_shorthand() {
         let config = Config {
             tracepoint: Some("user_events:example_L2K1".to_owned()),
-            format: Some(FormatConfig::CommonSchemaOtelLogs),
+            format: Some(FormatConfig::Tracefs),
             subscriptions: None,
             session: None,
             drain: None,
@@ -763,10 +748,7 @@ mod config_tests {
             UsereventsReceiver::normalize_subscriptions(&config).expect("normalized subscriptions");
         assert_eq!(normalized.len(), 1);
         assert_eq!(normalized[0].tracepoint, "user_events:example_L2K1");
-        assert!(matches!(
-            normalized[0].format,
-            FormatConfig::CommonSchemaOtelLogs
-        ));
+        assert!(matches!(normalized[0].format, FormatConfig::Tracefs));
     }
 
     #[test]
@@ -776,7 +758,7 @@ mod config_tests {
             format: None,
             subscriptions: Some(vec![SubscriptionConfig {
                 tracepoint: "user_events:example_L5K1".to_owned(),
-                format: FormatConfig::CommonSchemaOtelLogs,
+                format: FormatConfig::Tracefs,
             }]),
             session: None,
             drain: None,
@@ -787,20 +769,17 @@ mod config_tests {
         let normalized =
             UsereventsReceiver::normalize_subscriptions(&config).expect("normalized subscriptions");
         assert_eq!(normalized.len(), 1);
-        assert!(matches!(
-            normalized[0].format,
-            FormatConfig::CommonSchemaOtelLogs
-        ));
+        assert!(matches!(normalized[0].format, FormatConfig::Tracefs));
     }
 
     #[test]
     fn normalize_rejects_both_tracepoint_and_subscriptions() {
         let config = Config {
             tracepoint: Some("user_events:example_L2K1".to_owned()),
-            format: Some(FormatConfig::CommonSchemaOtelLogs),
+            format: Some(FormatConfig::Tracefs),
             subscriptions: Some(vec![SubscriptionConfig {
                 tracepoint: "user_events:example_L3K1".to_owned(),
-                format: FormatConfig::CommonSchemaOtelLogs,
+                format: FormatConfig::Tracefs,
             }]),
             session: None,
             drain: None,
@@ -821,7 +800,7 @@ mod config_tests {
     fn normalize_rejects_non_userevents_tracepoint_group() {
         let config = Config {
             tracepoint: Some("foo:example_L2K1".to_owned()),
-            format: Some(FormatConfig::CommonSchemaOtelLogs),
+            format: Some(FormatConfig::Tracefs),
             subscriptions: None,
             session: None,
             drain: None,
@@ -841,7 +820,7 @@ mod config_tests {
     fn normalize_rejects_tracepoint_without_group() {
         let config = Config {
             tracepoint: Some("example_L2K1".to_owned()),
-            format: Some(FormatConfig::CommonSchemaOtelLogs),
+            format: Some(FormatConfig::Tracefs),
             subscriptions: None,
             session: None,
             drain: None,

@@ -28,7 +28,7 @@ Aggregate flags enable all nodes in their category.
 
 - Reads Linux `user_events` tracepoints through per-CPU perf sessions
 - Supports single-tracepoint and multi-tracepoint configuration
-- Supports the `common_schema_otel_logs` decode format for supported log payloads
+- Supports tracefs structural decoding and EventHeader decoding
 
 ### Exporters
 
@@ -45,6 +45,7 @@ Aggregate flags enable all nodes in their category.
 
 | Feature | Enables Node | Node URN | Module |
 | ------- | ------------ | -------- | ------ |
+| `microsoft-common-schema-processor` | Microsoft Common Schema processor | `urn:microsoft:processor:common_schema_otel_logs` | `src/processors/microsoft_common_schema_processor/` |
 | `condense-attributes-processor` | Condense Attributes processor | `urn:otel:processor:condense_attributes` | `src/processors/condense_attributes_processor/` |
 | `recordset-kql-processor` | RecordSet KQL processor | `urn:microsoft:processor:recordset_kql` | `src/processors/recordset_kql_processor/` |
 | `resource-validator-processor` | Resource Validator processor | `urn:otel:processor:resource_validator` | `src/processors/resource_validator_processor/` |

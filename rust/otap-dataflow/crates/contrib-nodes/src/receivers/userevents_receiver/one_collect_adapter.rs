@@ -7,8 +7,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
+use one_collect::event::LocationType;
 #[cfg(target_os = "linux")]
 use one_collect::helpers::exporting::ExportMachine;
 #[cfg(target_os = "linux")]
@@ -16,21 +19,16 @@ use one_collect::perf_event::{PerfSession, RingBufBuilder, RingBufSessionBuilder
 #[cfg(target_os = "linux")]
 use one_collect::tracefs::TraceFS;
 
+use super::session::{TracefsField, TracefsFieldLocation};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CollectedEvent {
     pub timestamp_unix_nano: u64,
-    pub payload: Vec<u8>,
+    pub event_data: Vec<u8>,
+    pub user_data_offset: usize,
+    pub fields: Arc<[TracefsField]>,
     pub source: EventSource,
 }
-
-/// Size of the Linux tracepoint common fields prefix that precedes the
-/// user-defined event payload in every PERF_SAMPLE_RAW record:
-/// `common_type` (u16) + `common_flags` (u8) + `common_preempt_count` (u8)
-/// + `common_pid` (i32) = 8 bytes.
-/// TODO: Replace this constant with a metadata-derived common field size once
-/// one_collect exposes that value directly for tracepoint events.
-#[cfg(target_os = "linux")]
-const TRACEPOINT_COMMON_HEADER_LEN: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -194,8 +192,39 @@ impl OneCollectUserEventsSession {
                 },
             };
 
+            let fields = Arc::<[TracefsField]>::from(
+                event
+                    .format()
+                    .fields()
+                    .iter()
+                    .map(|field| TracefsField {
+                        name: field.name.clone(),
+                        type_name: field.type_name.clone(),
+                        location: match field.location {
+                            LocationType::Static => TracefsFieldLocation::Static,
+                            LocationType::StaticString => TracefsFieldLocation::StaticString,
+                            LocationType::DynRelative => TracefsFieldLocation::DynRelative,
+                            LocationType::DynAbsolute => TracefsFieldLocation::DynAbsolute,
+                            LocationType::StaticLenPrefixArray => {
+                                TracefsFieldLocation::StaticLenPrefixArray
+                            }
+                            LocationType::StaticUTF16String => {
+                                TracefsFieldLocation::StaticUtf16String
+                            }
+                        },
+                        offset: field.offset,
+                        size: field.size,
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let user_data_offset = fields
+                .iter()
+                .find(|field| !field.name.starts_with("common_"))
+                .map_or(0, |field| field.offset);
+
             let event_pending = Rc::clone(&pending);
             let event_time_field = time_field.clone();
+            let event_fields = Arc::clone(&fields);
 
             event.add_callback(move |data| {
                 let full_data = data.full_data();
@@ -206,20 +235,9 @@ impl OneCollectUserEventsSession {
 
                 event_pending.borrow_mut().push_back(CollectedEvent {
                     timestamp_unix_nano: timestamp,
-                    // Strip the 8-byte tracepoint common header
-                    // (`common_type` u16 + `common_flags` u8 + `common_preempt_count` u8 +
-                    // `common_pid` i32) so `payload` contains the EventHeader blob only —
-                    // that is what the receiver's CS decoder expects as input. If for some
-                    // reason the payload is shorter than 8 bytes we forward it as-is and
-                    // let the decoder fall back.
-                    payload: {
-                        let raw = data.event_data();
-                        if raw.len() >= TRACEPOINT_COMMON_HEADER_LEN {
-                            raw[TRACEPOINT_COMMON_HEADER_LEN..].to_vec()
-                        } else {
-                            raw.to_vec()
-                        }
-                    },
+                    event_data: data.event_data().to_vec(),
+                    user_data_offset,
+                    fields: Arc::clone(&event_fields),
                     source: EventSource::UserEvents(UserEventsSource { subscription_index }),
                 });
                 Ok(())
@@ -287,7 +305,7 @@ impl OneCollectUserEventsSession {
                 break;
             }
 
-            let front_len = front.payload.len();
+            let front_len = front.event_data.len();
             let next_bytes = drained_bytes.saturating_add(front_len);
             if next_bytes > max_bytes && !events.is_empty() {
                 break;
@@ -304,7 +322,7 @@ impl OneCollectUserEventsSession {
         // past the deadline before the pop loop could run.
         if events.is_empty() && !pending.is_empty() && max_records > 0 {
             if let Some(front) = pending.front() {
-                let front_len = front.payload.len();
+                let front_len = front.event_data.len();
                 if front_len <= max_bytes {
                     if let Some(event) = pending.pop_front() {
                         events.push(event);

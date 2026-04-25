@@ -9,11 +9,9 @@ This receiver ingests Linux
 through `perf_event_open` and converts them into OTAP logs for downstream
 processing.
 
-> **Note:** The current decoder supports the Microsoft Common Schema OTLP logs
-> format. That mapping is an initial built-in format rather than a
-> vendor-specific receiver contract; the receiver is intended to remain
-> vendor-neutral and to allow users to bring their own schema mappings in the
-> future.
+> **Note:** This receiver is vendor-neutral. It performs Linux `user_events`
+> collection and structural decoding only; schema-specific mappings such as
+> Microsoft Common Schema should be modeled outside the receiver.
 
 It follows the OTAP Dataflow thread-per-core model:
 
@@ -26,8 +24,8 @@ It follows the OTAP Dataflow thread-per-core model:
 
 `user_events` writes enter Linux tracing as user-space tracepoint events. The
 kernel stores trace records in per-CPU ring buffers; each receiver instance
-drains the ring for the CPU/pipeline core it owns, decodes the EventHeader
-payload, and emits OTAP logs into that same pipeline.
+drains the ring for the CPU/pipeline core it owns, decodes the tracepoint
+record, and emits OTAP logs into that same pipeline.
 
 ```text
 +------------------------------- Same Linux Host -------------------------------+
@@ -139,7 +137,7 @@ Design properties that support locality:
   own pinned CPU - so ring reads happen from the thread pinned to the same CPU
   that the receiver is configured to drain.
 - No receiver hot-path state crosses pipeline threads. Decoded records, Arrow
-  builders, per-record payload buffers, PartC attribute strings, the metric
+  builders, per-record payload buffers, decoded attribute strings, the metric
   set, and the admission state are all thread-local (`!Send`).
 
 On a multi-socket host with `--num-cores 0`, the intended result is one
@@ -196,8 +194,10 @@ kernel tracing feature. Windows support would require a separate ETW receiver.
 Current implementation supports:
 
 - single-tracepoint and multi-tracepoint configuration
-- `common_schema_otel_logs`, which decodes Microsoft Common Schema OTLP logs,
-  as the only supported decode format
+- `tracefs`, which decodes standard Linux tracefs fields into typed log
+  attributes
+- `event_header`, which decodes EventHeader self-describing fields into typed
+  log attributes
 
 ## Configuration
 
@@ -214,7 +214,7 @@ nodes:
     config:
       tracepoint: "user_events:myprovider_L2K1"
       format:
-        type: common_schema_otel_logs
+        type: tracefs
       session:
         per_cpu_buffer_size: 1048576  # bytes
         late_registration:
@@ -243,16 +243,16 @@ nodes:
       subscriptions:
         - tracepoint: "user_events:myprovider_L2K1"
           format:
-            type: common_schema_otel_logs
+            type: tracefs
         - tracepoint: "user_events:app_L2K1"
           format:
-            type: common_schema_otel_logs
+            type: event_header
       session:
         per_cpu_buffer_size: 1048576  # bytes
 ```
 
 Exactly one of `tracepoint` or `subscriptions` must be configured.
-`common_schema_otel_logs` is currently the only supported `format.type`.
+`tracefs` is the default `format.type`.
 
 `session.wakeup_watermark` exists as a reserved configuration field for future
 one_collect wakeup support, but is currently ignored.
@@ -266,8 +266,8 @@ tracepoint sessions.
 | Field | Default | Description |
 | --- | --- | --- |
 | `tracepoint` | none | Single tracepoint shorthand. Must use `user_events:<event>`. Mutually exclusive with `subscriptions`. |
-| `subscriptions` | none | List of tracepoints. Each entry must use `user_events:<event>` and `format.type: common_schema_otel_logs`. |
-| `format.type` | `common_schema_otel_logs` | Only supported decode format. |
+| `subscriptions` | none | List of tracepoints. Each entry must use `user_events:<event>`. |
+| `format.type` | `tracefs` | Decode format. Supported values: `tracefs`, `event_header`. |
 | `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded by the underlying perf/ring setup. |
 | `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
 | `session.late_registration.enabled` | `false` | When true, keep retrying if the tracepoint is not registered yet. |
@@ -289,85 +289,37 @@ tracefs group:
 user_events:<provider>_L<level>K<keyword>
 ```
 
-The `_L<level>K<keyword>` suffix follows EventHeader tracepoint naming. The
-receiver uses `level` only as a fallback when the payload does not provide
-`severityNumber`:
-
-| EventHeader level | Fallback severity |
-| --- | --- |
-| `1` or `2` | `ERROR` / `17` |
-| `3` | `WARN` / `13` |
-| `4` | `INFO` / `9` |
-| `5` | `DEBUG` / `5` |
-
-If the suffix is absent or malformed, Common Schema payloads with no
-`severityNumber` are emitted without a fallback severity.
+EventHeader-style names such as `<provider>_L<level>K<keyword>` are accepted,
+but the generic receiver does not interpret the level or keyword as OTLP
+severity.
 
 ## Decode
 
-### `common_schema_otel_logs`
+### `tracefs`
 
-Intended for EventHeader payloads that encode Microsoft Common Schema logs.
-[`opentelemetry-user-events-logs`](https://github.com/open-telemetry/opentelemetry-rust-contrib/tree/main/opentelemetry-user-events-logs)
-is an example/reference implementation that produces events in this format.
+Decodes standard Linux tracepoint fields using the tracefs `format` metadata
+exposed for each registered `user_events` tracepoint. Common tracepoint fields
+such as `common_pid` are skipped; producer-declared fields are emitted as typed
+log attributes. After a successful decode, the receiver forwards the decoded
+OTAP log record; it does not forward the original raw tracepoint sample bytes.
+Unknown static fields may be preserved as per-field base64 string attributes.
 
-Current behavior:
+### `event_header`
 
-- decodes EventHeader-encoded Common Schema log payloads
-- promotes `event_name`, `severityNumber`, `severityText`, `body`, and
-  `eventId` from Common Schema PartB
-- maps PartA fields including timestamp and trace/span context into typed
-  OTLP log fields when present
-- maps PartA `ext_cloud_role` and `ext_cloud_roleInstance` to
-  `service.name` and `service.instance.id` attributes
-- flattens eligible PartC scalar attributes into emitted log attributes
-- falls back to preserving the payload as base64-encoded data when Common
-  Schema decoding fails
-
-The main field mapping is:
-
-| Source field | OTAP / OTLP output |
-| --- | --- |
-| EventHeader name / PartA.name | fallback for typed `event_name` |
-| PartA.time | `time_unix_nano` |
-| PartA.ext_dt_traceId | typed `trace_id` when valid hex; otherwise `trace.id` attribute |
-| PartA.ext_dt_spanId | typed `span_id` when valid hex; otherwise `span.id` attribute |
-| PartA.ext_dt_traceFlags | log `flags` |
-| PartB.name | preferred typed `event_name` |
-| PartB.severityNumber | `severity_number` |
-| PartB.severityText | `severity_text` |
-| PartB.body | log `body` |
-| PartB.eventId | typed `eventId` attribute |
-| PartC scalar fields | flat log attributes with original field names and basic value types |
-
-Decode failure means the payload could not be interpreted as the supported
-EventHeader/Common Schema log shape. Examples include malformed EventHeader
-bytes, `__csver__` missing or not first, `__csver__ != 0x400`, missing PartB,
-PartB `_typeName != "Log"`, duplicate PartA/PartB/PartC structs, unknown PartB
-fields, or invalid nesting. On failure, the receiver emits the raw payload as a
-base64 body and increments `cs_decode_fallbacks`.
+Decodes EventHeader self-describing fields into typed log attributes. Nested
+EventHeader structs are flattened with dot-separated attribute names. If an
+EventHeader payload cannot be decoded, the raw user payload is preserved in the
+`linux.userevents.payload_base64` attribute.
 
 ## Output Shape
 
-The receiver emits OTAP logs. Payload data is represented as typed OTLP log
-fields and flat application attributes; receiver transport/debug metadata is
-not emitted as log attributes.
-
-The only PartB field emitted as a log attribute is:
-
-- `eventId` (typed Int, when the Common Schema payload carries PartB.eventId)
-
-Typed OTLP log fields (not attributes) also carry:
-
-- `body`
-- `severity_number` / `severity_text`
-- `event_name` (prefers PartB.name, falls back to EH.Name / PartA.name)
-- `time_unix_nano` (from PartA.time when present, else the perf sample timestamp)
-- `trace_id` / `span_id` / `flags` (from PartA.ext_dt_*)
-
-PartC fields are emitted as flat attributes using their original names
-(e.g. `user_name`, `user_email`) with their source types preserved
-(`Int`/`Bool`/`Double`/`Str`).
+The receiver emits OTAP logs. Structural data is represented as flat log
+attributes with source types preserved where possible (`Int`/`Bool`/`Double`/
+`Str`). The typed `event_name` field is set to the configured tracepoint name,
+and `time_unix_nano` uses the perf sample timestamp. Schema-specific promotion
+to typed OTLP fields is intentionally left to processors. The original raw
+tracepoint sample is not part of the normal output contract after structural
+decode succeeds.
 
 The receiver intentionally does **not** emit receiver-internal
 transport/diagnostic fields such as tracepoint name, provider name,
@@ -375,13 +327,6 @@ EventHeader level/keyword, CPU, PID/TID, sample id, payload size, body
 encoding, or decode mode. These describe the receiver itself rather than the
 application payload; surfacing them as OTLP log attributes would pollute
 downstream backends with receiver implementation details.
-
-Similarly, no `cs.*` inspection attributes are emitted (e.g.
-`cs.__csver__`, `cs.part_b._typeName`, `cs.part_b.name`). These are schema
-inspection details rather than application attributes; PartB.name is already
-represented by the typed `event_name` column. The base64 fallback path remains
-available internally when Common Schema decoding fails, but no
-`linux.userevents.body_encoding` marker is exposed to consumers.
 
 ## Receiver Internals
 
@@ -402,9 +347,8 @@ bounded by a specific config field. This diagram shows where the `drain.*`,
   +----------+----------+
              |
              v
-  +---------------------+   CS EventHeader decode succeeds -> typed logs
-  | decode              |   CS EventHeader decode fails    -> base64 body
-  |                     |                                     + cs_decode_fallbacks++
+  +---------------------+   tracefs fields -> typed attributes
+  | decode              |   EventHeader fields -> typed attributes
   +----------+----------+
              |
              v
@@ -448,8 +392,7 @@ the receiver drains it, that loss is reported by the perf path and counted as
 `lost_perf_samples`.
 
 TODO: Plumb corrupt perf event and corrupt perf buffer counters once
-`one_collect` exposes them. These should remain distinct from
-`cs_decode_fallbacks`, which can also count valid but unsupported payloads.
+`one_collect` exposes them.
 
 ### Memory Pressure
 
@@ -487,7 +430,6 @@ The receiver reports these counters under `userevents.receiver.metrics`:
 | `dropped_downstream_full` | Batches dropped because the downstream channel was full. |
 | `dropped_memory_pressure` | Records or batches dropped because process memory pressure requested ingress shedding. |
 | `dropped_no_subscription` | Samples that did not map to a configured subscription index. This should normally stay zero. |
-| `cs_decode_fallbacks` | Samples that failed Common Schema decoding and were emitted with a base64 body fallback. |
 | `lost_perf_samples` | Lost sample count reported by the perf ring. |
 | `late_registration_retries` | Late-registration retry attempts while waiting for tracepoints. |
 | `sessions_started` | Receiver perf sessions successfully opened. |
@@ -549,10 +491,6 @@ For reliable testing, prefer:
 
 Recommended test layers:
 
-- unit tests for tracepoint-format parsing and payload normalization
+- unit tests for tracefs structural decoding and EventHeader payload handling
 - Linux-only receiver integration tests using a real kernel tracepoint
-- exporter-to-receiver end-to-end tests from
-  `opentelemetry-user-events-logs` into this receiver
-
-An ignored Linux-only end-to-end smoke test exists under
-`crates/contrib-nodes/tests/userevents_exporter_receiver_e2e.rs`.
+- pipeline-level schema mapping tests in the processor that owns that schema
