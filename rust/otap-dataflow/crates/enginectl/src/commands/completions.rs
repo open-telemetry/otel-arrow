@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Shell completion generation and user-local installation helpers.
+//!
+//! This module owns both ways users interact with completion scripts:
+//! generating a script to stdout for manual shell integration and installing a
+//! script into a user-local shell-specific completion directory. It does not
+//! modify shell startup files; instead, install commands print the next action
+//! needed to activate the generated file when a shell requires one.
 
 use crate::args::{CompletionArgs, CompletionCommand, CompletionInstallArgs};
 use crate::error::CliError;
@@ -13,6 +19,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Dispatches `dfctl completions` commands.
+///
+/// With a shell argument, this writes a generated completion script to stdout.
+/// With the `install` subcommand, it writes the generated script into the
+/// requested or default per-user completion directory.
 pub(crate) fn run(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), CliError> {
     match args.command {
         Some(CompletionCommand::Install(args)) => install(stdout, args),
@@ -20,6 +31,10 @@ pub(crate) fn run(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), Cl
     }
 }
 
+/// Generates a shell completion script to stdout.
+///
+/// The command tree is rebuilt from Clap for every invocation so completion
+/// scripts reflect the currently executing binary.
 fn generate(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), CliError> {
     let shell = args.shell.ok_or_else(|| {
         CliError::invalid_usage(format!(
@@ -32,6 +47,12 @@ fn generate(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), CliError
     Ok(())
 }
 
+/// Installs a generated completion script into a user-local directory.
+///
+/// Installation creates the target directory if needed, writes the completion
+/// file using `clap_complete`, and prints a shell-specific activation note. It
+/// intentionally avoids editing `.bashrc`, `.zshrc`, PowerShell profiles, or
+/// any other user startup file.
 fn install(stdout: &mut dyn Write, args: CompletionInstallArgs) -> Result<(), CliError> {
     let dir = args
         .dir
@@ -73,11 +94,18 @@ fn install(stdout: &mut dyn Write, args: CompletionInstallArgs) -> Result<(), Cl
     Ok(())
 }
 
+/// Resolves the default installation directory from the current process
+/// environment.
 fn default_install_dir(shell: Shell) -> Option<PathBuf> {
     let env = EnvPaths::read();
     default_install_dir_from(shell, &env)
 }
 
+/// Maps a shell to the per-user directory where completion files are normally
+/// discovered.
+///
+/// This helper receives an explicit `EnvPaths` value so tests can validate path
+/// selection without mutating process environment variables.
 fn default_install_dir_from(shell: Shell, env: &EnvPaths) -> Option<PathBuf> {
     match shell {
         Shell::Bash => Some(env.data_home()?.join("bash-completion/completions")),
@@ -89,6 +117,10 @@ fn default_install_dir_from(shell: Shell, env: &EnvPaths) -> Option<PathBuf> {
     }
 }
 
+/// Returns the post-install activation guidance for a shell.
+///
+/// Some shells load files from the install directory automatically, while
+/// others need a source command or startup-file configuration from the user.
 fn activation_note(shell: Shell, dir: &Path, path: &Path) -> Option<String> {
     let path = shell_quote(path);
     let dir = shell_quote(dir);
@@ -110,19 +142,31 @@ fn activation_note(shell: Shell, dir: &Path, path: &Path) -> Option<String> {
     }
 }
 
+/// Quotes a path for display in shell snippets.
+///
+/// The output is intended for human instructions, not for launching a process.
 fn shell_quote(path: &Path) -> String {
     let raw = path.display().to_string();
     format!("'{}'", raw.replace('\'', "'\"'\"'"))
 }
 
+/// Environment-derived base directories used to resolve completion install
+/// paths.
+///
+/// The values are kept in a struct so path resolution can be tested with
+/// synthetic environments and without changing global process state.
 #[derive(Debug, Clone, Default)]
 struct EnvPaths {
+    /// XDG configuration root, typically `$HOME/.config` when unset.
     xdg_config_home: Option<PathBuf>,
+    /// XDG data root, typically `$HOME/.local/share` when unset.
     xdg_data_home: Option<PathBuf>,
+    /// User home directory used as the fallback base for XDG paths.
     home: Option<PathBuf>,
 }
 
 impl EnvPaths {
+    /// Reads relevant environment variables and normalizes empty values away.
     fn read() -> Self {
         Self {
             xdg_config_home: non_empty_env_path("XDG_CONFIG_HOME"),
@@ -131,12 +175,14 @@ impl EnvPaths {
         }
     }
 
+    /// Returns the effective user configuration directory.
     fn config_home(&self) -> Option<PathBuf> {
         self.xdg_config_home
             .clone()
             .or_else(|| self.home.as_ref().map(|home| home.join(".config")))
     }
 
+    /// Returns the effective user data directory.
     fn data_home(&self) -> Option<PathBuf> {
         self.xdg_data_home
             .clone()
@@ -144,10 +190,12 @@ impl EnvPaths {
     }
 }
 
+/// Reads an environment variable as a path, ignoring unset and empty values.
 fn non_empty_env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).and_then(non_empty_path)
 }
 
+/// Converts an `OsString` into a `PathBuf` only when it contains a value.
 fn non_empty_path(value: OsString) -> Option<PathBuf> {
     if value.is_empty() {
         None

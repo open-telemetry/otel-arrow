@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Groups-scoped command runner.
+//!
+//! This module is the execution layer for commands that operate on the whole
+//! engine group set rather than on one specific pipeline. It translates parsed
+//! CLI arguments into admin SDK calls, troubleshooting helpers, watch streams,
+//! support bundles, and human or machine-readable output.
 
 use crate::args::{
     GroupDiagnoseCommand, GroupEventsCommand, GroupsArgs, GroupsCommand, MetricsShape,
@@ -28,7 +33,13 @@ use otap_df_admin_api::telemetry::MetricsOptions;
 use serde::Serialize;
 use std::io::Write;
 
-/// Execute group-scoped commands.
+/// Executes group-scoped commands against the admin API.
+///
+/// Read-only commands fetch the latest group status, telemetry, or event
+/// snapshots and render them through the selected output mode. Mutating
+/// commands validate CLI output constraints before calling the SDK so shell
+/// scripts and agents receive predictable behavior for `--wait`, `--watch`,
+/// `--dry-run`, and structured output combinations.
 pub(crate) async fn run(
     client: &AdminClient,
     stdout: &mut dyn Write,
@@ -204,16 +215,27 @@ pub(crate) async fn run(
     }
 }
 
+/// Machine-readable result emitted by `groups shutdown --dry-run`.
+///
+/// The admin SDK currently has no server-side preflight endpoint for a full
+/// group shutdown, so this payload documents exactly what the CLI validated
+/// locally and which options would be sent by a real shutdown request.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GroupShutdownPreflight {
+    /// Indicates that no admin mutation was sent.
     mode: &'static str,
+    /// Stable operation identifier for scripts and agents.
     operation: &'static str,
+    /// Whether the request was validated by the server.
     server_validation: bool,
+    /// Whether the real request would wait for completion.
     wait: bool,
+    /// Effective wait timeout rounded up to full seconds for JSON output.
     wait_timeout_secs: u64,
 }
 
+/// Renders the dry-run group shutdown report for human output.
 fn render_group_shutdown_preflight(style: &HumanStyle, report: &GroupShutdownPreflight) -> String {
     [
         style.header("group shutdown dry-run"),
