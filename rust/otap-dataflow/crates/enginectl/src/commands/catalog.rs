@@ -37,7 +37,7 @@
 //! expose safety, dry-run, wait/watch, stdin, and schema metadata.
 
 use crate::args::CommandsArgs;
-use crate::commands::output::emit_read;
+use crate::commands::output::write_read_command_output;
 use crate::commands::schemas::{
     AGENT_ENVELOPE_SCHEMA, COMMAND_CATALOG_SCHEMA, DIAGNOSE_REPORT_SCHEMA, ERROR_SCHEMA,
     JSON_SCHEMA_SCHEMA, MUTATION_OUTCOME_SCHEMA, SCHEMA_CATALOG_SCHEMA, STREAM_EVENT_SCHEMA,
@@ -63,7 +63,7 @@ pub(crate) fn run(
     args: CommandsArgs,
 ) -> Result<(), CliError> {
     let catalog = build_catalog();
-    emit_read(stdout, args.output.output, &catalog, || {
+    write_read_command_output(stdout, args.output.output, &catalog, || {
         Ok(render_human(&human_style, &catalog))
     })
 }

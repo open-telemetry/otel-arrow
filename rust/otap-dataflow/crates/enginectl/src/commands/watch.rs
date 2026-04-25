@@ -5,7 +5,7 @@
 
 use crate::args::{MetricsShape, StreamOutput};
 use crate::commands::fetch::{fetch_logs, fetch_pipeline_status, fetch_rollout, fetch_shutdown};
-use crate::commands::output::{duration_to_secs_ceil, write_stream_line};
+use crate::commands::output::{duration_to_admin_timeout_secs, write_human_stream_line};
 use crate::error::CliError;
 use crate::render::{
     render_event_line, render_group_shutdown_watch, render_metrics_compact, render_metrics_full,
@@ -129,7 +129,7 @@ pub(crate) async fn watch_groups_shutdown(
         if started_at.elapsed().unwrap_or_default() >= wait_timeout {
             return Err(CliError::outcome_failure(format!(
                 "groups shutdown did not reach terminal pipeline phases within {}s",
-                duration_to_secs_ceil(wait_timeout)
+                duration_to_admin_timeout_secs(wait_timeout)
             )));
         }
 
@@ -346,7 +346,7 @@ fn emit_events(
         }
         match output {
             StreamOutput::Human => {
-                write_stream_line(stdout, &render_event_line(&human_style, event))?
+                write_human_stream_line(stdout, &render_event_line(&human_style, event))?
             }
             StreamOutput::Ndjson => write_event_output(stdout, "event", event)?,
         }
@@ -396,9 +396,10 @@ fn emit_logs(
 ) -> Result<(), CliError> {
     for entry in logs {
         match output {
-            StreamOutput::Human => {
-                write_stream_line(stdout, &crate::render::render_log_line(&human_style, entry))?
-            }
+            StreamOutput::Human => write_human_stream_line(
+                stdout,
+                &crate::render::render_log_line(&human_style, entry),
+            )?,
             StreamOutput::Ndjson => write_log_event(stdout, entry)?,
         }
     }

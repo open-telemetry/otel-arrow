@@ -5,7 +5,7 @@
 
 use crate::BIN_NAME;
 use crate::args::{ConfigArgs, ConfigCommand};
-use crate::commands::output::emit_read;
+use crate::commands::output::write_read_command_output;
 use crate::config::{ResolvedConnection, ResolvedConnectionView};
 use crate::error::CliError;
 use crate::style::HumanStyle;
@@ -20,7 +20,7 @@ pub(crate) fn run(
     match args.command {
         ConfigCommand::View(output) => {
             let view = resolved.view();
-            emit_read(stdout, output.output, &view, || {
+            write_read_command_output(stdout, output.output, &view, || {
                 Ok(render_config_view(&human_style, &view))
             })
         }

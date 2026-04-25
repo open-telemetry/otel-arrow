@@ -1,15 +1,36 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared output validation and serialization helpers for command runners.
+//! Command-facing output policy for dfctl command runners.
+//!
+//! `commands/*` modules decide what data to fetch or mutate. `render/output.rs`
+//! knows how to serialize concrete JSON/YAML/NDJSON/human envelopes. This
+//! module sits between those layers and gives command runners a small, named API
+//! for the output contracts they need.
+//!
+//! Output taxonomy:
+//!
+//! - read snapshots: one-time status/config/diagnostic data, emitted directly
+//!   for JSON/YAML or wrapped as an agent `snapshot`;
+//! - mutations: one-time operation responses that carry an explicit outcome
+//!   such as `accepted`, `completed`, `failed`, or `preflight_only`;
+//! - watch streams: ongoing human lines or NDJSON events, never pretty JSON/YAML;
+//! - group shutdown: a legacy group-wide mutation surface with its own CLI enum;
+//! - support bundles: structured troubleshooting payloads that may be written to
+//!   stdout or a private file.
+//!
+//! Human output is deliberately supplied as a closure. This keeps the common
+//! path cheap for JSON/YAML/NDJSON/agent output, where a command should not
+//! spend time building a human table that will never be printed.
 
 use crate::args::{
     BundleOutput, GroupShutdownOutput, MetricsShape, MutationOutput, ReadOutput, StreamOutput,
 };
 use crate::error::CliError;
 use crate::render::{
-    write_agent_output, write_bundle_output, write_event_output, write_human,
-    write_mutation_output, write_read_output,
+    write_agent_output as render_agent_output, write_bundle_output as render_bundle_output,
+    write_event_output as render_event_output, write_human as render_human_output,
+    write_mutation_output as render_mutation_output, write_read_output as render_read_output,
 };
 use crate::troubleshoot::{BundleMetadata, BundleMetricsShape};
 use serde::Serialize;
@@ -21,23 +42,37 @@ use std::time::{Duration, SystemTime};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
-/// Emit read-style command output, delegating human rendering to the caller.
-pub(crate) fn emit_read<T: Serialize>(
+// Command response writers.
+
+/// Writes the response for a read-only snapshot command.
+///
+/// Read commands return the admin SDK value directly for `json` and `yaml`.
+/// `agent-json` wraps the same value in the stable dfctl agent envelope with a
+/// `snapshot` type. `human` delegates formatting to the command-specific
+/// closure because each resource needs a different table or summary layout.
+pub(crate) fn write_read_command_output<T: Serialize>(
     stdout: &mut dyn Write,
     output: ReadOutput,
     value: &T,
     human: impl FnOnce() -> Result<String, CliError>,
 ) -> Result<(), CliError> {
     match output {
-        ReadOutput::Human => write_human(stdout, &human()?),
+        ReadOutput::Human => render_human_output(stdout, &human()?),
         ReadOutput::Json | ReadOutput::Yaml | ReadOutput::AgentJson => {
-            write_read_output(stdout, output, value)
+            render_read_output(stdout, output, value)
         }
     }
 }
 
-/// Emit mutation output while preserving the existing JSON/YAML/NDJSON wrappers.
-pub(crate) fn emit_mutation<T: Serialize>(
+/// Writes the response for a mutation command.
+///
+/// Mutations differ from reads because callers need to know whether the
+/// accepted operation ultimately succeeded, timed out, or failed. Machine
+/// output therefore includes the supplied `outcome` next to the command data.
+/// For `json` and `yaml` this is a `{ outcome, data }` object; for `agent-json`
+/// it is the dfctl mutation envelope; for `ndjson` it is a single stream-style
+/// snapshot event. Human output is still command-specific and generated lazily.
+pub(crate) fn write_mutation_command_output<T: Serialize>(
     stdout: &mut dyn Write,
     output: MutationOutput,
     outcome: &str,
@@ -45,34 +80,48 @@ pub(crate) fn emit_mutation<T: Serialize>(
     human: impl FnOnce() -> Result<String, CliError>,
 ) -> Result<(), CliError> {
     match output {
-        MutationOutput::Human => write_human(stdout, &human()?),
+        MutationOutput::Human => render_human_output(stdout, &human()?),
         MutationOutput::Json
         | MutationOutput::Yaml
         | MutationOutput::Ndjson
-        | MutationOutput::AgentJson => write_mutation_output(stdout, output, outcome, value),
+        | MutationOutput::AgentJson => render_mutation_output(stdout, output, outcome, value),
     }
 }
 
-/// Groups shutdown is the only mutation flow with a separate output enum today.
-pub(crate) fn emit_group_shutdown<T: Serialize>(
+/// Writes the response for the group-wide shutdown command.
+///
+/// Group shutdown currently has its own CLI output enum because it predates the
+/// shared mutation output path and still has group-specific compatibility
+/// rules. The emitted shape intentionally mirrors mutation output:
+/// human output is delegated, JSON/YAML serialize the raw response or preflight
+/// report, NDJSON emits one snapshot-like event, and agent JSON uses the dfctl
+/// envelope with `group_shutdown` as the resource.
+pub(crate) fn write_group_shutdown_command_output<T: Serialize>(
     stdout: &mut dyn Write,
     output: GroupShutdownOutput,
     value: &T,
     human: impl FnOnce() -> Result<String, CliError>,
 ) -> Result<(), CliError> {
     match output {
-        GroupShutdownOutput::Human => write_human(stdout, &human()?),
-        GroupShutdownOutput::Json => write_read_output(stdout, ReadOutput::Json, value),
-        GroupShutdownOutput::Yaml => write_read_output(stdout, ReadOutput::Yaml, value),
-        GroupShutdownOutput::Ndjson => write_event_output(stdout, "snapshot", value),
+        GroupShutdownOutput::Human => render_human_output(stdout, &human()?),
+        GroupShutdownOutput::Json => render_read_output(stdout, ReadOutput::Json, value),
+        GroupShutdownOutput::Yaml => render_read_output(stdout, ReadOutput::Yaml, value),
+        GroupShutdownOutput::Ndjson => render_event_output(stdout, "snapshot", value),
         GroupShutdownOutput::AgentJson => {
-            write_agent_output(stdout, "mutation", Some("group_shutdown"), value)
+            render_agent_output(stdout, "mutation", Some("group_shutdown"), value)
         }
     }
 }
 
-/// Write bundle output either to stdout or to an explicit file path.
-pub(crate) fn write_bundle<T: Serialize>(
+// Support bundle writing.
+
+/// Writes support-bundle output either to stdout or to an explicit file path.
+///
+/// Passing no path, or `-`, writes to stdout. Passing a real path creates or
+/// truncates that file before serialization. On Unix, files are created with
+/// `0600` permissions because support bundles may contain logs, endpoint names,
+/// or other operational details that should not become world-readable.
+pub(crate) fn write_support_bundle_output<T: Serialize>(
     stdout: &mut dyn Write,
     output: BundleOutput,
     path: Option<&Path>,
@@ -80,20 +129,21 @@ pub(crate) fn write_bundle<T: Serialize>(
 ) -> Result<(), CliError> {
     match path {
         Some(path) if path != Path::new("-") => {
-            let mut file = create_private_file(path).map_err(|err| {
+            let mut file = create_private_bundle_file(path).map_err(|err| {
                 CliError::config(format!(
                     "failed to create bundle output file '{}': {err}",
                     path.display()
                 ))
             })?;
-            write_bundle_output(&mut file, output, value)
+            render_bundle_output(&mut file, output, value)
         }
-        _ => write_bundle_output(stdout, output, value),
+        _ => render_bundle_output(stdout, output, value),
     }
 }
 
+/// Creates a private file for support-bundle output on Unix platforms.
 #[cfg(unix)]
-fn create_private_file(path: &Path) -> Result<fs::File, std::io::Error> {
+fn create_private_bundle_file(path: &Path) -> Result<fs::File, std::io::Error> {
     fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -102,8 +152,12 @@ fn create_private_file(path: &Path) -> Result<fs::File, std::io::Error> {
         .open(path)
 }
 
+/// Creates a bundle file on non-Unix platforms.
+///
+/// The standard library does not expose a portable mode API, so this falls back
+/// to the platform default permissions.
 #[cfg(not(unix))]
-fn create_private_file(path: &Path) -> Result<fs::File, std::io::Error> {
+fn create_private_bundle_file(path: &Path) -> Result<fs::File, std::io::Error> {
     fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -111,8 +165,15 @@ fn create_private_file(path: &Path) -> Result<fs::File, std::io::Error> {
         .open(path)
 }
 
-/// Reject invalid output combinations before command execution starts.
-pub(crate) fn validate_mutation_output(
+// Watch output validation and conversion.
+
+/// Rejects invalid mutation output combinations before command execution.
+///
+/// One-shot mutations may emit human, JSON, YAML, or agent JSON. Watch mode is
+/// an ongoing stream, so it may only emit human updates or NDJSON events.
+/// Conversely, NDJSON without `--watch` would imply a stream where no stream
+/// exists, so it is rejected as invalid usage.
+pub(crate) fn validate_mutation_output_mode(
     output: MutationOutput,
     watch: bool,
 ) -> Result<(), CliError> {
@@ -132,8 +193,13 @@ pub(crate) fn validate_mutation_output(
     Ok(())
 }
 
-/// Reject invalid output combinations for the client-side groups shutdown watch.
-pub(crate) fn validate_group_shutdown_output(
+/// Rejects invalid output combinations for group shutdown.
+///
+/// This mirrors `validate_mutation_output_mode` but accepts the group-shutdown
+/// enum used by that command's CLI surface. Keeping this separate avoids
+/// accidental enum conversions in command code while preserving the same
+/// user-facing rules.
+pub(crate) fn validate_group_shutdown_output_mode(
     output: GroupShutdownOutput,
     watch: bool,
 ) -> Result<(), CliError> {
@@ -153,8 +219,12 @@ pub(crate) fn validate_group_shutdown_output(
     Ok(())
 }
 
-/// Convert mutation output to stream output once watch compatibility is known.
-pub(crate) fn stream_output_from_mutation(
+/// Converts mutation output to stream output after watch compatibility checks.
+///
+/// Watch implementations only know about `StreamOutput`, so mutation commands
+/// call this after validation to bridge from the command-specific output enum to
+/// the stream renderer enum.
+pub(crate) fn mutation_output_to_stream_output(
     output: MutationOutput,
 ) -> Result<StreamOutput, CliError> {
     match output {
@@ -166,8 +236,10 @@ pub(crate) fn stream_output_from_mutation(
     }
 }
 
-/// Convert group shutdown output to stream output once watch compatibility is known.
-pub(crate) fn group_shutdown_stream_output(
+/// Converts group shutdown output to stream output after compatibility checks.
+///
+/// This is the group-shutdown equivalent of `mutation_output_to_stream_output`.
+pub(crate) fn group_shutdown_output_to_stream_output(
     output: GroupShutdownOutput,
 ) -> Result<StreamOutput, CliError> {
     match output {
@@ -181,18 +253,29 @@ pub(crate) fn group_shutdown_stream_output(
     }
 }
 
-/// Normalize admin operation wait options to the current wire contract.
-pub(crate) fn operation_options(wait: bool, wait_timeout: Duration) -> OperationOptions {
+// Admin operation option helpers.
+
+/// Normalizes CLI wait options to the admin SDK operation contract.
+///
+/// The CLI accepts a `Duration`, while the admin API currently expects a
+/// whole-second timeout. This helper keeps that conversion consistent across
+/// rollout, reconfiguration, shutdown, and group shutdown commands.
+pub(crate) fn build_operation_options(wait: bool, wait_timeout: Duration) -> OperationOptions {
     OperationOptions {
         wait,
-        timeout_secs: duration_to_secs_ceil(wait_timeout),
+        timeout_secs: duration_to_admin_timeout_secs(wait_timeout),
     }
 }
 
 use otap_df_admin_api::operations::OperationOptions;
 
-/// The admin API accepts whole-second timeout values, so callers round up.
-pub(crate) fn duration_to_secs_ceil(duration: Duration) -> u64 {
+/// Converts a duration to the whole-second timeout accepted by the admin API.
+///
+/// Partial seconds are rounded up so the effective timeout is never shorter
+/// than the user's requested duration. The result is clamped to at least one
+/// second because a zero-second wait timeout would make long-running operations
+/// fail immediately in surprising ways.
+pub(crate) fn duration_to_admin_timeout_secs(duration: Duration) -> u64 {
     let secs = duration.as_secs();
     if duration.subsec_nanos() == 0 {
         secs
@@ -202,8 +285,12 @@ pub(crate) fn duration_to_secs_ceil(duration: Duration) -> u64 {
     .max(1)
 }
 
-/// Bundle metadata is computed client side at collection time.
-pub(crate) fn bundle_metadata(logs_limit: usize, shape: MetricsShape) -> BundleMetadata {
+/// Builds the metadata block embedded in support bundles.
+///
+/// Support bundles combine status, logs, metrics, and diagnoses collected by
+/// the CLI. The metadata records when collection happened and which collection
+/// limits or shapes were used so a later reader can interpret the evidence.
+pub(crate) fn build_bundle_metadata(logs_limit: usize, shape: MetricsShape) -> BundleMetadata {
     BundleMetadata {
         collected_at: humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
         logs_limit,
@@ -214,7 +301,102 @@ pub(crate) fn bundle_metadata(logs_limit: usize, shape: MetricsShape) -> BundleM
     }
 }
 
-/// Helper for human stream output used by event/log streaming paths.
-pub(crate) fn write_stream_line(stdout: &mut dyn Write, content: &str) -> Result<(), CliError> {
-    write_human(stdout, content)
+// Stream helper.
+
+/// Writes one human-formatted stream line.
+///
+/// This is a small adapter used by watch paths that already assembled their
+/// human text and only need the shared flushing/error behavior from
+/// `write_human`.
+pub(crate) fn write_human_stream_line(
+    stdout: &mut dyn Write,
+    content: &str,
+) -> Result<(), CliError> {
+    render_human_output(stdout, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::cell::Cell;
+
+    /// Scenario: a read command emits machine-readable JSON.
+    /// Guarantees: machine output serializes the data directly and does not pay
+    /// the cost of building human output.
+    #[test]
+    fn read_json_output_does_not_render_human_text() {
+        let value = json!({ "status": "ok" });
+        let mut stdout = Vec::new();
+
+        write_read_command_output(&mut stdout, ReadOutput::Json, &value, || {
+            panic!("human renderer should not run for JSON output")
+        })
+        .expect("write read JSON output");
+
+        let output: Value = serde_json::from_slice(&stdout).expect("valid JSON");
+        assert_eq!(output, value);
+    }
+
+    /// Scenario: a read command emits human-readable output.
+    /// Guarantees: human mode delegates rendering to the command-specific
+    /// closure and writes the returned text.
+    #[test]
+    fn read_human_output_renders_human_text() {
+        let rendered = Cell::new(false);
+        let mut stdout = Vec::new();
+
+        write_read_command_output(
+            &mut stdout,
+            ReadOutput::Human,
+            &json!({ "ignored": true }),
+            || {
+                rendered.set(true);
+                Ok("human table".to_string())
+            },
+        )
+        .expect("write read human output");
+
+        assert!(rendered.get());
+        assert_eq!(
+            String::from_utf8(stdout).expect("utf8 output"),
+            "human table\n"
+        );
+    }
+
+    /// Scenario: a mutation command emits one-shot JSON output.
+    /// Guarantees: machine output includes both the operation outcome and the
+    /// command data payload.
+    #[test]
+    fn mutation_json_output_includes_outcome_and_data() {
+        let value = json!({ "rolloutId": "rollout-1" });
+        let mut stdout = Vec::new();
+
+        write_mutation_command_output(
+            &mut stdout,
+            MutationOutput::Json,
+            "accepted",
+            &value,
+            || panic!("human renderer should not run for JSON output"),
+        )
+        .expect("write mutation JSON output");
+
+        let output: Value = serde_json::from_slice(&stdout).expect("valid JSON");
+        assert_eq!(output["outcome"], "accepted");
+        assert_eq!(output["data"], value);
+    }
+
+    /// Scenario: CLI durations are converted for admin operation requests.
+    /// Guarantees: partial seconds round up and zero durations become a minimum
+    /// one-second timeout.
+    #[test]
+    fn admin_timeout_seconds_round_up_and_clamp_to_one() {
+        assert_eq!(duration_to_admin_timeout_secs(Duration::ZERO), 1);
+        assert_eq!(duration_to_admin_timeout_secs(Duration::from_millis(1)), 1);
+        assert_eq!(duration_to_admin_timeout_secs(Duration::from_secs(2)), 2);
+        assert_eq!(
+            duration_to_admin_timeout_secs(Duration::from_millis(2500)),
+            3
+        );
+    }
 }

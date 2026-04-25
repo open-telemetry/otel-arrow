@@ -14,8 +14,9 @@ use crate::args::{
 use crate::commands::fetch::fetch_logs;
 use crate::commands::filters::group_event_filters;
 use crate::commands::output::{
-    bundle_metadata, duration_to_secs_ceil, emit_group_shutdown, emit_read,
-    group_shutdown_stream_output, operation_options, validate_group_shutdown_output, write_bundle,
+    build_bundle_metadata, build_operation_options, duration_to_admin_timeout_secs,
+    group_shutdown_output_to_stream_output, validate_group_shutdown_output_mode,
+    write_group_shutdown_command_output, write_read_command_output, write_support_bundle_output,
 };
 use crate::commands::watch::{watch_group_events, watch_groups_shutdown};
 use crate::error::CliError;
@@ -50,7 +51,7 @@ pub(crate) async fn run(
         GroupsCommand::Describe(output) => {
             let status = client.groups().status().await?;
             let report = describe_groups(status);
-            emit_read(stdout, output.output, &report, || {
+            write_read_command_output(stdout, output.output, &report, || {
                 Ok(render_groups_describe(&human_style, &report))
             })
         }
@@ -68,7 +69,7 @@ pub(crate) async fn run(
                     extract_events_from_group_status(&status, Some(&filters)),
                     args.filters.tail,
                 );
-                emit_read(stdout, args.output.output, &events, || {
+                write_read_command_output(stdout, args.output.output, &events, || {
                     Ok(crate::render::render_events(&human_style, &events))
                 })
             }
@@ -107,7 +108,7 @@ pub(crate) async fn run(
                     &MetricsFilters::default(),
                 );
                 let report = diagnose_group_shutdown(&status, &logs, &metrics);
-                emit_read(stdout, args.output.output, &report, || {
+                write_read_command_output(stdout, args.output.output, &report, || {
                     Ok(render_diagnosis(&human_style, &report))
                 })
             }
@@ -152,37 +153,37 @@ pub(crate) async fn run(
                 }
             };
             let bundle = GroupsBundle {
-                metadata: bundle_metadata(args.logs_limit, args.metrics_shape),
+                metadata: build_bundle_metadata(args.logs_limit, args.metrics_shape),
                 describe,
                 diagnosis,
                 logs,
                 metrics,
             };
-            write_bundle(stdout, args.output, args.file.as_deref(), &bundle)
+            write_support_bundle_output(stdout, args.output, args.file.as_deref(), &bundle)
         }
         GroupsCommand::Status(output) => {
             let status = client.groups().status().await?;
-            emit_read(stdout, output.output, &status, || {
+            write_read_command_output(stdout, output.output, &status, || {
                 Ok(render_groups_status(&human_style, &status))
             })
         }
         GroupsCommand::Shutdown(args) => {
-            validate_group_shutdown_output(args.output, args.watch)?;
+            validate_group_shutdown_output_mode(args.output, args.watch)?;
             if args.dry_run {
                 let report = GroupShutdownPreflight {
                     mode: "preflight-only",
                     operation: "groups.shutdown",
                     server_validation: false,
                     wait: args.wait,
-                    wait_timeout_secs: duration_to_secs_ceil(args.wait_timeout),
+                    wait_timeout_secs: duration_to_admin_timeout_secs(args.wait_timeout),
                 };
-                return emit_group_shutdown(stdout, args.output, &report, || {
+                return write_group_shutdown_command_output(stdout, args.output, &report, || {
                     Ok(render_group_shutdown_preflight(&human_style, &report))
                 });
             }
             let response = client
                 .groups()
-                .shutdown(&operation_options(args.wait, args.wait_timeout))
+                .shutdown(&build_operation_options(args.wait, args.wait_timeout))
                 .await?;
             if args.watch {
                 watch_groups_shutdown(
@@ -192,12 +193,12 @@ pub(crate) async fn run(
                     response.status,
                     args.wait_timeout,
                     args.watch_interval,
-                    group_shutdown_stream_output(args.output)?,
+                    group_shutdown_output_to_stream_output(args.output)?,
                 )
                 .await?;
                 return Ok(());
             }
-            emit_group_shutdown(stdout, args.output, &response, || {
+            write_group_shutdown_command_output(stdout, args.output, &response, || {
                 Ok(render_groups_shutdown(&human_style, &response))
             })?;
             match response.status {

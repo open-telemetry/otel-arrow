@@ -21,7 +21,7 @@ pub use args::{Cli, ErrorFormat};
 pub const BIN_NAME: &str = "dfctl";
 
 pub(crate) use commands::fetch::{fetch_logs, fetch_pipeline_describe};
-pub(crate) use commands::output::bundle_metadata;
+pub(crate) use commands::output::build_bundle_metadata;
 pub(crate) use pipeline_config_io::{
     parse_pipeline_config_content, serialize_pipeline_config_yaml,
 };

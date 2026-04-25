@@ -316,7 +316,7 @@ async fn refresh_pipelines_view(
                 diagnose_pipeline_shutdown(&describe, shutdown_status.as_ref(), &logs, &metrics)
             };
             let bundle = PipelineBundle {
-                metadata: crate::bundle_metadata(args.logs_tail, MetricsShape::Compact),
+                metadata: crate::build_bundle_metadata(args.logs_tail, MetricsShape::Compact),
                 describe,
                 diagnosis,
                 rollout_status,
@@ -469,7 +469,7 @@ async fn refresh_groups_view(
             )?;
             let diagnosis = diagnose_group_shutdown(&subset, &logs, &metrics);
             let bundle = GroupsBundle {
-                metadata: crate::bundle_metadata(args.logs_tail, MetricsShape::Compact),
+                metadata: crate::build_bundle_metadata(args.logs_tail, MetricsShape::Compact),
                 describe,
                 diagnosis,
                 logs,

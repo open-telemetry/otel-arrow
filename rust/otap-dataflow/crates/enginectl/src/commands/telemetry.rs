@@ -6,7 +6,7 @@
 use crate::args::{LogsCommand, MetricsCommand, MetricsShape, TelemetryArgs, TelemetryCommand};
 use crate::commands::fetch::fetch_logs;
 use crate::commands::filters::{log_filters_from_args, metrics_filters_from_args};
-use crate::commands::output::emit_read;
+use crate::commands::output::write_read_command_output;
 use crate::commands::watch::{watch_logs, watch_metrics};
 use crate::error::CliError;
 use crate::render::{render_logs, render_metrics_compact, render_metrics_full};
@@ -30,7 +30,7 @@ pub(crate) async fn run(
                     &fetch_logs(client, args.after, args.limit).await?,
                     &log_filters_from_args(args.filters),
                 );
-                emit_read(stdout, args.output.output, &logs, || {
+                write_read_command_output(stdout, args.output.output, &logs, || {
                     Ok(render_logs(&human_style, &logs))
                 })
             }
@@ -61,7 +61,7 @@ pub(crate) async fn run(
                             &client.telemetry().metrics_compact(&options).await?,
                             &metrics_filters_from_args(args.filters),
                         );
-                        emit_read(stdout, args.output.output, &metrics, || {
+                        write_read_command_output(stdout, args.output.output, &metrics, || {
                             Ok(render_metrics_compact(&human_style, &metrics))
                         })
                     }
@@ -70,7 +70,7 @@ pub(crate) async fn run(
                             &client.telemetry().metrics(&options).await?,
                             &metrics_filters_from_args(args.filters),
                         );
-                        emit_read(stdout, args.output.output, &metrics, || {
+                        write_read_command_output(stdout, args.output.output, &metrics, || {
                             Ok(render_metrics_full(&human_style, &metrics))
                         })
                     }

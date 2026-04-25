@@ -12,8 +12,9 @@ use crate::commands::fetch::{
 };
 use crate::commands::filters::{pipeline_event_filters, pipeline_scope_filters};
 use crate::commands::output::{
-    bundle_metadata, duration_to_secs_ceil, emit_mutation, emit_read, operation_options,
-    stream_output_from_mutation, validate_mutation_output, write_bundle,
+    build_bundle_metadata, build_operation_options, duration_to_admin_timeout_secs,
+    mutation_output_to_stream_output, validate_mutation_output_mode, write_mutation_command_output,
+    write_read_command_output, write_support_bundle_output,
 };
 use crate::commands::watch::{watch_pipeline_events, watch_rollout, watch_shutdown};
 use crate::error::CliError;
@@ -52,7 +53,7 @@ pub(crate) async fn run(
                     args.target.pipeline_group_id, args.target.pipeline_id
                 )));
             };
-            emit_read(stdout, args.output.output, &details, || {
+            write_read_command_output(stdout, args.output.output, &details, || {
                 render_pipeline_details(&human_style, &details)
             })
         }
@@ -63,7 +64,7 @@ pub(crate) async fn run(
                 &args.target.pipeline_id,
             )
             .await?;
-            emit_read(stdout, args.output.output, &report, || {
+            write_read_command_output(stdout, args.output.output, &report, || {
                 Ok(render_pipeline_describe(&human_style, &report))
             })
         }
@@ -89,7 +90,7 @@ pub(crate) async fn run(
                     ),
                     args.filters.tail,
                 );
-                emit_read(stdout, args.output.output, &events, || {
+                write_read_command_output(stdout, args.output.output, &events, || {
                     Ok(crate::render::render_events(&human_style, &events))
                 })
             }
@@ -151,7 +152,7 @@ pub(crate) async fn run(
                 };
                 let report =
                     diagnose_pipeline_rollout(&describe, rollout_status.as_ref(), &logs, &metrics);
-                emit_read(stdout, args.output.output, &report, || {
+                write_read_command_output(stdout, args.output.output, &report, || {
                     Ok(render_diagnosis(&human_style, &report))
                 })
             }
@@ -196,7 +197,7 @@ pub(crate) async fn run(
                     &logs,
                     &metrics,
                 );
-                emit_read(stdout, args.output.output, &report, || {
+                write_read_command_output(stdout, args.output.output, &report, || {
                     Ok(render_diagnosis(&human_style, &report))
                 })
             }
@@ -290,7 +291,7 @@ pub(crate) async fn run(
                 }
             };
             let bundle = PipelineBundle {
-                metadata: bundle_metadata(args.logs_limit, args.metrics_shape),
+                metadata: build_bundle_metadata(args.logs_limit, args.metrics_shape),
                 describe,
                 diagnosis,
                 rollout_status,
@@ -298,7 +299,7 @@ pub(crate) async fn run(
                 logs,
                 metrics,
             };
-            write_bundle(stdout, args.output, args.file.as_deref(), &bundle)
+            write_support_bundle_output(stdout, args.output, args.file.as_deref(), &bundle)
         }
         PipelinesCommand::Status(args) => {
             let status = client
@@ -311,7 +312,7 @@ pub(crate) async fn run(
                     args.target.pipeline_group_id, args.target.pipeline_id
                 )));
             };
-            emit_read(stdout, args.output.output, &status, || {
+            write_read_command_output(stdout, args.output.output, &status, || {
                 Ok(render_pipeline_status(&human_style, &status))
             })
         }
@@ -320,7 +321,7 @@ pub(crate) async fn run(
                 .pipelines()
                 .livez(&args.target.pipeline_group_id, &args.target.pipeline_id)
                 .await?;
-            emit_read(stdout, args.output.output, &probe, || {
+            write_read_command_output(stdout, args.output.output, &probe, || {
                 Ok(render_pipeline_probe(&human_style, &probe))
             })
         }
@@ -329,12 +330,12 @@ pub(crate) async fn run(
                 .pipelines()
                 .readyz(&args.target.pipeline_group_id, &args.target.pipeline_id)
                 .await?;
-            emit_read(stdout, args.output.output, &probe, || {
+            write_read_command_output(stdout, args.output.output, &probe, || {
                 Ok(render_pipeline_probe(&human_style, &probe))
             })
         }
         PipelinesCommand::Reconfigure(args) => {
-            validate_mutation_output(args.output, args.watch)?;
+            validate_mutation_output_mode(args.output, args.watch)?;
             let pipeline = load_pipeline_config(
                 &args.file,
                 &args.target.pipeline_group_id,
@@ -342,8 +343,8 @@ pub(crate) async fn run(
             )?;
             let request = otap_df_admin_api::pipelines::ReconfigureRequest {
                 pipeline,
-                step_timeout_secs: duration_to_secs_ceil(args.step_timeout),
-                drain_timeout_secs: duration_to_secs_ceil(args.drain_timeout),
+                step_timeout_secs: duration_to_admin_timeout_secs(args.step_timeout),
+                drain_timeout_secs: duration_to_admin_timeout_secs(args.drain_timeout),
             };
             if args.dry_run {
                 let report = PipelineReconfigurePreflight {
@@ -358,11 +359,15 @@ pub(crate) async fn run(
                     step_timeout_secs: request.step_timeout_secs,
                     drain_timeout_secs: request.drain_timeout_secs,
                     wait: args.wait,
-                    wait_timeout_secs: duration_to_secs_ceil(args.wait_timeout),
+                    wait_timeout_secs: duration_to_admin_timeout_secs(args.wait_timeout),
                 };
-                return emit_mutation(stdout, args.output, "preflight_only", &report, || {
-                    Ok(render_pipeline_reconfigure_preflight(&human_style, &report))
-                });
+                return write_mutation_command_output(
+                    stdout,
+                    args.output,
+                    "preflight_only",
+                    &report,
+                    || Ok(render_pipeline_reconfigure_preflight(&human_style, &report)),
+                );
             }
             let outcome = client
                 .pipelines()
@@ -370,15 +375,19 @@ pub(crate) async fn run(
                     &args.target.pipeline_group_id,
                     &args.target.pipeline_id,
                     &request,
-                    &operation_options(args.wait, args.wait_timeout),
+                    &build_operation_options(args.wait, args.wait_timeout),
                 )
                 .await?;
 
             match outcome {
                 otap_df_admin_api::pipelines::ReconfigureOutcome::Accepted(status) => {
-                    emit_mutation(stdout, args.output, "accepted", &status, || {
-                        Ok(render_rollout_status(&human_style, &status))
-                    })?;
+                    write_mutation_command_output(
+                        stdout,
+                        args.output,
+                        "accepted",
+                        &status,
+                        || Ok(render_rollout_status(&human_style, &status)),
+                    )?;
                     if args.watch {
                         let rollout_id = status.rollout_id.clone();
                         watch_rollout(
@@ -389,7 +398,7 @@ pub(crate) async fn run(
                             &args.target.pipeline_id,
                             &rollout_id,
                             args.watch_interval,
-                            stream_output_from_mutation(args.output)?,
+                            mutation_output_to_stream_output(args.output)?,
                             Some(status),
                         )
                         .await
@@ -398,12 +407,12 @@ pub(crate) async fn run(
                     }
                 }
                 otap_df_admin_api::pipelines::ReconfigureOutcome::Completed(status) => {
-                    emit_mutation(stdout, args.output, "completed", &status, || {
+                    write_mutation_command_output(stdout, args.output, "completed", &status, || {
                         Ok(render_rollout_status(&human_style, &status))
                     })
                 }
                 otap_df_admin_api::pipelines::ReconfigureOutcome::Failed(status) => {
-                    emit_mutation(stdout, args.output, "failed", &status, || {
+                    write_mutation_command_output(stdout, args.output, "failed", &status, || {
                         Ok(render_rollout_status(&human_style, &status))
                     })?;
                     Err(CliError::outcome_failure(format!(
@@ -412,9 +421,13 @@ pub(crate) async fn run(
                     )))
                 }
                 otap_df_admin_api::pipelines::ReconfigureOutcome::TimedOut(status) => {
-                    emit_mutation(stdout, args.output, "timed_out", &status, || {
-                        Ok(render_rollout_status(&human_style, &status))
-                    })?;
+                    write_mutation_command_output(
+                        stdout,
+                        args.output,
+                        "timed_out",
+                        &status,
+                        || Ok(render_rollout_status(&human_style, &status)),
+                    )?;
                     Err(CliError::outcome_failure(format!(
                         "pipeline rollout '{}' timed out",
                         status.rollout_id
@@ -423,7 +436,7 @@ pub(crate) async fn run(
             }
         }
         PipelinesCommand::Shutdown(args) => {
-            validate_mutation_output(args.output, args.watch)?;
+            validate_mutation_output_mode(args.output, args.watch)?;
             if args.dry_run {
                 let report = PipelineShutdownPreflight {
                     mode: "preflight-only",
@@ -434,26 +447,34 @@ pub(crate) async fn run(
                         pipeline_id: args.target.pipeline_id.clone(),
                     },
                     wait: args.wait,
-                    wait_timeout_secs: duration_to_secs_ceil(args.wait_timeout),
+                    wait_timeout_secs: duration_to_admin_timeout_secs(args.wait_timeout),
                 };
-                return emit_mutation(stdout, args.output, "preflight_only", &report, || {
-                    Ok(render_pipeline_shutdown_preflight(&human_style, &report))
-                });
+                return write_mutation_command_output(
+                    stdout,
+                    args.output,
+                    "preflight_only",
+                    &report,
+                    || Ok(render_pipeline_shutdown_preflight(&human_style, &report)),
+                );
             }
             let outcome = client
                 .pipelines()
                 .shutdown(
                     &args.target.pipeline_group_id,
                     &args.target.pipeline_id,
-                    &operation_options(args.wait, args.wait_timeout),
+                    &build_operation_options(args.wait, args.wait_timeout),
                 )
                 .await?;
 
             match outcome {
                 otap_df_admin_api::pipelines::ShutdownOutcome::Accepted(status) => {
-                    emit_mutation(stdout, args.output, "accepted", &status, || {
-                        Ok(render_shutdown_status(&human_style, &status))
-                    })?;
+                    write_mutation_command_output(
+                        stdout,
+                        args.output,
+                        "accepted",
+                        &status,
+                        || Ok(render_shutdown_status(&human_style, &status)),
+                    )?;
                     if args.watch {
                         let shutdown_id = status.shutdown_id.clone();
                         watch_shutdown(
@@ -464,7 +485,7 @@ pub(crate) async fn run(
                             &args.target.pipeline_id,
                             &shutdown_id,
                             args.watch_interval,
-                            stream_output_from_mutation(args.output)?,
+                            mutation_output_to_stream_output(args.output)?,
                             Some(status),
                         )
                         .await
@@ -473,12 +494,12 @@ pub(crate) async fn run(
                     }
                 }
                 otap_df_admin_api::pipelines::ShutdownOutcome::Completed(status) => {
-                    emit_mutation(stdout, args.output, "completed", &status, || {
+                    write_mutation_command_output(stdout, args.output, "completed", &status, || {
                         Ok(render_shutdown_status(&human_style, &status))
                     })
                 }
                 otap_df_admin_api::pipelines::ShutdownOutcome::Failed(status) => {
-                    emit_mutation(stdout, args.output, "failed", &status, || {
+                    write_mutation_command_output(stdout, args.output, "failed", &status, || {
                         Ok(render_shutdown_status(&human_style, &status))
                     })?;
                     Err(CliError::outcome_failure(format!(
@@ -487,9 +508,13 @@ pub(crate) async fn run(
                     )))
                 }
                 otap_df_admin_api::pipelines::ShutdownOutcome::TimedOut(status) => {
-                    emit_mutation(stdout, args.output, "timed_out", &status, || {
-                        Ok(render_shutdown_status(&human_style, &status))
-                    })?;
+                    write_mutation_command_output(
+                        stdout,
+                        args.output,
+                        "timed_out",
+                        &status,
+                        || Ok(render_shutdown_status(&human_style, &status)),
+                    )?;
                     Err(CliError::outcome_failure(format!(
                         "pipeline shutdown '{}' timed out",
                         status.shutdown_id
@@ -506,7 +531,7 @@ pub(crate) async fn run(
                     &args.target.rollout_id,
                 )
                 .await?;
-                emit_read(stdout, args.output.output, &status, || {
+                write_read_command_output(stdout, args.output.output, &status, || {
                     Ok(render_rollout_status(&human_style, &status))
                 })
             }
@@ -533,7 +558,7 @@ pub(crate) async fn run(
                 &args.target.rollout_id,
             )
             .await?;
-            emit_read(stdout, args.output.output, &status, || {
+            write_read_command_output(stdout, args.output.output, &status, || {
                 Ok(render_rollout_status(&human_style, &status))
             })
         }
@@ -546,7 +571,7 @@ pub(crate) async fn run(
                     &args.target.shutdown_id,
                 )
                 .await?;
-                emit_read(stdout, args.output.output, &status, || {
+                write_read_command_output(stdout, args.output.output, &status, || {
                     Ok(render_shutdown_status(&human_style, &status))
                 })
             }
@@ -573,7 +598,7 @@ pub(crate) async fn run(
                 &args.target.shutdown_id,
             )
             .await?;
-            emit_read(stdout, args.output.output, &status, || {
+            write_read_command_output(stdout, args.output.output, &status, || {
                 Ok(render_shutdown_status(&human_style, &status))
             })
         }

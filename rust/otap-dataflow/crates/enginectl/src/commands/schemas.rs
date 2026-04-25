@@ -5,7 +5,7 @@
 
 use crate::BIN_NAME;
 use crate::args::SchemasArgs;
-use crate::commands::output::emit_read;
+use crate::commands::output::write_read_command_output;
 use crate::error::CliError;
 use crate::style::HumanStyle;
 use serde::Serialize;
@@ -45,7 +45,7 @@ pub(crate) fn run(
                 description: entry.description,
                 schema: schema_for(entry.name),
             };
-            emit_read(stdout, args.output.output, &document, || {
+            write_read_command_output(stdout, args.output.output, &document, || {
                 Ok(render_schema(&human_style, &document))
             })
         }
@@ -55,7 +55,7 @@ pub(crate) fn run(
                 generated_at: now(),
                 schemas: schema_entries(),
             };
-            emit_read(stdout, args.output.output, &catalog, || {
+            write_read_command_output(stdout, args.output.output, &catalog, || {
                 Ok(render_catalog(&human_style, &catalog))
             })
         }

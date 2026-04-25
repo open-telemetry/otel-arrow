@@ -4,7 +4,7 @@
 //! Engine-scoped command runner.
 
 use crate::args::{EngineArgs, EngineCommand};
-use crate::commands::output::emit_read;
+use crate::commands::output::write_read_command_output;
 use crate::error::CliError;
 use crate::render::{render_engine_probe, render_engine_status};
 use crate::style::HumanStyle;
@@ -21,19 +21,19 @@ pub(crate) async fn run(
     match args.command {
         EngineCommand::Status(output) => {
             let status = client.engine().status().await?;
-            emit_read(stdout, output.output, &status, || {
+            write_read_command_output(stdout, output.output, &status, || {
                 Ok(render_engine_status(&human_style, &status))
             })
         }
         EngineCommand::Livez(output) => {
             let probe = client.engine().livez().await?;
-            emit_read(stdout, output.output, &probe, || {
+            write_read_command_output(stdout, output.output, &probe, || {
                 Ok(render_engine_probe(&human_style, &probe))
             })
         }
         EngineCommand::Readyz(output) => {
             let probe = client.engine().readyz().await?;
-            emit_read(stdout, output.output, &probe, || {
+            write_read_command_output(stdout, output.output, &probe, || {
                 Ok(render_engine_probe(&human_style, &probe))
             })
         }

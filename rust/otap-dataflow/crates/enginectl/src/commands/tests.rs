@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::args::{ColorChoice, MetricsShape, MutationOutput, StreamOutput};
-use crate::commands::output::{duration_to_secs_ceil, validate_mutation_output};
+use crate::commands::output::{duration_to_admin_timeout_secs, validate_mutation_output_mode};
 use crate::commands::watch::{watch_logs, watch_metrics};
 use crate::crypto::ensure_crypto_provider;
 use crate::pipeline_config_io::load_pipeline_config;
@@ -1056,12 +1056,12 @@ async fn groups_shutdown_watch_ndjson_uses_status_heuristic() {
 /// are accepted.
 #[test]
 fn mutation_output_validation_enforces_watch_contract() {
-    assert!(validate_mutation_output(MutationOutput::Human, true).is_ok());
-    assert!(validate_mutation_output(MutationOutput::Ndjson, true).is_ok());
-    assert!(validate_mutation_output(MutationOutput::Json, true).is_err());
-    assert!(validate_mutation_output(MutationOutput::AgentJson, true).is_err());
-    assert!(validate_mutation_output(MutationOutput::AgentJson, false).is_ok());
-    assert!(validate_mutation_output(MutationOutput::Ndjson, false).is_err());
+    assert!(validate_mutation_output_mode(MutationOutput::Human, true).is_ok());
+    assert!(validate_mutation_output_mode(MutationOutput::Ndjson, true).is_ok());
+    assert!(validate_mutation_output_mode(MutationOutput::Json, true).is_err());
+    assert!(validate_mutation_output_mode(MutationOutput::AgentJson, true).is_err());
+    assert!(validate_mutation_output_mode(MutationOutput::AgentJson, false).is_ok());
+    assert!(validate_mutation_output_mode(MutationOutput::Ndjson, false).is_err());
 }
 
 /// Scenario: CLI timeout arguments contain fractional seconds or millisecond
@@ -1070,9 +1070,12 @@ fn mutation_output_validation_enforces_watch_contract() {
 /// the admin API wire contract.
 #[test]
 fn duration_rounds_up_to_whole_seconds() {
-    assert_eq!(duration_to_secs_ceil(Duration::from_millis(1)), 1);
-    assert_eq!(duration_to_secs_ceil(Duration::from_secs(2)), 2);
-    assert_eq!(duration_to_secs_ceil(Duration::from_millis(2500)), 3);
+    assert_eq!(duration_to_admin_timeout_secs(Duration::from_millis(1)), 1);
+    assert_eq!(duration_to_admin_timeout_secs(Duration::from_secs(2)), 2);
+    assert_eq!(
+        duration_to_admin_timeout_secs(Duration::from_millis(2500)),
+        3
+    );
 }
 
 /// Scenario: the pipeline config helpers load a YAML file from disk for a
