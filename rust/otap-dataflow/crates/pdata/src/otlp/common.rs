@@ -1672,4 +1672,220 @@ mod test {
         // tag(1) + placeholder(4) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 9
         assert_eq!(buf.len(), 9);
     }
+
+    // ----------------------------------------------------------------------
+    // Tests for the bounded/transactional encoding mechanisms introduced for
+    // self-tracing. These lock in invariants that several call-sites depend on
+    // (try_encode rollback, the difference between encode_len_delimited vs
+    // encode_len_delimited_partial, with_max_remaining nesting, truncating
+    // string encoders, and UTF-8-safe truncation).
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn try_encode_rolls_back_buffer_on_error() {
+        use crate::otlp::common::{Dropped, EncodeResult, ProtoBuffer};
+
+        let mut buf = ProtoBuffer::new();
+        buf.encode_string(1, "before").unwrap();
+        let snapshot: Vec<u8> = buf.as_ref().to_vec();
+        let snapshot_len = buf.len();
+
+        let res: EncodeResult = buf.try_encode(|b| {
+            // Write several bytes successfully, then fail.
+            b.encode_string(2, "partial-content")?;
+            b.encode_varint(0xDEAD_BEEF)?;
+            Err(Dropped)
+        });
+        assert_eq!(res, Err(Dropped));
+        assert_eq!(buf.len(), snapshot_len, "len must be restored");
+        assert_eq!(buf.as_ref(), snapshot.as_slice(), "bytes must be identical");
+
+        // try_encode on Ok preserves all writes.
+        let res: EncodeResult = buf.try_encode(|b| b.encode_string(3, "ok"));
+        assert!(res.is_ok());
+        assert!(buf.len() > snapshot_len);
+    }
+
+    #[test]
+    fn encode_len_delimited_does_not_patch_on_inner_err() {
+        // Regression: encode_len_delimited (non-partial) on inner Err leaves
+        // an unpatched 0-length placeholder followed by partial content bytes.
+        // The bytes are wire-corrupt and MUST be wrapped in try_encode by
+        // callers (this is the bug that bit encode_body_string).
+        use crate::otlp::common::{Dropped, EncodeResult, ProtoBufferInline};
+
+        let mut buf = ProtoBufferInline::<8>::with_inline();
+        let r: EncodeResult = buf.encode_len_delimited(1, |b| {
+            // Write enough partial content to force overflow before completion.
+            b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA")?;
+            Ok(())
+        });
+        assert_eq!(r, Err(Dropped));
+        // tag(1) + placeholder(1) was written, plus partial content bytes.
+        // The placeholder is unpatched (still 0x00), so a parser would read
+        // the body as 0 bytes and continue at the partial content as garbage.
+        assert!(buf.len() >= 2, "tag + placeholder were written");
+        assert_eq!(buf.as_ref()[1], 0x00, "placeholder remained unpatched");
+
+        // The safe pattern: wrap in try_encode so partial bytes roll back.
+        let mut buf = ProtoBufferInline::<8>::with_inline();
+        let r: EncodeResult = buf.try_encode(|b| {
+            b.encode_len_delimited(1, |b| b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA"))
+        });
+        assert_eq!(r, Err(Dropped));
+        assert_eq!(buf.len(), 0, "try_encode rolled back partial bytes");
+    }
+
+    #[test]
+    fn encode_len_delimited_partial_patches_length_on_err() {
+        use crate::otlp::common::{Dropped, EncodeResult, ProtoBufferInline};
+        use crate::proto::consts::wire_types;
+
+        // Partial mode: even when the inner closure returns Err mid-way, the
+        // length placeholder reflects the bytes actually written, leaving a
+        // valid LEN-prefixed wire field that can be parsed.
+        let mut buf = ProtoBufferInline::<128>::with_inline();
+        // Pre-write a marker field so we can detect mis-parsing of trailing data.
+        buf.encode_string(7, "marker").unwrap();
+        let len_before = buf.len();
+
+        let r: EncodeResult = buf.encode_len_delimited_partial(1, |b| {
+            b.extend_from_slice(b"abcde")?;
+            // Caller signals "partial" via Err to outer logic, but bytes stay.
+            Err(Dropped)
+        });
+        assert_eq!(r, Err(Dropped));
+
+        // Read back: tag for field 1 (LEN), then patched length, then 5 bytes.
+        let bytes = &buf.as_ref()[len_before..];
+        assert_eq!(bytes[0], (1 << 3) | wire_types::LEN as u8);
+        // Placeholder width 1 expected (small remaining after marker).
+        let payload_len = bytes[1] as usize;
+        assert_eq!(payload_len, 5, "length patched to written-bytes count");
+        assert_eq!(&bytes[2..2 + payload_len], b"abcde");
+
+        // Append another field after the partial one and confirm it parses.
+        buf.encode_string(8, "after").unwrap();
+        // Find "after" by scanning — it must be intact at the end.
+        assert!(
+            buf.as_ref().windows(5).any(|w| w == b"after"),
+            "subsequent field is intact when partial used"
+        );
+    }
+
+    #[test]
+    fn encode_string_truncating_three_outcomes() {
+        use crate::otlp::common::{Dropped, ProtoBufferInline, TRUNCATION_SUFFIX};
+
+        // (a) Full fit -> Ok(false), no suffix.
+        let mut buf = ProtoBufferInline::<64>::with_inline();
+        let r = buf.encode_string_truncating(1, "hi");
+        assert_eq!(r, Ok(false));
+        assert!(!buf.as_ref().windows(5).any(|w| w == TRUNCATION_SUFFIX));
+
+        // (b) Truncated -> Ok(true), output ends with suffix.
+        let mut buf = ProtoBufferInline::<32>::with_inline();
+        let long = "X".repeat(1000);
+        let r = buf.encode_string_truncating(1, &long);
+        assert_eq!(r, Ok(true));
+        assert!(buf.as_ref().ends_with(TRUNCATION_SUFFIX));
+
+        // (c) Hard fail -> Err(Dropped), buffer unchanged.
+        let mut buf = ProtoBufferInline::<4>::with_inline();
+        // Pre-fill so remaining < min_overhead.
+        buf.extend_from_slice(b"abcd").unwrap();
+        let snapshot: Vec<u8> = buf.as_ref().to_vec();
+        let r = buf.encode_string_truncating(1, &long);
+        assert_eq!(r, Err(Dropped));
+        assert_eq!(buf.as_ref(), snapshot.as_slice(), "no partial bytes on hard fail");
+    }
+
+    #[test]
+    fn encode_string_truncating_round_trips_via_prost() {
+        use crate::otlp::common::ProtoBufferInline;
+        use prost::Message;
+
+        // Encode a truncating string as if it were the "string_value" of an
+        // AnyValue (field 1 = string) and decode via prost to confirm the
+        // bytes form a valid wire message ending in the truncation suffix.
+        let mut buf = ProtoBufferInline::<48>::with_inline();
+        let long = "Y".repeat(500);
+        let r = buf.encode_string_truncating(1, &long);
+        assert_eq!(r, Ok(true));
+
+        // Decode as AnyValue (field 1 = string_value).
+        use crate::proto::opentelemetry::common::v1::AnyValue;
+        let av = AnyValue::decode(buf.into_bytes()).expect("valid wire bytes");
+        let s = match av.value {
+            Some(crate::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s,
+            other => panic!("unexpected AnyValue variant: {:?}", other),
+        };
+        assert!(s.ends_with("[...]"), "decoded value should end with truncation suffix");
+        assert!(s.starts_with("YY"));
+    }
+
+    #[test]
+    fn truncate_at_utf8_boundary_does_not_panic() {
+        use crate::otlp::common::ProtoBufferInline;
+
+        // A string of 4-byte UTF-8 chars (😀) where truncation lands mid-char.
+        let s: String = std::iter::repeat('😀').take(20).collect();
+        let mut buf = ProtoBufferInline::<24>::with_inline();
+        let r = buf.encode_string_truncating(1, &s);
+        assert!(matches!(r, Ok(true) | Err(_)));
+        // If anything was written, it must be valid UTF-8 between the length
+        // prefix and the [...] suffix (no byte-boundary panic during encoding).
+        // Just exercising the path is the test.
+    }
+
+    #[test]
+    fn with_max_remaining_restores_outer_limit() {
+        use crate::otlp::common::ProtoBufferInline;
+
+        let mut buf = ProtoBufferInline::<64>::with_inline();
+        let outer_limit = buf.limit();
+        let outer_remaining = buf.remaining();
+
+        let inner_seen = buf.with_max_remaining(8, |b| {
+            assert!(b.remaining() <= 8, "scoped limit applied");
+            b.remaining()
+        });
+        assert_eq!(inner_seen, 8.min(outer_remaining));
+
+        assert_eq!(buf.limit(), outer_limit, "outer limit restored");
+        assert_eq!(buf.remaining(), outer_remaining);
+    }
+
+    #[test]
+    fn with_max_remaining_nests_correctly() {
+        use crate::otlp::common::ProtoBufferInline;
+
+        let mut buf = ProtoBufferInline::<128>::with_inline();
+        let outer = buf.limit();
+
+        buf.with_max_remaining(50, |b| {
+            let mid = b.limit();
+            assert!(mid <= b.len() + 50);
+            b.with_max_remaining(10, |b| {
+                assert!(b.remaining() <= 10);
+            });
+            // After inner returns, mid-level limit must be restored, not outer.
+            assert_eq!(b.limit(), mid, "inner restoration goes to enclosing scope");
+        });
+        assert_eq!(buf.limit(), outer, "fully restored after both scopes");
+    }
+
+    #[test]
+    fn with_max_remaining_saturates_and_honors_outer() {
+        use crate::otlp::common::ProtoBufferInline;
+
+        let mut buf = ProtoBufferInline::<32>::with_inline();
+        let outer = buf.limit();
+
+        // usize::MAX should saturate without overflow and never exceed outer.
+        buf.with_max_remaining(usize::MAX, |b| {
+            assert_eq!(b.limit(), outer, "scoped limit clamped to outer");
+        });
+        assert_eq!(buf.limit(), outer);
+    }
 }
