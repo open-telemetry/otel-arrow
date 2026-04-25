@@ -175,7 +175,6 @@ pub struct FilterPlan {
     /// rows of the root batch
     pub attribute_filter: Option<Composite<AttributesFilterPlan>>,
 
-    // TODO revisit these comments which might no longer make sense
     /// General-purpose expression-based filter. Used for cases that cannot be handled by the
     /// fast-path `source_filter` and `attribute_filter`, such as comparing two fields,
     /// cross-scope comparisons (e.g. `severity_number == attributes["x"]`), function calls
@@ -480,7 +479,6 @@ impl FilterPlan {
         let planner = ExprLogicalPlanner::default();
 
         // build the comparison expression using the expr system's scoping logic
-        // let expr = Self::build_scoped_comparison_expr(left, binary_op, right)?;
         Ok(FilterPlan::from_expr(ExprFilterPlan::Binary(
             ExprBinaryFilterPlan {
                 left: planner.plan_scalar_expr(left_expr, functions)?,
@@ -888,7 +886,6 @@ impl ToExec for FilterPlan {
             .as_ref()
             .map(|logical_expr| {
                 // clone the logical expr since into_physical consumes it
-                // TODO - reconsider this cloning?
                 ExprFilterExec::try_from_plan(logical_expr.clone())
             })
             .transpose()?;
@@ -1003,7 +1000,7 @@ pub enum ExprFilterPlan {
     /// A unary expression evaluation that should create boolean value
     Unary(ScopedLogicalExpr),
 
-    /// The selection vector will be created by evaluating both sides and doing a comparison
+    /// The selection vector will be created by evaluating both sides comparing the results
     Binary(ExprBinaryFilterPlan),
 }
 
@@ -1177,8 +1174,7 @@ impl FilterExec {
         Ok(result)
     }
 
-    // TODO double check the comments still make sense after I refactor it ...
-    /// Evaluates a [`ScopedPhysicalExpr`] and converts the result to a `BooleanArray` selection
+    /// Evaluates a [`ExprFilterExec`] and converts the result to a `BooleanArray` selection
     /// vector aligned to the root record batch.
     ///
     /// The expression may produce results from any data scope (root, attributes, join result, or
@@ -1232,6 +1228,8 @@ impl FilterExec {
                     }
                 }
 
+                // Check if the results of the left & right expressions effectively have
+                // equivalent row orders. If not, we need to align them by performing a join.
                 if !left_result.data_scope.can_combine(&right_result.data_scope) {
                     let (join_rb, joined_scope) = join(&left_result, &right_result, otap_batch)?;
                     // safety: we can expect here because `join` will always create columns with

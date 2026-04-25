@@ -20,28 +20,33 @@ use crate::pipeline::project::anyval::{
     arrow_type_to_any_value_type, extract_type_from_any_value_struct, is_any_value_data_type,
 };
 
-/// This kernel implements comparing two [`ColumnarValue`]s using the given operation, with some
-/// additional edge case handling beyond what is found in [`arrow::compute::kernels:cmp`]. The
-/// motivation is that this can be used in cases where we're comparing OTAP columns which:
+/// This kernel implements comparing two [`ColumnarValue`]s using the given [`Operation`], with
+/// some additional edge case handling beyond what is found in [`arrow::compute::kernels:cmp`].
+/// The motivation is that this can be used in cases where we're comparing OTAP columns which:
 ///
 /// - may resolve to different types that are not known at compile time (for example, comparing two
-///   attributes in expressions like `attributes["x"] == attributes["y"]`). In this case, if the
+///   attributes in expressions like `attributes["x"] == attributes["y"]`). In such cases, if the
 ///   types do not match, the expression will always resolve to false unless the operator is
 ///   [`NotEq`](Operator::NotEq). The exception to this is if one or both sides are a struct
-///   representing an `AnyValue`, in which case it will compare the appropriate values columns.
+///   representing an `AnyValue`, in which case it will compare the appropriate values columns
 ///
 /// - may resolve to `null` on one or both sides. Arrow's `cmp` kernels typically return `null` for
 ///   these cases. By contrast, this function will always return `false` for comparisons where at
-///   least one side is null, except for the special case of `null == null` in which case it
-///   returns `true`.
+///   least one side is null, except for special cases of `null == null` and `<not null> != null`
+///   in which cases it will return `true`
 ///
-/// Not all [`Operator`] variants are supported. Currently this only supports: [`Eq`](Operator::Eq),
-/// [`Gt`](Operator::Gt), [`GtEq`](Operator::GtEq), [`Lt`](Operator::Lt), [`LtEq`](Operator::LtEq),
-/// and [`NotEq`](Operator::NotEq). Passing any other operator variant will cause this to return
-/// an error.
+/// Not all [`Operator`] variants are supported. Currently this only supports:
+/// - [`Eq`](Operator::Eq)
+/// - [`Gt`](Operator::Gt)
+/// - [`GtEq`](Operator::GtEq)
+/// - [`Lt`](Operator::Lt)
+/// - [`LtEq`](Operator::LtEq)
+/// - [`NotEq`](Operator::NotEq)
+///
+/// Passing any other operator variant will cause this to return an error.
 ///
 /// This function also does not, currently, perform any type coercion internally. It is the
-/// responsibility of the caller to have already coerced the types if necessary.
+/// responsibility of the caller to have already coerced the types for comparison if necessary.
 ///
 pub(crate) fn compare(
     left: &ColumnarValue,
@@ -186,14 +191,15 @@ pub(crate) fn compare(
             // Iterate through each values column and check which rows pass the comparison. We'll
             // combine the results for each type later on.
             //
-            // Perf note: Admittedly, this isn't the most well optimized way to do this, as it does
-            // the comparison for the entire length of the  array for all types, including for rows
+            // Perf note: this isn't the most well optimized way to do this, as it does the
+            // comparison for the entire length of the  array for all types, including for rows
             // that aren't of the given type. This would be inefficient if some types are present
             // sparsely. However, I expect this code path to be quite rare, as most useful
-            // comparisons involving `AnyValue` would be an attribute on one or both sides and  for
-            // a given attribute key there's a convention that all values will have the same type
-            // and in these cases, the engine will have already have coerced the AnyValue struct
-            // into a scalar we'll have taken a different branch in this function.
+            // comparisons involving `AnyValue` would be an attribute on one or both sides and for
+            // a given attribute key there's a convention that all values will have the same type.
+            // In such cases where the type is homogenous, the engine will have already have
+            // coerced the struct into a simple column array containing only the values and we'll
+            // have already taken a different code path.
             let left_arr = left.to_array(num_rows)?;
             let left_fields = left_arr.as_struct().fields();
             let mut value_type_comparisons = Vec::with_capacity(left_fields.len() + 1);
