@@ -266,6 +266,18 @@ impl<PData> EffectHandlerCore<PData> {
         self.metrics_reporter.report(metrics)
     }
 
+    /// Reports processor-local wakeup scheduler metrics, if this processor uses
+    /// the local wakeup service.
+    pub fn report_local_scheduler_metrics(
+        &self,
+        metrics_reporter: &mut MetricsReporter,
+    ) -> Result<(), TelemetryError> {
+        if let Some(scheduler) = &self.local_scheduler {
+            scheduler.report_metrics(metrics_reporter)?;
+        }
+        Ok(())
+    }
+
     /// Re-usable function to send a runtime control message. This returns a reference
     /// to the sender to place in a cancelation, for example.
     async fn send_runtime_ctrl_msg(
