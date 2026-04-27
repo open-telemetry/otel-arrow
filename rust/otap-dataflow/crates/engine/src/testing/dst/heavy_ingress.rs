@@ -11,7 +11,6 @@ use crate::control::{
 use crate::message::{ExporterInbox, Message, ProcessorInbox, Receiver};
 use crate::node::NodeType;
 use crate::pipeline_ctrl::PipelineCompletionMsgDispatcher;
-use crate::stopwatch::StopwatchState;
 use crate::testing::dst::common::{
     DstPData, build_manager, create_mock_control_sender, empty_node_metric_handles, frame,
     setup_dst_runtime, yield_cycles,
@@ -95,7 +94,6 @@ async fn run_backpressure_interblock_seed(seed: u64) {
             MetricsReporter::create_new_and_receiver(16).1,
             DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             TelemetryPolicy::default(),
-            StopwatchState::empty(),
         );
 
         let manager_handle = tokio::task::spawn_local(async move { manager.run().await });

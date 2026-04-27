@@ -16,7 +16,6 @@
 //! `.await` points.
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::Interests;
 use otap_df_telemetry::instrument::{Mmsc, Timer};
@@ -67,8 +66,10 @@ impl ComputeDuration {
     /// The elapsed time is recorded into the `success` or `failed`
     /// accumulator based on the closure's `Result` outcome.
     ///
-    /// When `capture` is provided, the elapsed nanoseconds are also
-    /// accumulated into it so the caller can feed stopwatch metrics.
+    /// Returns `(result, elapsed_ns)` where `elapsed_ns` is the
+    /// wall-clock nanoseconds consumed by `f` (0 when timing is
+    /// disabled).  Callers can use the elapsed value for optional stopwatch
+    /// accumulation.
     ///
     /// The closure-based API structurally prevents the timer from
     /// being held across `.await` — the closure is `FnOnce`, not
@@ -78,9 +79,8 @@ impl ComputeDuration {
     pub fn timed<T, E>(
         &self,
         interests: Interests,
-        capture: Option<&AtomicU64>,
         f: impl FnOnce() -> Result<T, E>,
-    ) -> Result<T, E> {
+    ) -> (Result<T, E>, u64) {
         if interests.contains(Interests::PROCESS_DURATION) {
             let timer = Timer::start();
             let result = f();
@@ -93,12 +93,9 @@ impl ComputeDuration {
             let mut val = acc.get();
             val.record(elapsed);
             acc.set(val);
-            if let Some(cap) = capture {
-                let _ = cap.fetch_add(elapsed as u64, Ordering::Relaxed);
-            }
-            result
+            (result, elapsed as u64)
         } else {
-            f()
+            (f(), 0)
         }
     }
 
@@ -129,9 +126,9 @@ mod tests {
         let active = Interests::PROCESS_DURATION;
 
         // Two Ok results and one Err.
-        let _ = cd.timed(active, None, || Ok::<_, &str>(std::hint::black_box(42)));
-        let _ = cd.timed(active, None, || Ok::<_, &str>(std::hint::black_box(43)));
-        let _ = cd.timed(active, None, || Err::<i32, _>("fail"));
+        let _ = cd.timed(active, || Ok::<_, &str>(std::hint::black_box(42)));
+        let _ = cd.timed(active, || Ok::<_, &str>(std::hint::black_box(43)));
+        let _ = cd.timed(active, || Err::<i32, _>("fail"));
 
         let success_snap = cd.acc_success.get().get();
         assert_eq!(success_snap.count, 2);
@@ -148,51 +145,45 @@ mod tests {
         let (ctx, _) = test_pipeline_ctx();
         let cd = ComputeDuration::new(&ctx);
 
-        let _ = cd.timed(Interests::empty(), None, || Ok::<_, &str>(1));
-        let _ = cd.timed(Interests::empty(), None, || Err::<i32, _>("fail"));
+        let _ = cd.timed(Interests::empty(), || Ok::<_, &str>(1));
+        let _ = cd.timed(Interests::empty(), || Err::<i32, _>("fail"));
 
         assert_eq!(cd.acc_success.get().get().count, 0);
         assert_eq!(cd.acc_failed.get().get().count, 0);
     }
 
-    /// timed_with_capture accumulates elapsed nanos into the external AtomicU64.
+    /// timed() returns elapsed nanoseconds alongside the result.
     #[test]
-    fn timed_with_capture_accumulates_into_atomic() {
+    fn timed_returns_elapsed_nanos() {
         let (ctx, _) = test_pipeline_ctx();
         let cd = ComputeDuration::new(&ctx);
         let active = Interests::PROCESS_DURATION;
-        let capture = AtomicU64::new(0);
 
-        // Two successful calls should accumulate into capture.
-        let _ = cd.timed(active, Some(&capture), || {
-            Ok::<_, &str>(std::hint::black_box(42))
-        });
-        let first = capture.load(Ordering::Relaxed);
-        assert!(first > 0, "first call should capture non-zero nanos");
-
-        let _ = cd.timed(active, Some(&capture), || {
-            Ok::<_, &str>(std::hint::black_box(43))
-        });
-        let second = capture.load(Ordering::Relaxed);
+        // Accumulate multiple calls to ensure a non-zero total
+        // (individual calls may be sub-nanosecond).
+        let mut total_ns = 0u64;
+        for _ in 0..10 {
+            let (_, ns) = cd.timed(active, || Ok::<_, &str>(std::hint::black_box(42)));
+            total_ns += ns;
+        }
         assert!(
-            second >= first,
-            "second call should accumulate: {second} >= {first}"
+            total_ns > 0,
+            "accumulated elapsed should be non-zero after 10 calls"
         );
 
         // Node-level accumulators should also be populated.
-        assert_eq!(cd.acc_success.get().get().count, 2);
+        assert_eq!(cd.acc_success.get().get().count, 10);
     }
 
-    /// timed_with_capture is a no-op (including capture) when interests are disabled.
+    /// timed() returns zero elapsed when interests are disabled.
     #[test]
-    fn timed_with_capture_noop_when_disabled() {
+    fn timed_returns_zero_elapsed_when_disabled() {
         let (ctx, _) = test_pipeline_ctx();
         let cd = ComputeDuration::new(&ctx);
-        let capture = AtomicU64::new(0);
 
-        let _ = cd.timed(Interests::empty(), Some(&capture), || Ok::<_, &str>(1));
+        let (_, elapsed) = cd.timed(Interests::empty(), || Ok::<_, &str>(1));
 
-        assert_eq!(capture.load(Ordering::Relaxed), 0);
+        assert_eq!(elapsed, 0);
         assert_eq!(cd.acc_success.get().get().count, 0);
     }
 
@@ -204,8 +195,8 @@ mod tests {
         let mut cd = ComputeDuration::new(&ctx);
         let active = Interests::PROCESS_DURATION;
 
-        let _ = cd.timed(active, None, || Ok::<_, &str>(1));
-        let _ = cd.timed(active, None, || Err::<i32, _>("fail"));
+        let _ = cd.timed(active, || Ok::<_, &str>(1));
+        let _ = cd.timed(active, || Err::<i32, _>("fail"));
 
         // report() sends a snapshot through the channel; drain it back
         // into the registry so visit_current_metrics can see the values.

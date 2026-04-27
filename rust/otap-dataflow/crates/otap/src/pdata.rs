@@ -18,7 +18,6 @@ use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::stopwatch::StopwatchId;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
     MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
@@ -43,12 +42,12 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
-    /// Active stopwatch accumulators keyed by stopwatch ID.
+    /// Active stopwatch accumulator (nanoseconds).
     ///
-    /// Populated by start nodes, accumulated by every node's send path,
-    /// consumed by stop nodes.  Supports multiple overlapping ranges.
-    /// Empty in the common case (no active stopwatches).
-    stopwatch_accumulators: Vec<(StopwatchId, u64)>,
+    /// `Some(ns)` when a message is inside a stopwatch range (between
+    /// start and stop nodes).  At most one stopwatch can be active at
+    /// a time (non-overlapping ranges).
+    stopwatch_compute_ns: Option<u64>,
 }
 
 impl Context {
@@ -59,7 +58,7 @@ impl Context {
         Self {
             stack: Vec::with_capacity(capacity),
             transport_headers: None,
-            stopwatch_accumulators: Vec::new(),
+            stopwatch_compute_ns: None,
         }
     }
 
@@ -350,46 +349,33 @@ impl otap_df_engine::StampOutputPort for OtapPdata {
 }
 
 impl StopwatchAccumulation for OtapPdata {
-    fn start_stopwatch_accumulators(&mut self, ids: &[StopwatchId]) {
-        for &id in ids {
-            // Only add if not already active (idempotent).
-            if !self
-                .context
-                .stopwatch_accumulators
-                .iter()
-                .any(|(existing, _)| *existing == id)
-            {
-                self.context.stopwatch_accumulators.push((id, 0));
-            }
+    fn start_stopwatch(&mut self) {
+        if self.context.stopwatch_compute_ns.is_some() {
+            otap_df_telemetry::otel_warn!(
+                "stopwatch.overlap",
+                "start_stopwatch called while another stopwatch is active; \
+                 overlapping ranges are not supported — previous accumulator discarded"
+            );
         }
+        self.context.stopwatch_compute_ns = Some(0);
     }
 
     fn add_stopwatch_compute(&mut self, ns: u64) {
-        for (_, acc) in &mut self.context.stopwatch_accumulators {
+        if let Some(acc) = &mut self.context.stopwatch_compute_ns {
             *acc = acc.saturating_add(ns);
         }
     }
 
-    fn take_stopwatch_compute(&mut self, id: StopwatchId) -> Option<u64> {
-        if let Some(pos) = self
-            .context
-            .stopwatch_accumulators
-            .iter()
-            .position(|(sw_id, _)| *sw_id == id)
-        {
-            let (_, total) = self.context.stopwatch_accumulators.remove(pos);
-            Some(total)
-        } else {
-            None
-        }
+    fn take_stopwatch_compute(&mut self) -> Option<u64> {
+        self.context.stopwatch_compute_ns.take()
     }
 }
 
 impl OtapPdata {
-    /// Returns `true` if any stopwatch accumulators are currently active.
+    /// Returns `true` if a stopwatch accumulator is currently active.
     #[must_use]
-    fn has_active_stopwatches(&self) -> bool {
-        !self.context.stopwatch_accumulators.is_empty()
+    fn has_active_stopwatch(&self) -> bool {
+        self.context.stopwatch_compute_ns.is_some()
     }
 }
 
@@ -485,7 +471,7 @@ impl OtapPdata {
             context: Context {
                 stack: Vec::new(),
                 transport_headers: self.context.transport_headers.clone(),
-                stopwatch_accumulators: Vec::new(),
+                stopwatch_compute_ns: None,
             },
             payload: self.payload.clone(),
         }
@@ -698,9 +684,9 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 /// Trait abstracting the stopwatch-related methods available on all EffectHandler types.
 trait StopwatchHandler {
     fn per_message_compute_ns(&self) -> u64;
-    fn stopwatch_start_ids(&self) -> &[StopwatchId];
-    fn stopwatch_stop_ids(&self) -> Vec<StopwatchId>;
-    fn record_stopwatch_stop(&self, id: StopwatchId, total: u64);
+    fn is_stopwatch_start(&self) -> bool;
+    fn is_stopwatch_stop(&self) -> bool;
+    fn record_stopwatch_stop(&self, total: u64);
 }
 
 macro_rules! impl_stopwatch_handler {
@@ -709,14 +695,14 @@ macro_rules! impl_stopwatch_handler {
             fn per_message_compute_ns(&self) -> u64 {
                 self.per_message_compute_ns()
             }
-            fn stopwatch_start_ids(&self) -> &[StopwatchId] {
-                self.stopwatch_start_ids()
+            fn is_stopwatch_start(&self) -> bool {
+                self.is_stopwatch_start()
             }
-            fn stopwatch_stop_ids(&self) -> Vec<StopwatchId> {
-                self.stopwatch_stop_ids()
+            fn is_stopwatch_stop(&self) -> bool {
+                self.is_stopwatch_stop()
             }
-            fn record_stopwatch_stop(&self, id: StopwatchId, total: u64) {
-                self.record_stopwatch_stop(id, total);
+            fn record_stopwatch_stop(&self, total: u64) {
+                self.record_stopwatch_stop(total);
             }
         }
     };
@@ -727,21 +713,21 @@ impl_stopwatch_handler!(otap_df_engine::shared::processor::EffectHandler<OtapPda
 impl_stopwatch_handler!(otap_df_engine::local::receiver::EffectHandler<OtapPdata>);
 impl_stopwatch_handler!(otap_df_engine::shared::receiver::EffectHandler<OtapPdata>);
 
-/// Forward-path stopwatch accumulation supporting overlapping ranges.
+/// Forward-path stopwatch accumulation for non-overlapping ranges.
 fn stopwatch_accumulate(handler: &impl StopwatchHandler, data: &mut OtapPdata) {
-    let start_ids = handler.stopwatch_start_ids();
-    let stop_ids = handler.stopwatch_stop_ids();
-    if start_ids.is_empty() && stop_ids.is_empty() && !data.has_active_stopwatches() {
+    let is_start = handler.is_stopwatch_start();
+    let is_stop = handler.is_stopwatch_stop();
+    if !is_start && !is_stop && !data.has_active_stopwatch() {
         return;
     }
     let compute_ns = handler.per_message_compute_ns();
-    if !start_ids.is_empty() {
-        data.start_stopwatch_accumulators(start_ids);
+    if is_start {
+        data.start_stopwatch();
     }
     data.add_stopwatch_compute(compute_ns);
-    for id in &stop_ids {
-        if let Some(total) = data.take_stopwatch_compute(*id) {
-            handler.record_stopwatch_stop(*id, total);
+    if is_stop {
+        if let Some(total) = data.take_stopwatch_compute() {
+            handler.record_stopwatch_stop(total);
         }
     }
 }
@@ -2089,5 +2075,67 @@ mod test {
             }
             other => panic!("expected DeliverNack, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Stopwatch accumulation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stopwatch_basic_accumulate_and_take() {
+        let mut pdata = create_test_pdata();
+
+        // No accumulator active initially.
+        assert!(!pdata.has_active_stopwatch());
+        assert_eq!(pdata.take_stopwatch_compute(), None);
+
+        // Start → accumulate → take.
+        pdata.start_stopwatch();
+        assert!(pdata.has_active_stopwatch());
+        pdata.add_stopwatch_compute(100);
+        pdata.add_stopwatch_compute(200);
+        assert_eq!(pdata.take_stopwatch_compute(), Some(300));
+
+        // Accumulator consumed.
+        assert!(!pdata.has_active_stopwatch());
+    }
+
+    #[test]
+    fn stopwatch_add_without_start_is_noop() {
+        let mut pdata = create_test_pdata();
+
+        // add_stopwatch_compute without start should be harmless.
+        pdata.add_stopwatch_compute(999);
+        assert!(!pdata.has_active_stopwatch());
+        assert_eq!(pdata.take_stopwatch_compute(), None);
+    }
+
+    #[test]
+    fn stopwatch_runtime_overlap_overwrites_accumulator() {
+        let mut pdata = create_test_pdata();
+
+        // First stopwatch starts and accumulates.
+        pdata.start_stopwatch();
+        pdata.add_stopwatch_compute(100);
+
+        // Second stopwatch starts while first is still active — this is
+        // the 1→3 + 2→4 overlap scenario.  The runtime warning fires
+        // and the accumulator is reset to 0.
+        pdata.start_stopwatch();
+        assert!(pdata.has_active_stopwatch());
+
+        // Only the second stopwatch's compute should be present.
+        pdata.add_stopwatch_compute(50);
+        assert_eq!(pdata.take_stopwatch_compute(), Some(50));
+    }
+
+    #[test]
+    fn stopwatch_clone_without_context_clears_accumulator() {
+        let mut pdata = create_test_pdata();
+        pdata.start_stopwatch();
+        pdata.add_stopwatch_compute(42);
+
+        let cloned = pdata.clone_without_context();
+        assert!(!cloned.has_active_stopwatch());
     }
 }

@@ -400,34 +400,33 @@ impl StampOutputPort for String {
 
 /// Trait for forward-path stopwatch compute accumulation on PData.
 ///
-/// Multiple overlapping stopwatch ranges are supported. Each accumulator
-/// is keyed by `StopwatchId` so they can be started, accumulated, and
-/// finalised independently.
+/// At most one stopwatch range can be active on a given message at a
+/// time (non-overlapping ranges).
 pub trait StopwatchAccumulation {
-    /// Start accumulators for the given stopwatch IDs.
-    /// Called at the start node for each stopwatch that begins here.
-    fn start_stopwatch_accumulators(&mut self, ids: &[stopwatch::StopwatchId]);
+    /// Initialise a fresh stopwatch accumulator (set to 0).
+    /// Called at the start node.
+    fn start_stopwatch(&mut self);
 
-    /// Add `ns` nanoseconds to all active stopwatch accumulators.
+    /// Add `ns` nanoseconds to the active stopwatch accumulator, if any.
     fn add_stopwatch_compute(&mut self, ns: u64);
 
-    /// Remove and return the accumulated total for the given stopwatch ID.
-    /// Returns `None` if that ID was not active.
-    fn take_stopwatch_compute(&mut self, id: stopwatch::StopwatchId) -> Option<u64>;
+    /// Remove and return the accumulated total.
+    /// Returns `None` if no accumulator was active.
+    fn take_stopwatch_compute(&mut self) -> Option<u64>;
 }
 
 impl StopwatchAccumulation for () {
-    fn start_stopwatch_accumulators(&mut self, _ids: &[stopwatch::StopwatchId]) {}
+    fn start_stopwatch(&mut self) {}
     fn add_stopwatch_compute(&mut self, _ns: u64) {}
-    fn take_stopwatch_compute(&mut self, _id: stopwatch::StopwatchId) -> Option<u64> {
+    fn take_stopwatch_compute(&mut self) -> Option<u64> {
         None
     }
 }
 
 impl StopwatchAccumulation for String {
-    fn start_stopwatch_accumulators(&mut self, _ids: &[stopwatch::StopwatchId]) {}
+    fn start_stopwatch(&mut self) {}
     fn add_stopwatch_compute(&mut self, _ns: u64) {}
-    fn take_stopwatch_compute(&mut self, _id: stopwatch::StopwatchId) -> Option<u64> {
+    fn take_stopwatch_compute(&mut self) -> Option<u64> {
         None
     }
 }

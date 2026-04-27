@@ -45,12 +45,15 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
 use crate::processor::ProcessorRuntimeRequirements;
+use crate::stopwatch::StopwatchMetrics;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::instrument::Mmsc;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -124,6 +127,19 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<Sender<PData>>,
+    /// Accumulated synchronous compute duration (nanoseconds) for the
+    /// current PData message.  Reset to 0 before each `process()` call
+    /// and added to when the processor calls `timed()`.
+    per_message_compute_ns: Cell<u64>,
+    /// Whether this node is a stopwatch start node.
+    stopwatch_is_start: bool,
+    /// Metric set for the stopwatch where this node is the stop node.
+    /// `None` when this node is not a stopwatch stop node.
+    /// Reported periodically via [`report_stopwatch`], not on every message.
+    stopwatch_stop_metric: Option<MetricSet<StopwatchMetrics>>,
+    /// Local Mmsc accumulator for stopwatch stop observations.
+    /// Drained into `stopwatch_stop_metric` on periodic telemetry collection.
+    stopwatch_stop_acc: Cell<Mmsc>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -138,7 +154,14 @@ impl<PData> EffectHandler<PData> {
     ) -> Self {
         let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
         let router = OutputRouter::new(node_id, msg_senders, default_port);
-        EffectHandler { core, router }
+        EffectHandler {
+            core,
+            router,
+            per_message_compute_ns: Cell::new(0),
+            stopwatch_is_start: false,
+            stopwatch_stop_metric: None,
+            stopwatch_stop_acc: Cell::new(Mmsc::default()),
+        }
     }
 
     /// Returns the id of the processor associated with this handler.
@@ -181,55 +204,71 @@ impl<PData> EffectHandler<PData> {
     /// in nanoseconds for the current PData message.
     #[must_use]
     pub fn per_message_compute_ns(&self) -> u64 {
-        self.core.per_message_compute_ns()
+        self.per_message_compute_ns.get()
     }
 
-    /// Returns the stopwatch IDs for which this node is a start node.
+    /// Reset the per-message compute accumulator to zero.
+    ///
+    /// Called at the start of each PData message processing cycle so that
+    /// `timed()` calls within a single `process()` invocation accumulate
+    /// fresh values.
+    pub(crate) fn reset_per_message_compute_ns(&self) {
+        self.per_message_compute_ns.set(0);
+    }
+
+    /// Sets stopwatch start/stop roles for this node.
+    pub(crate) fn set_stopwatch_roles(
+        &mut self,
+        is_start: bool,
+        stop_metric: Option<MetricSet<StopwatchMetrics>>,
+    ) {
+        self.stopwatch_is_start = is_start;
+        self.stopwatch_stop_metric = stop_metric;
+    }
+
+    /// Returns whether this node is a stopwatch start node.
     #[must_use]
-    pub fn stopwatch_start_ids(&self) -> &[crate::stopwatch::StopwatchId] {
-        &self.core.stopwatch_start_ids
+    pub fn is_stopwatch_start(&self) -> bool {
+        self.stopwatch_is_start
     }
 
-    /// Record `total` nanoseconds for each stopwatch where this node is
-    /// the stop node and the given ID matches, then report the snapshot
-    /// so the telemetry dispatcher can pick it up.
-    pub fn record_stopwatch_stop(&self, id: crate::stopwatch::StopwatchId, total: u64) {
-        let mut guard = self
-            .core
-            .stopwatch_stop_metrics
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        for (sw_id, metric_set) in guard.iter_mut() {
-            if *sw_id == id {
-                metric_set.compute_duration_success.record(total as f64);
-                if self
-                    .core
-                    .metrics_reporter
-                    .try_report_snapshot(metric_set.snapshot())
-                    .is_ok()
-                {
-                    metric_set.clear_values();
-                }
-            }
+    /// Returns whether this node is a stopwatch stop node.
+    #[must_use]
+    pub fn is_stopwatch_stop(&self) -> bool {
+        self.stopwatch_stop_metric.is_some()
+    }
+
+    /// Record `total` nanoseconds into the local stopwatch accumulator.
+    ///
+    /// This is called on the send path at the stop node.  The observation
+    /// is accumulated into a local `Mmsc` and drained into the `MetricSet`
+    /// on the next periodic [`report_stopwatch`] call — matching the
+    /// `ComputeDuration` reporting pattern.
+    pub fn record_stopwatch_stop(&self, total: u64) {
+        let mut acc = self.stopwatch_stop_acc.get();
+        acc.record(total as f64);
+        self.stopwatch_stop_acc.set(acc);
+    }
+
+    /// Drain accumulated stopwatch observations into the MetricSet and
+    /// report to the telemetry collector.
+    ///
+    /// Called by the engine on periodic `CollectTelemetry` and at
+    /// shutdown — the same cadence as `ComputeDuration::report`.
+    pub(crate) fn report_stopwatch(&mut self) {
+        if let Some(metric_set) = self.stopwatch_stop_metric.as_mut() {
+            let acc = self.stopwatch_stop_acc.replace(Mmsc::default());
+            metric_set.compute_duration.merge(acc);
+            let _ = self.core.metrics_reporter.report(metric_set);
         }
-    }
-
-    /// Returns the stopwatch IDs for which this node is a stop node.
-    pub fn stopwatch_stop_ids(&self) -> Vec<crate::stopwatch::StopwatchId> {
-        let guard = self
-            .core
-            .stopwatch_stop_metrics
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        guard.iter().map(|(id, _)| *id).collect()
     }
 
     /// Time a synchronous, fallible closure if process-duration timing
     /// is enabled.
     ///
-    /// Delegates to [`ComputeDuration::timed_with_capture`] with this
-    /// handler's precomputed interests.  Duration is recorded into the
-    /// `ok` or `err` accumulator based on the closure's `Result` outcome
+    /// Delegates to [`ComputeDuration::timed`] with this handler's
+    /// precomputed interests.  Duration is recorded into the `ok` or
+    /// `err` accumulator based on the closure's `Result` outcome
     /// **and** accumulated into the per-message compute counter so the
     /// engine can stamp it into the context frame for stopwatch metrics.
     ///
@@ -241,11 +280,12 @@ impl<PData> EffectHandler<PData> {
         cd: &ComputeDuration,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
-        cd.timed(
-            self.core.node_interests(),
-            Some(&self.core.per_message_compute_ns),
-            f,
-        )
+        let (result, elapsed_ns) = cd.timed(self.core.node_interests(), f);
+        if elapsed_ns > 0 {
+            self.per_message_compute_ns
+                .set(self.per_message_compute_ns.get().saturating_add(elapsed_ns));
+        }
+        result
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -840,11 +880,10 @@ mod tests {
         assert_eq!(counts, (0, 0));
     }
 
-    /// Verify that record_stopwatch_stop resets the MetricSet after reporting,
-    /// so that successive calls produce delta snapshots rather than
-    /// monotonically growing cumulative values.
+    /// Verify that record_stopwatch_stop accumulates into the local Mmsc
+    /// and report_stopwatch drains into the MetricSet and reports.
     #[test]
-    fn record_stopwatch_stop_resets_after_report() {
+    fn stopwatch_accumulate_then_report() {
         use crate::context::ControllerContext;
         use crate::stopwatch::{StopwatchAttributeSet, StopwatchMetrics};
         use otap_df_config::node::NodeKind;
@@ -876,38 +915,40 @@ mod tests {
             None,
             metrics_reporter,
         );
-        eh.core
-            .set_stopwatch_roles(Vec::new(), vec![(0, metric_set)]);
+        eh.set_stopwatch_roles(false, Some(metric_set));
 
-        // First recording.
-        eh.record_stopwatch_stop(0, 1000);
+        // Record two observations — should accumulate in the local Mmsc,
+        // not touch the MetricSet yet.
+        eh.record_stopwatch_stop(1000);
+        eh.record_stopwatch_stop(2000);
 
-        // Read the local MetricSet state after the first call.
-        let guard = eh.core.stopwatch_stop_metrics.lock().unwrap();
-        let snap_after_first = guard[0].1.compute_duration_success.get();
-        drop(guard);
+        let acc = eh.stopwatch_stop_acc.get().get();
+        assert_eq!(acc.count, 2, "local Mmsc should have 2 observations");
+        assert!((acc.sum - 3000.0).abs() < f64::EPSILON);
 
-        // BUG: without reset, count keeps growing. After fix, count should be 0
-        // because the snapshot was sent and the local Mmsc was cleared.
-        // This assertion documents the expected post-fix behavior.
+        // MetricSet should still be empty before report.
+        let ms_snap = eh
+            .stopwatch_stop_metric
+            .as_ref()
+            .unwrap()
+            .compute_duration
+            .get();
+        assert_eq!(ms_snap.count, 0, "MetricSet should be empty before report");
+
+        // report_stopwatch drains the accumulator into the MetricSet.
+        eh.report_stopwatch();
+
+        // Accumulator should be drained.
+        let acc_after = eh.stopwatch_stop_acc.get().get();
+        assert_eq!(acc_after.count, 0, "accumulator should be drained");
+
+        // Another record + report cycle should work independently.
+        eh.record_stopwatch_stop(500);
+        eh.report_stopwatch();
+        let acc_final = eh.stopwatch_stop_acc.get().get();
         assert_eq!(
-            snap_after_first.count, 0,
-            "MetricSet should be reset after successful report (count should be 0, got {})",
-            snap_after_first.count,
-        );
-
-        // Second recording.
-        eh.record_stopwatch_stop(0, 2000);
-
-        let guard = eh.core.stopwatch_stop_metrics.lock().unwrap();
-        let snap_after_second = guard[0].1.compute_duration_success.get();
-        drop(guard);
-
-        // After fix: should be a fresh delta with count=0 (just reported).
-        assert_eq!(
-            snap_after_second.count, 0,
-            "Second call should also reset after report (count should be 0, got {})",
-            snap_after_second.count,
+            acc_final.count, 0,
+            "accumulator drained after second report"
         );
     }
 }

@@ -27,7 +27,7 @@ use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
-use crate::stopwatch::{StopwatchId, StopwatchMetrics};
+use crate::stopwatch::StopwatchMetrics;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -149,6 +149,7 @@ pub enum ProcessorWrapper<PData> {
 ///
 /// This allows external control over the message processing loop, useful for testing and custom
 /// processing scenarios.
+#[allow(clippy::large_enum_variant)]
 pub enum ProcessorWrapperRuntime<PData> {
     /// A processor with a `!Send` implementation.
     Local {
@@ -513,8 +514,8 @@ impl<PData> ProcessorWrapper<PData> {
             metrics_reporter,
             node_interests,
             None,
-            Vec::new(),
-            Vec::new(),
+            false,
+            None,
         )
         .await
     }
@@ -526,8 +527,8 @@ impl<PData> ProcessorWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
-        stopwatch_start_ids: Vec<StopwatchId>,
-        stopwatch_stop_metrics: Vec<(StopwatchId, MetricSet<StopwatchMetrics>)>,
+        stopwatch_is_start: bool,
+        stopwatch_stop_metric: Option<MetricSet<StopwatchMetrics>>,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode,
@@ -552,10 +553,8 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
-                effect_handler.core.set_stopwatch_roles(
-                    stopwatch_start_ids.clone(),
-                    stopwatch_stop_metrics.clone(),
-                );
+                effect_handler
+                    .set_stopwatch_roles(stopwatch_is_start, stopwatch_stop_metric.clone());
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -563,12 +562,21 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    effect_handler.core.reset_per_message_compute_ns();
+                    effect_handler.reset_per_message_compute_ns();
+                    if effect_handler.is_stopwatch_stop()
+                        && matches!(
+                            &msg,
+                            Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                        )
+                    {
+                        effect_handler.report_stopwatch();
+                    }
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
+                effect_handler.report_stopwatch();
                 processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
@@ -591,9 +599,6 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics);
-                effect_handler
-                    .core
-                    .set_stopwatch_roles(stopwatch_start_ids, stopwatch_stop_metrics);
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -601,7 +606,6 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    effect_handler.core.reset_per_message_compute_ns();
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
