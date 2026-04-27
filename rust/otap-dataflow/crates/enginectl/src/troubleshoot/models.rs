@@ -187,48 +187,81 @@ pub struct GroupShutdownWatchSnapshot {
     pub pipelines: Vec<GroupShutdownWatchPipeline>,
 }
 
+/// Controls how much metric detail a support bundle carries.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BundleMetricsShape {
+    /// Compact metrics are smaller and optimized for quick diagnosis.
     Compact,
+    /// Full metrics preserve the verbose admin API metrics payload.
     Full,
 }
 
+/// Metadata describing how and when a support bundle was collected.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleMetadata {
+    /// RFC 3339 timestamp recorded by the CLI at collection time.
     pub collected_at: String,
+    /// Maximum number of retained log entries requested for the bundle.
     pub logs_limit: usize,
+    /// Metrics detail level included in the bundle.
     pub metrics_shape: BundleMetricsShape,
 }
 
+/// Metrics payload embedded in a support bundle.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "shape", content = "data", rename_all = "snake_case")]
 pub enum BundleMetrics {
+    /// Compact metrics response from the admin API.
     Compact(telemetry::CompactMetricsResponse),
+    /// Full metrics response from the admin API.
     Full(telemetry::MetricsResponse),
 }
 
+/// Fleet-wide troubleshooting package emitted by `dfctl groups bundle`.
+///
+/// A group bundle captures the evidence needed to investigate group-level
+/// readiness or shutdown issues without issuing several separate commands. It
+/// is a point-in-time CLI artifact and may contain sensitive telemetry or
+/// operational data.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupsBundle {
+    /// Collection timestamp and capture options.
     pub metadata: BundleMetadata,
+    /// Group status, summary, and recent events.
     pub describe: GroupsDescribeReport,
+    /// Diagnosis derived from status, logs, and metrics.
     pub diagnosis: DiagnosisReport,
+    /// Retained logs collected from the admin API.
     pub logs: telemetry::LogsResponse,
+    /// Metrics collected at the requested detail level.
     pub metrics: BundleMetrics,
 }
 
+/// Pipeline-scoped troubleshooting package emitted by `dfctl pipelines bundle`.
+///
+/// A pipeline bundle captures describe output, diagnosis, logs, metrics, and
+/// optional operation status for one pipeline. It is intended for incident
+/// handoff, offline inspection, and agent-assisted troubleshooting.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineBundle {
+    /// Collection timestamp and capture options.
     pub metadata: BundleMetadata,
+    /// Pipeline details, status, probes, and recent events.
     pub describe: PipelineDescribeReport,
+    /// Diagnosis derived from pipeline evidence.
     pub diagnosis: DiagnosisReport,
+    /// Optional rollout status included when the command targets a rollout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_status: Option<pipelines::RolloutStatus>,
+    /// Optional shutdown status included when the command targets a shutdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shutdown_status: Option<pipelines::ShutdownStatus>,
+    /// Retained logs collected from the admin API.
     pub logs: telemetry::LogsResponse,
+    /// Metrics collected at the requested detail level.
     pub metrics: BundleMetrics,
 }

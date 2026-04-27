@@ -271,9 +271,17 @@ dfctl groups bundle --file shutdown-bundle.json
 dfctl pipelines bundle "$GROUP" "$PIPE" --output yaml > pipeline-bundle.yaml
 ```
 
-Bundles can contain pipeline configuration, retained logs, diagnosis evidence,
-and metrics. When written with `--file` on Unix, `dfctl` creates the file with
-owner-only permissions.
+A `dfctl` support bundle is a point-in-time troubleshooting package. It is not
+a live engine data bundle. It collects the evidence an operator or agent usually
+needs to investigate an incident without running several commands manually:
+description data, diagnosis output, retained logs, metrics, and optional
+rollout or shutdown status.
+
+Use a group bundle for fleet-wide shutdown or readiness questions. Use a
+pipeline bundle when the investigation is scoped to one pipeline. Bundles are
+not redacted today and may include telemetry content, endpoint names, pipeline
+configuration, and other operational data. When written with `--file` on Unix,
+`dfctl` creates the file with owner-only permissions.
 
 Watch coordinated shutdown progress client-side:
 

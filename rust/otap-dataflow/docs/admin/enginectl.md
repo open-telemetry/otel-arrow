@@ -225,6 +225,24 @@ contexts. Agent mode changes defaults only:
 
 Explicit `--output`, `--error-format`, and `--color` flags always win.
 
+## Support Bundles
+
+A `dfctl` support bundle is a point-in-time troubleshooting package, not a live
+engine data bundle. It is intended for incident handoff between operators,
+automation, and agents when a single command should capture the evidence needed
+to investigate a problem.
+
+Group bundles collect fleet-wide status, diagnosis, retained logs, and metrics.
+Pipeline bundles collect the same kind of evidence for one pipeline and may also
+include rollout or shutdown status when requested. Use bundles when a diagnosis
+needs to be shared, archived, or inspected offline; use `describe`, `diagnose`,
+`events`, `logs`, or `metrics` directly when you only need one narrow view.
+
+Bundle output supports `json`, `yaml`, and `agent-json`. Bundles are not
+redacted today and may contain sensitive telemetry, endpoint names, pipeline
+configuration, diagnosis evidence, and operational metadata. Files written with
+`--file` are created with owner-only permissions on Unix.
+
 ## Command Catalog
 
 `dfctl commands` emits a human-readable table of runnable commands. It is local
