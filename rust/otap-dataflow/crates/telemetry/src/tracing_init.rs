@@ -448,7 +448,7 @@ mod tests {
             let setup = test_setup(internal_async_provider(reporter), level("info"));
 
             // Use enough long-string attributes to overflow any reasonable
-            // ENCODE_INLINE (well above 256 bytes worth of payload).
+            // LOG_ARGUMENTS_ENCODE_INLINE (well above 256 bytes worth of payload).
             setup.with_subscriber_ignoring_env(|| {
                 otel_info!(
                     "overflow.test",

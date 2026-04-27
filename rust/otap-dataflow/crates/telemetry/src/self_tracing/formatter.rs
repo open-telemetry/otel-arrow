@@ -4,7 +4,9 @@
 //! An alternative to Tokio fmt::layer().
 
 use super::encoder::level_to_severity_number;
-use super::{BorrowedLogRecord, LogContext, LogContextFn, LogRecord, SavedCallsite};
+use super::{
+    BorrowedLogRecord, LOG_PRINT_BUFFER_SIZE, LogContext, LogContextFn, LogRecord, SavedCallsite,
+};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
@@ -14,11 +16,6 @@ use std::time::SystemTime;
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
-
-/// Default buffer size for log formatting. Note that we truncate and
-/// recognize dropped_attributes_count at the top-level of each log
-/// record.
-pub const LOG_BUFFER_SIZE: usize = 4096;
 
 /// ANSI codes a.k.a. "Select Graphic Rendition" codes.
 #[derive(Clone, Copy)]
@@ -182,7 +179,7 @@ impl ConsoleWriter {
 /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
 #[must_use]
 pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord) -> String {
-    let mut buf = [0u8; LOG_BUFFER_SIZE];
+    let mut buf = [0u8; LOG_PRINT_BUFFER_SIZE];
     let len = {
         let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
         w.format_log_record(time, record, |w| {
@@ -214,7 +211,7 @@ impl ConsoleWriter {
     ) where
         F: FnOnce(&mut StyledBufWriter<'_>),
     {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let mut buf = [0u8; LOG_PRINT_BUFFER_SIZE];
         let len = {
             let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
             w.format_log(Some(time), view, scope_formatter);
@@ -877,7 +874,7 @@ mod tests {
             context: LogContext::new(),
         };
 
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let mut buf = [0u8; LOG_PRINT_BUFFER_SIZE];
         let len = {
             let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
             w.format_log_record(Some(time), &record, |_| {});
@@ -886,7 +883,7 @@ mod tests {
 
         // Fills exactly to capacity due to overflow.
         // Note! we could append a ... or some other indicator.
-        assert_eq!(len, LOG_BUFFER_SIZE);
+        assert_eq!(len, LOG_PRINT_BUFFER_SIZE);
 
         // Verify the output starts correctly with timestamp and body
         let output = std::str::from_utf8(&buf[..len]).unwrap();

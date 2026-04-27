@@ -25,16 +25,21 @@ pub use encoder::ScopeToBytesMap;
 pub use encoder::encode_export_logs_request;
 pub use encoder::encode_resource_to_bytes;
 pub use formatter::{
-    AnsiCode, ColorMode, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer, StyledBufWriter,
+    AnsiCode, ColorMode, ConsoleWriter, RawLoggingLayer, StyledBufWriter,
     format_log_record_to_string,
 };
 
 /// Inline buffer size for the encoding phase.
 ///
-/// During encoding, `ProtoBuffer<ENCODE_INLINE>` keeps data on the
+/// During encoding, `ProtoBuffer<LOG_ARGUMENTS_ENCODE_INLINE>` keeps data on the
 /// stack.  After encoding the result is converted to `Bytes` for
 /// cheap reference-counted storage.
-pub const ENCODE_INLINE: usize = 256;
+pub const LOG_ARGUMENTS_ENCODE_INLINE: usize = 256;
+
+/// Default buffer size for log formatting. Note that we truncate and
+/// recognize dropped_attributes_count at the top-level of each log
+/// record.
+pub const LOG_PRINT_BUFFER_SIZE: usize = 512;
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -133,7 +138,7 @@ impl SavedCallsite {
 /// - [`into_record()`](Self::into_record) to produce an owned `LogRecord`
 ///   with reference-counted `Bytes` storage
 pub struct StackLogRecord {
-    buf: ProtoBufferInline<ENCODE_INLINE>,
+    buf: ProtoBufferInline<LOG_ARGUMENTS_ENCODE_INLINE>,
     callsite_id: Identifier,
     dropped_count: u32,
 }
@@ -142,7 +147,7 @@ impl StackLogRecord {
     /// Construct from an event, encoding body/attributes on the stack.
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
-        let mut buf = ProtoBufferInline::<ENCODE_INLINE>::with_inline();
+        let mut buf = ProtoBufferInline::<LOG_ARGUMENTS_ENCODE_INLINE>::with_inline();
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
@@ -185,7 +190,7 @@ impl LogRecord {
     /// Attributes that don't fit are counted via `dropped_attributes_count`.
     #[must_use]
     pub fn new(event: &Event<'_>, context: LogContext) -> Self {
-        Self::new_bounded::<ENCODE_INLINE>(event, context)
+        Self::new_bounded::<LOG_ARGUMENTS_ENCODE_INLINE>(event, context)
     }
 
     /// Construct a log record encoding into a buffer of `INLINE` bytes.

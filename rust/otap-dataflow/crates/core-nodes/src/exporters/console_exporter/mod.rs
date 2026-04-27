@@ -29,7 +29,9 @@ use otap_df_pdata_views::views::logs::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
-use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
+use otap_df_telemetry::self_tracing::{
+    AnsiCode, ColorMode, LOG_PRINT_BUFFER_SIZE, StyledBufWriter,
+};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -388,7 +390,7 @@ impl HierarchicalFormatter {
     where
         F: FnOnce(&mut StyledBufWriter<'_>),
     {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let mut buf = [0u8; LOG_PRINT_BUFFER_SIZE];
         let mut w = StyledBufWriter::new(&mut buf, self.color);
         f(&mut w);
         let len = w.position();
