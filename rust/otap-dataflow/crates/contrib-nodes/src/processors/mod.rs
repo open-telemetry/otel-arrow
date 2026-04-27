@@ -1,6 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+/// Microsoft Common Schema log promotion processor
+#[cfg(feature = "microsoft-common-schema-processor")]
+pub mod microsoft_common_schema_processor;
+
 /// Condense Attributes processor
 #[cfg(feature = "condense-attributes-processor")]
 pub mod condense_attributes_processor;

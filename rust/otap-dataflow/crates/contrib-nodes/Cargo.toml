@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 # Workspace crates (likely used by most/all features)
+otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-engine-macros = { workspace = true }
@@ -21,23 +22,25 @@ otap-df-otap = { workspace = true }
 otap-df-pdata = { workspace = true }
 otap-df-pdata-views = { workspace = true }
 otap-df-telemetry = { workspace = true }
-otap-df-channel = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 
 arrow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
-tokio.workspace = true
-tracing.workspace = true
 bytes.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 linkme.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+base64 = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
-geneva-uploader = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
+tracepoint_decode = { version = "0.5.0", optional = true }
+itoa = { workspace = true, optional = true }
+geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
@@ -46,14 +49,28 @@ azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
-itoa = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# TODO: Remove this pinned git dependency once one-collect is upstream in the
+# normal dependency graph and no longer needs to be pulled directly here.
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "2d33e674348168f4a19bd3ab40d92f1c556407ec", features = ["scripting"], optional = true }
+
 [features]
+contrib-receivers = [
+    "userevents-receiver",
+]
+userevents-receiver = [
+    "dep:base64",
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:one_collect",
+    "dep:tracepoint_decode",
+]
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
@@ -80,9 +97,13 @@ azure-monitor-exporter = [
 ]
 
 contrib-processors = [
+    "microsoft-common-schema-processor",
     "condense-attributes-processor",
     "recordset-kql-processor",
     "resource-validator-processor",
+]
+microsoft-common-schema-processor = [
+    "dep:chrono",
 ]
 condense-attributes-processor = []
 recordset-kql-processor = [
@@ -97,11 +118,16 @@ axum.workspace = true
 clap.workspace = true
 criterion = { workspace = true, features = ["html_reports"] }
 humantime.workspace = true
+core_affinity.workspace = true
+eventheader_dynamic = "0.5.0"
+otap-df-channel = { workspace = true }
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["test-utils"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 
 [[bench]]
