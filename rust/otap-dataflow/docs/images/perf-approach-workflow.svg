@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="420" viewBox="0 0 1120 420" role="img">
+  <title>Performance experiment workflow</title>
+  <desc>Causal debugging workflow from baseline through optimizer rules.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, sans-serif; fill: #0f172a; }
+      .title { font-size: 25px; font-weight: 700; }
+      .subtitle { font-size: 14px; fill: #475569; }
+      .node-title { font-size: 15px; font-weight: 700; }
+      .node-text { font-size: 12px; fill: #475569; }
+      .label { font-size: 12px; fill: #334155; font-weight: 600; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 10; }
+      .primary { fill: #e0f2fe; stroke: #0284c7; }
+      .gate { fill: #fef9c3; stroke: #ca8a04; }
+      .rule { fill: #dcfce7; stroke: #16a34a; }
+      .reject { fill: #fee2e2; stroke: #dc2626; }
+      .line { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .thin { stroke: #94a3b8; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1120" height="420" fill="#f8fafc"/>
+  <text x="36" y="48" class="title">Reproducible Performance Investigation Workflow</text>
+  <text x="36" y="74" class="subtitle">
+    Rank only clean matched-throughput windows; use diagnostics to explain why metrics moved.
+  </text>
+
+  <g transform="translate(36 118)">
+    <rect class="box primary" x="0" y="0" width="145" height="90"/>
+    <text class="node-title" x="18" y="28">1. Baseline</text>
+    <text class="node-text" x="18" y="51">Named configs</text>
+    <text class="node-text" x="18" y="69">Pinned cores</text>
+  </g>
+
+  <g transform="translate(196 118)">
+    <rect class="box" x="0" y="0" width="145" height="90"/>
+    <text class="node-title" x="18" y="28">2. One Change</text>
+    <text class="node-text" x="18" y="51">Option, node, or</text>
+    <text class="node-text" x="18" y="69">implementation path</text>
+  </g>
+
+  <g transform="translate(356 118)">
+    <rect class="box gate" x="0" y="0" width="160" height="90"/>
+    <text class="node-title" x="18" y="28">3. Calibrate</text>
+    <text class="node-text" x="18" y="51">Closed-loop rate</text>
+    <text class="node-text" x="18" y="69">throughput gate</text>
+  </g>
+
+  <g transform="translate(536 118)">
+    <rect class="box" x="0" y="0" width="170" height="90"/>
+    <text class="node-title" x="18" y="28">4. Measure</text>
+    <text class="node-text" x="18" y="51">Internal telemetry</text>
+    <text class="node-text" x="18" y="69">perf and strace</text>
+  </g>
+
+  <g transform="translate(726 118)">
+    <rect class="box" x="0" y="0" width="165" height="90"/>
+    <text class="node-title" x="18" y="28">5. Explain</text>
+    <text class="node-text" x="18" y="51">Observation plus</text>
+    <text class="node-text" x="18" y="69">causal mechanism</text>
+  </g>
+
+  <g transform="translate(910 118)">
+    <rect class="box rule" x="0" y="0" width="165" height="90"/>
+    <text class="node-title" x="18" y="28">6. Optimize</text>
+    <text class="node-text" x="18" y="51">Promote, reject,</text>
+    <text class="node-text" x="18" y="69">or retest rule</text>
+  </g>
+
+  <path class="line" d="M181 163 H190"/>
+  <path class="line" d="M341 163 H350"/>
+  <path class="line" d="M516 163 H530"/>
+  <path class="line" d="M706 163 H720"/>
+  <path class="line" d="M891 163 H904"/>
+
+  <g transform="translate(110 260)">
+    <rect class="box reject" x="0" y="0" width="360" height="112"/>
+    <text class="node-title" x="18" y="29">Quality Gates Before Ranking</text>
+    <text class="node-text" x="18" y="55">Accepted throughput window in target band</text>
+    <text class="node-text" x="18" y="75">No generator falling behind or send-full</text>
+    <text class="node-text" x="18" y="95">No rejections, response churn, or dirty ctx/s</text>
+  </g>
+
+  <g transform="translate(650 260)">
+    <rect class="box primary" x="0" y="0" width="360" height="112"/>
+    <text class="node-title" x="18" y="29">Artifacts And Repeatability</text>
+    <text class="node-text" x="18" y="55">Raw metrics, logs, perf, strace, build mode</text>
+    <text class="node-text" x="18" y="75">Exact config and environment overrides</text>
+    <text class="node-text" x="18" y="95">Repeat or control evidence before rules</text>
+  </g>
+
+  <path class="thin" d="M470 316 C520 250 530 215 536 188"/>
+  <path class="thin" d="M650 316 C590 250 585 215 575 190"/>
+  <path class="thin" d="M990 260 C1050 240 1080 105 145 105 C82 105 70 118 70 118"/>
+  <text class="label" x="470" y="248">reject dirty windows</text>
+  <text class="label" x="806" y="247">preserve evidence</text>
+</svg>

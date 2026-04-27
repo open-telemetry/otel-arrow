@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" role="img">
+  <title>Causal graph summary for performance experiments</title>
+  <desc>Inputs affect mechanisms, mechanisms affect objective metrics, and epoll_wait is diagnostic.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, sans-serif; fill: #0f172a; }
+      .title { font-size: 25px; font-weight: 700; }
+      .subtitle { font-size: 14px; fill: #475569; }
+      .col-title { font-size: 15px; font-weight: 700; fill: #334155; }
+      .node-title { font-size: 14px; font-weight: 700; }
+      .node-text { font-size: 12px; fill: #475569; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.4; rx: 10; }
+      .input { fill: #e0f2fe; stroke: #0284c7; }
+      .mechanism { fill: #fef9c3; stroke: #ca8a04; }
+      .metric { fill: #dcfce7; stroke: #16a34a; }
+      .diagnostic { fill: #ede9fe; stroke: #7c3aed; }
+      .dirty { fill: #fee2e2; stroke: #dc2626; }
+      .line { stroke: #334155; stroke-width: 1.7; fill: none; marker-end: url(#arrow); }
+      .diag-line { stroke: #7c3aed; stroke-width: 1.7; fill: none; stroke-dasharray: 5 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1120" height="560" fill="#f8fafc"/>
+  <text x="36" y="48" class="title">Causal Model: Options, Mechanisms, Metrics</text>
+  <text x="36" y="74" class="subtitle">
+    Optimize objective metrics; use epoll_wait/s to explain reactor and readiness cadence.
+  </text>
+
+  <text class="col-title" x="82" y="122">Configuration Inputs</text>
+  <text class="col-title" x="434" y="122">Mechanisms</text>
+  <text class="col-title" x="818" y="122">Observed Metrics</text>
+
+  <g transform="translate(48 145)">
+    <rect class="box input" width="250" height="68"/>
+    <text class="node-title" x="18" y="28">Traffic shape</text>
+    <text class="node-text" x="18" y="49">smooth/open, rate target, loadgen count</text>
+  </g>
+  <g transform="translate(48 230)">
+    <rect class="box input" width="250" height="68"/>
+    <text class="node-title" x="18" y="28">Request shape</text>
+    <text class="node-text" x="18" y="49">max_batch_size and payload bytes</text>
+  </g>
+  <g transform="translate(48 315)">
+    <rect class="box input" width="250" height="68"/>
+    <text class="node-title" x="18" y="28">Batch processor</text>
+    <text class="node-text" x="18" y="49">min_size and timer window</text>
+  </g>
+  <g transform="translate(48 400)">
+    <rect class="box input" width="250" height="68"/>
+    <text class="node-title" x="18" y="28">Payload path</text>
+    <text class="node-text" x="18" y="49">OTLP fast path, OTAP, compression</text>
+  </g>
+
+  <g transform="translate(406 136)">
+    <rect class="box mechanism" width="285" height="62"/>
+    <text class="node-title" x="18" y="26">Request cadence</text>
+    <text class="node-text" x="18" y="46">receiver and h2 readiness events</text>
+  </g>
+  <g transform="translate(406 218)">
+    <rect class="box mechanism" width="285" height="62"/>
+    <text class="node-title" x="18" y="26">Flush shape</text>
+    <text class="node-text" x="18" y="46">size flush, timer flush, coalescing</text>
+  </g>
+  <g transform="translate(406 300)">
+    <rect class="box dirty" width="285" height="62"/>
+    <text class="node-title" x="18" y="26">Backpressure</text>
+    <text class="node-text" x="18" y="46">send-full, queue depth, response waits</text>
+  </g>
+  <g transform="translate(406 382)">
+    <rect class="box mechanism" width="285" height="62"/>
+    <text class="node-title" x="18" y="26">Payload work</text>
+    <text class="node-text" x="18" y="46">decode, transform, encode, compress</text>
+  </g>
+
+  <g transform="translate(802 130)">
+    <rect class="box metric" width="255" height="58"/>
+    <text class="node-title" x="18" y="25">CPU per signal</text>
+    <text class="node-text" x="18" y="43">primary objective</text>
+  </g>
+  <g transform="translate(802 202)">
+    <rect class="box metric" width="255" height="58"/>
+    <text class="node-title" x="18" y="25">Clean ctx/s</text>
+    <text class="node-text" x="18" y="43">perf window, no strace attached</text>
+  </g>
+  <g transform="translate(802 274)">
+    <rect class="box metric" width="255" height="58"/>
+    <text class="node-title" x="18" y="25">p99 latency</text>
+    <text class="node-text" x="18" y="43">wait_for_result when needed</text>
+  </g>
+  <g transform="translate(802 346)">
+    <rect class="box metric" width="255" height="58"/>
+    <text class="node-title" x="18" y="25">Throughput stability</text>
+    <text class="node-text" x="18" y="43">accepted windows in target band</text>
+  </g>
+  <g transform="translate(802 424)">
+    <rect class="box diagnostic" width="255" height="58"/>
+    <text class="node-title" x="18" y="25">epoll_wait/s</text>
+    <text class="node-text" x="18" y="43">diagnostic proxy, not the goal</text>
+  </g>
+
+  <path class="line" d="M298 178 H398"/>
+  <path class="line" d="M298 264 C345 250 365 248 398 247"/>
+  <path class="line" d="M298 264 C348 300 365 322 398 330"/>
+  <path class="line" d="M298 349 H398"/>
+  <path class="line" d="M298 434 H398"/>
+
+  <path class="line" d="M692 167 C740 156 760 156 794 158"/>
+  <path class="line" d="M692 249 C750 230 765 230 794 231"/>
+  <path class="line" d="M692 331 C748 322 766 311 794 303"/>
+  <path class="line" d="M692 331 C744 354 764 373 794 375"/>
+  <path class="line" d="M692 413 C745 370 765 318 794 303"/>
+  <path class="line" d="M692 413 C744 292 766 189 794 163"/>
+  <path class="diag-line" d="M692 168 C750 240 760 420 794 453"/>
+  <path class="diag-line" d="M692 249 C746 318 764 430 794 453"/>
+</svg>
