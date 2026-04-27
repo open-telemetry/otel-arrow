@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! CLI-to-troubleshoot filter translation helpers.
+//!
+//! The command layer accepts user-oriented filter flags while the
+//! troubleshooting layer works with normalized filter structs. This module is
+//! the small conversion boundary that keeps filtering behavior shared between
+//! group events, pipeline events, logs, and metrics commands.
 
 use crate::args::{EventKind, LogsFilterArgs, MetricsFilterArgs};
 use crate::troubleshoot::{EventFilters, LogFilters, MetricsFilters, NormalizedEventKind};

@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Integration-style tests for command runners and CLI output contracts.
+//!
+//! These tests exercise parsed `dfctl` commands against mock admin endpoints or
+//! local helpers. Each test documents the user scenario and the command contract
+//! it protects so reviewers can understand which behavior is intentionally
+//! stable for humans, scripts, and agents.
+
 use crate::args::{ColorChoice, MetricsShape, MutationOutput, StreamOutput};
 use crate::commands::output::{duration_to_admin_timeout_secs, validate_mutation_output_mode};
 use crate::commands::watch::{watch_logs, watch_metrics};

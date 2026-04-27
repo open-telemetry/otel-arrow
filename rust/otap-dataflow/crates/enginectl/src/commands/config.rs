@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Commands that inspect client-side `dfctl` configuration.
+//!
+//! The config command family explains how the CLI resolved its target and
+//! transport settings without contacting the engine. It exists to make
+//! automation and human troubleshooting safer by showing the effective URL,
+//! profile source, timeout policy, and TLS-related inputs with sensitive local
+//! key paths redacted.
 
 use crate::BIN_NAME;
 use crate::args::{ConfigArgs, ConfigCommand};

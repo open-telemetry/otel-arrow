@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Engine-scoped command runner.
+//!
+//! This module implements commands that inspect the engine as a whole rather
+//! than a group or pipeline. It translates `engine status`, `engine livez`, and
+//! `engine readyz` into admin SDK calls and emits the same engine-level state in
+//! human tables or machine-readable formats.
 
 use crate::args::{EngineArgs, EngineCommand};
 use crate::commands::output::write_read_command_output;

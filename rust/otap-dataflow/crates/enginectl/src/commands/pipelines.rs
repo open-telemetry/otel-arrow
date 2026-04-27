@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Pipeline-scoped command runner.
+//!
+//! This module implements commands that inspect or mutate one pipeline within a
+//! pipeline group. It coordinates admin SDK calls, local config loading,
+//! diagnosis helpers, support bundles, rollout and shutdown watches, and
+//! consistent human or machine-readable output for pipeline operations.
 
 use crate::args::{
     MetricsShape, PipelineDiagnoseCommand, PipelineEventsCommand, PipelinesArgs, PipelinesCommand,

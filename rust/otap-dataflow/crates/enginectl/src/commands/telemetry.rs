@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Telemetry-scoped command runner.
+//!
+//! This module implements retained-log and metrics commands exposed by the
+//! admin API. It applies client-side filters, selects compact or full metric
+//! shapes, and delegates long-running watch behavior so telemetry output stays
+//! usable both interactively and in shell pipelines.
 
 use crate::args::{LogsCommand, MetricsCommand, MetricsShape, TelemetryArgs, TelemetryCommand};
 use crate::commands::fetch::fetch_logs;

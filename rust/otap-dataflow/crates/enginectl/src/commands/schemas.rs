@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Versioned machine-readable schema discovery for `dfctl` outputs.
+//!
+//! The schemas command family gives scripts and agents a stable way to
+//! discover the shape of `dfctl` outputs without scraping help text or example
+//! JSON. It publishes a local catalog and individual JSON Schema documents for
+//! envelopes, errors, streams, command catalogs, diagnosis reports, mutations,
+//! and support bundles.
 
 use crate::BIN_NAME;
 use crate::args::SchemasArgs;

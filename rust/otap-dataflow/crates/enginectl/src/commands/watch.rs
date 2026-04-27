@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Long-lived watch loops for events, logs, metrics, and operation status.
+//!
+//! Watch commands are optimized for long-running interactive sessions and
+//! automation streams. This module centralizes polling, tailing, de-duplication,
+//! Ctrl-C handling, and stream emission so event, log, metric, rollout, and
+//! shutdown watches share the same liveness and output behavior.
 
 use crate::args::{MetricsShape, StreamOutput};
 use crate::commands::fetch::{fetch_logs, fetch_pipeline_status, fetch_rollout, fetch_shutdown};

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Shared fetch helpers that normalize not-found handling across commands.
+//!
+//! Command runners use this module when several command families need the same
+//! admin SDK lookup and the same CLI error semantics. Keeping these helpers in
+//! one place avoids subtle differences in not-found messages for logs,
+//! rollouts, shutdowns, pipeline status, and pipeline describe data.
 
 use crate::error::CliError;
 use crate::troubleshoot::{PipelineDescribeReport, describe_pipeline};
