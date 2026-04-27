@@ -4,7 +4,13 @@
 //! Node-local wakeup scheduling for processor inboxes.
 
 use crate::control::{WakeupRevision, WakeupSlot};
+use crate::entity_context::current_node_telemetry_handle;
 use crate::indexed_min_heap::IndexedMinHeap;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry_macros::metric_set;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::Notify;
@@ -45,6 +51,45 @@ impl WakeupSetOutcome {
     }
 }
 
+/// Metrics for processor-local wakeup scheduler activity.
+#[metric_set(name = "node.local_wakeup.scheduler")]
+#[derive(Debug, Default, Clone)]
+pub(crate) struct NodeLocalWakeupSchedulerMetrics {
+    /// Count of newly inserted wakeups.
+    #[metric(name = "set.inserted", unit = "{wakeup}")]
+    set_inserted: Counter<u64>,
+    /// Count of wakeups that replaced an existing live slot.
+    #[metric(name = "set.replaced", unit = "{wakeup}")]
+    set_replaced: Counter<u64>,
+    /// Count of set attempts rejected because the live-slot capacity was full.
+    #[metric(name = "set.error_capacity", unit = "{attempt}")]
+    set_error_capacity: Counter<u64>,
+    /// Count of set attempts rejected after shutdown was latched.
+    #[metric(name = "set.error_shutdown", unit = "{attempt}")]
+    set_error_shutdown: Counter<u64>,
+    /// Count of cancel attempts that removed a live wakeup.
+    #[metric(name = "cancel.removed", unit = "{wakeup}")]
+    cancel_removed: Counter<u64>,
+    /// Count of cancel attempts that found no live wakeup in the slot.
+    #[metric(name = "cancel.missed", unit = "{attempt}")]
+    cancel_missed: Counter<u64>,
+    /// Count of cancel attempts ignored after shutdown was latched.
+    #[metric(name = "cancel.ignored_shutdown", unit = "{attempt}")]
+    cancel_ignored_shutdown: Counter<u64>,
+    /// Count of wakeups popped for delivery to the processor.
+    #[metric(name = "pop.due", unit = "{wakeup}")]
+    pop_due: Counter<u64>,
+    /// Count of live wakeups dropped when shutdown was latched.
+    #[metric(name = "shutdown.cleared", unit = "{wakeup}")]
+    shutdown_cleared: Counter<u64>,
+    /// Current number of live wakeups.
+    #[metric(name = "live", unit = "{wakeup}")]
+    live: Gauge<u64>,
+    /// Configured live wakeup slot capacity.
+    #[metric(name = "capacity", unit = "{wakeup}")]
+    capacity: Gauge<u64>,
+}
+
 /// Priority key for the wakeup heap.  Ordered by wall-clock time first,
 /// then by revision to break ties deterministically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,15 +117,25 @@ struct NodeLocalScheduler {
     next_revision: WakeupRevision,
     heap: IndexedMinHeap<WakeupSlot, WakeupPriority>,
     shutting_down: bool,
+    metrics: Option<MetricSet<NodeLocalWakeupSchedulerMetrics>>,
 }
 
 impl NodeLocalScheduler {
+    #[cfg(test)]
     fn new(wakeup_capacity: usize) -> Self {
+        Self::new_with_metrics(wakeup_capacity, None)
+    }
+
+    fn new_with_metrics(
+        wakeup_capacity: usize,
+        metrics: Option<MetricSet<NodeLocalWakeupSchedulerMetrics>>,
+    ) -> Self {
         Self {
             wakeup_capacity,
             next_revision: 0,
             heap: IndexedMinHeap::new(),
             shutting_down: false,
+            metrics,
         }
     }
 
@@ -90,12 +145,22 @@ impl NodeLocalScheduler {
         next
     }
 
+    fn refresh_gauges(&mut self) {
+        if let Some(metrics) = &mut self.metrics {
+            metrics.live.set(self.heap.len() as u64);
+            metrics.capacity.set(self.wakeup_capacity as u64);
+        }
+    }
+
     fn set_wakeup(
         &mut self,
         slot: WakeupSlot,
         when: Instant,
     ) -> Result<WakeupSetOutcome, WakeupError> {
         if self.shutting_down {
+            if let Some(metrics) = &mut self.metrics {
+                metrics.set_error_shutdown.inc();
+            }
             return Err(WakeupError::ShuttingDown);
         }
 
@@ -103,23 +168,46 @@ impl NodeLocalScheduler {
             let revision = self.next_revision();
             let priority = WakeupPriority { when, revision };
             let _ = self.heap.insert(slot, priority);
+            if let Some(metrics) = &mut self.metrics {
+                metrics.set_replaced.inc();
+            }
+            self.refresh_gauges();
             Ok(WakeupSetOutcome::Replaced { revision })
         } else {
             if self.heap.len() >= self.wakeup_capacity {
+                if let Some(metrics) = &mut self.metrics {
+                    metrics.set_error_capacity.inc();
+                }
                 return Err(WakeupError::Capacity);
             }
             let revision = self.next_revision();
             let priority = WakeupPriority { when, revision };
             let _ = self.heap.insert(slot, priority);
+            if let Some(metrics) = &mut self.metrics {
+                metrics.set_inserted.inc();
+            }
+            self.refresh_gauges();
             Ok(WakeupSetOutcome::Inserted { revision })
         }
     }
 
     fn cancel_wakeup(&mut self, slot: WakeupSlot) -> bool {
         if self.shutting_down {
+            if let Some(metrics) = &mut self.metrics {
+                metrics.cancel_ignored_shutdown.inc();
+            }
             return false;
         }
-        self.heap.remove(&slot).is_some()
+        let removed = self.heap.remove(&slot).is_some();
+        if let Some(metrics) = &mut self.metrics {
+            if removed {
+                metrics.cancel_removed.inc();
+            } else {
+                metrics.cancel_missed.inc();
+            }
+        }
+        self.refresh_gauges();
+        removed
     }
 
     fn next_expiry(&mut self) -> Option<Instant> {
@@ -138,6 +226,10 @@ impl NodeLocalScheduler {
         }
 
         let (slot, priority) = self.heap.pop().expect("due wakeup should exist");
+        if let Some(metrics) = &mut self.metrics {
+            metrics.pop_due.inc();
+        }
+        self.refresh_gauges();
         Some((slot, priority.when, priority.revision))
     }
 
@@ -151,6 +243,10 @@ impl NodeLocalScheduler {
         self.heap.assert_consistent();
 
         let (slot, priority) = self.heap.pop()?;
+        if let Some(metrics) = &mut self.metrics {
+            metrics.pop_due.inc();
+        }
+        self.refresh_gauges();
         Some((slot, priority.when, priority.revision))
     }
 
@@ -159,11 +255,27 @@ impl NodeLocalScheduler {
             return;
         }
         self.shutting_down = true;
+        let cleared = self.heap.len();
+        if let Some(metrics) = &mut self.metrics {
+            metrics.shutdown_cleared.add(cleared as u64);
+        }
         self.heap.clear();
+        self.refresh_gauges();
     }
 
     fn is_drained(&self) -> bool {
         self.heap.is_empty()
+    }
+
+    fn report_metrics(
+        &mut self,
+        metrics_reporter: &mut MetricsReporter,
+    ) -> Result<(), TelemetryError> {
+        self.refresh_gauges();
+        if let Some(metrics) = &mut self.metrics {
+            metrics_reporter.report(metrics)?;
+        }
+        Ok(())
     }
 }
 
@@ -184,8 +296,14 @@ impl Clone for NodeLocalSchedulerHandle {
 
 impl NodeLocalSchedulerHandle {
     pub(crate) fn new(wakeup_capacity: usize) -> Self {
+        let metrics = current_node_telemetry_handle()
+            .map(|telemetry| telemetry.register_metric_set::<NodeLocalWakeupSchedulerMetrics>());
+
         Self {
-            inner: Arc::new(Mutex::new(NodeLocalScheduler::new(wakeup_capacity))),
+            inner: Arc::new(Mutex::new(NodeLocalScheduler::new_with_metrics(
+                wakeup_capacity,
+                metrics,
+            ))),
             notify: Arc::new(Notify::new()),
         }
     }
@@ -243,6 +361,13 @@ impl NodeLocalSchedulerHandle {
 
     pub(crate) fn is_drained(&self) -> bool {
         self.with_scheduler(|scheduler| scheduler.is_drained())
+    }
+
+    pub(crate) fn report_metrics(
+        &self,
+        metrics_reporter: &mut MetricsReporter,
+    ) -> Result<(), TelemetryError> {
+        self.with_scheduler(|scheduler| scheduler.report_metrics(metrics_reporter))
     }
 
     pub(crate) async fn wait_for_change(&self) {
@@ -316,6 +441,49 @@ mod tests {
         assert!(!scheduler.cancel_wakeup(WakeupSlot(5)));
         assert_eq!(scheduler.next_expiry(), None);
         assert_eq!(scheduler.pop_due(when), None);
+    }
+
+    #[test]
+    fn scheduler_metrics_count_wakeup_lifecycle() {
+        let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
+        let metrics: MetricSet<NodeLocalWakeupSchedulerMetrics> =
+            registry.register_metric_set(otap_df_telemetry::testing::EmptyAttributes());
+        let mut scheduler = NodeLocalScheduler::new_with_metrics(1, Some(metrics));
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        let sooner = now + Duration::from_millis(10);
+
+        assert_eq!(
+            scheduler.set_wakeup(WakeupSlot(0), later),
+            Ok(WakeupSetOutcome::Inserted { revision: 0 })
+        );
+        assert_eq!(
+            scheduler.set_wakeup(WakeupSlot(0), sooner),
+            Ok(WakeupSetOutcome::Replaced { revision: 1 })
+        );
+        assert_eq!(
+            scheduler.set_wakeup(WakeupSlot(1), later),
+            Err(WakeupError::Capacity)
+        );
+        assert!(!scheduler.cancel_wakeup(WakeupSlot(9)));
+        assert!(scheduler.cancel_wakeup(WakeupSlot(0)));
+        assert!(!scheduler.cancel_wakeup(WakeupSlot(0)));
+        assert_eq!(
+            scheduler.set_wakeup(WakeupSlot(0), later),
+            Ok(WakeupSetOutcome::Inserted { revision: 2 })
+        );
+        assert_eq!(scheduler.pop_due(now), None);
+        assert_eq!(scheduler.pop_due(later), Some((WakeupSlot(0), later, 2)));
+
+        let metrics = scheduler.metrics.as_ref().expect("metrics enabled");
+        assert_eq!(metrics.set_inserted.get(), 2);
+        assert_eq!(metrics.set_replaced.get(), 1);
+        assert_eq!(metrics.set_error_capacity.get(), 1);
+        assert_eq!(metrics.cancel_removed.get(), 1);
+        assert_eq!(metrics.cancel_missed.get(), 2);
+        assert_eq!(metrics.pop_due.get(), 1);
+        assert_eq!(metrics.live.get(), 0);
+        assert_eq!(metrics.capacity.get(), 1);
     }
 
     /// Scenario: a wakeup is rescheduled after heap reordering and then
