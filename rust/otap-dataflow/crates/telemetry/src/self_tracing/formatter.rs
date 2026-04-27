@@ -15,10 +15,9 @@ use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
 
-/// Default buffer size for log formatting.
-///
-/// TODO: Append a note to the log message when truncation occurs, otherwise
-/// today the log record is silently truncated.
+/// Default buffer size for log formatting. Note that we truncate and
+/// recognize dropped_attributes_count at the top-level of each log
+/// record.
 pub const LOG_BUFFER_SIZE: usize = 4096;
 
 /// ANSI codes a.k.a. "Select Graphic Rendition" codes.
@@ -95,6 +94,27 @@ impl<'a> StyledBufWriter<'a> {
     #[must_use]
     pub const fn is_full(&self) -> bool {
         self.buf.position() as usize >= self.buf.get_ref().len()
+    }
+
+    /// Finish the current line by writing a trailing newline.
+    ///
+    /// Guarantees the buffer always ends in `\n`, even when the buffer
+    /// filled up mid-line (in which case the last byte of content is
+    /// overwritten with `\n` rather than silently lost). Without this
+    /// guarantee, undersized buffers cause adjacent log lines to glom
+    /// together on the console.
+    #[inline]
+    pub fn finish_line(&mut self) {
+        let cap = self.buf.get_ref().len();
+        if cap == 0 {
+            return;
+        }
+        let pos = self.buf.position() as usize;
+        if pos >= cap {
+            // Buffer is full — back up one byte and overwrite with '\n'.
+            self.buf.set_position((cap - 1) as u64);
+        }
+        let _ = self.buf.write_all(b"\n");
     }
 }
 
@@ -573,7 +593,8 @@ impl StyledBufWriter<'_> {
         // Write suffix (e.g., entity scope) before newline
         write_suffix(self);
 
-        let _ = self.write_all(b"\n");
+        // Always terminate the line, even when the buffer is full.
+        self.finish_line();
     }
 }
 
@@ -889,6 +910,40 @@ mod tests {
             "got: {}",
             output
         );
+    }
+
+    #[test]
+    fn finish_line_guarantees_trailing_newline() {
+        // Even when the buffer fills up before the line is complete,
+        // finish_line must overwrite the last byte with '\n' so adjacent
+        // log lines never glom together on the console.
+        use std::io::Write;
+
+        // Tiny buffer; content overflows.
+        let mut buf = [0u8; 8];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"AAAAAAAAAAAAAA"); // exceeds 8
+        assert!(w.is_full());
+        w.finish_line();
+        let pos = w.position();
+        assert_eq!(buf[pos - 1], b'\n', "last byte must be newline");
+        assert_eq!(pos, 8, "position should be at capacity (overwrote)");
+
+        // Non-full buffer: append newline normally.
+        let mut buf = [0u8; 16];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"abc");
+        w.finish_line();
+        let pos = w.position();
+        assert_eq!(&buf[..pos], b"abc\n");
+
+        // Already-full-exactly: should still terminate by overwriting last.
+        let mut buf = [0u8; 4];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"abcd");
+        assert!(w.is_full());
+        w.finish_line();
+        assert_eq!(&buf, b"abc\n");
     }
 
     static TEST_CALLSITE: TestCallsite = TestCallsite;
