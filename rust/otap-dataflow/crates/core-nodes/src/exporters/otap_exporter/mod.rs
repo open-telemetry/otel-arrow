@@ -42,6 +42,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::task::JoinHandle;
 use tonic::transport::Channel;
 use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
@@ -374,12 +375,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         // TODO import so can use as just "channel" here
         // TODO check if we can use our local channel since we are already using `tokio::task::spawn_local`.
         let stream_queue_capacity = self.config.stream_queue_capacity;
-        let (logs_sender, logs_receiver) =
-            tokio::sync::mpsc::channel::<StreamBatch>(stream_queue_capacity);
-        let (metrics_sender, metrics_receiver) =
-            tokio::sync::mpsc::channel::<StreamBatch>(stream_queue_capacity);
-        let (traces_sender, traces_receiver) =
-            tokio::sync::mpsc::channel::<StreamBatch>(stream_queue_capacity);
+        let streams_per_signal = self.config.streams_per_signal;
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let ipc_compression = matches!(
@@ -389,30 +385,33 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         .then(|| arrow_ipc::CompressionType::ZSTD);
 
         // TODO check if we can expose/use spawn_local method in the effect handler
-        let logs_handle = tokio::task::spawn_local(stream_arrow_batches(
+        let (logs_senders, logs_handles) = spawn_stream_workers(
             arrow_logs_client,
             SignalType::Logs,
             ipc_compression,
-            logs_receiver,
+            stream_queue_capacity,
+            streams_per_signal,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
-        ));
-        let metrics_handle = tokio::task::spawn_local(stream_arrow_batches(
+        );
+        let (metrics_senders, metrics_handles) = spawn_stream_workers(
             arrow_metrics_client,
             SignalType::Metrics,
             ipc_compression,
-            metrics_receiver,
+            stream_queue_capacity,
+            streams_per_signal,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
-        ));
-        let traces_handle = tokio::task::spawn_local(stream_arrow_batches(
+        );
+        let (traces_senders, traces_handles) = spawn_stream_workers(
             arrow_traces_client,
             SignalType::Traces,
             ipc_compression,
-            traces_receiver,
+            stream_queue_capacity,
+            streams_per_signal,
             pdata_metrics_tx.clone(),
             shutdown_rx.clone(),
-        ));
+        );
 
         // Loop until a Shutdown event is received.
         loop {
@@ -442,9 +441,9 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             message = "OTAP Exporter shutting down"
                         );
                         _ = shutdown_tx.send_replace(true);
-                        _ = logs_handle.await;
-                        _ = metrics_handle.await;
-                        _ = traces_handle.await;
+                        await_stream_handles(logs_handles).await;
+                        await_stream_handles(metrics_handles).await;
+                        await_stream_handles(traces_handles).await;
                         _ = timer_cancel_handle.cancel().await;
                         self.export_latency_window
                             .report_into(&mut self.async_metrics);
@@ -470,9 +469,9 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         };
 
                         let sender = match signal_type {
-                            SignalType::Logs => &logs_sender,
-                            SignalType::Metrics => &metrics_sender,
-                            SignalType::Traces => &traces_sender,
+                            SignalType::Logs => least_loaded_stream_sender(&logs_senders),
+                            SignalType::Metrics => least_loaded_stream_sender(&metrics_senders),
+                            SignalType::Traces => least_loaded_stream_sender(&traces_senders),
                         };
                         self.enqueue_stream_batch(
                             sender,
@@ -499,6 +498,50 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
             }
         }
+    }
+}
+
+fn spawn_stream_workers<T>(
+    client: T,
+    signal_type: SignalType,
+    ipc_compression: Option<arrow_ipc::CompressionType>,
+    stream_queue_capacity: usize,
+    streams_per_signal: usize,
+    pdata_metrics_tx: Sender<PDataMetricsUpdate>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> (Vec<Sender<StreamBatch>>, Vec<JoinHandle<()>>)
+where
+    T: StreamingArrowService + Clone + 'static,
+{
+    let mut senders = Vec::with_capacity(streams_per_signal);
+    let mut handles = Vec::with_capacity(streams_per_signal);
+
+    for _ in 0..streams_per_signal {
+        let (sender, receiver) = tokio::sync::mpsc::channel::<StreamBatch>(stream_queue_capacity);
+        senders.push(sender);
+        handles.push(tokio::task::spawn_local(stream_arrow_batches(
+            client.clone(),
+            signal_type,
+            ipc_compression,
+            receiver,
+            pdata_metrics_tx.clone(),
+            shutdown_rx.clone(),
+        )));
+    }
+
+    (senders, handles)
+}
+
+fn least_loaded_stream_sender(senders: &[Sender<StreamBatch>]) -> &Sender<StreamBatch> {
+    senders
+        .iter()
+        .min_by_key(|sender| sender.max_capacity() - sender.capacity())
+        .expect("streams_per_signal validation must create at least one stream")
+}
+
+async fn await_stream_handles(handles: Vec<JoinHandle<()>>) {
+    for handle in handles {
+        _ = handle.await;
     }
 }
 
@@ -1072,6 +1115,7 @@ mod tests {
 
         assert_eq!(exporter.config.grpc.grpc_endpoint, "http://localhost:4317");
         assert_eq!(exporter.config.stream_queue_capacity, 64);
+        assert_eq!(exporter.config.streams_per_signal, 1);
         match exporter.config.compression_method {
             Some(ref method) => match method {
                 CompressionMethod::Gzip => {} // success
@@ -1122,6 +1166,22 @@ mod tests {
     }
 
     #[test]
+    fn test_from_config_with_streams_per_signal() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "streams_per_signal": 4
+        });
+        let exporter =
+            OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
+        assert_eq!(exporter.config.streams_per_signal, 4);
+    }
+
+    #[test]
     fn test_from_config_rejects_zero_stream_queue_capacity() {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1137,6 +1197,24 @@ mod tests {
             Err(err) => err,
         };
         assert!(format!("{err}").contains("stream_queue_capacity must be greater than 0"));
+    }
+
+    #[test]
+    fn test_from_config_rejects_zero_streams_per_signal() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "streams_per_signal": 0
+        });
+        let err = match OTAPExporter::from_config(pipeline_ctx, &json_config) {
+            Ok(_) => panic!("zero streams per signal should fail"),
+            Err(err) => err,
+        };
+        assert!(format!("{err}").contains("streams_per_signal must be greater than 0"));
     }
 
     #[test]

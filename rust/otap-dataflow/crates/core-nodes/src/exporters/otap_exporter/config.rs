@@ -36,6 +36,13 @@ pub struct Config {
     )]
     pub stream_queue_capacity: usize,
 
+    /// Number of independent gRPC streams to run for each signal type.
+    #[serde(
+        default = "default_streams_per_signal",
+        deserialize_with = "deserialize_positive_streams_per_signal"
+    )]
+    pub streams_per_signal: usize,
+
     /// Timeout for RPC requests. If not specified, no timeout is applied.
     /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
     #[serde(default, with = "humantime_serde")]
@@ -91,6 +98,10 @@ const fn default_stream_queue_capacity() -> usize {
     64
 }
 
+const fn default_streams_per_signal() -> usize {
+    1
+}
+
 fn deserialize_positive_usize<'de, D>(deserializer: D, field_name: &str) -> Result<usize, D::Error>
 where
     D: Deserializer<'de>,
@@ -109,6 +120,13 @@ where
     D: Deserializer<'de>,
 {
     deserialize_positive_usize(deserializer, "stream_queue_capacity")
+}
+
+fn deserialize_positive_streams_per_signal<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_positive_usize(deserializer, "streams_per_signal")
 }
 
 /// helper method to deserialize the text "none" as the None option. This is needed to override
