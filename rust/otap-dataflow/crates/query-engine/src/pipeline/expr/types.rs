@@ -5,6 +5,7 @@
 
 use crate::pipeline::expr::{ScopedLogicalExpr, VALUE_COLUMN_NAME};
 use arrow::datatypes::{DataType, TimeUnit};
+use data_engine_expressions::ValueType;
 use datafusion::logical_expr::cast;
 use otap_df_pdata::schema::consts;
 
@@ -13,7 +14,7 @@ use otap_df_pdata::schema::consts;
 /// Note: This is different than the actual Arrow DataType. In many OTAP columns, the type
 /// could use dictionary encoding so for example a column with the type variant
 /// ExprLogicalType::String may have arrow DataType Dictionary<u8/16, Utf8> or simply Utf8.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum ExprLogicalType {
     /// This type represents the type of an expression involving attribute value whose
     /// concrete type could not be determined by static analysis of the expression. The actual
@@ -24,13 +25,14 @@ pub enum ExprLogicalType {
     /// numeric. The actual type may be one of Int64 or Float64
     AnyValueNumeric,
 
+    // TODO the comments on this no longer make sense ...
     /// This type represents the value of an integer scalar expression that could not be determined
     /// to be a concrete type. When parsing, we may receive an expression such as `1`, and will
-    /// consider the type to be this generic unknown Int type until such time ias it is used in
-    /// conjunction with a place that a known type is expected. For example `1 + severity_number`
+    /// consider the type to be this generic unknown Int type until such time as it is used in
+    /// conjunction with an expr that a known type is expected. For example `1 + severity_number`
     /// would result in static scalar `1`'s type being resolved to Int32, because that is the type
     /// of severity number.
-    ScalarInt,
+    AnyInt,
 
     Boolean,
     Binary,
@@ -52,6 +54,11 @@ impl ExprLogicalType {
 
     fn is_signed_integer(&self) -> bool {
         matches!(self, Self::Int32 | Self::Int64)
+    }
+
+    // TODO comments
+    pub fn is_concrete(&self) -> bool {
+        !matches!(self, Self::AnyValue | Self::AnyValueNumeric | Self::AnyInt)
     }
 
     /// Returns the bit width of integer types
@@ -81,7 +88,7 @@ impl ExprLogicalType {
             Self::UInt8 => DataType::UInt8,
 
             // These types can actually be more than one arrow type, so return None
-            Self::AnyValue | Self::AnyValueNumeric | Self::ScalarInt => return None,
+            Self::AnyValue | Self::AnyValueNumeric | Self::AnyInt => return None,
         })
     }
 }
@@ -280,7 +287,7 @@ pub fn coerce_arithmetic(
                     Some(ExprLogicalType::Int64)
                 }
 
-                ExprLogicalType::ScalarInt => {
+                ExprLogicalType::AnyInt => {
                     // default type scalar int is int64, and the only type for AnyValue that is int
                     //  like is int64. We don't need to massage the input types, but we've
                     // identified what the expression output of the expression assuming evaluation
@@ -308,7 +315,7 @@ pub fn coerce_arithmetic(
                 }
             }
         }
-        ExprLogicalType::ScalarInt => match &right.expr_type {
+        ExprLogicalType::AnyInt => match &right.expr_type {
             // The left side is a scalar int type. We initialize these to be an int64 in the
             // expression planner, but this is just a placeholder until if/when we know the
             // actual type that will be required.
@@ -358,7 +365,7 @@ pub fn coerce_arithmetic(
                 right.expr_type = ExprLogicalType::Int64;
                 Some(ExprLogicalType::Int64)
             }
-            ExprLogicalType::ScalarInt => {
+            ExprLogicalType::AnyInt => {
                 // safety: this should always return Some because we can always determine the
                 // logical arrow data type for integer types
                 let arrow_data_type = left_int_type.datatype().expect("single data type");
@@ -448,11 +455,11 @@ mod test {
     #[test]
     fn test_coerce_arithmetic_left_any_value_right_scalar_int() {
         let mut left_expr = test_expr(ExprLogicalType::AnyValue);
-        let mut right_expr = test_expr(ExprLogicalType::ScalarInt);
+        let mut right_expr = test_expr(ExprLogicalType::AnyInt);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, Some(ExprLogicalType::Int64));
         assert_eq!(left_expr.expr_type, ExprLogicalType::Int64);
-        assert_eq!(right_expr.expr_type, ExprLogicalType::ScalarInt);
+        assert_eq!(right_expr.expr_type, ExprLogicalType::AnyInt);
     }
 
     #[test]
@@ -485,27 +492,27 @@ mod test {
 
     #[test]
     fn test_coerce_arithmetic_left_scalar_int_right_int64() {
-        let mut left_expr = test_expr(ExprLogicalType::ScalarInt);
+        let mut left_expr = test_expr(ExprLogicalType::AnyInt);
         let mut right_expr = test_expr(ExprLogicalType::Int64);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, Some(ExprLogicalType::Int64));
-        assert_eq!(left_expr.expr_type, ExprLogicalType::ScalarInt);
+        assert_eq!(left_expr.expr_type, ExprLogicalType::AnyInt);
         assert_eq!(right_expr.expr_type, ExprLogicalType::Int64);
     }
 
     #[test]
     fn test_coerce_arithmetic_left_scalar_int_right_any_value() {
-        let mut left_expr = test_expr(ExprLogicalType::ScalarInt);
+        let mut left_expr = test_expr(ExprLogicalType::AnyInt);
         let mut right_expr = test_expr(ExprLogicalType::AnyValue);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, Some(ExprLogicalType::Int64));
-        assert_eq!(left_expr.expr_type, ExprLogicalType::ScalarInt);
+        assert_eq!(left_expr.expr_type, ExprLogicalType::AnyInt);
         assert_eq!(right_expr.expr_type, ExprLogicalType::Int64);
     }
 
     #[test]
     fn test_coerce_arithmetic_left_scalar_int_right_int32() {
-        let mut left_expr = test_expr(ExprLogicalType::ScalarInt);
+        let mut left_expr = test_expr(ExprLogicalType::AnyInt);
         let mut right_expr = test_expr(ExprLogicalType::Int32);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, Some(ExprLogicalType::Int32));
@@ -515,7 +522,7 @@ mod test {
 
     #[test]
     fn test_coerce_arithmetic_left_scalar_int_right_uint32() {
-        let mut left_expr = test_expr(ExprLogicalType::ScalarInt);
+        let mut left_expr = test_expr(ExprLogicalType::AnyInt);
         let mut right_expr = test_expr(ExprLogicalType::UInt32);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, Some(ExprLogicalType::UInt32));
@@ -525,7 +532,7 @@ mod test {
 
     #[test]
     fn test_coerce_arithmetic_left_scalar_int_right_float64() {
-        let mut left_expr = test_expr(ExprLogicalType::ScalarInt);
+        let mut left_expr = test_expr(ExprLogicalType::AnyInt);
         let mut right_expr = test_expr(ExprLogicalType::Float64);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, None);
@@ -582,7 +589,7 @@ mod test {
     #[test]
     fn test_coerce_arithmetic_left_int64_right_scalar_int() {
         let mut left_expr = test_expr(ExprLogicalType::Int64);
-        let mut right_expr = test_expr(ExprLogicalType::ScalarInt);
+        let mut right_expr = test_expr(ExprLogicalType::AnyInt);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, Some(ExprLogicalType::Int64));
         assert_eq!(left_expr.expr_type, ExprLogicalType::Int64);
@@ -632,7 +639,7 @@ mod test {
     #[test]
     fn test_coerce_arithmetic_left_int32_right_scalar_int() {
         let mut left_expr = test_expr(ExprLogicalType::Int32);
-        let mut right_expr = test_expr(ExprLogicalType::ScalarInt);
+        let mut right_expr = test_expr(ExprLogicalType::AnyInt);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, Some(ExprLogicalType::Int32));
         assert_eq!(left_expr.expr_type, ExprLogicalType::Int32);

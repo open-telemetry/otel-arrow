@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::consts::BODY_FIELD_NAME;
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::expr::types::coerce_arithmetic;
+use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic};
 use crate::pipeline::expr::{
     DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, LogicalExprDataSource,
     PhysicalExprEvalResult, ScopedLogicalExpr, ScopedPhysicalExpr, join::join,
@@ -14,6 +14,7 @@ use crate::pipeline::expr::{
 use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
 use crate::pipeline::filter::compare::compare;
 use crate::pipeline::functions::expr_fn::contains;
+use crate::pipeline::functions::is_type::IsTypeFunc;
 use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
     try_static_scalar_to_any_val_column, try_static_scalar_to_attr_literal,
@@ -32,7 +33,7 @@ use async_trait::async_trait;
 use data_engine_expressions::{
     BooleanValue, ContainsLogicalExpression, Expression, LogicalExpression,
     MatchesLogicalExpression, PipelineFunction, ScalarExpression, StaticScalarExpression,
-    StringScalarExpression, StringValue,
+    StringScalarExpression, StringValue, ValueType,
 };
 use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
@@ -40,7 +41,8 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
+use datafusion::logical_expr::expr::ScalarFunction;
+use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
@@ -490,7 +492,7 @@ impl FilterPlan {
         // quickly evaluated without any expression evaluation by checking the signal type of the
         // batch itself
         if let Some(element_type_filter) =
-            Self::try_as_type_check(left_expr, binary_op, right_expr)?
+            Self::try_as_type_check(left_expr, binary_op, right_expr, functions)?
         {
             return Ok(element_type_filter);
         }
@@ -512,6 +514,7 @@ impl FilterPlan {
         left_expr: &ScalarExpression,
         binary_op: Operator,
         right_expr: &ScalarExpression,
+        functions: &[PipelineFunction],
     ) -> Result<Option<Self>> {
         match (left_expr, binary_op, right_expr) {
             (
@@ -533,6 +536,60 @@ impl FilterPlan {
 
                 Ok(Some(FilterPlan::from(ElementTypeFilter::new(
                     stream_element_type,
+                ))))
+            }
+            (
+                ScalarExpression::GetType(get_type_expr),
+                Operator::Eq,
+                ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
+            ) => {
+                let expr_planner = ExprLogicalPlanner::default();
+                let mut expr_source =
+                    expr_planner.plan_scalar_expr(get_type_expr.get_value(), functions)?;
+
+                let type_name = typename_expr.get_value();
+                let value_type = ValueType::from_str_opt(type_name).ok_or_else(|| {
+                    Error::InvalidPipelineError {
+                        cause: format!("Unknown type name {type_name}"),
+                        query_location: Some(right_expr.get_query_location().clone()),
+                    }
+                })?;
+
+                let expected_type = match value_type {
+                    ValueType::Boolean => ExprLogicalType::Boolean,
+                    ValueType::DateTime => ExprLogicalType::TimestampNanosecond,
+                    ValueType::Double => ExprLogicalType::Float64,
+                    ValueType::Integer => ExprLogicalType::AnyInt,
+                    ValueType::String => ExprLogicalType::String,
+                    ValueType::TimeSpan => ExprLogicalType::DurationNanoSecond,
+                    ValueType::Array | ValueType::Map | ValueType::Regex => {
+                        todo!("not supported")
+                    }
+                    ValueType::Null => {
+                        todo!("handle null differently")
+                    }
+                };
+
+                if expr_source.expr_type == expected_type {
+                    // TODO return scalar true
+                }
+
+                if expr_source.expr_type.is_concrete() {
+                    // TODO return scalar false
+                }
+
+                // call the is_type function on the result of the expression
+                expr_source.logical_expr = Expr::ScalarFunction(ScalarFunction::new_udf(
+                    Arc::new(ScalarUDF::new_from_shared_impl(Arc::new(IsTypeFunc::new(
+                        expected_type,
+                    )))),
+                    vec![expr_source.logical_expr],
+                ));
+
+                // TODO - also set the scope to scalar ...
+
+                Ok(Some(FilterPlan::from_expr(ExprFilterPlan::Unary(
+                    expr_source,
                 ))))
             }
             _ => Ok(None),
@@ -6514,5 +6571,58 @@ mod test {
         let traces_ouptut = pipeline.execute(traces_input.clone()).await.unwrap();
 
         assert_eq!(traces_input, traces_ouptut);
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attr_type() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_always_string", AnyValue::new_string("hello")),
+                    KeyValue::new("attr_always_int", AnyValue::new_int(1)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "attr_always_string",
+                    AnyValue::new_string("hello"),
+                )])
+                .finish(),
+        ];
+
+        // check selects correctly all rows when they all have the attribute with the matching type
+        let query = "logs | where attributes[\"attr_always_string\"] is String";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // check we can invert the case above
+        let query = "logs | where not(attributes[\"attr_always_string\"] is String)";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // check omits correctly all rows when  they all have the attribute with a non-matching type
+        let query = "logs | where attributes[\"attr_always_string\"] is Integer";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // check we select correctly only some rows have the attribute
+        let query = "logs | where attributes[\"attr_always_int\"] is Integer";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // TODO mixed types
     }
 }
