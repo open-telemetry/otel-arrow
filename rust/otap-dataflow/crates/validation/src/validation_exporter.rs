@@ -118,11 +118,10 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 
 impl ValidationExporter {
     /// Run the configured validations and update metrics.
-    ///
-    /// The `OtlpProtoMessage` projection is built once here so that
-    /// multiple [`ValidationInstructions`] can share it without
-    /// redundant cloning.
     fn validate_and_record(&mut self) {
+        /// The `OtlpProtoMessage` projection is built once here so that
+        /// multiple [`ValidationInstructions`] can share it without
+        /// redundant cloning.
         let suv_msgs: Vec<OtlpProtoMessage> =
             self.suv_msgs.iter().map(|(msg, _)| msg.clone()).collect();
 
