@@ -79,57 +79,94 @@ enum FormatConfig {
     ///
     /// EventHeader is still decoded structurally and vendor-neutrally here: the
     /// receiver flattens EventHeader structs into `Struct.field` attributes but
-    /// does not attach any meaning to names such as `PartA`, `PartB`, or
-    /// `PartC`. Schema-specific interpretation belongs in processors.
+    /// does not attach semantic meaning to field names. Schema-specific
+    /// interpretation belongs in processors.
     EventHeader,
 }
 
+/// One user_events tracepoint subscription.
+///
+/// Each subscription opens the named tracepoint and chooses the payload decoder
+/// used for samples read from that tracepoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SubscriptionConfig {
+    /// Tracepoint name to subscribe to, for example `my_provider:event_name`.
     tracepoint: String,
+    /// Payload decoding format for records emitted by this tracepoint.
     #[serde(default)]
     format: FormatConfig,
 }
 
+/// Optional polling for tracepoints that may be registered after startup.
+///
+/// Linux user_events tracepoints can appear after the receiver starts if the
+/// producer process registers them later. When enabled, the receiver retries
+/// missing subscriptions instead of treating startup absence as final.
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 struct LateRegistrationConfig {
+    /// Enables periodic retries for subscriptions whose tracepoints do not
+    /// exist yet.
     #[serde(default)]
     enabled: bool,
+    /// Delay, in milliseconds, between late-registration retry attempts.
     #[serde(default = "default_late_registration_poll_ms")]
     poll_interval_ms: u64,
 }
 
+/// Low-level tracepoint session settings.
+///
+/// These values tune how the receiver opens and services the per-CPU perf ring
+/// buffers used by the underlying user_events tracepoint session.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct SessionConfig {
+    /// Ring buffer capacity allocated per CPU for tracepoint samples.
     #[serde(default = "default_per_cpu_buffer_size")]
     per_cpu_buffer_size: usize,
     #[expect(
         dead_code,
         reason = "reserved for future one-collect wakeup watermark support"
     )]
+    /// Planned readiness threshold for waking the reader when buffered data is
+    /// available.
+    ///
+    /// This is currently parsed for forward compatibility but not applied until
+    /// one_collect exposes wakeup/readiness and watermark configuration.
     // TODO: Wire this into the perf ring setup once one_collect exposes
     // wakeup/readiness and watermark configuration for tracepoint sessions.
     #[serde(default = "default_wakeup_watermark")]
     wakeup_watermark: usize,
+    /// Behavior for tracepoints that are absent during initial session setup.
     #[serde(default)]
     late_registration: LateRegistrationConfig,
 }
 
+/// Per-turn limits for reading samples from the tracepoint session.
+///
+/// The receiver runs cooperatively with the local pipeline task. These limits
+/// bound how much work one drain pass can do before yielding back to the engine.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct DrainConfig {
+    /// Maximum number of decoded records to read during one receiver turn.
     #[serde(default = "default_max_records_per_turn")]
     max_records_per_turn: usize,
+    /// Maximum raw payload bytes to read during one receiver turn.
     #[serde(default = "default_max_bytes_per_turn")]
     max_bytes_per_turn: usize,
+    /// Maximum wall-clock time spent draining records during one receiver turn.
     #[serde(default = "default_max_drain_ns")]
     #[serde(with = "humantime_serde")]
     max_drain_ns: Duration,
 }
 
+/// In-memory OTAP log batching policy.
+///
+/// Decoded user_events records are accumulated into OTAP log batches before
+/// they are sent downstream. Batching improves throughput but also increases
+/// how many decoded records can be lost if the process exits before a flush.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct BatchConfig {
@@ -142,53 +179,69 @@ struct BatchConfig {
     // increase the amount of irrecoverable data that can be lost before a flush.
     // TODO: Revisit these batching tradeoffs if we add durable buffering or
     // upstream retry/replay support for this ingestion path.
+    /// Maximum number of log records per emitted OTAP batch.
     #[serde(default = "default_batch_max_size")]
     max_size: u16,
+    /// Maximum time to hold a non-empty batch before flushing it downstream.
     #[serde(default = "default_batch_max_duration")]
     #[serde(with = "humantime_serde")]
     max_duration: Duration,
 }
 
+/// Policy for handling records when the receiver cannot send downstream.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 enum OverflowMode {
+    /// Drop the current record or batch and continue reading future events.
     Drop,
 }
 
+/// Downstream backpressure behavior.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct OverflowConfig {
+    /// Action to take when the downstream local channel is full.
     #[serde(default = "default_overflow_mode")]
     on_downstream_full: OverflowMode,
 }
 
+/// User-supplied configuration for the Linux user_events receiver.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct Config {
-    #[serde(default)]
-    tracepoint: Option<String>,
-    #[serde(default)]
-    format: Option<FormatConfig>,
-    #[serde(default)]
-    subscriptions: Option<Vec<SubscriptionConfig>>,
+struct UsereventsReceiverConfig {
+    /// Required non-empty list of tracepoints to subscribe to.
+    subscriptions: Vec<SubscriptionConfig>,
+    /// Tracepoint session setup and late-registration settings.
     #[serde(default)]
     session: Option<SessionConfig>,
+    /// Cooperative drain-loop limits.
     #[serde(default)]
     drain: Option<DrainConfig>,
+    /// OTAP log batching limits.
     #[serde(default)]
     batching: Option<BatchConfig>,
+    /// Backpressure behavior when downstream cannot accept records.
     #[serde(default)]
     overflow: Option<OverflowConfig>,
 }
 
+/// Runtime state for one local user_events receiver task.
 struct UsereventsReceiver {
+    /// Tracepoint subscriptions owned by this receiver instance.
     subscriptions: Vec<SubscriptionConfig>,
+    /// Low-level session configuration used when opening tracepoint readers.
     session: SessionConfig,
+    /// Per-turn drain limits used to keep receiver work cooperative.
     drain: DrainConfig,
+    /// In-memory batching policy for decoded log records.
     batching: BatchConfig,
+    /// Policy applied when downstream admission or send capacity is exhausted.
     overflow: OverflowConfig,
+    /// Local pipeline CPU/shard assigned by the engine.
     cpu_id: usize,
+    /// Receiver metric set shared with the local pipeline task.
     metrics: Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>>,
+    /// Local admission state used to coordinate with memory limiting.
     admission_state: LocalReceiverAdmissionState,
 }
 
@@ -197,13 +250,14 @@ impl UsereventsReceiver {
         pipeline: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: e.to_string(),
-            }
-        })?;
+        let config: UsereventsReceiverConfig =
+            serde_json::from_value(config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?;
 
-        let subscriptions = Self::normalize_subscriptions(&config)?;
+        Self::validate_subscriptions(&config.subscriptions)?;
         let session = config.session.clone().unwrap_or(SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
@@ -228,7 +282,7 @@ impl UsereventsReceiver {
         });
 
         Ok(Self {
-            subscriptions,
+            subscriptions: config.subscriptions,
             session,
             drain,
             batching,
@@ -243,36 +297,18 @@ impl UsereventsReceiver {
         })
     }
 
-    fn normalize_subscriptions(
-        config: &Config,
-    ) -> Result<Vec<SubscriptionConfig>, otap_df_config::error::Error> {
-        match (&config.tracepoint, &config.subscriptions) {
-            (Some(_), Some(_)) => Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "configure either `tracepoint` or `subscriptions`, not both".to_owned(),
-            }),
-            (None, None) => Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver requires either `tracepoint` or `subscriptions`"
-                    .to_owned(),
-            }),
-            (Some(tracepoint), None) => {
-                Self::validate_tracepoint(tracepoint)?;
-                Ok(vec![SubscriptionConfig {
-                    tracepoint: tracepoint.clone(),
-                    format: config.format.clone().unwrap_or_default(),
-                }])
-            }
-            (None, Some(subscriptions)) if subscriptions.is_empty() => {
-                Err(otap_df_config::error::Error::InvalidUserConfig {
-                    error: "userevents receiver requires at least one subscription".to_owned(),
-                })
-            }
-            (None, Some(subscriptions)) => {
-                for subscription in subscriptions {
-                    Self::validate_tracepoint(&subscription.tracepoint)?;
-                }
-                Ok(subscriptions.clone())
-            }
+    fn validate_subscriptions(
+        subscriptions: &[SubscriptionConfig],
+    ) -> Result<(), otap_df_config::error::Error> {
+        if subscriptions.is_empty() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "userevents receiver requires at least one subscription".to_owned(),
+            });
         }
+        for subscription in subscriptions {
+            Self::validate_tracepoint(&subscription.tracepoint)?;
+        }
+        Ok(())
     }
 
     fn validate_tracepoint(tracepoint: &str) -> Result<(), otap_df_config::error::Error> {
@@ -400,7 +436,7 @@ pub static USEREVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    validate_config: otap_df_config::validation::validate_typed_config::<UsereventsReceiverConfig>,
 };
 
 #[async_trait(?Send)]
@@ -733,83 +769,68 @@ mod config_tests {
     use super::*;
 
     #[test]
-    fn normalize_single_tracepoint_shorthand() {
-        let config = Config {
-            tracepoint: Some("user_events:example_L2K1".to_owned()),
-            format: Some(FormatConfig::Tracefs),
-            subscriptions: None,
-            session: None,
-            drain: None,
-            batching: None,
-            overflow: None,
-        };
-
-        let normalized =
-            UsereventsReceiver::normalize_subscriptions(&config).expect("normalized subscriptions");
-        assert_eq!(normalized.len(), 1);
-        assert_eq!(normalized[0].tracepoint, "user_events:example_L2K1");
-        assert!(matches!(normalized[0].format, FormatConfig::Tracefs));
-    }
-
-    #[test]
-    fn normalize_subscriptions_list() {
-        let config = Config {
-            tracepoint: None,
-            format: None,
-            subscriptions: Some(vec![SubscriptionConfig {
+    fn validate_subscriptions_accepts_single_subscription() {
+        let config = UsereventsReceiverConfig {
+            subscriptions: vec![SubscriptionConfig {
                 tracepoint: "user_events:example_L5K1".to_owned(),
                 format: FormatConfig::Tracefs,
-            }]),
+            }],
             session: None,
             drain: None,
             batching: None,
             overflow: None,
         };
 
-        let normalized =
-            UsereventsReceiver::normalize_subscriptions(&config).expect("normalized subscriptions");
-        assert_eq!(normalized.len(), 1);
-        assert!(matches!(normalized[0].format, FormatConfig::Tracefs));
+        UsereventsReceiver::validate_subscriptions(&config.subscriptions)
+            .expect("subscriptions accepted");
     }
 
     #[test]
-    fn normalize_rejects_both_tracepoint_and_subscriptions() {
-        let config = Config {
-            tracepoint: Some("user_events:example_L2K1".to_owned()),
-            format: Some(FormatConfig::Tracefs),
-            subscriptions: Some(vec![SubscriptionConfig {
-                tracepoint: "user_events:example_L3K1".to_owned(),
-                format: FormatConfig::Tracefs,
-            }]),
-            session: None,
-            drain: None,
-            batching: None,
-            overflow: None,
-        };
+    fn deserialize_config_rejects_legacy_tracepoint_shorthand() {
+        let error = serde_json::from_value::<UsereventsReceiverConfig>(serde_json::json!({
+            "tracepoint": "user_events:example_L5K1"
+        }))
+        .expect_err("legacy shorthand rejected");
 
-        let error =
-            UsereventsReceiver::normalize_subscriptions(&config).expect_err("config rejected");
         assert!(
-            error
-                .to_string()
-                .contains("either `tracepoint` or `subscriptions`")
+            error.to_string().contains("unknown field `tracepoint`"),
+            "unexpected error: {error}"
         );
     }
 
     #[test]
-    fn normalize_rejects_non_userevents_tracepoint_group() {
-        let config = Config {
-            tracepoint: Some("foo:example_L2K1".to_owned()),
-            format: Some(FormatConfig::Tracefs),
-            subscriptions: None,
+    fn validate_subscriptions_rejects_empty_list() {
+        let config = UsereventsReceiverConfig {
+            subscriptions: Vec::new(),
             session: None,
             drain: None,
             batching: None,
             overflow: None,
         };
 
-        let error =
-            UsereventsReceiver::normalize_subscriptions(&config).expect_err("config rejected");
+        let error = UsereventsReceiver::validate_subscriptions(&config.subscriptions)
+            .expect_err("config rejected");
+        assert!(
+            error.to_string().contains("at least one subscription"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_subscriptions_rejects_non_userevents_tracepoint_group() {
+        let config = UsereventsReceiverConfig {
+            subscriptions: vec![SubscriptionConfig {
+                tracepoint: "foo:example_L2K1".to_owned(),
+                format: FormatConfig::Tracefs,
+            }],
+            session: None,
+            drain: None,
+            batching: None,
+            overflow: None,
+        };
+
+        let error = UsereventsReceiver::validate_subscriptions(&config.subscriptions)
+            .expect_err("config rejected");
         assert!(
             error.to_string().contains("user_events:<event>"),
             "unexpected error: {error}"
@@ -817,19 +838,20 @@ mod config_tests {
     }
 
     #[test]
-    fn normalize_rejects_tracepoint_without_group() {
-        let config = Config {
-            tracepoint: Some("example_L2K1".to_owned()),
-            format: Some(FormatConfig::Tracefs),
-            subscriptions: None,
+    fn validate_subscriptions_rejects_tracepoint_without_group() {
+        let config = UsereventsReceiverConfig {
+            subscriptions: vec![SubscriptionConfig {
+                tracepoint: "example_L2K1".to_owned(),
+                format: FormatConfig::Tracefs,
+            }],
             session: None,
             drain: None,
             batching: None,
             overflow: None,
         };
 
-        let error =
-            UsereventsReceiver::normalize_subscriptions(&config).expect_err("config rejected");
+        let error = UsereventsReceiver::validate_subscriptions(&config.subscriptions)
+            .expect_err("config rejected");
         assert!(
             error.to_string().contains("user_events:<event>"),
             "unexpected error: {error}"

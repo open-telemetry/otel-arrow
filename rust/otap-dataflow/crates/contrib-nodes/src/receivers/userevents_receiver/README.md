@@ -193,7 +193,7 @@ kernel tracing feature. Windows support would require a separate ETW receiver.
 
 Current implementation supports:
 
-- single-tracepoint and multi-tracepoint configuration
+- one or more tracepoint subscriptions per receiver
 - `tracefs`, which decodes standard Linux tracefs fields into typed log
   attributes
 - `event_header`, which decodes EventHeader self-describing fields into typed
@@ -201,20 +201,21 @@ Current implementation supports:
 
 ## Configuration
 
-You can configure the receiver in one of two ways.
+Configure one or more tracepoints with `subscriptions`. A receiver subscribes
+to one tracepoint with a one-item list, or to multiple tracepoints with
+multiple list entries.
 
-### Single Tracepoint Shorthand
-
-Use this when one receiver should listen to one tracepoint.
+### Subscriptions
 
 ```yaml
 nodes:
   ingest:
     type: receiver:userevents
     config:
-      tracepoint: "user_events:myprovider_L2K1"
-      format:
-        type: tracefs
+      subscriptions:
+        - tracepoint: "user_events:myprovider_L2K1"
+          format:
+            type: tracefs
       session:
         per_cpu_buffer_size: 1048576  # bytes
         late_registration:
@@ -231,9 +232,7 @@ nodes:
         on_downstream_full: drop
 ```
 
-### Multiple Tracepoints
-
-Use this when one receiver should listen to several tracepoints.
+Add another list entry when one receiver should listen to several tracepoints:
 
 ```yaml
 nodes:
@@ -251,8 +250,21 @@ nodes:
         per_cpu_buffer_size: 1048576  # bytes
 ```
 
-Exactly one of `tracepoint` or `subscriptions` must be configured.
-`tracefs` is the default `format.type`.
+With `subscriptions`, each per-CPU receiver instance still opens one
+one_collect/perf session for its assigned CPU only. The receiver registers all
+configured tracepoints in that session, tags each sample with a subscription
+index, and uses that index to select the configured decoder format. This keeps
+the per-CPU locality model intact while allowing related tracepoints to share a
+receiver.
+
+The tradeoff is shared fate and shared budgets: all subscriptions in the
+receiver share the same perf session, drain limits, batching policy, overflow
+policy, and metrics. A high-volume tracepoint can consume the shared drain or
+batch budget and affect quieter tracepoints. If tracepoints need independent
+resource limits or failure isolation, configure separate receiver nodes instead.
+
+`subscriptions` must contain at least one entry. `tracefs` is the default
+`subscriptions[].format.type`.
 
 `session.wakeup_watermark` exists as a reserved configuration field for future
 one_collect wakeup support, but is currently ignored.
@@ -265,9 +277,8 @@ tracepoint sessions.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `tracepoint` | none | Single tracepoint shorthand. Must use `user_events:<event>`. Mutually exclusive with `subscriptions`. |
-| `subscriptions` | none | List of tracepoints. Each entry must use `user_events:<event>`. |
-| `format.type` | `tracefs` | Decode format. Supported values: `tracefs`, `event_header`. |
+| `subscriptions` | none | Required non-empty list of tracepoints. Each entry must use `user_events:<event>`. |
+| `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. Supported values: `tracefs`, `event_header`. |
 | `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded by the underlying perf/ring setup. |
 | `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
 | `session.late_registration.enabled` | `false` | When true, keep retrying if the tracepoint is not registered yet. |
