@@ -1,15 +1,17 @@
 # Demonstrates the distributed stopwatch feature.
 #
-# Five attribute processors form a sequential processing chain. Two stopwatches
-# measure aggregate synchronous compute duration across different sub-ranges:
+# Five attribute processors form a sequential processing chain. A stopwatch
+# measures aggregate synchronous compute duration across the full chain:
 #
 #   stopwatch "ingest_pipeline" - covers attr1 through attr5 (full chain)
-#   stopwatch "enrich_stage"    - covers attr2 through attr4 (middle three)
 #
 # Stopwatches sum per-message compute.*.duration (the time spent inside timed()
 # closures) across each processor in the range, excluding queue wait and async I/O.
-# Metrics appear as stopwatch.compute.success.duration and
-# stopwatch.compute.failed.duration (MMSC histograms in nanoseconds).
+# Metrics appear as stopwatch.compute.duration (MMSC histograms in
+# nanoseconds).
+#
+# Note: only non-overlapping stopwatch ranges are supported. A message can be
+# inside at most one stopwatch range at a time.
 #
 # Query metrics while running:
 #   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
@@ -33,9 +35,6 @@ groups:
               - name: ingest_pipeline
                 start_node: attr1
                 stop_node: attr5
-              - name: enrich_stage
-                start_node: attr2
-                stop_node: attr4
 
         nodes:
           receiver:
