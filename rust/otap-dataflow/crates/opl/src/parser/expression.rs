@@ -7,9 +7,9 @@ use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
     CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
     ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression, DoubleValue,
-    EqualToLogicalExpression, Expression, GetTypeScalarExpression, GreaterThanLogicalExpression,
-    GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, IntegerValue,
-    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    EqualToLogicalExpression, Expression, GetRecordTypeScalarExpression,
+    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
+    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
     ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
     NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
     RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
@@ -215,13 +215,9 @@ pub(crate) fn parse_type_check_expression(
         // IF there are two rules, we have an expression like (is <Type>) meaning we're checking
         // that an element of the stream is some type
         2 => {
-            let type_check_expr = ScalarExpression::GetType(GetTypeScalarExpression::new(
-                type_check_rule_query_location.clone(),
-                ScalarExpression::Source(SourceScalarExpression::new(
-                    type_check_rule_query_location.clone(),
-                    ValueAccessor::new_with_selectors(Vec::new()),
-                )),
-            ));
+            let type_check_expr = ScalarExpression::GetRecordType(
+                GetRecordTypeScalarExpression::new(type_check_rule_query_location.clone()),
+            );
 
             let type_name_rule = inner_rules.nth(1).expect("two rules");
             let type_check_expected_type = ScalarExpression::Static(

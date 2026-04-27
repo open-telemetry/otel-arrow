@@ -515,46 +515,25 @@ impl FilterPlan {
     ) -> Result<Option<Self>> {
         match (left_expr, binary_op, right_expr) {
             (
-                ScalarExpression::GetType(get_type_expr),
+                ScalarExpression::GetRecordType(_),
                 Operator::Eq,
                 ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
             ) => {
-                let source_value_accessor = match get_type_expr.get_value() {
-                    ScalarExpression::Source(source_scalar_expr) => {
-                        source_scalar_expr.get_value_accessor()
-                    }
-                    _ => {
-                        // the source for the get type expression isn't something that we can check
-                        // determine to statically be the identifier of a type, defer to expression
-                        // evaluation for this filter
-                        return Ok(None);
-                    }
-                };
+                // since the source accessor has no selectors, it means we're checking the type
+                // of elements of the stream for this pipeline. We'll try to determine if the
+                // type name is a stream type that is handled by this query engine ...
+                let type_name = typename_expr.get_value();
+                let stream_element_type =
+                    StreamElementType::from_str(type_name).ok_or_else(|| {
+                        Error::InvalidPipelineError {
+                            cause: format!("Unknown stream type name {type_name}"),
+                            query_location: Some(right_expr.get_query_location().clone()),
+                        }
+                    })?;
 
-                if !source_value_accessor.has_selectors() {
-                    // since the source accessor has no selectors, it means we're checking the type
-                    // of elements of the stream for this pipeline. We'll try to determine if the
-                    // type name is a stream type that is handled by this query engine ...
-                    let type_name = typename_expr.get_value();
-                    let stream_element_type =
-                        StreamElementType::from_str(type_name).ok_or_else(|| {
-                            Error::InvalidPipelineError {
-                                cause: format!("Unknown stream type name {type_name}"),
-                                query_location: Some(right_expr.get_query_location().clone()),
-                            }
-                        })?;
-
-                    Ok(Some(FilterPlan::from(ElementTypeFilter::new(
-                        stream_element_type,
-                    ))))
-                } else {
-                    // TODO - we will support this soon
-                    Err(Error::NotYetSupportedError {
-                        message:
-                            "Checking if a field of stream element is a type is not yet supported"
-                                .into(),
-                    })
-                }
+                Ok(Some(FilterPlan::from(ElementTypeFilter::new(
+                    stream_element_type,
+                ))))
             }
             _ => Ok(None),
         }

@@ -659,6 +659,7 @@ pub(crate) fn try_resolve_identifier(
         ScalarExpression::Slice(_) => Ok(None),
         ScalarExpression::Static(_) => Ok(None),
         ScalarExpression::Text(_) => Ok(None),
+        ScalarExpression::GetRecordType(_) => Ok(None),
         ScalarExpression::GetType(g) => {
             if let Some(mut i) = try_resolve_identifier(g.get_value(), scope)? {
                 i.insert(0, "type".into());
@@ -667,6 +668,7 @@ pub(crate) fn try_resolve_identifier(
 
             Ok(None)
         }
+
         ScalarExpression::Select(s) => {
             if let Some(mut value) = try_resolve_identifier(s.get_value(), scope)?
                 && let ScalarExpression::Static(StaticScalarExpression::Array(selectors)) =
