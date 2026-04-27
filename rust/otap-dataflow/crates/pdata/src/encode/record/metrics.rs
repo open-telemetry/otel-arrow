@@ -95,6 +95,7 @@ impl MetricsRecordBatchBuilder {
             }),
             is_monotonic: AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions {
                 optional: true,
+                skip_all_false: true,
             }),
         }
     }

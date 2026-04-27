@@ -233,7 +233,10 @@ impl AnyValuesRecordsBuilder {
                 dictionary_options: None,
                 ..Default::default()
             }),
-            bool_value: AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { optional: true }),
+            bool_value: AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions {
+                optional: true,
+                skip_all_false: false,
+            }),
             bytes_value: BinaryArrayBuilder::new(ArrayOptions {
                 optional: true,
                 dictionary_options: Some(DictionaryOptions::dict16()),
