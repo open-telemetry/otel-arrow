@@ -130,9 +130,14 @@ pub struct EffectHandler<PData> {
     /// Accumulated synchronous compute duration (nanoseconds) for the
     /// current PData message.  Reset to 0 before each `process()` call
     /// and added to when the processor calls `timed()`.
+    /// Only populated when `stopwatches_active` is true.
     per_message_compute_ns: Cell<u64>,
     /// Whether this node is a stopwatch start node.
     stopwatch_is_start: bool,
+    /// Whether any stopwatch is configured in this pipeline.
+    /// When false, `timed()` uses the lighter path that doesn't track
+    /// per-message elapsed, and `reset_per_message_compute_ns` is a no-op.
+    stopwatches_active: bool,
     /// Metric set for the stopwatch where this node is the stop node.
     /// `None` when this node is not a stopwatch stop node.
     /// Reported periodically via [`report_stopwatch`], not on every message.
@@ -159,6 +164,7 @@ impl<PData> EffectHandler<PData> {
             router,
             per_message_compute_ns: Cell::new(0),
             stopwatch_is_start: false,
+            stopwatches_active: false,
             stopwatch_stop_metric: None,
             stopwatch_stop_acc: Cell::new(Mmsc::default()),
         }
@@ -211,9 +217,11 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Called at the start of each PData message processing cycle so that
     /// `timed()` calls within a single `process()` invocation accumulate
-    /// fresh values.
+    /// fresh values.  No-op when no stopwatches are configured.
     pub(crate) fn reset_per_message_compute_ns(&self) {
-        self.per_message_compute_ns.set(0);
+        if self.stopwatches_active {
+            self.per_message_compute_ns.set(0);
+        }
     }
 
     /// Sets stopwatch start/stop roles for this node.
@@ -221,9 +229,11 @@ impl<PData> EffectHandler<PData> {
         &mut self,
         is_start: bool,
         stop_metric: Option<MetricSet<StopwatchMetrics>>,
+        stopwatches_active: bool,
     ) {
         self.stopwatch_is_start = is_start;
         self.stopwatch_stop_metric = stop_metric;
+        self.stopwatches_active = stopwatches_active;
     }
 
     /// Returns whether this node is a stopwatch start node.
@@ -267,10 +277,9 @@ impl<PData> EffectHandler<PData> {
     /// is enabled.
     ///
     /// Delegates to [`ComputeDuration::timed`] with this handler's
-    /// precomputed interests.  Duration is recorded into the `ok` or
-    /// `err` accumulator based on the closure's `Result` outcome
-    /// **and** accumulated into the per-message compute counter so the
-    /// engine can stamp it into the context frame for stopwatch metrics.
+    /// precomputed interests.  When stopwatches are active in this
+    /// pipeline, the elapsed nanoseconds are also accumulated into
+    /// `per_message_compute_ns` for the stopwatch send path.
     ///
     /// The closure-based API structurally prevents timing from
     /// spanning `.await` points.
@@ -280,12 +289,16 @@ impl<PData> EffectHandler<PData> {
         cd: &ComputeDuration,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
-        let (result, elapsed_ns) = cd.timed(self.core.node_interests(), f);
-        if elapsed_ns > 0 {
-            self.per_message_compute_ns
-                .set(self.per_message_compute_ns.get().saturating_add(elapsed_ns));
+        if self.stopwatches_active {
+            let (result, elapsed_ns) = cd.timed_with_elapsed(self.core.node_interests(), f);
+            if elapsed_ns > 0 {
+                self.per_message_compute_ns
+                    .set(self.per_message_compute_ns.get().saturating_add(elapsed_ns));
+            }
+            result
+        } else {
+            cd.timed(self.core.node_interests(), f)
         }
-        result
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -915,7 +928,7 @@ mod tests {
             None,
             metrics_reporter,
         );
-        eh.set_stopwatch_roles(false, Some(metric_set));
+        eh.set_stopwatch_roles(false, Some(metric_set), true);
 
         // Record two observations — should accumulate in the local Mmsc,
         // not touch the MetricSet yet.
@@ -950,5 +963,66 @@ mod tests {
             acc_final.count, 0,
             "accumulator drained after second report"
         );
+    }
+
+    /// When no stopwatches are configured (the default), `timed()` should
+    /// use the lightweight `ComputeDuration::timed()` path and NOT
+    /// accumulate into `per_message_compute_ns`.
+    #[test]
+    fn timed_without_stopwatches_does_not_accumulate() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+
+        // Default: stopwatches_active = false.
+        assert!(!eh.stopwatches_active);
+
+        // Create a ComputeDuration and call timed() with active interests.
+        let (ctx, _) = crate::testing::test_pipeline_ctx();
+        let cd = ComputeDuration::new(&ctx);
+        let active = Interests::PROCESS_DURATION;
+
+        let result = eh.timed(&cd, || Ok::<_, &str>(42));
+        assert_eq!(result.unwrap(), 42);
+
+        // per_message_compute_ns must remain 0 — the stopwatch path was not taken.
+        assert_eq!(
+            eh.per_message_compute_ns(),
+            0,
+            "per_message_compute_ns should be 0 when stopwatches are inactive"
+        );
+
+        // reset is also a no-op.
+        eh.reset_per_message_compute_ns();
+        assert_eq!(eh.per_message_compute_ns(), 0);
+    }
+
+    /// When stopwatches are active, `timed()` should accumulate elapsed
+    /// nanoseconds into `per_message_compute_ns`.
+    #[test]
+    fn timed_with_stopwatches_accumulates() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        eh.set_stopwatch_roles(false, None, true);
+        eh.core.set_node_interests(Interests::PROCESS_DURATION);
+        assert!(eh.stopwatches_active);
+
+        let (ctx, _) = crate::testing::test_pipeline_ctx();
+        let cd = ComputeDuration::new(&ctx);
+
+        // Call timed() multiple times; accumulated ns should be > 0.
+        for _ in 0..10 {
+            let _ = eh.timed(&cd, || Ok::<_, &str>(std::hint::black_box(42)));
+        }
+        let ns = eh.per_message_compute_ns();
+        assert!(
+            ns > 0,
+            "per_message_compute_ns should be non-zero when stopwatches are active, got {ns}"
+        );
+
+        // reset should clear it.
+        eh.reset_per_message_compute_ns();
+        assert_eq!(eh.per_message_compute_ns(), 0);
     }
 }

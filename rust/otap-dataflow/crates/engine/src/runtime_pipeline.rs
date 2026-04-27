@@ -326,6 +326,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                 .stop_nodes
                 .get(&node_id.index)
                 .map(|&id| stopwatch_state.metrics[id].clone());
+            let sw_active = !stopwatch_state.start_nodes.is_empty();
             let fut = async move {
                 let result = processor
                     .start_with_completion_metrics(
@@ -336,6 +337,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                         completion_emission_metrics,
                         sw_is_start,
                         sw_stop_metric,
+                        sw_active,
                     )
                     .await;
                 drop(telemetry_guard);

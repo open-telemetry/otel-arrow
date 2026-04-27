@@ -227,8 +227,7 @@ impl<PData> EffectHandler<PData> {
         cd: &ComputeDuration,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
-        let (result, _elapsed_ns) = cd.timed(self.core.node_interests(), f);
-        result
+        cd.timed(self.core.node_interests(), f)
     }
 
     /// Sends a message to the next node(s) in the pipeline.

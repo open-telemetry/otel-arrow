@@ -516,6 +516,7 @@ impl<PData> ProcessorWrapper<PData> {
             None,
             false,
             None,
+            false,
         )
         .await
     }
@@ -529,6 +530,7 @@ impl<PData> ProcessorWrapper<PData> {
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
         stopwatch_is_start: bool,
         stopwatch_stop_metric: Option<MetricSet<StopwatchMetrics>>,
+        stopwatches_active: bool,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode,
@@ -553,8 +555,11 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
-                effect_handler
-                    .set_stopwatch_roles(stopwatch_is_start, stopwatch_stop_metric.clone());
+                effect_handler.set_stopwatch_roles(
+                    stopwatch_is_start,
+                    stopwatch_stop_metric.clone(),
+                    stopwatches_active,
+                );
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler

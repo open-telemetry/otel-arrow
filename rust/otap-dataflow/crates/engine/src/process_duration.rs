@@ -66,17 +66,43 @@ impl ComputeDuration {
     /// The elapsed time is recorded into the `success` or `failed`
     /// accumulator based on the closure's `Result` outcome.
     ///
-    /// Returns `(result, elapsed_ns)` where `elapsed_ns` is the
-    /// wall-clock nanoseconds consumed by `f` (0 when timing is
-    /// disabled).  Callers can use the elapsed value for optional stopwatch
-    /// accumulation.
-    ///
     /// The closure-based API structurally prevents the timer from
     /// being held across `.await` — the closure is `FnOnce`, not
     /// async, so the compiler enforces that only synchronous work is
     /// measured.
     #[inline]
     pub fn timed<T, E>(
+        &self,
+        interests: Interests,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        if interests.contains(Interests::PROCESS_DURATION) {
+            let timer = Timer::start();
+            let result = f();
+            let elapsed = timer.elapsed_nanos();
+            let acc = if result.is_ok() {
+                &self.acc_success
+            } else {
+                &self.acc_failed
+            };
+            let mut val = acc.get();
+            val.record(elapsed);
+            acc.set(val);
+            result
+        } else {
+            f()
+        }
+    }
+
+    /// Time a synchronous, fallible closure and return the elapsed
+    /// nanoseconds alongside the result.
+    ///
+    /// Like [`timed`](Self::timed), but also returns the wall-clock
+    /// nanoseconds consumed by `f` (0 when timing is disabled).
+    /// Used by the stopwatch path to accumulate per-message compute
+    /// duration.
+    #[inline]
+    pub fn timed_with_elapsed<T, E>(
         &self,
         interests: Interests,
         f: impl FnOnce() -> Result<T, E>,
@@ -152,9 +178,9 @@ mod tests {
         assert_eq!(cd.acc_failed.get().get().count, 0);
     }
 
-    /// timed() returns elapsed nanoseconds alongside the result.
+    /// timed_with_elapsed() returns elapsed nanoseconds alongside the result.
     #[test]
-    fn timed_returns_elapsed_nanos() {
+    fn timed_with_elapsed_returns_nanos() {
         let (ctx, _) = test_pipeline_ctx();
         let cd = ComputeDuration::new(&ctx);
         let active = Interests::PROCESS_DURATION;
@@ -163,7 +189,7 @@ mod tests {
         // (individual calls may be sub-nanosecond).
         let mut total_ns = 0u64;
         for _ in 0..10 {
-            let (_, ns) = cd.timed(active, || Ok::<_, &str>(std::hint::black_box(42)));
+            let (_, ns) = cd.timed_with_elapsed(active, || Ok::<_, &str>(std::hint::black_box(42)));
             total_ns += ns;
         }
         assert!(
@@ -175,13 +201,13 @@ mod tests {
         assert_eq!(cd.acc_success.get().get().count, 10);
     }
 
-    /// timed() returns zero elapsed when interests are disabled.
+    /// timed_with_elapsed() returns zero elapsed when interests are disabled.
     #[test]
-    fn timed_returns_zero_elapsed_when_disabled() {
+    fn timed_with_elapsed_zero_when_disabled() {
         let (ctx, _) = test_pipeline_ctx();
         let cd = ComputeDuration::new(&ctx);
 
-        let (_, elapsed) = cd.timed(Interests::empty(), || Ok::<_, &str>(1));
+        let (_, elapsed) = cd.timed_with_elapsed(Interests::empty(), || Ok::<_, &str>(1));
 
         assert_eq!(elapsed, 0);
         assert_eq!(cd.acc_success.get().get().count, 0);
