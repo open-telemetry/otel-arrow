@@ -23,27 +23,37 @@
 //! fields. Until that Arrow-native promotion path exists, Arrow-native
 //! pipelines pay an Arrow-to-OTLP conversion here.
 
+mod metrics;
+
 use std::sync::Arc;
 
+use arrow::array::{Array, DictionaryArray, RecordBatch, StringArray};
+use arrow::datatypes::{UInt8Type, UInt16Type};
 use async_trait::async_trait;
 use bytes::BytesMut;
 use chrono::DateTime;
 use linkme::distributed_slice;
+use metrics::MicrosoftCommonSchemaProcessorMetrics;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
 use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
+use otap_df_pdata::schema::consts;
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+use otap_df_telemetry::metrics::MetricSet;
 use prost::Message as _;
 use serde::Deserialize;
 
@@ -57,16 +67,23 @@ pub const MICROSOFT_COMMON_SCHEMA_PROCESSOR_URN: &str =
 pub struct Config {}
 
 /// Processor that promotes decoded Microsoft Common Schema log attributes.
-pub struct MicrosoftCommonSchemaProcessor;
+pub struct MicrosoftCommonSchemaProcessor {
+    metrics: MetricSet<MicrosoftCommonSchemaProcessorMetrics>,
+}
 
 impl MicrosoftCommonSchemaProcessor {
     /// Creates a processor from user configuration.
-    pub fn from_config(config: &serde_json::Value) -> Result<Self, ConfigError> {
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &serde_json::Value,
+    ) -> Result<Self, ConfigError> {
         let _config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse MicrosoftCommonSchemaProcessor configuration: {e}"),
             })?;
-        Ok(Self)
+        Ok(Self {
+            metrics: pipeline_ctx.register_metrics::<MicrosoftCommonSchemaProcessorMetrics>(),
+        })
     }
 }
 
@@ -78,7 +95,15 @@ impl local::Processor<OtapPdata> for MicrosoftCommonSchemaProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(_) => Ok(()),
+            Message::Control(control) => {
+                if let NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } = control
+                {
+                    let _ = metrics_reporter.report(&mut self.metrics);
+                }
+                Ok(())
+            }
             Message::PData(pdata) => {
                 if pdata.signal_type() != SignalType::Logs {
                     return effect_handler
@@ -88,6 +113,16 @@ impl local::Processor<OtapPdata> for MicrosoftCommonSchemaProcessor {
                 }
 
                 let (context, payload) = pdata.into_parts();
+                if let OtapPayload::OtapArrowRecords(records) = &payload {
+                    if arrow_logs_have_no_csver(records) {
+                        self.metrics.arrow_batches_skipped_no_csver.inc();
+                        return effect_handler
+                            .send_message_with_source_node(OtapPdata::new(context, payload))
+                            .await
+                            .map_err(Into::into);
+                    }
+                }
+
                 let otlp_bytes: OtlpProtoBytes = payload.try_into().map_err(|e| {
                     processor_error(
                         effect_handler.processor_id(),
@@ -107,7 +142,13 @@ impl local::Processor<OtapPdata> for MicrosoftCommonSchemaProcessor {
                         format!("failed to decode OTLP logs: {e}"),
                     )
                 })?;
-                if !promote_microsoft_common_schema_logs(&mut logs) {
+                let stats = promote_microsoft_common_schema_logs(&mut logs);
+                self.metrics.records_seen.add(stats.records_seen);
+                self.metrics.records_promoted.add(stats.records_promoted);
+                self.metrics
+                    .records_skipped_not_common_schema
+                    .add(stats.records_skipped_not_common_schema());
+                if !stats.promoted_any() {
                     return effect_handler
                         .send_message_with_source_node(OtapPdata::new(context, otlp_bytes.into()))
                         .await
@@ -121,6 +162,7 @@ impl local::Processor<OtapPdata> for MicrosoftCommonSchemaProcessor {
                         format!("failed to encode OTLP logs: {e}"),
                     )
                 })?;
+                self.metrics.batches_promoted.inc();
                 let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(out.freeze()));
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(context, payload))
@@ -133,12 +175,12 @@ impl local::Processor<OtapPdata> for MicrosoftCommonSchemaProcessor {
 
 /// Factory function to create a Microsoft Common Schema processor.
 pub fn create_microsoft_common_schema_processor(
-    _pipeline_ctx: PipelineContext,
+    pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let proc = MicrosoftCommonSchemaProcessor::from_config(&node_config.config)?;
+    let proc = MicrosoftCommonSchemaProcessor::from_config(pipeline_ctx, &node_config.config)?;
     Ok(ProcessorWrapper::local(
         proc,
         node,
@@ -172,16 +214,90 @@ fn processor_error(processor: NodeId, error: String) -> EngineError {
     }
 }
 
-fn promote_microsoft_common_schema_logs(logs: &mut LogsData) -> bool {
-    let mut promoted_any = false;
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PromotionStats {
+    records_seen: u64,
+    records_promoted: u64,
+}
+
+impl PromotionStats {
+    const fn promoted_any(self) -> bool {
+        self.records_promoted > 0
+    }
+
+    fn records_skipped_not_common_schema(self) -> u64 {
+        self.records_seen.saturating_sub(self.records_promoted)
+    }
+}
+
+fn promote_microsoft_common_schema_logs(logs: &mut LogsData) -> PromotionStats {
+    let mut stats = PromotionStats::default();
     for resource_logs in &mut logs.resource_logs {
         for scope_logs in &mut resource_logs.scope_logs {
             for log in &mut scope_logs.log_records {
-                promoted_any |= promote_microsoft_common_schema_log(log);
+                stats.records_seen = stats.records_seen.saturating_add(1);
+                if promote_microsoft_common_schema_log(log) {
+                    stats.records_promoted = stats.records_promoted.saturating_add(1);
+                }
             }
         }
     }
-    promoted_any
+    stats
+}
+
+fn arrow_logs_have_no_csver(records: &OtapArrowRecords) -> bool {
+    !arrow_log_attrs_have_key(records, "__csver__")
+}
+
+fn arrow_log_attrs_have_key(records: &OtapArrowRecords, target: &str) -> bool {
+    let Some(attrs) = records.get(ArrowPayloadType::LogAttrs) else {
+        return false;
+    };
+    record_batch_has_attr_key(attrs, target)
+}
+
+fn record_batch_has_attr_key(attrs: &RecordBatch, target: &str) -> bool {
+    let Some(key_col) = attrs.column_by_name(consts::ATTRIBUTE_KEY) else {
+        return false;
+    };
+
+    if let Some(keys) = key_col.as_any().downcast_ref::<StringArray>() {
+        return (0..keys.len()).any(|index| keys.is_valid(index) && keys.value(index) == target);
+    }
+
+    if let Some(keys) = key_col
+        .as_any()
+        .downcast_ref::<DictionaryArray<UInt8Type>>()
+    {
+        let Some(values) = keys.values().as_any().downcast_ref::<StringArray>() else {
+            return false;
+        };
+        return (0..keys.len()).any(|index| {
+            if !keys.is_valid(index) {
+                return false;
+            }
+            let value_index = keys.keys().value(index) as usize;
+            values.is_valid(value_index) && values.value(value_index) == target
+        });
+    }
+
+    if let Some(keys) = key_col
+        .as_any()
+        .downcast_ref::<DictionaryArray<UInt16Type>>()
+    {
+        let Some(values) = keys.values().as_any().downcast_ref::<StringArray>() else {
+            return false;
+        };
+        return (0..keys.len()).any(|index| {
+            if !keys.is_valid(index) {
+                return false;
+            }
+            let value_index = keys.keys().value(index) as usize;
+            values.is_valid(value_index) && values.value(value_index) == target
+        });
+    }
+
+    false
 }
 
 fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
@@ -276,7 +392,9 @@ fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
             "PartB.severityNumber" => {
                 if let Some(number) = attr.value.as_ref().and_then(any_int) {
                     if let Ok(number) = i32::try_from(number) {
-                        log.severity_number = number.clamp(1, 24);
+                        if number > 0 {
+                            log.severity_number = number.clamp(1, 24);
+                        }
                     }
                 }
             }
@@ -293,6 +411,8 @@ fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
             key if key.starts_with("PartC.") => {
                 if let Some(value) = attr.value {
                     let key = key.trim_start_matches("PartC.");
+                    // PartB.eventId is the canonical event identifier when both
+                    // PartB and PartC carry the field.
                     if key != "eventId" || !has_part_b_event_id {
                         promoted.push(KeyValue::new(key, value));
                     }
@@ -572,15 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn severity_number_is_clamped_to_otlp_range() {
-        let mut low = LogRecord {
-            attributes: vec![
-                KeyValue::new("__csver__", AnyValue::new_int(0x400)),
-                KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
-                KeyValue::new("PartB.severityNumber", AnyValue::new_int(-10)),
-            ],
-            ..Default::default()
-        };
+    fn positive_severity_number_is_clamped_to_otlp_range() {
         let mut high = LogRecord {
             attributes: vec![
                 KeyValue::new("__csver__", AnyValue::new_int(0x400)),
@@ -590,10 +702,33 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(promote_microsoft_common_schema_log(&mut low));
         assert!(promote_microsoft_common_schema_log(&mut high));
-        assert_eq!(low.severity_number, 1);
         assert_eq!(high.severity_number, 24);
+    }
+
+    #[test]
+    fn non_positive_severity_preserves_unspecified() {
+        let mut zero = LogRecord {
+            attributes: vec![
+                KeyValue::new("__csver__", AnyValue::new_int(0x400)),
+                KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
+                KeyValue::new("PartB.severityNumber", AnyValue::new_int(0)),
+            ],
+            ..Default::default()
+        };
+        let mut negative = LogRecord {
+            attributes: vec![
+                KeyValue::new("__csver__", AnyValue::new_int(0x400)),
+                KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
+                KeyValue::new("PartB.severityNumber", AnyValue::new_int(-10)),
+            ],
+            ..Default::default()
+        };
+
+        assert!(promote_microsoft_common_schema_log(&mut zero));
+        assert!(promote_microsoft_common_schema_log(&mut negative));
+        assert_eq!(zero.severity_number, 0);
+        assert_eq!(negative.severity_number, 0);
     }
 
     #[test]
@@ -624,7 +759,11 @@ mod tests {
             }],
         };
 
-        assert!(promote_microsoft_common_schema_logs(&mut logs));
+        let stats = promote_microsoft_common_schema_logs(&mut logs);
+        assert!(stats.promoted_any());
+        assert_eq!(stats.records_seen, 2);
+        assert_eq!(stats.records_promoted, 1);
+        assert_eq!(stats.records_skipped_not_common_schema(), 1);
         let records = &logs.resource_logs[0].scope_logs[0].log_records;
         assert_eq!(records[0].attributes[0].key, "PartB.body");
         assert_eq!(records[1].body.as_ref().and_then(any_str), Some("cs"));
@@ -645,6 +784,42 @@ mod tests {
             }],
         };
 
-        assert!(!promote_microsoft_common_schema_logs(&mut non_cs));
+        let stats = promote_microsoft_common_schema_logs(&mut non_cs);
+        assert!(!stats.promoted_any());
+        assert_eq!(stats.records_seen, 1);
+        assert_eq!(stats.records_promoted, 0);
+        assert_eq!(stats.records_skipped_not_common_schema(), 1);
+    }
+
+    #[test]
+    fn record_batch_key_probe_finds_plain_and_dictionary_keys() {
+        use arrow::array::ArrayRef;
+        use arrow::datatypes::DataType;
+        use arrow::datatypes::Field;
+        use arrow::datatypes::Schema;
+
+        let plain = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["other", "__csver__"])) as ArrayRef],
+        )
+        .expect("plain key batch");
+        assert!(record_batch_has_attr_key(&plain, "__csver__"));
+        assert!(!record_batch_has_attr_key(&plain, "missing"));
+
+        let dict: DictionaryArray<UInt16Type> = vec!["other", "__csver__"].into_iter().collect();
+        let dictionary = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ATTRIBUTE_KEY,
+                dict.data_type().clone(),
+                false,
+            )])),
+            vec![Arc::new(dict) as ArrayRef],
+        )
+        .expect("dictionary key batch");
+        assert!(record_batch_has_attr_key(&dictionary, "__csver__"));
     }
 }

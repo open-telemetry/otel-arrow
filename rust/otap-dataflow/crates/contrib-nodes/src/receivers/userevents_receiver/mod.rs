@@ -41,7 +41,7 @@ use self::decoder::DecodedUsereventsRecord;
 use self::metrics::UsereventsReceiverMetrics;
 #[cfg(target_os = "linux")]
 use self::session::SessionInitError;
-use self::session::UsereventsSession;
+use self::session::{RawUsereventsRecord, SessionDrainStats, UsereventsSession};
 #[cfg(target_os = "linux")]
 use otap_df_engine::control::NodeControlMsg;
 #[cfg(target_os = "linux")]
@@ -448,6 +448,65 @@ async fn flush_batch(
     }
 }
 
+async fn process_drained_records(
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    subscriptions: &[SubscriptionConfig],
+    admission_state: &LocalReceiverAdmissionState,
+    metrics: &Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>>,
+    builder: &mut ArrowRecordsBuilder,
+    drained_records: &mut Vec<RawUsereventsRecord>,
+    drain_stats: SessionDrainStats,
+    batch_cfg: &BatchConfig,
+    overflow_mode: &OverflowMode,
+) -> Result<(), Error> {
+    let received_samples = drain_stats.received_samples;
+    let mut dropped_memory_pressure: u64 = 0;
+    let mut dropped_no_subscription = drain_stats.dropped_no_subscription;
+
+    for raw in drained_records.drain(..) {
+        if admission_state.should_shed_ingress() {
+            dropped_memory_pressure = dropped_memory_pressure.saturating_add(1);
+            continue;
+        }
+
+        let Some(subscription) = subscriptions.get(raw.subscription_index) else {
+            dropped_no_subscription = dropped_no_subscription.saturating_add(1);
+            continue;
+        };
+
+        let decoded = DecodedUsereventsRecord::from_raw(
+            subscription.tracepoint.as_str(),
+            raw,
+            &subscription.format,
+        );
+        builder.append(decoded);
+        if builder.len() >= batch_cfg.max_size {
+            flush_batch(effect_handler, metrics, builder, overflow_mode).await?;
+        }
+    }
+
+    let mut metrics = metrics.borrow_mut();
+    if drain_stats.lost_samples > 0 {
+        metrics.lost_perf_samples.add(drain_stats.lost_samples);
+    }
+    if drain_stats.dropped_pending_overflow > 0 {
+        metrics
+            .dropped_pending_overflow
+            .add(drain_stats.dropped_pending_overflow);
+    }
+    if received_samples > 0 {
+        metrics.received_samples.add(received_samples);
+    }
+    if dropped_memory_pressure > 0 {
+        metrics.dropped_memory_pressure.add(dropped_memory_pressure);
+    }
+    if dropped_no_subscription > 0 {
+        metrics.dropped_no_subscription.add(dropped_no_subscription);
+    }
+
+    Ok(())
+}
+
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the Linux userevents receiver as a local receiver factory.
@@ -543,52 +602,18 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                                                 source_detail: format_error_sources(&error),
                                             })?;
 
-                                        let received_samples = drain_stats.received_samples;
-                                        let mut dropped_memory_pressure: u64 = 0;
-                                        let dropped_no_subscription =
-                                            drain_stats.dropped_no_subscription;
-                                        for raw in drained_records.drain(..) {
-                                            if self.admission_state.should_shed_ingress() {
-                                                dropped_memory_pressure += 1;
-                                                continue;
-                                            }
-
-                                            let subscription_index = raw.subscription_index;
-                                            let subscription = &self.subscriptions[subscription_index];
-
-                                            let decoded = DecodedUsereventsRecord::from_raw(
-                                                subscription.tracepoint.as_str(),
-                                                raw,
-                                                &subscription.format,
-                                            );
-                                            builder.append(decoded);
-                                            if builder.len() >= batch_cfg.max_size {
-                                                flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
-                                            }
-                                        }
-
-                                        let mut metrics = self.metrics.borrow_mut();
-                                        if drain_stats.lost_samples > 0 {
-                                            metrics.lost_perf_samples.add(drain_stats.lost_samples);
-                                        }
-                                        if drain_stats.dropped_pending_overflow > 0 {
-                                            metrics
-                                                .dropped_pending_overflow
-                                                .add(drain_stats.dropped_pending_overflow);
-                                        }
-                                        if received_samples > 0 {
-                                            metrics.received_samples.add(received_samples);
-                                        }
-                                        if dropped_memory_pressure > 0 {
-                                            metrics
-                                                .dropped_memory_pressure
-                                                .add(dropped_memory_pressure);
-                                        }
-                                        if dropped_no_subscription > 0 {
-                                            metrics
-                                                .dropped_no_subscription
-                                                .add(dropped_no_subscription);
-                                        }
+                                        process_drained_records(
+                                            &effect_handler,
+                                            &self.subscriptions,
+                                            &self.admission_state,
+                                            &self.metrics,
+                                            &mut builder,
+                                            &mut drained_records,
+                                            drain_stats,
+                                            &batch_cfg,
+                                            &overflow_mode,
+                                        )
+                                        .await?;
                                     }
                                 }
                                 if self.admission_state.should_shed_ingress() {
@@ -675,47 +700,18 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                             source_detail: format_error_sources(&error),
                         })?;
 
-                        let received_samples = drain_stats.received_samples;
-                        let mut dropped_memory_pressure: u64 = 0;
-                        let dropped_no_subscription = drain_stats.dropped_no_subscription;
-                        for raw in drained_records.drain(..) {
-                            if self.admission_state.should_shed_ingress() {
-                                dropped_memory_pressure += 1;
-                                continue;
-                            }
-
-                            let subscription_index = raw.subscription_index;
-                            let subscription = &self.subscriptions[subscription_index];
-
-                            let decoded = DecodedUsereventsRecord::from_raw(
-                                subscription.tracepoint.as_str(),
-                                raw,
-                                &subscription.format,
-                            );
-                            builder.append(decoded);
-                            if builder.len() >= batch_cfg.max_size {
-                                flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
-                            }
-                        }
-
-                        let mut metrics = self.metrics.borrow_mut();
-                        if drain_stats.lost_samples > 0 {
-                            metrics.lost_perf_samples.add(drain_stats.lost_samples);
-                        }
-                        if drain_stats.dropped_pending_overflow > 0 {
-                            metrics
-                                .dropped_pending_overflow
-                                .add(drain_stats.dropped_pending_overflow);
-                        }
-                        if received_samples > 0 {
-                            metrics.received_samples.add(received_samples);
-                        }
-                        if dropped_memory_pressure > 0 {
-                            metrics.dropped_memory_pressure.add(dropped_memory_pressure);
-                        }
-                        if dropped_no_subscription > 0 {
-                            metrics.dropped_no_subscription.add(dropped_no_subscription);
-                        }
+                        process_drained_records(
+                            &effect_handler,
+                            &self.subscriptions,
+                            &self.admission_state,
+                            &self.metrics,
+                            &mut builder,
+                            &mut drained_records,
+                            drain_stats,
+                            &batch_cfg,
+                            &overflow_mode,
+                        )
+                        .await?;
                     }
                 }
 
@@ -816,6 +812,209 @@ mod linux_integration_tests {
 #[cfg(test)]
 mod config_tests {
     use super::*;
+    use std::collections::HashMap;
+
+    use super::session::TracefsField;
+    use otap_df_channel::mpsc;
+    use otap_df_config::SignalType;
+    use otap_df_engine::control::runtime_ctrl_msg_channel;
+    use otap_df_engine::local::message::LocalSender;
+    use otap_df_engine::memory_limiter::{
+        MemoryPressureChanged, MemoryPressureLevel, MemoryPressureState,
+    };
+    use otap_df_engine::message::Sender;
+    use otap_df_engine::testing::{test_node, test_pipeline_ctx};
+    use otap_df_pdata::OtapPayload;
+    use otap_df_telemetry::reporter::MetricsReporter;
+
+    fn test_metrics() -> Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>> {
+        let (pipeline_ctx, _) = test_pipeline_ctx();
+        Rc::new(RefCell::new(
+            pipeline_ctx.register_metrics::<UsereventsReceiverMetrics>(),
+        ))
+    }
+
+    fn test_effect_handler(
+        capacity: usize,
+        prefill: bool,
+    ) -> (local::EffectHandler<OtapPdata>, mpsc::Receiver<OtapPdata>) {
+        let (tx, rx) = mpsc::Channel::new(capacity);
+        if prefill {
+            tx.send(OtapPdata::new_todo_context(OtapPayload::empty(
+                SignalType::Logs,
+            )))
+            .expect("prefill downstream channel");
+        }
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+        let (runtime_tx, _) = runtime_ctrl_msg_channel(4);
+        let (_, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+        (
+            local::EffectHandler::new(
+                test_node("userevents_receiver"),
+                senders,
+                None,
+                runtime_tx,
+                metrics_reporter,
+            ),
+            rx,
+        )
+    }
+
+    fn test_subscription() -> SubscriptionConfig {
+        SubscriptionConfig {
+            tracepoint: "user_events:test".to_owned(),
+            format: FormatConfig::Tracefs,
+        }
+    }
+
+    fn test_batch_config(max_size: u16) -> BatchConfig {
+        BatchConfig {
+            max_size,
+            max_duration: default_batch_max_duration(),
+        }
+    }
+
+    fn test_raw_record(subscription_index: usize) -> RawUsereventsRecord {
+        RawUsereventsRecord {
+            subscription_index,
+            timestamp_unix_nano: 123,
+            event_data: Vec::new(),
+            user_data_offset: 0,
+            fields: Arc::<[TracefsField]>::from(Vec::<TracefsField>::new().into_boxed_slice()),
+        }
+    }
+
+    fn normal_admission_state() -> LocalReceiverAdmissionState {
+        LocalReceiverAdmissionState::from_process_state(&MemoryPressureState::default())
+    }
+
+    fn hard_admission_state() -> LocalReceiverAdmissionState {
+        let state = normal_admission_state();
+        state.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Hard,
+            retry_after_secs: 1,
+            usage_bytes: 1,
+        });
+        state
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_drained_records_drops_records_under_memory_pressure() {
+        let (effect_handler, _rx) = test_effect_handler(4, false);
+        let subscriptions = vec![test_subscription()];
+        let admission_state = hard_admission_state();
+        let metrics = test_metrics();
+        let mut builder = ArrowRecordsBuilder::new();
+        let mut drained_records = vec![test_raw_record(0), test_raw_record(0)];
+        let drain_stats = SessionDrainStats {
+            received_samples: 2,
+            dropped_no_subscription: 0,
+            lost_samples: 1,
+            dropped_pending_overflow: 1,
+        };
+
+        process_drained_records(
+            &effect_handler,
+            &subscriptions,
+            &admission_state,
+            &metrics,
+            &mut builder,
+            &mut drained_records,
+            drain_stats,
+            &test_batch_config(10),
+            &OverflowMode::Drop,
+        )
+        .await
+        .expect("drained records processed");
+
+        let metrics = metrics.borrow();
+        assert!(builder.is_empty());
+        assert!(drained_records.is_empty());
+        assert_eq!(metrics.received_samples.get(), 2);
+        assert_eq!(metrics.dropped_memory_pressure.get(), 2);
+        assert_eq!(metrics.lost_perf_samples.get(), 1);
+        assert_eq!(metrics.dropped_pending_overflow.get(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_drained_records_counts_downstream_full_drop() {
+        let (effect_handler, _rx) = test_effect_handler(1, true);
+        let subscriptions = vec![test_subscription()];
+        let admission_state = normal_admission_state();
+        let metrics = test_metrics();
+        let mut builder = ArrowRecordsBuilder::new();
+        let mut drained_records = vec![test_raw_record(0)];
+        let drain_stats = SessionDrainStats {
+            received_samples: 1,
+            ..Default::default()
+        };
+
+        process_drained_records(
+            &effect_handler,
+            &subscriptions,
+            &admission_state,
+            &metrics,
+            &mut builder,
+            &mut drained_records,
+            drain_stats,
+            &test_batch_config(1),
+            &OverflowMode::Drop,
+        )
+        .await
+        .expect("drained records processed");
+
+        let metrics = metrics.borrow();
+        assert!(builder.is_empty());
+        assert_eq!(metrics.received_samples.get(), 1);
+        assert_eq!(metrics.dropped_downstream_full.get(), 1);
+        assert_eq!(metrics.forwarded_samples.get(), 0);
+        assert_eq!(metrics.flushed_batches.get(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn partial_batch_flushes_after_drain_ingress_processing() {
+        let (effect_handler, rx) = test_effect_handler(2, false);
+        let subscriptions = vec![test_subscription()];
+        let admission_state = normal_admission_state();
+        let metrics = test_metrics();
+        let mut builder = ArrowRecordsBuilder::new();
+        let mut drained_records = vec![test_raw_record(0)];
+        let drain_stats = SessionDrainStats {
+            received_samples: 1,
+            ..Default::default()
+        };
+
+        process_drained_records(
+            &effect_handler,
+            &subscriptions,
+            &admission_state,
+            &metrics,
+            &mut builder,
+            &mut drained_records,
+            drain_stats,
+            &test_batch_config(10),
+            &OverflowMode::Drop,
+        )
+        .await
+        .expect("drained records processed");
+
+        assert_eq!(builder.len(), 1);
+        flush_batch(&effect_handler, &metrics, &mut builder, &OverflowMode::Drop)
+            .await
+            .expect("partial batch flushed");
+
+        let pdata = rx.recv().await.expect("flushed batch received");
+        assert_eq!(pdata.num_items(), 1);
+        let metrics = metrics.borrow();
+        assert!(builder.is_empty());
+        assert_eq!(metrics.received_samples.get(), 1);
+        assert_eq!(metrics.forwarded_samples.get(), 1);
+        assert_eq!(metrics.flushed_batches.get(), 1);
+    }
 
     #[test]
     fn validate_subscriptions_accepts_single_subscription() {

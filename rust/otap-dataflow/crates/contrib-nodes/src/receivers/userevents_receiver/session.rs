@@ -320,5 +320,6 @@ mod imp {
 }
 
 pub(super) use imp::{
-    RawUsereventsRecord, SessionInitError, TracefsField, TracefsFieldLocation, UsereventsSession,
+    RawUsereventsRecord, SessionDrainStats, SessionInitError, TracefsField, TracefsFieldLocation,
+    UsereventsSession,
 };

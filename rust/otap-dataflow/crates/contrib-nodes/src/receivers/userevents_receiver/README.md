@@ -284,6 +284,10 @@ improvement.
 `session.wakeup_watermark` exists as a reserved configuration field for future
 one_collect wakeup support, but is currently ignored.
 
+`session.per_cpu_buffer_size` is a requested perf-ring size, not an exact byte
+count. The one_collect adapter rounds it up to at least one system page and
+then to the next power of two before converting it to a perf page count.
+
 TODO: Wire `session.wakeup_watermark` into the perf ring setup once
 `one_collect` exposes wakeup/readiness and watermark configuration for
 tracepoint sessions.
@@ -294,7 +298,7 @@ tracepoint sessions.
 | --- | --- | --- |
 | `subscriptions` | none | Required non-empty list of tracepoints. Each entry must use `user_events:<event>`. |
 | `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. Supported values: `tracefs`, `event_header`. |
-| `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded by the underlying perf/ring setup. |
+| `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded up to at least one page and then to the next power of two. |
 | `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
 | `session.max_pending_events` | `4096` | Maximum parsed events buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap is reached. |
 | `session.max_pending_bytes` | `16777216` | Maximum raw event payload bytes buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap would be exceeded. |
@@ -338,6 +342,11 @@ Decodes EventHeader self-describing fields into typed log attributes. Nested
 EventHeader structs are flattened with dot-separated attribute names. If an
 EventHeader payload cannot be decoded, the raw user payload is preserved in the
 `linux.userevents.payload_base64` attribute.
+
+Only scalar EventHeader values that map to the receiver's current attribute
+types are surfaced: strings, signed integers, booleans, and floating point
+values. EventHeader arrays, binary blobs, and other non-scalar encodings are
+not emitted as attributes yet.
 
 ## Output Shape
 
