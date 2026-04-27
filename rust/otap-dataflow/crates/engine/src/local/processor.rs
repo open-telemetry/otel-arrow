@@ -977,10 +977,9 @@ mod tests {
         // Default: stopwatches_active = false.
         assert!(!eh.stopwatches_active);
 
-        // Create a ComputeDuration and call timed() with active interests.
+        // Create a ComputeDuration and call timed().
         let (ctx, _) = crate::testing::test_pipeline_ctx();
         let cd = ComputeDuration::new(&ctx);
-        let active = Interests::PROCESS_DURATION;
 
         let result = eh.timed(&cd, || Ok::<_, &str>(42));
         assert_eq!(result.unwrap(), 42);
