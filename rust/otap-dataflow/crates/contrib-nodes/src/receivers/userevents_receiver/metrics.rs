@@ -25,6 +25,10 @@ pub(super) struct UsereventsReceiverMetrics {
     /// Number of samples dropped because no matching subscription was found.
     #[metric(unit = "{item}")]
     pub dropped_no_subscription: Counter<u64>,
+    /// Number of samples dropped before allocation because the adapter pending
+    /// queue reached its configured event or byte cap.
+    #[metric(unit = "{item}")]
+    pub dropped_pending_overflow: Counter<u64>,
     /// Number of lost samples reported by the perf ring.
     #[metric(unit = "{item}")]
     pub lost_perf_samples: Counter<u64>,

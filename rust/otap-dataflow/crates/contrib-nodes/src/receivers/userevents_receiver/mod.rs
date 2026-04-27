@@ -51,6 +51,8 @@ use tokio::time::{self, MissedTickBehavior};
 
 const DEFAULT_PER_CPU_BUFFER_SIZE: usize = 1024 * 1024;
 const DEFAULT_WAKEUP_WATERMARK: usize = 256 * 1024;
+const DEFAULT_MAX_PENDING_EVENTS: usize = 4096;
+const DEFAULT_MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MAX_RECORDS_PER_TURN: usize = 1024;
 const DEFAULT_MAX_BYTES_PER_TURN: usize = 1024 * 1024;
 const DEFAULT_MAX_DRAIN_NS: Duration = Duration::from_millis(2);
@@ -138,6 +140,14 @@ struct SessionConfig {
     // wakeup/readiness and watermark configuration for tracepoint sessions.
     #[serde(default = "default_wakeup_watermark")]
     wakeup_watermark: usize,
+    /// Maximum number of parsed events buffered between one_collect callbacks
+    /// and the receiver drain loop.
+    #[serde(default = "default_max_pending_events")]
+    max_pending_events: usize,
+    /// Maximum raw event payload bytes buffered between one_collect callbacks
+    /// and the receiver drain loop.
+    #[serde(default = "default_max_pending_bytes")]
+    max_pending_bytes: usize,
     /// Behavior for tracepoints that are absent during initial session setup.
     #[serde(default)]
     late_registration: LateRegistrationConfig,
@@ -261,11 +271,14 @@ impl UsereventsReceiver {
         let session = config.session.clone().unwrap_or(SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
+            max_pending_events: default_max_pending_events(),
+            max_pending_bytes: default_max_pending_bytes(),
             late_registration: LateRegistrationConfig {
                 enabled: false,
                 poll_interval_ms: default_late_registration_poll_ms(),
             },
         });
+        Self::validate_session(&session)?;
         let drain = config.drain.clone().unwrap_or(DrainConfig {
             max_records_per_turn: default_max_records_per_turn(),
             max_bytes_per_turn: default_max_bytes_per_turn(),
@@ -324,6 +337,22 @@ impl UsereventsReceiver {
                 error: format!(
                     "userevents receiver tracepoint `{tracepoint}` must use `user_events:<event>`"
                 ),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_session(session: &SessionConfig) -> Result<(), otap_df_config::error::Error> {
+        if session.max_pending_events == 0 {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "userevents receiver `session.max_pending_events` must be greater than zero"
+                    .to_owned(),
+            });
+        }
+        if session.max_pending_bytes == 0 {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "userevents receiver `session.max_pending_bytes` must be greater than zero"
+                    .to_owned(),
             });
         }
         Ok(())
@@ -542,6 +571,11 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                                         if drain_stats.lost_samples > 0 {
                                             metrics.lost_perf_samples.add(drain_stats.lost_samples);
                                         }
+                                        if drain_stats.dropped_pending_overflow > 0 {
+                                            metrics
+                                                .dropped_pending_overflow
+                                                .add(drain_stats.dropped_pending_overflow);
+                                        }
                                         if received_samples > 0 {
                                             metrics.received_samples.add(received_samples);
                                         }
@@ -668,6 +702,11 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                         if drain_stats.lost_samples > 0 {
                             metrics.lost_perf_samples.add(drain_stats.lost_samples);
                         }
+                        if drain_stats.dropped_pending_overflow > 0 {
+                            metrics
+                                .dropped_pending_overflow
+                                .add(drain_stats.dropped_pending_overflow);
+                        }
                         if received_samples > 0 {
                             metrics.received_samples.add(received_samples);
                         }
@@ -707,6 +746,14 @@ const fn default_per_cpu_buffer_size() -> usize {
 
 const fn default_wakeup_watermark() -> usize {
     DEFAULT_WAKEUP_WATERMARK
+}
+
+const fn default_max_pending_events() -> usize {
+    DEFAULT_MAX_PENDING_EVENTS
+}
+
+const fn default_max_pending_bytes() -> usize {
+    DEFAULT_MAX_PENDING_BYTES
 }
 
 const fn default_late_registration_poll_ms() -> u64 {
@@ -751,6 +798,8 @@ mod linux_integration_tests {
         let config = SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
+            max_pending_events: default_max_pending_events(),
+            max_pending_bytes: default_max_pending_bytes(),
             late_registration: LateRegistrationConfig::default(),
         };
         let subscriptions = vec![SubscriptionConfig {
@@ -854,6 +903,38 @@ mod config_tests {
             .expect_err("config rejected");
         assert!(
             error.to_string().contains("user_events:<event>"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_session_rejects_zero_max_pending_events() {
+        let session = SessionConfig {
+            per_cpu_buffer_size: default_per_cpu_buffer_size(),
+            wakeup_watermark: default_wakeup_watermark(),
+            max_pending_events: 0,
+            max_pending_bytes: default_max_pending_bytes(),
+            late_registration: LateRegistrationConfig::default(),
+        };
+        let error = UsereventsReceiver::validate_session(&session).expect_err("zero rejected");
+        assert!(
+            error.to_string().contains("max_pending_events"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_session_rejects_zero_max_pending_bytes() {
+        let session = SessionConfig {
+            per_cpu_buffer_size: default_per_cpu_buffer_size(),
+            wakeup_watermark: default_wakeup_watermark(),
+            max_pending_events: default_max_pending_events(),
+            max_pending_bytes: 0,
+            late_registration: LateRegistrationConfig::default(),
+        };
+        let error = UsereventsReceiver::validate_session(&session).expect_err("zero rejected");
+        assert!(
+            error.to_string().contains("max_pending_bytes"),
             "unexpected error: {error}"
         );
     }

@@ -9,8 +9,19 @@
 //! typed OTLP log fields and leaves non-Microsoft-Common-Schema records unchanged.
 //!
 //! TODO: Promote directly on `OtapArrowRecords`. The current implementation
-//! converts input payloads to OTLP proto bytes for promotion, so Arrow-native
-//! pipelines still pay an Arrow-to-OTLP conversion before this processor runs.
+//! converts input payloads to OTLP proto bytes because the promotion code is
+//! written against mutable OTLP `LogsData` / `LogRecord` structs. OTAP Arrow
+//! has the target fields, but they are split across immutable columnar
+//! `Logs` and `LogAttrs` record batches. A native implementation needs a
+//! reusable cross-batch transform that can read attributes by `parent_id`, set
+//! root log columns such as body, event name, severity, trace/span IDs, flags,
+//! and timestamp, then rebuild `LogAttrs` with promoted fields removed and
+//! remaining fields preserved. Existing attribute/transform processors cannot
+//! express that today: they operate on attribute batches with rename/delete and
+//! literal insert/upsert operations, but they do not move per-log attribute
+//! values into root log columns or parse Common Schema values into typed log
+//! fields. Until that Arrow-native promotion path exists, Arrow-native
+//! pipelines pay an Arrow-to-OTLP conversion here.
 
 use std::sync::Arc;
 

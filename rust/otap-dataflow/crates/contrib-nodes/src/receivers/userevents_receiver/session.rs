@@ -82,6 +82,7 @@ mod imp {
         pub received_samples: u64,
         pub dropped_no_subscription: u64,
         pub lost_samples: u64,
+        pub dropped_pending_overflow: u64,
     }
 
     #[derive(Debug)]
@@ -133,6 +134,7 @@ mod imp {
                 received_samples: drained.events.len() as u64,
                 dropped_no_subscription: 0,
                 lost_samples: drained.lost_samples,
+                dropped_pending_overflow: drained.dropped_pending_overflow,
             };
             for event in drained.events {
                 let EventSource::UserEvents(source) = event.source;
@@ -165,6 +167,8 @@ mod imp {
                 .collect::<Vec<_>>();
             let config = UserEventsSessionConfig {
                 per_cpu_buffer_size: config.per_cpu_buffer_size,
+                max_pending_events: config.max_pending_events,
+                max_pending_bytes: config.max_pending_bytes,
                 // Open the perf ring for this pipeline's pinned CPU only.
                 // Keeping ring reads on the same CPU as the pipeline thread
                 // preserves the NUMA-locality design documented in the
@@ -198,7 +202,7 @@ mod imp {
 
             loop {
                 let stats = self.drain_once_impl(config, out)?;
-                if !out.is_empty() || stats.lost_samples > 0 {
+                if !out.is_empty() || stats.lost_samples > 0 || stats.dropped_pending_overflow > 0 {
                     return Ok(stats);
                 }
 
@@ -262,6 +266,7 @@ mod imp {
         pub received_samples: u64,
         pub dropped_no_subscription: u64,
         pub lost_samples: u64,
+        pub dropped_pending_overflow: u64,
     }
 
     #[derive(Debug)]

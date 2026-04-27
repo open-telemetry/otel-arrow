@@ -263,6 +263,21 @@ policy, and metrics. A high-volume tracepoint can consume the shared drain or
 batch budget and affect quieter tracepoints. If tracepoints need independent
 resource limits or failure isolation, configure separate receiver nodes instead.
 
+The receiver bounds the in-process pending queue between one_collect perf
+callbacks and the drain loop with `session.max_pending_events` and
+`session.max_pending_bytes`. When parse rate exceeds drain rate and either cap
+is reached, new events are dropped before their payload is copied into user
+space and counted as `dropped_pending_overflow`. This cap covers only the
+adapter pending queue; kernel perf ring memory is governed by
+`session.per_cpu_buffer_size`, Arrow batch memory by `batching.*`, and
+downstream channel behavior by `overflow.on_downstream_full`.
+
+Late registration is also currently all-or-nothing for multiple subscriptions:
+if any configured tracepoint is missing, the receiver retries opening the
+entire session and does not collect already-registered tracepoints yet.
+Supporting partial startup and later subscription registration is a future
+improvement.
+
 `subscriptions` must contain at least one entry. `tracefs` is the default
 `subscriptions[].format.type`.
 
@@ -281,6 +296,8 @@ tracepoint sessions.
 | `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. Supported values: `tracefs`, `event_header`. |
 | `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded by the underlying perf/ring setup. |
 | `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
+| `session.max_pending_events` | `4096` | Maximum parsed events buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap is reached. |
+| `session.max_pending_bytes` | `16777216` | Maximum raw event payload bytes buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap would be exceeded. |
 | `session.late_registration.enabled` | `false` | When true, keep retrying if the tracepoint is not registered yet. |
 | `session.late_registration.poll_interval_ms` | `1000` | Retry interval for late tracepoint registration. |
 | `drain.max_records_per_turn` | `1024` | Maximum records popped from the receiver's pending queue per drain turn. |

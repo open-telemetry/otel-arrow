@@ -45,6 +45,7 @@ pub(crate) struct UserEventsSource {
 pub(crate) struct CollectedDrain {
     pub events: Vec<CollectedEvent>,
     pub lost_samples: u64,
+    pub dropped_pending_overflow: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +57,8 @@ pub(crate) struct UserEventsSubscription {
 pub(crate) struct UserEventsSessionConfig {
     pub per_cpu_buffer_size: usize,
     pub cpu_ids: Vec<usize>,
+    pub max_pending_events: usize,
+    pub max_pending_bytes: usize,
 }
 
 #[cfg(target_os = "linux")]
@@ -112,7 +115,9 @@ impl std::error::Error for CollectInitError {}
 pub(crate) struct OneCollectUserEventsSession {
     session: PerfSession,
     pending: Rc<RefCell<VecDeque<CollectedEvent>>>,
+    pending_bytes: Rc<Cell<usize>>,
     lost_samples: Rc<Cell<u64>>,
+    dropped_pending_overflow: Rc<Cell<u64>>,
     subscription_count: usize,
 }
 
@@ -154,13 +159,22 @@ impl OneCollectUserEventsSession {
         session.set_read_timeout(Duration::from_millis(0));
 
         let pending = Rc::new(RefCell::new(VecDeque::new()));
+        let pending_bytes = Rc::new(Cell::new(0usize));
         let lost_samples = Rc::new(Cell::new(0u64));
+        let dropped_pending_overflow = Rc::new(Cell::new(0u64));
         let time_field = session.time_data_ref();
         // TODO: Prefer a one_collect-owned sample-time to realtime conversion API
         // once the session exposes one.
         let tracefs = TraceFS::open().map_err(CollectInitError::Io)?;
         let time_anchor = PerfTimeAnchor::capture();
 
+        // Current late-registration behavior is all-or-nothing: every
+        // configured tracepoint must exist before the perf session is enabled.
+        // If any subscription is missing, the caller retries the entire open
+        // later and no already-registered subscriptions are collected yet.
+        // TODO: Support partial session startup plus later registration/reopen
+        // so present tracepoints can be collected while waiting for missing
+        // subscriptions.
         for (subscription_index, subscription) in subscriptions.iter().enumerate() {
             let (group, event_name) = subscription.tracepoint.split_once(':').ok_or_else(|| {
                 CollectInitError::InvalidTracepoint(subscription.tracepoint.clone())
@@ -223,10 +237,30 @@ impl OneCollectUserEventsSession {
                 .map_or(0, |field| field.offset);
 
             let event_pending = Rc::clone(&pending);
+            let event_pending_bytes = Rc::clone(&pending_bytes);
+            let event_dropped_pending_overflow = Rc::clone(&dropped_pending_overflow);
+            let max_pending_events = config.max_pending_events;
+            let max_pending_bytes = config.max_pending_bytes;
             let event_time_field = time_field.clone();
             let event_fields = Arc::clone(&fields);
 
             event.add_callback(move |data| {
+                let payload_len = data.event_data().len();
+                let current_pending_bytes = event_pending_bytes.get();
+                let pending_len = event_pending.borrow().len();
+                if !pending_accepts_event(
+                    pending_len,
+                    current_pending_bytes,
+                    payload_len,
+                    max_pending_events,
+                    max_pending_bytes,
+                ) {
+                    event_dropped_pending_overflow
+                        .set(event_dropped_pending_overflow.get().saturating_add(1));
+                    return Ok(());
+                }
+
+                let event_data = data.event_data().to_vec();
                 let full_data = data.full_data();
                 let timestamp = event_time_field
                     .try_get_u64(full_data)
@@ -235,11 +269,12 @@ impl OneCollectUserEventsSession {
 
                 event_pending.borrow_mut().push_back(CollectedEvent {
                     timestamp_unix_nano: timestamp,
-                    event_data: data.event_data().to_vec(),
+                    event_data,
                     user_data_offset,
                     fields: Arc::clone(&event_fields),
                     source: EventSource::UserEvents(UserEventsSource { subscription_index }),
                 });
+                event_pending_bytes.set(current_pending_bytes.saturating_add(payload_len));
                 Ok(())
             });
 
@@ -252,7 +287,9 @@ impl OneCollectUserEventsSession {
         Ok(Self {
             session,
             pending,
+            pending_bytes,
             lost_samples,
+            dropped_pending_overflow,
             subscription_count: subscriptions.len(),
         })
     }
@@ -312,7 +349,7 @@ impl OneCollectUserEventsSession {
             }
 
             drained_bytes = next_bytes;
-            if let Some(event) = pending.pop_front() {
+            if let Some(event) = pop_pending_event(&mut pending, &self.pending_bytes) {
                 events.push(event);
             }
         }
@@ -324,7 +361,7 @@ impl OneCollectUserEventsSession {
             if let Some(front) = pending.front() {
                 let front_len = front.event_data.len();
                 if front_len <= max_bytes {
-                    if let Some(event) = pending.pop_front() {
+                    if let Some(event) = pop_pending_event(&mut pending, &self.pending_bytes) {
                         events.push(event);
                     }
                 }
@@ -334,8 +371,29 @@ impl OneCollectUserEventsSession {
         Ok(CollectedDrain {
             events,
             lost_samples: self.lost_samples.replace(0),
+            dropped_pending_overflow: self.dropped_pending_overflow.replace(0),
         })
     }
+}
+
+fn pending_accepts_event(
+    pending_events: usize,
+    pending_bytes: usize,
+    payload_len: usize,
+    max_pending_events: usize,
+    max_pending_bytes: usize,
+) -> bool {
+    pending_events < max_pending_events
+        && pending_bytes.saturating_add(payload_len) <= max_pending_bytes
+}
+
+fn pop_pending_event(
+    pending: &mut VecDeque<CollectedEvent>,
+    pending_bytes: &Cell<usize>,
+) -> Option<CollectedEvent> {
+    let event = pending.pop_front()?;
+    pending_bytes.set(pending_bytes.get().saturating_sub(event.event_data.len()));
+    Some(event)
 }
 
 #[cfg(target_os = "linux")]
@@ -403,6 +461,32 @@ impl OneCollectUserEventsSession {
         Ok(CollectedDrain {
             events: Vec::new(),
             lost_samples: 0,
+            dropped_pending_overflow: 0,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_accepts_event;
+
+    #[test]
+    fn pending_accepts_event_below_caps() {
+        assert!(pending_accepts_event(3, 100, 20, 4, 128));
+    }
+
+    #[test]
+    fn pending_accepts_event_at_exact_byte_cap() {
+        assert!(pending_accepts_event(3, 100, 28, 4, 128));
+    }
+
+    #[test]
+    fn pending_rejects_event_count_cap() {
+        assert!(!pending_accepts_event(4, 100, 1, 4, 128));
+    }
+
+    #[test]
+    fn pending_rejects_byte_cap() {
+        assert!(!pending_accepts_event(3, 100, 29, 4, 128));
     }
 }
