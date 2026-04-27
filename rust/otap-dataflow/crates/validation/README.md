@@ -486,7 +486,7 @@ through the system-under-validation to the capture pipeline.
 
 > **NOTE:** Only OTLP (`otlp_grpc`) receivers and exporters currently support
 > transport header capture and propagation. OTAP receivers/exporters do **not**
-> support transport headers.
+> yet support transport headers.
 
 For these headers to flow through the pipeline chain, each
 stage needs to be appropriately configured:

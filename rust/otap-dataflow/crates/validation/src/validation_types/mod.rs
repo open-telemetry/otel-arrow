@@ -154,6 +154,7 @@ mod tests {
     use super::*;
     use crate::validation_types::attributes::{AnyValue, KeyValue};
     use crate::validation_types::transport_headers::TransportHeaderKeyValue;
+    use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
     use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue as ProtoAny, KeyValue as ProtoKV, any_value::Value as ProtoVal,
     };
@@ -431,6 +432,20 @@ mod tests {
         let yaml = serde_yaml::to_string(&instruction).expect("serialize");
         let back: ValidationInstructions = serde_yaml::from_str(&yaml).expect("deserialize");
         assert_eq!(back, instruction);
+
+        // Validate that both the original and round-tripped instruction
+        // produce identical results when executed.
+        let mut headers = TransportHeaders::default();
+        headers.push(TransportHeader::text("x-tenant-id", "x-tenant-id", b"acme"));
+        let transport = vec![Some(headers)];
+        let control: Vec<OtlpProtoMessage> = vec![];
+        let suv_msgs: Vec<OtlpProtoMessage> = vec![];
+        let suv_with_dur: Vec<(OtlpProtoMessage, Duration)> = vec![];
+
+        let result_original = instruction.validate(&control, &suv_msgs, &suv_with_dur, &transport);
+        let result_roundtrip = back.validate(&control, &suv_msgs, &suv_with_dur, &transport);
+        assert!(result_original);
+        assert_eq!(result_original, result_roundtrip);
     }
 
     #[test]
