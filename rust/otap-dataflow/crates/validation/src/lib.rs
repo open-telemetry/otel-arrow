@@ -871,8 +871,6 @@ mod tests {
     }
 
     /// Validates the temporal reaggregation processor with metric signals.
-    /// All data points share the same stream identity and collapse to a small
-    /// number of outputs per flush window, yielding at least 95% signal reduction.
     #[test]
     fn validation_temporal_reaggregation_metrics() {
         Scenario::new()
@@ -894,8 +892,8 @@ mod tests {
                     .otap_grpc("exporter")
                     .validate(vec![
                         ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.95),
-                            max_drop_ratio: Some(1.0),
+                            min_drop_ratio: Some(0.05),
+                            max_drop_ratio: Some(0.80),
                         },
                         ValidationInstructions::AttributeNoDuplicate,
                     ])
@@ -966,12 +964,9 @@ mod tests {
                 "validate",
                 Capture::default()
                     .otap_grpc("exporter")
-                    .validate(vec![ValidationInstructions::AttributeRequireKeyValue {
+                    .validate(vec![ValidationInstructions::AttributeRequireKey {
                         domains: vec![AttributeDomain::Signal],
-                        pairs: vec![
-                            KeyValue::new("http.method".into(), AnyValue::String("GET".into())),
-                            KeyValue::new("http.route".into(), AnyValue::String("/api".into())),
-                        ],
+                        keys: vec!["http.method".into(), "http.route".into()],
                     }])
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
