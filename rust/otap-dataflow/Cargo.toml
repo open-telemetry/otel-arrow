@@ -36,11 +36,8 @@ otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
 otap-df-engine.workspace = true
 otap-df-otap.workspace = true
-thiserror.workspace = true
-serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
-sysinfo.workspace = true
 dhat = { workspace = true, optional = true }
 cfg-if.workspace = true
 
