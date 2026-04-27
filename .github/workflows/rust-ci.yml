@@ -392,6 +392,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+          version: "34.1"
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -400,7 +401,6 @@ jobs:
         working-directory: ./rust/${{ matrix.folder }}
       - name: check git diff after compile-proto execution
         run: git diff --exit-code rust/otap-dataflow/crates/pdata/src/proto
-
 
   # Verify the workspace builds with --no-default-features to catch broken
   # optional feature gates (e.g., dev-tools, crypto-*).
