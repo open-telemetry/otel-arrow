@@ -6,6 +6,7 @@
 use super::*;
 use crate::BIN_NAME;
 
+/// Draw the full TUI frame, including chrome, the active view, and any modal overlays.
 pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     let area = frame.area();
     let Some(layout) = compute_ui_layout(area) else {
@@ -42,6 +43,7 @@ pub(crate) fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     }
 }
 
+/// Draw the two-line header containing the title, target, vitals, and top-level tabs.
 pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -57,6 +59,7 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     draw_engine_vitals_panel(frame, top[1], &app.engine_vitals, app);
 }
 
+/// Draw the fallback message shown when the terminal is too small for the normal layout.
 pub(super) fn draw_resize_required(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let message = Paragraph::new(format!(
         "{BIN_NAME} ui needs at least {MIN_TERMINAL_WIDTH}x{MIN_TERMINAL_HEIGHT}\ncurrent size: {}x{}\n\nResize the terminal and try again.",
@@ -71,6 +74,7 @@ pub(super) fn draw_resize_required(frame: &mut Frame<'_>, area: Rect, app: &AppS
     frame.render_widget(message, centered_rect(60, 30, area));
 }
 
+/// Draw the first-level Engine, Groups, and Pipelines tab bar.
 pub(super) fn draw_top_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let selected = View::ALL
         .iter()
@@ -83,6 +87,7 @@ pub(super) fn draw_top_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     draw_tab_bar(frame, area, &titles, selected, app.color_enabled);
 }
 
+/// Draw the title, OpenTelemetry brand label, and current target URL.
 pub(super) fn draw_title_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let mut spans = brand_spans(app);
     spans.extend([
@@ -98,6 +103,7 @@ pub(super) fn draw_title_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) 
     frame.render_widget(title, area);
 }
 
+/// Build the styled OpenTelemetry brand spans, shimmering them while background activity runs.
 pub(super) fn brand_spans(app: &AppState) -> Vec<Span<'static>> {
     if !app.color_enabled || !app.is_activity_active() {
         return vec![
@@ -142,6 +148,7 @@ fn shimmering_brand_style(index: usize, frame: u16) -> Style {
     }
 }
 
+/// Draw the compact engine CPU and memory strip in the title bar.
 pub(super) fn draw_engine_vitals_panel(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -179,6 +186,7 @@ pub(super) fn draw_engine_vitals_panel(
     frame.render_widget(widget, area);
 }
 
+/// Draw the selectable object list for the current top-level view.
 pub(super) fn draw_left_list(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     match app.view {
         View::Pipelines => {
@@ -322,6 +330,7 @@ pub(super) fn draw_left_list(frame: &mut Frame<'_>, area: Rect, app: &AppState) 
     }
 }
 
+/// Draw the selected object's detail area.
 pub(super) fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -337,6 +346,7 @@ pub(super) fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     draw_detail_body(frame, sections[2], app);
 }
 
+/// Draw the detail header line and status chips for the selected object.
 pub(super) fn draw_detail_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_widget(
         Block::default().style(object_strip_style(app.color_enabled)),
@@ -385,6 +395,7 @@ pub(super) fn draw_detail_header(frame: &mut Frame<'_>, area: Rect, app: &AppSta
     }
 }
 
+/// Draw the second-level tab bar for the selected object.
 pub(super) fn draw_detail_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let titles = app.current_tab_titles();
     draw_tab_bar(
@@ -396,6 +407,7 @@ pub(super) fn draw_detail_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState
     );
 }
 
+/// Dispatch drawing to the active detail pane for the selected view and tab.
 pub(super) fn draw_detail_body(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     match app.view {
         View::Pipelines => match app.pipeline_tab {

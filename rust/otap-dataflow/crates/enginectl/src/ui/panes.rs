@@ -5,6 +5,7 @@
 
 use super::*;
 
+/// Build the default pipeline summary pane for the selected pipeline.
 pub(super) fn build_pipeline_summary_pane(
     describe: &PipelineDescribeReport,
     header: DetailHeader,
@@ -54,6 +55,7 @@ pub(super) fn build_pipeline_summary_pane(
     }
 }
 
+/// Build the default group summary pane, including problem pipelines for quick triage.
 pub(super) fn build_group_summary_pane(
     group_id: &str,
     describe: &GroupsDescribeReport,
@@ -111,6 +113,7 @@ pub(super) fn build_group_summary_pane(
     }
 }
 
+/// Build the default engine summary pane from global status and probe responses.
 pub(super) fn build_engine_summary_pane(
     status: &engine::Status,
     livez: &engine::ProbeResponse,
@@ -170,6 +173,7 @@ pub(super) fn build_engine_summary_pane(
     }
 }
 
+/// Build a metrics pane from a compact metrics response.
 pub(super) fn build_metrics_pane(
     metrics: telemetry::CompactMetricsResponse,
     header: DetailHeader,
@@ -194,6 +198,7 @@ pub(super) fn build_metrics_pane(
     }
 }
 
+/// Build the rollout pane for the selected pipeline, or an empty pane when no rollout is active.
 pub(super) fn build_rollout_pane(
     describe: &PipelineDescribeReport,
     rollout_status: Option<&pipelines::RolloutStatus>,
@@ -272,6 +277,7 @@ pub(super) fn build_rollout_pane(
     }
 }
 
+/// Build the shutdown pane for the selected pipeline, or an empty pane when no shutdown is active.
 pub(super) fn build_shutdown_pane(
     describe: &PipelineDescribeReport,
     shutdown_status: Option<&pipelines::ShutdownStatus>,
@@ -333,6 +339,7 @@ pub(super) fn build_shutdown_pane(
     }
 }
 
+/// Build the client-side group shutdown tracking pane for the selected group.
 pub(super) fn build_group_shutdown_pane(
     group_id: &str,
     status: &groups::Status,
@@ -466,6 +473,7 @@ pub(super) fn build_group_shutdown_pane(
     }
 }
 
+/// Build a diagnosis pane by flattening findings and evidence into separate table models.
 pub(super) fn build_diagnosis_pane(
     diagnosis: DiagnosisReport,
     header: DetailHeader,
@@ -491,6 +499,7 @@ pub(super) fn build_diagnosis_pane(
     }
 }
 
+/// Build the pipeline configuration pane, choosing committed YAML, invalid draft, or deployable diff.
 pub(super) fn build_config_pane(
     header: &DetailHeader,
     pipeline_group_id: &str,
@@ -588,6 +597,7 @@ pub(super) fn build_config_pane(
     }
 }
 
+/// Build the support-bundle pane from collected metadata and a human preview.
 pub(super) fn build_bundle_pane(
     title: &str,
     subtitle: Option<String>,
@@ -615,6 +625,7 @@ pub(super) fn build_bundle_pane(
     }
 }
 
+/// Build the standard pipeline detail header shared by pipeline panes.
 pub(super) fn pipeline_header(describe: &PipelineDescribeReport) -> DetailHeader {
     DetailHeader {
         title: format!(
@@ -673,6 +684,7 @@ pub(super) fn pipeline_header(describe: &PipelineDescribeReport) -> DetailHeader
     }
 }
 
+/// Build the standard group detail header shared by group panes.
 pub(super) fn group_header(group_id: &str, describe: &GroupsDescribeReport) -> DetailHeader {
     DetailHeader {
         title: group_id.to_string(),
@@ -710,6 +722,7 @@ pub(super) fn group_header(group_id: &str, describe: &GroupsDescribeReport) -> D
     }
 }
 
+/// Build the standard engine detail header shared by engine panes.
 pub(super) fn engine_header(
     status: &engine::Status,
     livez: &engine::ProbeResponse,
@@ -747,11 +760,13 @@ pub(super) fn engine_header(
     }
 }
 
+/// Append a status chip to an existing detail header.
 pub(super) fn add_header_chip(mut header: DetailHeader, chip: StatusChip) -> DetailHeader {
     header.chips.push(chip);
     header
 }
 
+/// Construct a status chip from display parts.
 pub(super) fn chip(label: impl Into<String>, value: impl Into<String>, tone: Tone) -> StatusChip {
     StatusChip {
         label: label.into(),
@@ -760,6 +775,7 @@ pub(super) fn chip(label: impl Into<String>, value: impl Into<String>, tone: Ton
     }
 }
 
+/// Construct a summary card from display parts.
 pub(super) fn card(label: impl Into<String>, value: impl Into<String>, tone: Tone) -> StatCard {
     StatCard {
         label: label.into(),

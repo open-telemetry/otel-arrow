@@ -5,6 +5,7 @@
 
 use super::*;
 
+/// Draw horizontal summary cards, adapting to short terminal heights.
 pub(super) fn draw_stat_cards(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -61,6 +62,7 @@ pub(super) fn draw_stat_cards(
     }
 }
 
+/// Draw pipeline readiness/liveness conditions.
 pub(super) fn draw_condition_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -104,6 +106,7 @@ pub(super) fn draw_condition_table(
     );
 }
 
+/// Draw per-core runtime state for a pipeline.
 pub(super) fn draw_core_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -154,6 +157,7 @@ pub(super) fn draw_core_table(
     );
 }
 
+/// Draw a normalized event timeline table.
 pub(super) fn draw_timeline_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -201,6 +205,7 @@ pub(super) fn draw_timeline_table(
     );
 }
 
+/// Draw retained log entries in a scoped log pane.
 pub(super) fn draw_log_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -247,6 +252,7 @@ pub(super) fn draw_log_table(
     );
 }
 
+/// Draw compact metrics rows in a scoped metrics pane.
 pub(super) fn draw_metrics_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -283,6 +289,7 @@ pub(super) fn draw_metrics_table(
     );
 }
 
+/// Draw per-core rollout or shutdown operation state.
 pub(super) fn draw_operation_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -335,6 +342,7 @@ pub(super) fn draw_operation_table(
     );
 }
 
+/// Draw the synthetic per-pipeline state used by group shutdown tracking.
 pub(super) fn draw_group_shutdown_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -381,6 +389,7 @@ pub(super) fn draw_group_shutdown_table(
     );
 }
 
+/// Draw diagnosis findings.
 pub(super) fn draw_findings_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -424,6 +433,7 @@ pub(super) fn draw_findings_table(
     );
 }
 
+/// Draw evidence excerpts attached to diagnosis findings.
 pub(super) fn draw_evidence_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -464,6 +474,7 @@ pub(super) fn draw_evidence_table(
     );
 }
 
+/// Draw pipeline inventory rows for group and engine overview panes.
 pub(super) fn draw_pipeline_inventory_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -515,6 +526,7 @@ pub(super) fn draw_pipeline_inventory_table(
     );
 }
 
+/// Draw engine readiness probe failures.
 pub(super) fn draw_probe_failures(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -557,6 +569,7 @@ pub(super) fn draw_probe_failures(
     );
 }
 
+/// Draw field/value/detail rows for the object detail pane.
 pub(super) fn draw_object_detail_table(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -600,6 +613,7 @@ pub(super) fn draw_object_detail_table(
     );
 }
 
+/// Draw a selectable table owned by the left-hand resource list.
 pub(super) fn draw_state_table<const N: usize>(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -642,6 +656,7 @@ pub(super) fn draw_state_table<const N: usize>(
     frame.render_stateful_widget(table, area, &mut state);
 }
 
+/// Draw a non-selectable table with a standard empty-state placeholder.
 pub(super) fn draw_table_block<const N: usize>(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -674,6 +689,7 @@ pub(super) fn draw_table_block<const N: usize>(
     frame.render_widget(table, area);
 }
 
+/// Draw a centered empty-state overlay.
 pub(super) fn draw_empty_overlay(
     frame: &mut Frame<'_>,
     area: Rect,

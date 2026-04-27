@@ -5,6 +5,7 @@
 
 use super::*;
 
+/// Routes one terminal event to keyboard, mouse, or resize handling.
 pub(super) fn handle_event(event: Event, app: &mut AppState) -> EventOutcome {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(key, app),
@@ -150,6 +151,7 @@ fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
         && row < area.y.saturating_add(area.height)
 }
 
+/// Handles one key press and returns the resulting UI-loop action.
 pub(super) fn handle_key_event(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     if app.is_filter_mode() {
         return handle_filter_key(key, app);

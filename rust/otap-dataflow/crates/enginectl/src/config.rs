@@ -10,14 +10,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Default local admin endpoint used when no flag, environment variable, or profile sets one.
 pub const DEFAULT_LOCAL_URL: &str = "http://127.0.0.1:8085";
 
+/// Effective connection settings after applying CLI, environment, profile, and defaults.
 #[derive(Debug, Clone)]
 pub struct ResolvedConnection {
     pub settings: HttpAdminClientSettings,
     pub profile_file: Option<PathBuf>,
 }
 
+/// Optional YAML profile loaded by `--profile-file`.
+///
+/// Profile values are lower precedence than CLI flags and environment
+/// variables, but higher precedence than the built-in local default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConnectionProfile {
     pub url: Option<String>,
@@ -39,6 +45,7 @@ pub struct ConnectionProfile {
     pub insecure_skip_verify: Option<bool>,
 }
 
+/// Resolves admin client settings from CLI flags, environment variables, profile, and defaults.
 pub fn resolve_connection(args: &ConnectionArgs) -> Result<ResolvedConnection, CliError> {
     let profile = load_profile(args.profile_file.as_ref())?;
 
@@ -116,6 +123,7 @@ pub fn resolve_connection(args: &ConnectionArgs) -> Result<ResolvedConnection, C
     })
 }
 
+/// Redacted, serializable view of the effective connection settings.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedConnectionView {
@@ -134,6 +142,7 @@ pub struct ResolvedConnectionView {
     pub tls: ResolvedTlsView,
 }
 
+/// Redacted, serializable view of the resolved TLS client configuration.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedTlsView {
@@ -146,10 +155,12 @@ pub struct ResolvedTlsView {
 }
 
 impl ResolvedConnection {
+    /// Returns the canonical URL built from the resolved admin endpoint.
     pub fn display_url(&self) -> String {
         endpoint_url(&self.settings.endpoint)
     }
 
+    /// Builds the user-facing configuration view used by `dfctl config view`.
     pub fn view(&self) -> ResolvedConnectionView {
         let endpoint = &self.settings.endpoint;
         let tls = self.settings.tls.as_ref();

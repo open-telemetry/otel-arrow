@@ -8,6 +8,7 @@ use crate::BIN_NAME;
 
 use std::time::{Duration, Instant, SystemTime};
 
+/// Top-level TUI object family currently selected by the user.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum View {
     Pipelines,
@@ -16,8 +17,10 @@ pub(crate) enum View {
 }
 
 impl View {
+    /// Display order for the first-level tab bar.
     pub(crate) const ALL: [Self; 3] = [Self::Engine, Self::Groups, Self::Pipelines];
 
+    /// Returns the tab title shown in the TUI.
     pub(crate) const fn title(self) -> &'static str {
         match self {
             Self::Pipelines => "Pipelines",
@@ -27,12 +30,14 @@ impl View {
     }
 }
 
+/// One executable CLI command shown by the command overlay.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommandLine {
     pub(crate) label: String,
     pub(crate) command: String,
 }
 
+/// TUI recipe that explains how to reproduce the current view from the CLI.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommandRecipe {
     pub(crate) title: String,
@@ -41,6 +46,7 @@ pub(crate) struct CommandRecipe {
     pub(crate) note: Option<String>,
 }
 
+/// Connection and display context used to build equivalent CLI commands in the TUI.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UiCommandContext {
     pub(crate) target_url: String,
@@ -51,6 +57,7 @@ pub(crate) struct UiCommandContext {
 }
 
 impl UiCommandContext {
+    /// Builds a local fallback context for tests and early UI initialization.
     pub(crate) fn local_default(logs_tail: usize) -> Self {
         Self {
             target_url: "http://127.0.0.1:8085".to_string(),
@@ -76,12 +83,14 @@ impl From<UiStartView> for View {
     }
 }
 
+/// Which major UI region receives keyboard navigation.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum FocusArea {
     List,
     Detail,
 }
 
+/// Active modal overlay, if any.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) enum UiModal {
     #[default]
@@ -95,6 +104,7 @@ pub(crate) enum UiModal {
     ScaleEditor(ScaleEditorState),
 }
 
+/// Command palette action resolved from a selected palette entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PaletteAction {
     SwitchView(View),
@@ -112,6 +122,7 @@ pub(crate) enum PaletteAction {
     Execute(UiAction),
 }
 
+/// One row in the command palette.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommandPaletteEntry {
     pub(crate) label: String,
@@ -121,12 +132,14 @@ pub(crate) struct CommandPaletteEntry {
     pub(crate) enabled: bool,
 }
 
+/// Mutable input and selection state for the command palette modal.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CommandPaletteState {
     pub(crate) input: String,
     pub(crate) selected: usize,
 }
 
+/// User-triggered operation that may execute admin calls or edit local state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum UiAction {
     PipelineEditAndRedeploy {
@@ -157,6 +170,7 @@ pub(crate) enum UiAction {
     },
 }
 
+/// One row in the context-sensitive action menu.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ActionMenuEntry {
     pub(crate) label: String,
@@ -165,6 +179,7 @@ pub(crate) struct ActionMenuEntry {
     pub(crate) enabled: bool,
 }
 
+/// Mutable state for the context-sensitive action menu modal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ActionMenuState {
     pub(crate) title: String,
@@ -173,6 +188,7 @@ pub(crate) struct ActionMenuState {
     pub(crate) selected: usize,
 }
 
+/// Confirmation prompt for destructive shutdown actions.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ShutdownConfirmState {
     pub(crate) title: String,
@@ -180,6 +196,7 @@ pub(crate) struct ShutdownConfirmState {
     pub(crate) action: UiAction,
 }
 
+/// Modal state for editing a pipeline's target core count.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ScaleEditorState {
     pub(crate) group_id: String,
@@ -188,6 +205,7 @@ pub(crate) struct ScaleEditorState {
     pub(crate) input: String,
 }
 
+/// Render row for group shutdown progress.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GroupShutdownRow {
     pub(crate) pipeline: String,
@@ -197,6 +215,7 @@ pub(crate) struct GroupShutdownRow {
     pub(crate) tone: Tone,
 }
 
+/// Pane state for the group shutdown progress tab.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GroupShutdownPane {
     pub(crate) header: Option<DetailHeader>,
@@ -206,6 +225,7 @@ pub(crate) struct GroupShutdownPane {
     pub(crate) note: Option<String>,
 }
 
+/// Client-side tracking state for an in-progress group shutdown action.
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveGroupShutdown {
     pub(crate) group_id: String,
@@ -216,6 +236,7 @@ pub(crate) struct ActiveGroupShutdown {
     pub(crate) request_count: usize,
 }
 
+/// Second-level tab selection for a pipeline object.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PipelineTab {
     Summary,
@@ -231,6 +252,7 @@ pub(crate) enum PipelineTab {
 }
 
 impl PipelineTab {
+    /// Display order for pipeline detail tabs.
     pub(crate) const ALL: [Self; 10] = [
         Self::Summary,
         Self::Details,
@@ -244,6 +266,7 @@ impl PipelineTab {
         Self::Bundle,
     ];
 
+    /// Returns the tab title shown in the TUI.
     pub(crate) const fn title(self) -> &'static str {
         match self {
             Self::Summary => "Summary",
@@ -260,6 +283,7 @@ impl PipelineTab {
     }
 }
 
+/// Second-level tab selection for a group object.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum GroupTab {
     Summary,
@@ -273,6 +297,7 @@ pub(crate) enum GroupTab {
 }
 
 impl GroupTab {
+    /// Display order for group detail tabs.
     pub(crate) const ALL: [Self; 8] = [
         Self::Summary,
         Self::Details,
@@ -284,6 +309,7 @@ impl GroupTab {
         Self::Bundle,
     ];
 
+    /// Returns the tab title shown in the TUI.
     pub(crate) const fn title(self) -> &'static str {
         match self {
             Self::Summary => "Summary",
@@ -298,6 +324,7 @@ impl GroupTab {
     }
 }
 
+/// Second-level tab selection for the engine object.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EngineTab {
     Summary,
@@ -307,8 +334,10 @@ pub(crate) enum EngineTab {
 }
 
 impl EngineTab {
+    /// Display order for engine detail tabs.
     pub(crate) const ALL: [Self; 4] = [Self::Summary, Self::Details, Self::Logs, Self::Metrics];
 
+    /// Returns the tab title shown in the TUI.
     pub(crate) const fn title(self) -> &'static str {
         match self {
             Self::Summary => "Summary",
@@ -319,6 +348,7 @@ impl EngineTab {
     }
 }
 
+/// Semantic color category used by TUI rows, cards, and chips.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) enum Tone {
     #[default]
@@ -330,6 +360,7 @@ pub(crate) enum Tone {
     Muted,
 }
 
+/// Compact key/value status shown in detail headers.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct StatusChip {
     pub(crate) label: String,
@@ -337,6 +368,7 @@ pub(crate) struct StatusChip {
     pub(crate) tone: Tone,
 }
 
+/// Header content shared by summary and detail panes.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DetailHeader {
     pub(crate) title: String,
@@ -344,6 +376,7 @@ pub(crate) struct DetailHeader {
     pub(crate) chips: Vec<StatusChip>,
 }
 
+/// Small summary value card shown at the top of panes.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct StatCard {
     pub(crate) label: String,
@@ -351,6 +384,7 @@ pub(crate) struct StatCard {
     pub(crate) tone: Tone,
 }
 
+/// Engine-level CPU, memory, and pressure values shown in the header rail.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EngineVitals {
     pub(crate) cpu_utilization: String,
@@ -378,6 +412,7 @@ impl Default for EngineVitals {
     }
 }
 
+/// Render row for a pipeline condition table.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ConditionRow {
     pub(crate) kind: String,
@@ -387,6 +422,7 @@ pub(crate) struct ConditionRow {
     pub(crate) tone: Tone,
 }
 
+/// Render row for a pipeline core table.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CoreRow {
     pub(crate) core: String,
@@ -397,6 +433,7 @@ pub(crate) struct CoreRow {
     pub(crate) tone: Tone,
 }
 
+/// Render row for event timelines.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TimelineRow {
     pub(crate) time: String,
@@ -406,6 +443,7 @@ pub(crate) struct TimelineRow {
     pub(crate) tone: Tone,
 }
 
+/// Render row for retained logs.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct LogRow {
     pub(crate) time: String,
@@ -415,6 +453,7 @@ pub(crate) struct LogRow {
     pub(crate) tone: Tone,
 }
 
+/// Render row for metrics tables.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct MetricRow {
     pub(crate) metric_set: String,
@@ -424,6 +463,7 @@ pub(crate) struct MetricRow {
     pub(crate) value: String,
 }
 
+/// Render row for rollout or shutdown operation state.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct OperationRow {
     pub(crate) core: String,
@@ -435,6 +475,7 @@ pub(crate) struct OperationRow {
     pub(crate) tone: Tone,
 }
 
+/// Render row for diagnosis findings.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FindingRow {
     pub(crate) severity: String,
@@ -443,6 +484,7 @@ pub(crate) struct FindingRow {
     pub(crate) tone: Tone,
 }
 
+/// Render row for diagnosis evidence excerpts.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct EvidenceRow {
     pub(crate) source: String,
@@ -450,6 +492,7 @@ pub(crate) struct EvidenceRow {
     pub(crate) message: String,
 }
 
+/// Render row for group or engine pipeline inventories.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PipelineInventoryRow {
     pub(crate) pipeline: String,
@@ -460,6 +503,7 @@ pub(crate) struct PipelineInventoryRow {
     pub(crate) tone: Tone,
 }
 
+/// Render row for engine-level readiness or liveness failures.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProbeFailureRow {
     pub(crate) pipeline: String,
@@ -468,6 +512,7 @@ pub(crate) struct ProbeFailureRow {
     pub(crate) tone: Tone,
 }
 
+/// Render row for generic object detail tables.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ObjectDetailRow {
     pub(crate) field: String,
@@ -476,6 +521,7 @@ pub(crate) struct ObjectDetailRow {
     pub(crate) tone: Tone,
 }
 
+/// Pane state for structured object details.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ObjectDetailsPane {
     pub(crate) header: Option<DetailHeader>,
@@ -484,6 +530,7 @@ pub(crate) struct ObjectDetailsPane {
     pub(crate) empty_message: String,
 }
 
+/// Pane state for the pipeline summary tab.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PipelineSummaryPane {
     pub(crate) header: Option<DetailHeader>,
@@ -493,6 +540,7 @@ pub(crate) struct PipelineSummaryPane {
     pub(crate) events: Vec<TimelineRow>,
 }
 
+/// Pane state for the group summary tab.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GroupSummaryPane {
     pub(crate) header: Option<DetailHeader>,
@@ -502,6 +550,7 @@ pub(crate) struct GroupSummaryPane {
     pub(crate) events: Vec<TimelineRow>,
 }
 
+/// Pane state for the engine summary tab.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EngineSummaryPane {
     pub(crate) header: Option<DetailHeader>,
@@ -510,6 +559,7 @@ pub(crate) struct EngineSummaryPane {
     pub(crate) failing: Vec<ProbeFailureRow>,
 }
 
+/// Pane state for event tabs.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EventPane {
     pub(crate) header: Option<DetailHeader>,
@@ -517,6 +567,7 @@ pub(crate) struct EventPane {
     pub(crate) empty_message: String,
 }
 
+/// Pane state for metrics tabs.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MetricsPane {
     pub(crate) header: Option<DetailHeader>,
@@ -525,6 +576,7 @@ pub(crate) struct MetricsPane {
     pub(crate) empty_message: String,
 }
 
+/// Pane state for rollout and shutdown operation tabs.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OperationPane {
     pub(crate) header: Option<DetailHeader>,
@@ -533,6 +585,7 @@ pub(crate) struct OperationPane {
     pub(crate) empty_message: String,
 }
 
+/// Pane state for diagnosis tabs.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DiagnosisPane {
     pub(crate) header: Option<DetailHeader>,
@@ -542,6 +595,7 @@ pub(crate) struct DiagnosisPane {
     pub(crate) next_steps: Vec<String>,
 }
 
+/// Pane state for support bundle previews.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BundlePane {
     pub(crate) header: Option<DetailHeader>,
@@ -549,6 +603,7 @@ pub(crate) struct BundlePane {
     pub(crate) preview: String,
 }
 
+/// Pane state for pipeline configuration preview and edit status.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ConfigPane {
     pub(crate) header: Option<DetailHeader>,
@@ -558,6 +613,7 @@ pub(crate) struct ConfigPane {
     pub(crate) preview: String,
 }
 
+/// Draft pipeline configuration captured from an editor session.
 #[derive(Clone, Debug)]
 pub(crate) struct PipelineConfigDraft {
     pub(crate) original_yaml: String,
@@ -568,11 +624,13 @@ pub(crate) struct PipelineConfigDraft {
 }
 
 impl PipelineConfigDraft {
+    /// Returns true when the draft parsed successfully and differs from the original.
     pub(crate) fn is_deployable(&self) -> bool {
         self.parsed.is_some() && self.edited_yaml != self.original_yaml
     }
 }
 
+/// Incremental retained-log state for one object scope.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LogFeedState {
     pub(crate) scope_key: Option<String>,
@@ -584,6 +642,7 @@ pub(crate) struct LogFeedState {
 }
 
 impl LogFeedState {
+    /// Resets the feed for a new scope and clears existing log rows.
     pub(crate) fn reset(&mut self, scope_key: String) {
         self.scope_key = Some(scope_key);
         self.next_seq = None;
@@ -593,6 +652,7 @@ impl LogFeedState {
         self.empty_message.clear();
     }
 
+    /// Clears scope and retained log state.
     pub(crate) fn clear(&mut self) {
         self.scope_key = None;
         self.next_seq = None;
@@ -603,6 +663,7 @@ impl LogFeedState {
     }
 }
 
+/// Cached data backing all pipeline detail tabs.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PipelinePaneState {
     pub(crate) target_key: Option<String>,
@@ -624,6 +685,7 @@ pub(crate) struct PipelinePaneState {
 }
 
 impl PipelinePaneState {
+    /// Resets cached pipeline data when the selected pipeline changes.
     pub(crate) fn reset(&mut self, target_key: String) {
         self.target_key = Some(target_key.clone());
         self.describe = None;
@@ -643,6 +705,7 @@ impl PipelinePaneState {
         self.bundle = BundlePane::default();
     }
 
+    /// Clears all cached pipeline data when no pipeline is selected.
     pub(crate) fn clear(&mut self) {
         self.target_key = None;
         self.describe = None;
@@ -663,6 +726,7 @@ impl PipelinePaneState {
     }
 }
 
+/// Cached data backing all group detail tabs.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GroupPaneState {
     pub(crate) group_id: Option<String>,
@@ -678,6 +742,7 @@ pub(crate) struct GroupPaneState {
 }
 
 impl GroupPaneState {
+    /// Resets cached group data when the selected group changes.
     pub(crate) fn reset(&mut self, group_id: String) {
         self.group_id = Some(group_id.clone());
         if self
@@ -697,6 +762,7 @@ impl GroupPaneState {
         self.bundle = BundlePane::default();
     }
 
+    /// Clears all cached group data when no group is selected.
     pub(crate) fn clear(&mut self) {
         self.group_id = None;
         self.active_shutdown = None;
@@ -711,6 +777,7 @@ impl GroupPaneState {
     }
 }
 
+/// Cached data backing all engine detail tabs.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EnginePaneState {
     pub(crate) summary: EngineSummaryPane,
@@ -720,6 +787,7 @@ pub(crate) struct EnginePaneState {
 }
 
 impl EnginePaneState {
+    /// Creates engine pane state with an initialized engine-scoped log feed.
     pub(crate) fn new() -> Self {
         let mut state = Self::default();
         state.logs.reset("engine".to_string());
@@ -727,6 +795,7 @@ impl EnginePaneState {
     }
 }
 
+/// Selectable row in the pipeline list.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PipelineItem {
     pub(crate) key: String,
@@ -739,6 +808,7 @@ pub(crate) struct PipelineItem {
     pub(crate) rollout: String,
 }
 
+/// Selectable row in the group list.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GroupItem {
     pub(crate) group_id: String,
@@ -750,6 +820,7 @@ pub(crate) struct GroupItem {
     pub(crate) terminal: usize,
 }
 
+/// Selectable row in the engine pipeline list.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EnginePipelineItem {
     pub(crate) key: String,
@@ -760,12 +831,14 @@ pub(crate) struct EnginePipelineItem {
     pub(crate) rollout: String,
 }
 
+/// Small animated activity marker state for the TUI title bar.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ActivityIndicator {
     pub(crate) active: bool,
     pub(crate) frame: u16,
 }
 
+/// Root mutable state for one interactive TUI session.
 #[derive(Clone, Debug)]
 pub(crate) struct AppState {
     pub(crate) view: View,

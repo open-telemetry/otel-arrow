@@ -6,6 +6,7 @@
 use super::*;
 use crate::style::terminal_safe;
 
+/// Convert normalized engine events into timeline rows that can be sorted and styled consistently.
 pub(super) fn event_rows(events: &[NormalizedEvent]) -> Vec<TimelineRow> {
     events
         .iter()
@@ -19,6 +20,7 @@ pub(super) fn event_rows(events: &[NormalizedEvent]) -> Vec<TimelineRow> {
         .collect()
 }
 
+/// Convert captured log entries into terminal-safe TUI rows.
 pub(super) fn log_rows(entries: &[telemetry::LogEntry]) -> Vec<LogRow> {
     entries
         .iter()
@@ -32,6 +34,7 @@ pub(super) fn log_rows(entries: &[telemetry::LogEntry]) -> Vec<LogRow> {
         .collect()
 }
 
+/// Flatten compact metric sets into one display row per metric value.
 pub(super) fn metric_rows(metrics: &telemetry::CompactMetricsResponse) -> Vec<MetricRow> {
     let mut rows = Vec::new();
     for metric_set in &metrics.metric_sets {
@@ -49,6 +52,7 @@ pub(super) fn metric_rows(metrics: &telemetry::CompactMetricsResponse) -> Vec<Me
     rows
 }
 
+/// Convert readiness/liveness conditions into status rows with precomputed tones.
 pub(super) fn condition_rows(conditions: &[pipelines::Condition]) -> Vec<ConditionRow> {
     conditions
         .iter()
@@ -66,6 +70,7 @@ pub(super) fn condition_rows(conditions: &[pipelines::Condition]) -> Vec<Conditi
         .collect()
 }
 
+/// Build core rows from the most detailed runtime instance view available in the status payload.
 pub(super) fn core_rows(status: &pipelines::Status) -> Vec<CoreRow> {
     if let Some(instances) = &status.instances {
         instances
@@ -98,6 +103,7 @@ pub(super) fn core_rows(status: &pipelines::Status) -> Vec<CoreRow> {
     }
 }
 
+/// Build the pipeline inventory shown by group and engine views.
 pub(super) fn pipeline_inventory_rows(
     pipelines: &BTreeMap<String, pipelines::Status>,
     include_group_prefix: bool,
@@ -131,6 +137,7 @@ pub(super) fn pipeline_inventory_rows(
         .collect()
 }
 
+/// Convert a diagnosis finding into a compact table row.
 pub(super) fn finding_row(finding: &DiagnosisFinding) -> FindingRow {
     FindingRow {
         severity: format!("{:?}", finding.severity).to_ascii_lowercase(),
@@ -144,6 +151,7 @@ pub(super) fn finding_row(finding: &DiagnosisFinding) -> FindingRow {
     }
 }
 
+/// Convert a diagnosis evidence excerpt into a compact table row.
 pub(super) fn evidence_row(evidence: &EvidenceExcerpt) -> EvidenceRow {
     EvidenceRow {
         source: terminal_safe(&evidence.source),
@@ -152,6 +160,7 @@ pub(super) fn evidence_row(evidence: &EvidenceExcerpt) -> EvidenceRow {
     }
 }
 
+/// Render the stable scope label used by event timelines.
 pub(super) fn event_scope(event: &NormalizedEvent) -> String {
     let mut parts = vec![format!(
         "{}/{} c{}",
@@ -165,6 +174,7 @@ pub(super) fn event_scope(event: &NormalizedEvent) -> String {
     parts.join(" ")
 }
 
+/// Compose the event name, message, and detail into the timeline message cell.
 pub(super) fn event_message(event: &NormalizedEvent) -> String {
     let mut parts = vec![terminal_safe(&event.name)];
     if let Some(message) = &event.message {
@@ -176,6 +186,7 @@ pub(super) fn event_message(event: &NormalizedEvent) -> String {
     parts.join(" - ")
 }
 
+/// Render a metric set name with a small attribute preview for disambiguation.
 pub(super) fn metric_set_label(metric_set: &telemetry::MetricSet) -> String {
     let attrs = metric_set
         .attributes
@@ -191,6 +202,7 @@ pub(super) fn metric_set_label(metric_set: &telemetry::MetricSet) -> String {
     }
 }
 
+/// Render a telemetry attribute value into a terminal-safe table cell.
 pub(super) fn attribute_value_string(value: &telemetry::AttributeValue) -> String {
     match value {
         telemetry::AttributeValue::String(value) => terminal_safe(value),
@@ -204,6 +216,7 @@ pub(super) fn attribute_value_string(value: &telemetry::AttributeValue) -> Strin
     }
 }
 
+/// Render a metric value into the compact TUI representation.
 pub(super) fn metric_value_string(value: &telemetry::MetricValue) -> String {
     match value {
         telemetry::MetricValue::U64(value) => value.to_string(),
@@ -215,6 +228,7 @@ pub(super) fn metric_value_string(value: &telemetry::MetricValue) -> String {
     }
 }
 
+/// Classify a pipeline into the short operational badge and tone used across TUI lists.
 pub(super) fn classify_pipeline(status: &pipelines::Status) -> (&'static str, Tone) {
     if status
         .rollout
@@ -248,6 +262,7 @@ pub(super) fn classify_pipeline(status: &pipelines::Status) -> (&'static str, To
     ("ok", Tone::Success)
 }
 
+/// Render a boolean as a human-readable table cell.
 pub(super) fn bool_label(value: bool) -> String {
     if value {
         "yes".to_string()
@@ -256,6 +271,7 @@ pub(super) fn bool_label(value: bool) -> String {
     }
 }
 
+/// Map an in-progress group shutdown pipeline snapshot to the tone used by the watch pane.
 pub(super) fn group_shutdown_tone(
     pipeline: &crate::troubleshoot::GroupShutdownWatchPipeline,
 ) -> Tone {
@@ -274,10 +290,12 @@ pub(super) fn group_shutdown_tone(
     }
 }
 
+/// Render engine phase variants in the lowercase style used by CLI and TUI tables.
 pub(super) fn phase_label(phase: &pipelines::Phase) -> String {
     format!("{phase:?}").to_ascii_lowercase()
 }
 
+/// Map pipeline conditions to a severity tone.
 pub(super) fn condition_tone(condition: &pipelines::Condition) -> Tone {
     match condition.status {
         pipelines::ConditionStatus::True => Tone::Success,
@@ -286,6 +304,7 @@ pub(super) fn condition_tone(condition: &pipelines::Condition) -> Tone {
     }
 }
 
+/// Map runtime phases to the TUI severity tone.
 pub(super) fn phase_tone(phase: &pipelines::Phase) -> Tone {
     match phase {
         pipelines::Phase::Running | pipelines::Phase::Stopped | pipelines::Phase::Deleted => {
@@ -301,6 +320,7 @@ pub(super) fn phase_tone(phase: &pipelines::Phase) -> Tone {
     }
 }
 
+/// Map normalized event kinds to the tone used in event tables.
 pub(super) fn event_tone(kind: NormalizedEventKind) -> Tone {
     match kind {
         NormalizedEventKind::Request => Tone::Accent,
@@ -310,6 +330,7 @@ pub(super) fn event_tone(kind: NormalizedEventKind) -> Tone {
     }
 }
 
+/// Map rollout states to the tone used in operation panes.
 pub(super) fn rollout_tone(state: pipelines::PipelineRolloutState) -> Tone {
     match state {
         pipelines::PipelineRolloutState::Pending | pipelines::PipelineRolloutState::Running => {
@@ -322,6 +343,7 @@ pub(super) fn rollout_tone(state: pipelines::PipelineRolloutState) -> Tone {
     }
 }
 
+/// Return whether a rollout state is final from the operator perspective.
 pub(super) fn rollout_is_terminal(state: pipelines::PipelineRolloutState) -> bool {
     matches!(
         state,
@@ -331,6 +353,7 @@ pub(super) fn rollout_is_terminal(state: pipelines::PipelineRolloutState) -> boo
     )
 }
 
+/// Map diagnosis status to the TUI severity tone.
 pub(super) fn diagnosis_tone(status: DiagnosisStatus) -> Tone {
     match status {
         DiagnosisStatus::Healthy => Tone::Success,
@@ -340,6 +363,7 @@ pub(super) fn diagnosis_tone(status: DiagnosisStatus) -> Tone {
     }
 }
 
+/// Map pipeline probe status to the TUI severity tone.
 pub(super) fn probe_tone(status: pipelines::ProbeStatus) -> Tone {
     match status {
         pipelines::ProbeStatus::Ok => Tone::Success,
@@ -347,6 +371,7 @@ pub(super) fn probe_tone(status: pipelines::ProbeStatus) -> Tone {
     }
 }
 
+/// Map engine probe status to the TUI severity tone.
 pub(super) fn probe_tone_engine(status: engine::ProbeStatus) -> Tone {
     match status {
         engine::ProbeStatus::Ok => Tone::Success,
@@ -354,6 +379,7 @@ pub(super) fn probe_tone_engine(status: engine::ProbeStatus) -> Tone {
     }
 }
 
+/// Heuristically classify free-form status text into a display tone.
 pub(super) fn state_tone(value: &str) -> Tone {
     let lowered = value.to_ascii_lowercase();
     if lowered.contains("fail") || lowered.contains("error") || lowered.contains("reject") {
@@ -378,6 +404,7 @@ pub(super) fn state_tone(value: &str) -> Tone {
     }
 }
 
+/// Return whether the pipeline Ready condition is currently true.
 pub(super) fn pipeline_is_ready(status: &pipelines::Status) -> bool {
     status.conditions.iter().any(|condition| {
         condition.kind == pipelines::ConditionKind::Ready
@@ -385,6 +412,7 @@ pub(super) fn pipeline_is_ready(status: &pipelines::Status) -> bool {
     })
 }
 
+/// Return whether all known runtime instances have reached a terminal phase.
 pub(super) fn pipeline_is_terminal(status: &pipelines::Status) -> bool {
     let phases_terminal = if let Some(instances) = &status.instances {
         !instances.is_empty()

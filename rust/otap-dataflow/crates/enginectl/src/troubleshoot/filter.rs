@@ -7,6 +7,7 @@ use super::models::{EventFilters, LogFilters, MetricsFilters, NormalizedEvent};
 use otap_df_admin_api::telemetry;
 use std::collections::BTreeMap;
 
+/// Applies retained-log filters while preserving response cursor metadata.
 pub fn filter_logs(
     response: &telemetry::LogsResponse,
     filters: &LogFilters,
@@ -28,6 +29,7 @@ pub fn filter_logs(
     }
 }
 
+/// Applies metric-set and metric filters to a compact metrics response.
 pub fn filter_metrics_compact(
     response: &telemetry::CompactMetricsResponse,
     filters: &MetricsFilters,
@@ -42,6 +44,7 @@ pub fn filter_metrics_compact(
     }
 }
 
+/// Applies metric-set and metric filters to a full metrics response.
 pub fn filter_metrics_full(
     response: &telemetry::MetricsResponse,
     filters: &MetricsFilters,
@@ -56,6 +59,7 @@ pub fn filter_metrics_full(
     }
 }
 
+/// Returns true when a normalized event satisfies all configured event filters.
 pub(super) fn event_matches(event: &NormalizedEvent, filters: &EventFilters) -> bool {
     if !filters.kinds.is_empty() && !filters.kinds.contains(&event.kind) {
         return false;

@@ -6,14 +6,17 @@
 use super::*;
 
 impl AppState {
+    /// Opens the command palette modal with empty input.
     pub(crate) fn open_command_palette(&mut self) {
         self.modal = UiModal::CommandPalette(CommandPaletteState::default());
     }
 
+    /// Returns true when the command palette modal is visible.
     pub(crate) fn show_command_palette(&self) -> bool {
         matches!(self.modal, UiModal::CommandPalette(_))
     }
 
+    /// Returns read-only command palette state when the modal is visible.
     pub(crate) fn command_palette(&self) -> Option<&CommandPaletteState> {
         match &self.modal {
             UiModal::CommandPalette(palette) => Some(palette),
@@ -21,6 +24,7 @@ impl AppState {
         }
     }
 
+    /// Returns mutable command palette state when the modal is visible.
     pub(crate) fn command_palette_mut(&mut self) -> Option<&mut CommandPaletteState> {
         match &mut self.modal {
             UiModal::CommandPalette(palette) => Some(palette),
@@ -28,6 +32,7 @@ impl AppState {
         }
     }
 
+    /// Appends one character to the command palette filter input.
     pub(crate) fn push_palette_input(&mut self, character: char) {
         if let Some(palette) = self.command_palette_mut() {
             palette.input.push(character);
@@ -35,6 +40,7 @@ impl AppState {
         self.clamp_palette_selection();
     }
 
+    /// Removes the last character from the command palette filter input.
     pub(crate) fn pop_palette_input(&mut self) {
         if let Some(palette) = self.command_palette_mut() {
             let _ = palette.input.pop();
@@ -42,6 +48,7 @@ impl AppState {
         self.clamp_palette_selection();
     }
 
+    /// Moves the selected command palette row with wraparound.
     pub(crate) fn move_palette_selection(&mut self, delta: isize) {
         let len = self.filtered_palette_entries().len();
         if len == 0 {
@@ -61,6 +68,7 @@ impl AppState {
         }
     }
 
+    /// Returns the enabled action selected in the filtered command palette.
     pub(crate) fn selected_palette_action(&self) -> Option<PaletteAction> {
         let entries = self.filtered_palette_entries();
         let selected = self
@@ -73,6 +81,7 @@ impl AppState {
             .map(|entry| entry.action.clone())
     }
 
+    /// Builds command palette entries filtered by the current palette input.
     pub(crate) fn filtered_palette_entries(&self) -> Vec<CommandPaletteEntry> {
         let query = self
             .command_palette()

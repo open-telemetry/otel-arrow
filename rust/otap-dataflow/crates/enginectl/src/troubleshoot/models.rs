@@ -7,6 +7,7 @@ use otap_df_admin_api::{groups, pipelines, telemetry};
 use serde::Serialize;
 use serde_json::Value;
 
+/// Normalized event categories used by event filters and watch output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NormalizedEventKind {
@@ -16,6 +17,10 @@ pub enum NormalizedEventKind {
     Log,
 }
 
+/// Event shape derived from engine lifecycle events or retained logs.
+///
+/// This model gives commands one sortable/filterable event representation even
+/// though the admin API exposes different raw event variants.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NormalizedEvent {
@@ -40,6 +45,7 @@ pub struct NormalizedEvent {
 }
 
 impl NormalizedEvent {
+    /// Builds a stable de-duplication key used by watch commands.
     pub fn identity_key(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| {
             format!(
@@ -59,6 +65,7 @@ impl NormalizedEvent {
     }
 }
 
+/// Event filter model shared by event snapshot and watch commands.
 #[derive(Debug, Clone, Default)]
 pub struct EventFilters {
     pub kinds: Vec<NormalizedEventKind>,
@@ -68,6 +75,7 @@ pub struct EventFilters {
     pub contains: Option<String>,
 }
 
+/// Log filter model shared by log commands and troubleshooting flows.
 #[derive(Debug, Clone, Default)]
 pub struct LogFilters {
     pub level: Option<String>,
@@ -79,6 +87,7 @@ pub struct LogFilters {
     pub contains: Option<String>,
 }
 
+/// Metrics filter model shared by metrics commands and troubleshooting flows.
 #[derive(Debug, Clone, Default)]
 pub struct MetricsFilters {
     pub metric_sets: Vec<String>,
@@ -89,6 +98,7 @@ pub struct MetricsFilters {
     pub node_id: Option<String>,
 }
 
+/// Derived group-level status report emitted by `dfctl groups describe`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupsDescribeReport {
@@ -97,6 +107,7 @@ pub struct GroupsDescribeReport {
     pub recent_events: Vec<NormalizedEvent>,
 }
 
+/// Aggregated group status counts and problem pipeline lists.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupsSummary {
@@ -108,6 +119,7 @@ pub struct GroupsSummary {
     pub non_terminal_pipelines: Vec<String>,
 }
 
+/// Derived pipeline status report emitted by `dfctl pipelines describe`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineDescribeReport {
@@ -118,6 +130,7 @@ pub struct PipelineDescribeReport {
     pub recent_events: Vec<NormalizedEvent>,
 }
 
+/// Coarse health classification assigned to a diagnosis report.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosisStatus {
@@ -128,6 +141,7 @@ pub enum DiagnosisStatus {
     Unknown,
 }
 
+/// Severity assigned to one diagnosis finding.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingSeverity {
@@ -136,6 +150,7 @@ pub enum FindingSeverity {
     Error,
 }
 
+/// Small source excerpt that supports a diagnosis finding.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceExcerpt {
@@ -145,6 +160,7 @@ pub struct EvidenceExcerpt {
     pub message: String,
 }
 
+/// One actionable problem or observation produced by diagnosis heuristics.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosisFinding {
@@ -154,6 +170,7 @@ pub struct DiagnosisFinding {
     pub evidence: Vec<EvidenceExcerpt>,
 }
 
+/// Complete diagnosis result for group or pipeline troubleshooting.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosisReport {
@@ -164,6 +181,7 @@ pub struct DiagnosisReport {
     pub recommended_next_steps: Vec<String>,
 }
 
+/// Per-pipeline row included in group shutdown watch snapshots.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupShutdownWatchPipeline {
@@ -174,6 +192,7 @@ pub struct GroupShutdownWatchPipeline {
     pub phases: Vec<String>,
 }
 
+/// Point-in-time group shutdown progress snapshot for human and NDJSON watch output.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupShutdownWatchSnapshot {

@@ -11,6 +11,7 @@ use otap_df_admin_api::{groups, pipelines};
 use serde_json::Value;
 use std::time::SystemTime;
 
+/// Builds the derived `groups describe` report from raw group status.
 pub fn describe_groups(status: groups::Status) -> GroupsDescribeReport {
     let recent_events = extract_events_from_group_status(&status, None);
     let mut running_pipelines = 0;
@@ -49,6 +50,7 @@ pub fn describe_groups(status: groups::Status) -> GroupsDescribeReport {
     }
 }
 
+/// Builds the derived `pipelines describe` report from raw pipeline details and probes.
 pub fn describe_pipeline(
     details: pipelines::PipelineDetails,
     status: pipelines::Status,
@@ -70,6 +72,7 @@ pub fn describe_pipeline(
     }
 }
 
+/// Extracts normalized recent events from every pipeline in group status.
 pub fn extract_events_from_group_status(
     status: &groups::Status,
     filters: Option<&super::models::EventFilters>,
@@ -88,6 +91,7 @@ pub fn extract_events_from_group_status(
     events
 }
 
+/// Extracts normalized recent events from one pipeline status response.
 pub fn extract_events_from_pipeline_status(
     pipeline_group_id: &str,
     pipeline_id: &str,
@@ -110,6 +114,7 @@ pub fn extract_events_from_pipeline_status(
     events
 }
 
+/// Keeps only the newest `tail` events when a tail limit is configured.
 pub fn tail_events(events: Vec<NormalizedEvent>, tail: Option<usize>) -> Vec<NormalizedEvent> {
     let Some(tail) = tail else {
         return events;
@@ -118,6 +123,7 @@ pub fn tail_events(events: Vec<NormalizedEvent>, tail: Option<usize>) -> Vec<Nor
     events.into_iter().skip(keep_from).collect()
 }
 
+/// Builds one group shutdown progress snapshot for watch output.
 pub fn group_shutdown_snapshot(
     request_status: groups::ShutdownStatus,
     status: &groups::Status,
@@ -150,6 +156,7 @@ pub fn group_shutdown_snapshot(
     }
 }
 
+/// Returns true when all selected pipeline cores have reached a terminal phase.
 pub fn pipeline_is_terminal(status: &pipelines::Status) -> bool {
     let phases_terminal = if let Some(instances) = &status.instances {
         !instances.is_empty()
@@ -166,6 +173,7 @@ pub fn pipeline_is_terminal(status: &pipelines::Status) -> bool {
     phases_terminal && status.running_cores == 0
 }
 
+/// Returns true when the pipeline has an aggregate ready condition set to true.
 pub fn pipeline_is_ready(status: &pipelines::Status) -> bool {
     status.conditions.iter().any(|condition| {
         condition.kind == pipelines::ConditionKind::Ready
@@ -173,6 +181,7 @@ pub fn pipeline_is_ready(status: &pipelines::Status) -> bool {
     })
 }
 
+/// Returns true when a core phase is terminal for shutdown/progress purposes.
 pub fn phase_is_terminal(phase: &pipelines::Phase) -> bool {
     matches!(
         phase,
@@ -304,6 +313,7 @@ fn error_summary(summary: &pipelines::ErrorSummary) -> String {
     }
 }
 
+/// Returns the distinct lower-case phases currently represented by a pipeline status.
 pub(super) fn pipeline_phases(status: &pipelines::Status) -> Vec<String> {
     if let Some(instances) = &status.instances {
         instances

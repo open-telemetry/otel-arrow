@@ -17,6 +17,7 @@ use crate::troubleshoot::{
 use otap_df_admin_api::{engine, groups, pipelines, telemetry};
 use std::collections::BTreeMap;
 
+/// Renders engine status as human-readable fields and a pipeline table.
 pub fn render_engine_status(style: &HumanStyle, status: &engine::Status) -> String {
     let mut lines = vec![
         field(style, "generated_at", status.generated_at.to_string()),
@@ -29,6 +30,7 @@ pub fn render_engine_status(style: &HumanStyle, status: &engine::Status) -> Stri
     lines.join("\n")
 }
 
+/// Renders group status as human-readable fields and a pipeline table.
 pub fn render_groups_status(style: &HumanStyle, status: &groups::Status) -> String {
     let mut lines = vec![
         field(style, "generated_at", status.generated_at.to_string()),
@@ -41,6 +43,7 @@ pub fn render_groups_status(style: &HumanStyle, status: &groups::Status) -> Stri
     lines.join("\n")
 }
 
+/// Renders the derived group describe report for terminal output.
 pub fn render_groups_describe(style: &HumanStyle, report: &GroupsDescribeReport) -> String {
     let mut lines = vec![
         field(style, "generated_at", &report.status.generated_at),
@@ -84,6 +87,7 @@ pub fn render_groups_describe(style: &HumanStyle, report: &GroupsDescribeReport)
     lines.join("\n")
 }
 
+/// Renders an engine liveness or readiness probe response.
 pub fn render_engine_probe(style: &HumanStyle, probe: &engine::ProbeResponse) -> String {
     let mut lines = vec![
         field(style, "probe", format!("{:?}", probe.probe)),
@@ -105,6 +109,7 @@ pub fn render_engine_probe(style: &HumanStyle, probe: &engine::ProbeResponse) ->
     lines.join("\n")
 }
 
+/// Renders a pipeline liveness or readiness probe response.
 pub fn render_pipeline_probe(style: &HumanStyle, probe: &pipelines::ProbeResult) -> String {
     let mut lines = vec![state_field(style, "status", format!("{:?}", probe.status))];
     if let Some(message) = &probe.message {
@@ -113,6 +118,7 @@ pub fn render_pipeline_probe(style: &HumanStyle, probe: &pipelines::ProbeResult)
     lines.join("\n")
 }
 
+/// Renders the derived pipeline describe report for terminal output.
 pub fn render_pipeline_describe(style: &HumanStyle, report: &PipelineDescribeReport) -> String {
     let mut lines = vec![
         field(
@@ -173,6 +179,7 @@ pub fn render_pipeline_describe(style: &HumanStyle, report: &PipelineDescribeRep
     lines.join("\n")
 }
 
+/// Renders raw pipeline details, including the pipeline config as YAML.
 pub fn render_pipeline_details(
     style: &HumanStyle,
     details: &pipelines::PipelineDetails,
@@ -205,6 +212,7 @@ pub fn render_pipeline_details(
     Ok(lines.join("\n"))
 }
 
+/// Renders one pipeline status snapshot.
 pub fn render_pipeline_status(style: &HumanStyle, status: &pipelines::Status) -> String {
     let mut lines = vec![
         field(
@@ -240,6 +248,7 @@ pub fn render_pipeline_status(style: &HumanStyle, status: &pipelines::Status) ->
     lines.join("\n")
 }
 
+/// Renders one rollout operation status snapshot.
 pub fn render_rollout_status(style: &HumanStyle, status: &pipelines::RolloutStatus) -> String {
     let mut lines = vec![
         field(style, "rollout_id", &status.rollout_id),
@@ -273,6 +282,7 @@ pub fn render_rollout_status(style: &HumanStyle, status: &pipelines::RolloutStat
     lines.join("\n")
 }
 
+/// Renders one shutdown operation status snapshot.
 pub fn render_shutdown_status(style: &HumanStyle, status: &pipelines::ShutdownStatus) -> String {
     let mut lines = vec![
         field(style, "shutdown_id", &status.shutdown_id),
@@ -292,6 +302,7 @@ pub fn render_shutdown_status(style: &HumanStyle, status: &pipelines::ShutdownSt
     lines.join("\n")
 }
 
+/// Renders the response returned by a group shutdown request.
 pub fn render_groups_shutdown(style: &HumanStyle, response: &groups::ShutdownResponse) -> String {
     let mut lines = vec![state_field(
         style,
@@ -309,6 +320,7 @@ pub fn render_groups_shutdown(style: &HumanStyle, response: &groups::ShutdownRes
     lines.join("\n")
 }
 
+/// Renders retained logs with response cursor metadata.
 pub fn render_logs(style: &HumanStyle, response: &telemetry::LogsResponse) -> String {
     let mut lines = vec![
         field(style, "oldest_seq", format!("{:?}", response.oldest_seq)),
@@ -323,6 +335,7 @@ pub fn render_logs(style: &HumanStyle, response: &telemetry::LogsResponse) -> St
     lines.join("\n")
 }
 
+/// Renders compact metrics as grouped human-readable tables.
 pub fn render_metrics_compact(
     style: &HumanStyle,
     response: &telemetry::CompactMetricsResponse,
@@ -356,6 +369,7 @@ pub fn render_metrics_compact(
     lines.join("\n")
 }
 
+/// Renders full metrics as grouped human-readable tables.
 pub fn render_metrics_full(style: &HumanStyle, response: &telemetry::MetricsResponse) -> String {
     let mut lines = vec![
         field(style, "timestamp", response.timestamp.to_string()),
@@ -398,6 +412,7 @@ pub fn render_metrics_full(style: &HumanStyle, response: &telemetry::MetricsResp
     lines.join("\n")
 }
 
+/// Renders normalized events as a finite human-readable list.
 pub fn render_events(style: &HumanStyle, events: &[NormalizedEvent]) -> String {
     let mut lines = vec![field(style, "event_count", events.len())];
     for event in events {
@@ -406,6 +421,7 @@ pub fn render_events(style: &HumanStyle, events: &[NormalizedEvent]) -> String {
     lines.join("\n")
 }
 
+/// Renders one normalized event as a compact single-line entry.
 pub fn render_event_line(style: &HumanStyle, event: &NormalizedEvent) -> String {
     let target = format!(
         "{}:{}",
@@ -446,6 +462,7 @@ pub fn render_event_line(style: &HumanStyle, event: &NormalizedEvent) -> String 
     )
 }
 
+/// Renders a diagnosis report with findings, evidence, and next steps.
 pub fn render_diagnosis(style: &HumanStyle, report: &DiagnosisReport) -> String {
     let mut lines = vec![
         field(style, "scope", &report.scope),
@@ -478,6 +495,7 @@ pub fn render_diagnosis(style: &HumanStyle, report: &DiagnosisReport) -> String 
     lines.join("\n")
 }
 
+/// Renders one group shutdown watch snapshot.
 pub fn render_group_shutdown_watch(
     style: &HumanStyle,
     snapshot: &GroupShutdownWatchSnapshot,
@@ -524,6 +542,7 @@ pub fn render_group_shutdown_watch(
     lines.join("\n")
 }
 
+/// Renders one retained-log entry as a compact single-line entry.
 pub fn render_log_line(style: &HumanStyle, entry: &telemetry::LogEntry) -> String {
     format!(
         "{} [{}] {} {}",

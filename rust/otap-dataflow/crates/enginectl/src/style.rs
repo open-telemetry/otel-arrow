@@ -3,12 +3,14 @@
 
 use crate::args::ColorChoice;
 
+/// Lightweight ANSI styling policy for human-readable CLI output.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct HumanStyle {
     enabled: bool,
 }
 
 impl HumanStyle {
+    /// Resolves the effective color policy from CLI choice, terminal detection, and `NO_COLOR`.
     pub fn resolve(choice: ColorChoice, stdout_is_terminal: bool) -> Self {
         Self::resolve_with_no_color(
             choice,
@@ -30,26 +32,32 @@ impl HumanStyle {
         Self { enabled }
     }
 
+    /// Returns true when human output should include ANSI styling.
     pub const fn is_enabled(self) -> bool {
         self.enabled
     }
 
+    /// Styles section headers.
     pub fn header(self, text: impl AsRef<str>) -> String {
         self.paint(text, &[AnsiCode::Bold, AnsiCode::Cyan])
     }
 
+    /// Styles field labels.
     pub fn label(self, text: impl AsRef<str>) -> String {
         self.paint(text, &[AnsiCode::Bold, AnsiCode::Cyan])
     }
 
+    /// Styles low-emphasis text.
     pub fn dim(self, text: impl AsRef<str>) -> String {
         self.paint(text, &[AnsiCode::Dim])
     }
 
+    /// Styles target identifiers such as URLs or pipeline names.
     pub fn target(self, text: impl AsRef<str>) -> String {
         self.paint(text, &[AnsiCode::Dim, AnsiCode::Cyan])
     }
 
+    /// Styles status-like values based on success, warning, or failure keywords.
     pub fn state(self, text: impl AsRef<str>) -> String {
         let text = text.as_ref();
         match classify_state(text) {
@@ -60,6 +68,7 @@ impl HumanStyle {
         }
     }
 
+    /// Styles log-level labels using severity-aware colors.
     pub fn log_level(self, text: impl AsRef<str>) -> String {
         let text = text.as_ref();
         match text.to_ascii_uppercase().as_str() {

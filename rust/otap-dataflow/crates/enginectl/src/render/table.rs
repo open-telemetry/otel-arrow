@@ -7,6 +7,7 @@ use crate::style::{HumanStyle, terminal_safe};
 use otap_df_admin_api::{pipelines, telemetry};
 use std::collections::BTreeMap;
 
+/// Formats one label/value line for human output.
 pub(super) fn field(style: &HumanStyle, label: &str, value: impl std::fmt::Display) -> String {
     format!(
         "{} {}",
@@ -15,6 +16,7 @@ pub(super) fn field(style: &HumanStyle, label: &str, value: impl std::fmt::Displ
     )
 }
 
+/// Formats one label/value line where the value should use status coloring.
 pub(super) fn state_field(style: &HumanStyle, label: &str, value: impl AsRef<str>) -> String {
     format!(
         "{} {}",
@@ -23,6 +25,7 @@ pub(super) fn state_field(style: &HumanStyle, label: &str, value: impl AsRef<str
     )
 }
 
+/// Formats one pipeline condition as a compact human-readable line.
 pub(super) fn condition_line(style: &HumanStyle, condition: &pipelines::Condition) -> String {
     format!(
         "{} kind={} status={} reason={} message={}",
@@ -45,6 +48,7 @@ pub(super) fn condition_line(style: &HumanStyle, condition: &pipelines::Conditio
     )
 }
 
+/// Formats metric attributes while neutralizing terminal control sequences.
 pub(super) fn format_metric_attributes(
     attributes: &BTreeMap<String, telemetry::AttributeValue>,
 ) -> String {
@@ -59,6 +63,7 @@ pub(super) fn format_metric_attributes(
         .join(", ")
 }
 
+/// Converts one admin API metric attribute value to display text.
 pub(super) fn attribute_value_string(value: &telemetry::AttributeValue) -> String {
     match value {
         telemetry::AttributeValue::String(value) => terminal_safe(value),
@@ -81,6 +86,7 @@ pub(super) fn attribute_value_string(value: &telemetry::AttributeValue) -> Strin
     }
 }
 
+/// Converts one admin API metric value to display text.
 pub(super) fn metric_value_string(value: &telemetry::MetricValue) -> String {
     match value {
         telemetry::MetricValue::U64(value) => value.to_string(),
@@ -92,6 +98,7 @@ pub(super) fn metric_value_string(value: &telemetry::MetricValue) -> String {
     }
 }
 
+/// Renders an aligned plain-text table using visible terminal width.
 pub(super) fn render_table(
     style: &HumanStyle,
     columns: &[TableColumn<'_>],
@@ -151,6 +158,7 @@ fn pad_cell(text: &str, width: usize, align: TableAlign) -> String {
     }
 }
 
+/// Returns display width after removing ANSI styling sequences.
 pub(super) fn visible_width(text: &str) -> usize {
     strip_ansi(text).chars().count()
 }
@@ -175,12 +183,14 @@ fn strip_ansi(text: &str) -> String {
     stripped
 }
 
+/// Horizontal alignment applied when padding table cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TableAlign {
     Left,
     Right,
 }
 
+/// Column definition used by the human table renderer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct TableColumn<'a> {
     pub(super) header: &'a str,
@@ -188,6 +198,7 @@ pub(super) struct TableColumn<'a> {
 }
 
 impl<'a> TableColumn<'a> {
+    /// Creates a left-aligned table column.
     pub(super) const fn left(header: &'a str) -> Self {
         Self {
             header,
@@ -195,6 +206,7 @@ impl<'a> TableColumn<'a> {
         }
     }
 
+    /// Creates a right-aligned table column.
     pub(super) const fn right(header: &'a str) -> Self {
         Self {
             header,

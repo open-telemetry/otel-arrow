@@ -6,6 +6,7 @@
 use super::*;
 use crate::BIN_NAME;
 
+/// Draw the footer status bar with navigation hints, refresh age, filter state, and last error.
 pub(super) fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let age = app
         .last_refresh
@@ -59,6 +60,7 @@ pub(super) fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState)
     frame.render_widget(footer, area);
 }
 
+/// Draw the keyboard shortcut help overlay.
 pub(super) fn draw_help_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let overlay = centered_rect(74, 74, area);
     let lines = vec![
@@ -100,6 +102,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppStat
     frame.render_widget(help, overlay);
 }
 
+/// Draw the overlay explaining the equivalent non-interactive command for the current pane.
 pub(super) fn draw_command_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let overlay = centered_rect(78, 70, area);
     let recipe = app.current_command_recipe();
@@ -154,6 +157,7 @@ pub(super) fn draw_command_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppS
     frame.render_widget(command, overlay);
 }
 
+/// Draw the searchable command palette overlay.
 pub(super) fn draw_command_palette_overlay(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -227,6 +231,7 @@ pub(super) fn draw_command_palette_overlay(
     frame.render_widget(widget, overlay);
 }
 
+/// Draw the resource-list filter input overlay.
 pub(super) fn draw_filter_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let overlay = centered_rect(60, 20, area);
     let text = Paragraph::new(vec![
@@ -245,6 +250,7 @@ pub(super) fn draw_filter_overlay(frame: &mut Frame<'_>, area: Rect, app: &AppSt
     frame.render_widget(text, overlay);
 }
 
+/// Draw the context action menu for the currently selected object.
 pub(super) fn draw_action_menu_overlay(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -299,6 +305,7 @@ pub(super) fn draw_action_menu_overlay(
     frame.render_widget(widget, overlay);
 }
 
+/// Draw the destructive-action confirmation overlay.
 pub(super) fn draw_shutdown_confirm_overlay(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -326,6 +333,7 @@ pub(super) fn draw_shutdown_confirm_overlay(
     frame.render_widget(widget, overlay);
 }
 
+/// Draw the core-count editor used by pipeline scale actions.
 pub(super) fn draw_scale_editor_overlay(
     frame: &mut Frame<'_>,
     area: Rect,

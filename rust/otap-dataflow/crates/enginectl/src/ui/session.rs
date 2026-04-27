@@ -6,6 +6,7 @@
 use super::*;
 use tokio::sync::mpsc::error::TrySendError;
 
+/// Cross-thread event sent from terminal input and refresh tasks to the UI loop.
 #[derive(Debug)]
 pub(super) enum UiEvent {
     Terminal(Event),
@@ -13,6 +14,7 @@ pub(super) enum UiEvent {
     RefreshComplete(Box<AppState>),
 }
 
+/// Result of handling one terminal event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum EventOutcome {
     Continue,
@@ -25,11 +27,13 @@ pub(super) enum EventOutcome {
     Quit,
 }
 
+/// Owns terminal raw mode, alternate screen state, and ratatui drawing.
 pub(super) struct TerminalSession {
     terminal: ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 }
 
 impl TerminalSession {
+    /// Enters raw-mode alternate-screen rendering for the TUI.
     pub(super) fn new() -> Result<Self, io::Error> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -39,6 +43,7 @@ impl TerminalSession {
         Ok(Self { terminal })
     }
 
+    /// Draws one TUI frame and records the frame size in app state.
     pub(super) fn draw(&mut self, app: &mut AppState) -> Result<(), CliError> {
         let _ = self.terminal.draw(|frame| {
             let area = frame.area();
@@ -48,6 +53,7 @@ impl TerminalSession {
         Ok(())
     }
 
+    /// Temporarily restores the terminal before launching an external editor.
     pub(super) fn suspend(&mut self) -> Result<(), io::Error> {
         disable_raw_mode()?;
         execute!(
@@ -59,6 +65,7 @@ impl TerminalSession {
         Ok(())
     }
 
+    /// Re-enters the alternate screen after an external editor exits.
     pub(super) fn resume(&mut self) -> Result<(), io::Error> {
         enable_raw_mode()?;
         execute!(
@@ -84,6 +91,7 @@ impl Drop for TerminalSession {
     }
 }
 
+/// Spawns the blocking crossterm event reader used by the async UI loop.
 pub(super) fn spawn_event_thread(
     stop: Arc<AtomicBool>,
     tx: mpsc::Sender<UiEvent>,
@@ -111,6 +119,7 @@ pub(super) fn spawn_event_thread(
     })
 }
 
+/// Stops and joins the crossterm event reader thread.
 pub(super) fn stop_event_thread(
     stop: &Arc<AtomicBool>,
     event_thread: &mut Option<thread::JoinHandle<()>>,
@@ -121,6 +130,7 @@ pub(super) fn stop_event_thread(
     }
 }
 
+/// Restarts terminal event reading after a temporary terminal suspension.
 pub(super) fn restart_event_thread(
     stop: &mut Arc<AtomicBool>,
     event_thread: &mut Option<thread::JoinHandle<()>>,

@@ -5,6 +5,7 @@
 
 use super::*;
 
+/// Draw the pipeline configuration pane, including the edit note and YAML or diff preview.
 pub(super) fn draw_config_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -43,6 +44,7 @@ pub(super) fn draw_config_pane(
     frame.render_widget(preview, sections[2]);
 }
 
+/// Draw the selected pipeline summary with cards, conditions, events, and core rows.
 pub(super) fn draw_pipeline_summary(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -98,6 +100,7 @@ pub(super) fn draw_pipeline_summary(
     );
 }
 
+/// Draw the object detail pane for engine, group, or pipeline details.
 pub(super) fn draw_object_details_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -122,6 +125,7 @@ pub(super) fn draw_object_details_pane(
     }
 }
 
+/// Draw the selected group summary with attention rows, recent events, and inventory.
 pub(super) fn draw_group_summary(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -185,6 +189,7 @@ pub(super) fn draw_group_summary(
     );
 }
 
+/// Draw the engine summary with global cards, probe failures, and pipeline inventory.
 pub(super) fn draw_engine_summary(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -225,6 +230,7 @@ pub(super) fn draw_engine_summary(
     );
 }
 
+/// Draw a full-height event timeline pane.
 pub(super) fn draw_events_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -245,6 +251,7 @@ pub(super) fn draw_events_pane(
     }
 }
 
+/// Draw retained logs with retention and cursor summary cards.
 pub(super) fn draw_logs_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -298,6 +305,7 @@ pub(super) fn draw_logs_pane(
     }
 }
 
+/// Draw compact metrics with timestamp and row-count summary cards.
 pub(super) fn draw_metrics_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -338,6 +346,7 @@ pub(super) fn draw_metrics_pane(
     }
 }
 
+/// Draw rollout or shutdown operation state.
 pub(super) fn draw_operation_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -362,6 +371,7 @@ pub(super) fn draw_operation_pane(
     }
 }
 
+/// Draw group shutdown state tracked by the TUI.
 pub(super) fn draw_group_shutdown_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -401,6 +411,7 @@ pub(super) fn draw_group_shutdown_pane(
     }
 }
 
+/// Draw diagnosis summary, findings, and evidence tables.
 pub(super) fn draw_diagnosis_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -455,6 +466,7 @@ pub(super) fn draw_diagnosis_pane(
     );
 }
 
+/// Draw a support-bundle preview pane.
 pub(super) fn draw_bundle_pane(
     frame: &mut Frame<'_>,
     area: Rect,

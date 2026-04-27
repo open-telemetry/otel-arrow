@@ -5,6 +5,7 @@
 
 use super::*;
 
+/// Executes a confirmed TUI action and updates UI state to show the resulting operation.
 pub(super) async fn execute_ui_action(
     client: &AdminClient,
     app: &mut AppState,
@@ -209,6 +210,7 @@ async fn submit_group_shutdown(
     Ok(())
 }
 
+/// Loads pipeline details, reusing the currently cached describe report when it matches.
 pub(super) async fn load_pipeline_details(
     client: &AdminClient,
     app: &AppState,

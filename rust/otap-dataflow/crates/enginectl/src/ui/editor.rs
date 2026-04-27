@@ -6,6 +6,7 @@
 use super::*;
 use crate::BIN_NAME;
 
+/// Opens the selected pipeline config in an external editor and stages the edited draft.
 pub(super) async fn stage_pipeline_editor_draft(
     client: &AdminClient,
     session: &mut TerminalSession,
@@ -145,6 +146,7 @@ fn resolve_editor_command() -> Result<Vec<String>, CliError> {
     split_editor_command(&value)
 }
 
+/// Splits a `$VISUAL` or `$EDITOR` command string into executable arguments.
 pub(super) fn split_editor_command(command: &str) -> Result<Vec<String>, CliError> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -199,6 +201,7 @@ pub(super) fn split_editor_command(command: &str) -> Result<Vec<String>, CliErro
     Ok(parts)
 }
 
+/// Builds a small inline diff for the TUI config draft preview.
 pub(super) fn build_yaml_diff(original: &str, edited: &str) -> String {
     if original == edited {
         return "No effective config changes were detected.".to_string();

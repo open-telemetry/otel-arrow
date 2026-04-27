@@ -5,14 +5,23 @@
 
 use super::*;
 
+/// Minimum terminal width required before the TUI renders its normal layout.
 pub(crate) const MIN_TERMINAL_WIDTH: u16 = 100;
+/// Minimum terminal height required before the TUI renders its normal layout.
 pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 25;
+/// Height reserved for the title bar and top-level tabs.
 pub(super) const HEADER_HEIGHT: u16 = 2;
+/// Height reserved for the footer status bar.
 pub(super) const STATUS_BAR_HEIGHT: u16 = 2;
+/// Height reserved for the selected object's detail header.
 pub(super) const DETAIL_HEADER_HEIGHT: u16 = 1;
+/// Height reserved for detail-pane tabs.
 pub(super) const DETAIL_TABS_HEIGHT: u16 = 1;
+/// Fixed width of the engine vitals strip in the header.
 pub(super) const ENGINE_VITALS_WIDTH: u16 = 38;
+/// Separator rendered between adjacent tabs and header segments.
 pub(super) const TAB_SEPARATOR: &str = " | ";
+/// Display width of [`TAB_SEPARATOR`].
 pub(super) const TAB_SEPARATOR_WIDTH: u16 = 3;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -27,6 +36,7 @@ pub(crate) struct UiLayout {
     pub(crate) status: Rect,
 }
 
+/// Compute the fixed TUI regions for a terminal area, returning `None` when it is too small.
 pub(crate) fn compute_ui_layout(area: Rect) -> Option<UiLayout> {
     if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
         return None;
@@ -73,6 +83,7 @@ pub(crate) fn compute_ui_layout(area: Rect) -> Option<UiLayout> {
     })
 }
 
+/// Resolve a mouse hit in a tab bar to the corresponding tab index.
 pub(crate) fn tab_hit_index(area: Rect, labels: &[&str], column: u16, row: u16) -> Option<usize> {
     if area.height == 0 || row < area.y || row >= area.y + area.height {
         return None;
@@ -86,6 +97,7 @@ pub(crate) fn tab_hit_index(area: Rect, labels: &[&str], column: u16, row: u16) 
         })
 }
 
+/// Resolve a mouse hit in a bordered table to the corresponding data-row index.
 pub(crate) fn state_table_row_hit_index(area: Rect, row: u16, item_count: usize) -> Option<usize> {
     if item_count == 0 {
         return None;
@@ -106,6 +118,7 @@ pub(crate) fn state_table_row_hit_index(area: Rect, row: u16, item_count: usize)
     (index < item_count).then_some(index)
 }
 
+/// Draw a pipe-separated tab bar with the selected tab highlighted.
 pub(super) fn draw_tab_bar(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -132,6 +145,7 @@ pub(super) fn draw_tab_bar(
     frame.render_widget(widget, area);
 }
 
+/// Compute the clickable regions occupied by tab labels in a tab bar.
 pub(crate) fn tab_regions(area: Rect, labels: &[&str]) -> Vec<Rect> {
     if area.height == 0 || labels.is_empty() {
         return Vec::new();
@@ -154,6 +168,7 @@ pub(crate) fn tab_regions(area: Rect, labels: &[&str]) -> Vec<Rect> {
     regions
 }
 
+/// Return a centered rectangle sized as percentages of the parent area.
 pub(super) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)

@@ -7,6 +7,10 @@ use serde::Serialize;
 use std::io::{self, Write};
 use thiserror::Error;
 
+/// Runtime error type used by CLI command execution.
+///
+/// The variants deliberately carry enough information to map failures to
+/// stable process exit codes and machine-readable error kinds.
 #[derive(Debug, Error)]
 pub enum CliError {
     #[error("{message}")]
@@ -24,6 +28,7 @@ pub enum CliError {
 }
 
 impl CliError {
+    /// Returns the POSIX-style process exit code associated with this failure.
     pub fn exit_code(&self) -> u8 {
         match self {
             CliError::Message { exit_code, .. } => *exit_code,
@@ -32,6 +37,7 @@ impl CliError {
         }
     }
 
+    /// Returns true when the CLI should render the error on stderr.
     pub fn should_print(&self) -> bool {
         match self {
             CliError::Message { print, .. } => *print,
@@ -39,6 +45,7 @@ impl CliError {
         }
     }
 
+    /// Builds a configuration or local environment failure.
     pub fn config(message: impl Into<String>) -> Self {
         Self::Message {
             exit_code: 6,
@@ -47,6 +54,7 @@ impl CliError {
         }
     }
 
+    /// Builds a command usage failure that should exit with code 2.
     pub fn invalid_usage(message: impl Into<String>) -> Self {
         Self::Message {
             exit_code: 2,
@@ -55,6 +63,7 @@ impl CliError {
         }
     }
 
+    /// Builds a missing-resource failure that should exit with code 3.
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::Message {
             exit_code: 3,
@@ -63,6 +72,7 @@ impl CliError {
         }
     }
 
+    /// Builds a terminal operation failure that should exit with code 5.
     pub fn outcome_failure(message: impl Into<String>) -> Self {
         Self::Message {
             exit_code: 5,
@@ -71,6 +81,7 @@ impl CliError {
         }
     }
 
+    /// Writes this error using the selected human, JSON, or agent JSON format.
     pub fn write_to(&self, writer: &mut dyn Write, format: ErrorFormat) -> io::Result<()> {
         match format {
             ErrorFormat::Text => writeln!(writer, "error: {self}"),

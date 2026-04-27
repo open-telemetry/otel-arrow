@@ -6,6 +6,7 @@
 use super::*;
 
 impl AppState {
+    /// Builds the equivalent CLI command recipe for the active view and tab.
     pub(crate) fn current_command_recipe(&self) -> CommandRecipe {
         let mut recipe = match self.view {
             View::Pipelines => self.pipeline_command_recipe(),
@@ -22,22 +23,26 @@ impl AppState {
         recipe
     }
 
+    /// Opens the resource-list filter modal with the current query prefilled.
     pub(crate) fn start_filter_input(&mut self) {
         self.modal = UiModal::Filter;
         self.filter_input = self.filter_query.clone();
     }
 
+    /// Applies the filter modal input to visible resource lists.
     pub(crate) fn apply_filter_input(&mut self) {
         self.filter_query = self.filter_input.trim().to_string();
         self.modal = UiModal::None;
         self.ensure_selection();
     }
 
+    /// Closes the filter modal without changing the active filter.
     pub(crate) fn cancel_filter_input(&mut self) {
         self.modal = UiModal::None;
         self.filter_input.clear();
     }
 
+    /// Clears the active resource-list filter and repairs selection.
     pub(crate) fn clear_filter(&mut self) {
         self.filter_query.clear();
         self.modal = UiModal::None;
@@ -45,22 +50,27 @@ impl AppState {
         self.ensure_selection();
     }
 
+    /// Resets the scroll offset of the detail pane.
     pub(crate) fn reset_scroll(&mut self) {
         self.detail_scroll = 0;
     }
 
+    /// Returns true when the filter modal is active.
     pub(crate) fn is_filter_mode(&self) -> bool {
         matches!(self.modal, UiModal::Filter)
     }
 
+    /// Returns true when the help overlay is active.
     pub(crate) fn show_help(&self) -> bool {
         matches!(self.modal, UiModal::Help)
     }
 
+    /// Returns true when the equivalent-command overlay is active.
     pub(crate) fn show_command_overlay(&self) -> bool {
         matches!(self.modal, UiModal::Command)
     }
 
+    /// Returns read-only action menu state when visible.
     pub(crate) fn action_menu(&self) -> Option<&ActionMenuState> {
         match &self.modal {
             UiModal::ActionMenu(menu) => Some(menu),
@@ -68,6 +78,7 @@ impl AppState {
         }
     }
 
+    /// Returns read-only shutdown confirmation state when visible.
     pub(crate) fn shutdown_confirm(&self) -> Option<&ShutdownConfirmState> {
         match &self.modal {
             UiModal::ConfirmShutdown(confirm) => Some(confirm),
@@ -75,6 +86,7 @@ impl AppState {
         }
     }
 
+    /// Returns read-only scale editor state when visible.
     pub(crate) fn scale_editor(&self) -> Option<&ScaleEditorState> {
         match &self.modal {
             UiModal::ScaleEditor(editor) => Some(editor),
@@ -82,6 +94,7 @@ impl AppState {
         }
     }
 
+    /// Returns mutable action menu state when visible.
     pub(crate) fn action_menu_mut(&mut self) -> Option<&mut ActionMenuState> {
         match &mut self.modal {
             UiModal::ActionMenu(menu) => Some(menu),
@@ -89,6 +102,7 @@ impl AppState {
         }
     }
 
+    /// Returns mutable scale editor state when visible.
     pub(crate) fn scale_editor_mut(&mut self) -> Option<&mut ScaleEditorState> {
         match &mut self.modal {
             UiModal::ScaleEditor(editor) => Some(editor),
@@ -96,6 +110,7 @@ impl AppState {
         }
     }
 
+    /// Returns true when the current pipeline config draft can be deployed.
     pub(crate) fn has_deployable_pipeline_config_draft(&self) -> bool {
         self.pipelines
             .config_draft
@@ -103,10 +118,12 @@ impl AppState {
             .is_some_and(PipelineConfigDraft::is_deployable)
     }
 
+    /// Drops the currently staged pipeline config draft.
     pub(crate) fn discard_pipeline_config_draft(&mut self) {
         self.pipelines.config_draft = None;
     }
 
+    /// Stores the current pipeline config draft and parse result.
     pub(crate) fn stage_pipeline_config_draft(
         &mut self,
         original_yaml: String,
@@ -124,10 +141,12 @@ impl AppState {
         });
     }
 
+    /// Closes any active modal overlay.
     pub(crate) fn hide_modal(&mut self) {
         self.modal = UiModal::None;
     }
 
+    /// Toggles the help overlay.
     pub(crate) fn toggle_help(&mut self) {
         self.modal = if self.show_help() {
             UiModal::None
@@ -136,6 +155,7 @@ impl AppState {
         };
     }
 
+    /// Toggles the equivalent-command overlay.
     pub(crate) fn toggle_command_overlay(&mut self) {
         self.modal = if self.show_command_overlay() {
             UiModal::None
@@ -144,6 +164,7 @@ impl AppState {
         };
     }
 
+    /// Opens the context action menu when actions are available.
     pub(crate) fn open_action_menu(&mut self) -> bool {
         let Some(menu) = self.build_action_menu() else {
             return false;
@@ -152,6 +173,7 @@ impl AppState {
         true
     }
 
+    /// Opens the shutdown confirmation modal for a destructive action.
     pub(crate) fn open_shutdown_confirm(&mut self, action: UiAction) {
         let (title, prompt) = match &action {
             UiAction::PipelineShutdown {
@@ -180,6 +202,7 @@ impl AppState {
         });
     }
 
+    /// Opens the core-count editor for a pipeline scaling action.
     pub(crate) fn open_scale_editor(
         &mut self,
         group_id: String,
@@ -194,6 +217,7 @@ impl AppState {
         });
     }
 
+    /// Returns all pipeline keys belonging to the selected group.
     pub(crate) fn selected_group_pipeline_keys(&self) -> Vec<String> {
         let Some(group_id) = self.selected_group_id() else {
             return Vec::new();
@@ -812,6 +836,7 @@ impl AppState {
         shell_join(parts)
     }
 
+    /// Builds the context-sensitive action menu for the active selection.
     pub(super) fn build_action_menu(&self) -> Option<ActionMenuState> {
         match self.view {
             View::Pipelines => self.build_pipeline_action_menu(),

@@ -17,6 +17,7 @@ use crate::error::CliError;
 use crate::style::HumanStyle;
 use std::io::Write;
 
+/// Executes the selected config command without contacting the admin API.
 pub(crate) fn run(
     stdout: &mut dyn Write,
     human_style: HumanStyle,

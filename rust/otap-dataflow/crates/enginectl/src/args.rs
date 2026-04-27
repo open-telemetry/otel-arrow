@@ -133,6 +133,7 @@ fn leaf_value_source(matches: &ArgMatches, id: &str) -> Option<ValueSource> {
         .flatten()
 }
 
+/// Global connection flags shared by commands that contact the admin API.
 #[derive(Args, Debug, Clone, Default)]
 pub struct ConnectionArgs {
     #[arg(long, env = "DFCTL_URL", global = true, value_name = "URL")]
@@ -233,6 +234,7 @@ pub struct ConnectionArgs {
     pub insecure_skip_verify: Option<bool>,
 }
 
+/// Top-level `dfctl` command tree.
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     Completions(CompletionArgs),
@@ -345,6 +347,7 @@ fn apply_telemetry_agent_output_default(args: &mut TelemetryArgs) {
     }
 }
 
+/// Arguments for shell completion generation or installation.
 #[derive(Args, Debug, Clone)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct CompletionArgs {
@@ -355,11 +358,13 @@ pub struct CompletionArgs {
     pub shell: Option<Shell>,
 }
 
+/// Shell completion subcommands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum CompletionCommand {
     Install(CompletionInstallArgs),
 }
 
+/// Arguments for installing a generated completion script.
 #[derive(Args, Debug, Clone)]
 pub struct CompletionInstallArgs {
     #[arg(value_enum)]
@@ -369,12 +374,14 @@ pub struct CompletionInstallArgs {
     pub dir: Option<PathBuf>,
 }
 
+/// Arguments for the machine-readable command catalog command.
 #[derive(Args, Debug, Clone)]
 pub struct CommandsArgs {
     #[command(flatten)]
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for schema catalog and schema document discovery.
 #[derive(Args, Debug, Clone)]
 pub struct SchemasArgs {
     pub name: Option<String>,
@@ -383,17 +390,20 @@ pub struct SchemasArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for client-side configuration inspection commands.
 #[derive(Args, Debug, Clone)]
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub command: ConfigCommand,
 }
 
+/// Client-side configuration inspection subcommands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ConfigCommand {
     View(ReadOutputArgs),
 }
 
+/// Arguments for launching the interactive TUI.
 #[derive(Args, Debug, Clone)]
 pub struct UiArgs {
     #[arg(long, value_enum, default_value_t = UiStartView::Pipelines)]
@@ -406,12 +416,14 @@ pub struct UiArgs {
     pub logs_tail: usize,
 }
 
+/// Arguments for engine-level health and status commands.
 #[derive(Args, Debug, Clone)]
 pub struct EngineArgs {
     #[command(subcommand)]
     pub command: EngineCommand,
 }
 
+/// Engine-level command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum EngineCommand {
     Status(ReadOutputArgs),
@@ -419,12 +431,14 @@ pub enum EngineCommand {
     Readyz(ReadOutputArgs),
 }
 
+/// Arguments for group-level commands that operate across pipeline groups.
 #[derive(Args, Debug, Clone)]
 pub struct GroupsArgs {
     #[command(subcommand)]
     pub command: GroupsCommand,
 }
 
+/// Group-level command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum GroupsCommand {
     Describe(ReadOutputArgs),
@@ -435,12 +449,14 @@ pub enum GroupsCommand {
     Shutdown(GroupShutdownArgs),
 }
 
+/// Arguments for commands scoped to a single pipeline or pipeline operation.
 #[derive(Args, Debug, Clone)]
 pub struct PipelinesArgs {
     #[command(subcommand)]
     pub command: PipelinesCommand,
 }
 
+/// Pipeline command set, including status, diagnosis, mutation, and operation lookup commands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum PipelinesCommand {
     #[command(alias = "details")]
@@ -460,66 +476,77 @@ pub enum PipelinesCommand {
     ShutdownStatus(ShutdownLookupArgs),
 }
 
+/// Arguments for pipeline rollout operation lookup and watch commands.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineRolloutsArgs {
     #[command(subcommand)]
     pub command: RolloutCommand,
 }
 
+/// Pipeline rollout operation command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum RolloutCommand {
     Get(RolloutLookupArgs),
     Watch(RolloutWatchArgs),
 }
 
+/// Arguments for pipeline shutdown operation lookup and watch commands.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineShutdownsArgs {
     #[command(subcommand)]
     pub command: ShutdownCommand,
 }
 
+/// Pipeline shutdown operation command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ShutdownCommand {
     Get(ShutdownLookupArgs),
     Watch(ShutdownWatchArgs),
 }
 
+/// Arguments for telemetry commands exposed by the admin API.
 #[derive(Args, Debug, Clone)]
 pub struct TelemetryArgs {
     #[command(subcommand)]
     pub command: TelemetryCommand,
 }
 
+/// Telemetry command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum TelemetryCommand {
     Logs(LogsArgs),
     Metrics(MetricsArgs),
 }
 
+/// Arguments for retained-log commands.
 #[derive(Args, Debug, Clone)]
 pub struct LogsArgs {
     #[command(subcommand)]
     pub command: LogsCommand,
 }
 
+/// Retained-log command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum LogsCommand {
     Get(LogsGetArgs),
     Watch(LogsWatchArgs),
 }
 
+/// Arguments for metrics snapshot and watch commands.
 #[derive(Args, Debug, Clone)]
 pub struct MetricsArgs {
     #[command(subcommand)]
     pub command: MetricsCommand,
 }
 
+/// Metrics command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum MetricsCommand {
     Get(MetricsGetArgs),
     Watch(MetricsWatchArgs),
 }
 
+/// Initial top-level view selected when the TUI starts.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum UiStartView {
     Pipelines,
@@ -527,59 +554,69 @@ pub enum UiStartView {
     Engine,
 }
 
+/// Arguments for group-level event commands.
 #[derive(Args, Debug, Clone)]
 pub struct GroupEventsArgs {
     #[command(subcommand)]
     pub command: GroupEventsCommand,
 }
 
+/// Group-level event command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum GroupEventsCommand {
     Get(GroupEventsGetArgs),
     Watch(GroupEventsWatchArgs),
 }
 
+/// Arguments for pipeline-scoped event commands.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineEventsArgs {
     #[command(subcommand)]
     pub command: PipelineEventsCommand,
 }
 
+/// Pipeline-scoped event command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum PipelineEventsCommand {
     Get(PipelineEventsGetArgs),
     Watch(PipelineEventsWatchArgs),
 }
 
+/// Arguments for group-level diagnosis commands.
 #[derive(Args, Debug, Clone)]
 pub struct GroupDiagnoseArgs {
     #[command(subcommand)]
     pub command: GroupDiagnoseCommand,
 }
 
+/// Group-level diagnosis command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum GroupDiagnoseCommand {
     Shutdown(GroupDiagnoseShutdownArgs),
 }
 
+/// Arguments for pipeline-level diagnosis commands.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineDiagnoseArgs {
     #[command(subcommand)]
     pub command: PipelineDiagnoseCommand,
 }
 
+/// Pipeline-level diagnosis command set.
 #[derive(Subcommand, Debug, Clone)]
 pub enum PipelineDiagnoseCommand {
     Rollout(PipelineDiagnoseRolloutArgs),
     Shutdown(PipelineDiagnoseShutdownArgs),
 }
 
+/// Positional coordinates for a pipeline within a group.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineTargetArgs {
     pub pipeline_group_id: String,
     pub pipeline_id: String,
 }
 
+/// Positional coordinates for a rollout operation.
 #[derive(Args, Debug, Clone)]
 pub struct RolloutTargetArgs {
     pub pipeline_group_id: String,
@@ -587,6 +624,7 @@ pub struct RolloutTargetArgs {
     pub rollout_id: String,
 }
 
+/// Positional coordinates for a shutdown operation.
 #[derive(Args, Debug, Clone)]
 pub struct ShutdownTargetArgs {
     pub pipeline_group_id: String,
@@ -594,6 +632,7 @@ pub struct ShutdownTargetArgs {
     pub shutdown_id: String,
 }
 
+/// Client-side filters applied to group event snapshots or watches.
 #[derive(Args, Debug, Clone)]
 pub struct GroupEventsFilterArgs {
     #[arg(long = "kind", value_enum)]
@@ -615,6 +654,7 @@ pub struct GroupEventsFilterArgs {
     pub tail: Option<usize>,
 }
 
+/// Client-side filters applied to pipeline event snapshots or watches.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineEventsFilterArgs {
     #[arg(long = "kind", value_enum)]
@@ -630,6 +670,7 @@ pub struct PipelineEventsFilterArgs {
     pub tail: Option<usize>,
 }
 
+/// Client-side filters applied to retained admin logs.
 #[derive(Args, Debug, Clone, Default)]
 pub struct LogsFilterArgs {
     #[arg(long)]
@@ -654,6 +695,7 @@ pub struct LogsFilterArgs {
     pub contains: Option<String>,
 }
 
+/// Client-side filters applied to metrics snapshots or watches.
 #[derive(Args, Debug, Clone, Default)]
 pub struct MetricsFilterArgs {
     #[arg(long = "metric-set")]
@@ -675,6 +717,7 @@ pub struct MetricsFilterArgs {
     pub node_id: Option<String>,
 }
 
+/// Common arguments for read-only pipeline commands.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineReadArgs {
     #[command(flatten)]
@@ -684,6 +727,7 @@ pub struct PipelineReadArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for fetching one rollout status snapshot.
 #[derive(Args, Debug, Clone)]
 pub struct RolloutLookupArgs {
     #[command(flatten)]
@@ -693,6 +737,7 @@ pub struct RolloutLookupArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for fetching one shutdown status snapshot.
 #[derive(Args, Debug, Clone)]
 pub struct ShutdownLookupArgs {
     #[command(flatten)]
@@ -702,6 +747,7 @@ pub struct ShutdownLookupArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for initiating and optionally observing a group shutdown.
 #[derive(Args, Debug, Clone)]
 pub struct GroupShutdownArgs {
     #[arg(long, default_value_t = false, conflicts_with = "watch")]
@@ -723,6 +769,7 @@ pub struct GroupShutdownArgs {
     pub output: GroupShutdownOutput,
 }
 
+/// Arguments for redeploying a pipeline from a local configuration file.
 #[derive(Args, Debug, Clone)]
 pub struct ReconfigureArgs {
     #[command(flatten)]
@@ -756,6 +803,7 @@ pub struct ReconfigureArgs {
     pub output: MutationOutput,
 }
 
+/// Arguments for initiating and optionally observing one pipeline shutdown.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineShutdownArgs {
     #[command(flatten)]
@@ -780,6 +828,7 @@ pub struct PipelineShutdownArgs {
     pub output: MutationOutput,
 }
 
+/// Arguments for watching one rollout operation until interrupted or terminal.
 #[derive(Args, Debug, Clone)]
 pub struct RolloutWatchArgs {
     #[command(flatten)]
@@ -792,6 +841,7 @@ pub struct RolloutWatchArgs {
     pub output: StreamOutputArgs,
 }
 
+/// Arguments for watching one shutdown operation until interrupted or terminal.
 #[derive(Args, Debug, Clone)]
 pub struct ShutdownWatchArgs {
     #[command(flatten)]
@@ -804,6 +854,7 @@ pub struct ShutdownWatchArgs {
     pub output: StreamOutputArgs,
 }
 
+/// Arguments for reading a filtered group event snapshot.
 #[derive(Args, Debug, Clone)]
 pub struct GroupEventsGetArgs {
     #[command(flatten)]
@@ -813,6 +864,7 @@ pub struct GroupEventsGetArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for watching group events by polling group status.
 #[derive(Args, Debug, Clone)]
 pub struct GroupEventsWatchArgs {
     #[command(flatten)]
@@ -825,6 +877,7 @@ pub struct GroupEventsWatchArgs {
     pub output: StreamOutputArgs,
 }
 
+/// Arguments for reading a filtered pipeline event snapshot.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineEventsGetArgs {
     #[command(flatten)]
@@ -837,6 +890,7 @@ pub struct PipelineEventsGetArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for watching pipeline events by polling pipeline status.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineEventsWatchArgs {
     #[command(flatten)]
@@ -852,6 +906,7 @@ pub struct PipelineEventsWatchArgs {
     pub output: StreamOutputArgs,
 }
 
+/// Arguments for diagnosing coordinated group shutdown state.
 #[derive(Args, Debug, Clone)]
 pub struct GroupDiagnoseShutdownArgs {
     #[arg(long, default_value_t = 200)]
@@ -861,6 +916,7 @@ pub struct GroupDiagnoseShutdownArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for diagnosing a pipeline rollout, optionally by operation id.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineDiagnoseRolloutArgs {
     #[command(flatten)]
@@ -876,6 +932,7 @@ pub struct PipelineDiagnoseRolloutArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for diagnosing a pipeline shutdown, optionally by operation id.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineDiagnoseShutdownArgs {
     #[command(flatten)]
@@ -891,6 +948,7 @@ pub struct PipelineDiagnoseShutdownArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for collecting a group-scoped troubleshooting bundle.
 #[derive(Args, Debug, Clone)]
 pub struct GroupBundleArgs {
     #[arg(long, value_name = "PATH")]
@@ -906,6 +964,7 @@ pub struct GroupBundleArgs {
     pub output: BundleOutput,
 }
 
+/// Arguments for collecting a pipeline-scoped troubleshooting bundle.
 #[derive(Args, Debug, Clone)]
 pub struct PipelineBundleArgs {
     #[command(flatten)]
@@ -930,6 +989,7 @@ pub struct PipelineBundleArgs {
     pub output: BundleOutput,
 }
 
+/// Arguments for reading retained logs once.
 #[derive(Args, Debug, Clone)]
 pub struct LogsGetArgs {
     #[arg(long)]
@@ -945,6 +1005,7 @@ pub struct LogsGetArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for following retained logs by polling the admin API.
 #[derive(Args, Debug, Clone)]
 pub struct LogsWatchArgs {
     #[arg(long, conflicts_with = "tail")]
@@ -966,6 +1027,7 @@ pub struct LogsWatchArgs {
     pub output: StreamOutputArgs,
 }
 
+/// Arguments for reading one metrics snapshot.
 #[derive(Args, Debug, Clone)]
 pub struct MetricsGetArgs {
     #[arg(long, value_enum, default_value_t = MetricsShape::Compact)]
@@ -984,6 +1046,7 @@ pub struct MetricsGetArgs {
     pub output: ReadOutputArgs,
 }
 
+/// Arguments for following metrics snapshots by polling the admin API.
 #[derive(Args, Debug, Clone)]
 pub struct MetricsWatchArgs {
     #[arg(long, value_enum, default_value_t = MetricsShape::Compact)]
@@ -1005,18 +1068,21 @@ pub struct MetricsWatchArgs {
     pub output: StreamOutputArgs,
 }
 
+/// Shared output selector for finite read-only command responses.
 #[derive(Args, Debug, Clone)]
 pub struct ReadOutputArgs {
     #[arg(long, value_enum, default_value_t = ReadOutput::Human)]
     pub output: ReadOutput,
 }
 
+/// Shared output selector for long-running stream commands.
 #[derive(Args, Debug, Clone)]
 pub struct StreamOutputArgs {
     #[arg(long, value_enum, default_value_t = StreamOutput::Human)]
     pub output: StreamOutput,
 }
 
+/// Output modes supported by finite read-only command responses.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ReadOutput {
     Human,
@@ -1025,12 +1091,14 @@ pub enum ReadOutput {
     AgentJson,
 }
 
+/// Output modes supported by long-running stream commands.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum StreamOutput {
     Human,
     Ndjson,
 }
 
+/// Output modes supported by pipeline mutation commands.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum MutationOutput {
     Human,
@@ -1040,6 +1108,7 @@ pub enum MutationOutput {
     AgentJson,
 }
 
+/// Output modes supported by group shutdown commands.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum GroupShutdownOutput {
     Human,
@@ -1049,6 +1118,7 @@ pub enum GroupShutdownOutput {
     AgentJson,
 }
 
+/// Output modes supported by support bundle commands.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum BundleOutput {
     Json,
@@ -1056,8 +1126,8 @@ pub enum BundleOutput {
     AgentJson,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 /// Runtime error output format for stderr diagnostics.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ErrorFormat {
     /// Human-readable single-line errors.
     Text,
@@ -1067,12 +1137,14 @@ pub enum ErrorFormat {
     AgentJson,
 }
 
+/// Metrics payload shape requested from the admin API.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum MetricsShape {
     Compact,
     Full,
 }
 
+/// Normalized event kind filters accepted by event commands.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum EventKind {
     Request,
@@ -1081,6 +1153,7 @@ pub enum EventKind {
     Log,
 }
 
+/// Terminal color policy for human-readable output.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ColorChoice {
     Auto,
@@ -1088,10 +1161,12 @@ pub enum ColorChoice {
     Never,
 }
 
+/// Parses human-friendly duration arguments accepted by CLI flags.
 pub fn parse_duration_arg(raw: &str) -> Result<Duration, String> {
     humantime::parse_duration(raw).map_err(|err| err.to_string())
 }
 
+/// Parses and validates polling intervals for watch-style commands.
 pub fn parse_poll_interval_arg(raw: &str) -> Result<Duration, String> {
     let duration = parse_duration_arg(raw)?;
     let minimum = Duration::from_millis(100);

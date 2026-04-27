@@ -5,6 +5,7 @@
 
 use super::*;
 
+/// Build the pipeline object detail pane from the current describe, rollout, and shutdown state.
 pub(super) fn build_pipeline_details_pane(
     describe: &PipelineDescribeReport,
     header: DetailHeader,
@@ -141,6 +142,7 @@ pub(super) fn build_pipeline_details_pane(
     }
 }
 
+/// Build the group object detail pane from the current group summary snapshot.
 pub(super) fn build_group_details_pane(
     group_id: &str,
     describe: &GroupsDescribeReport,
@@ -237,6 +239,7 @@ pub(super) fn build_group_details_pane(
     }
 }
 
+/// Build the engine object detail pane, including probe and process-vital summaries.
 pub(super) fn build_engine_details_pane(
     status: &engine::Status,
     livez: &engine::ProbeResponse,

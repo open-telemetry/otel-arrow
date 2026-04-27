@@ -5,6 +5,7 @@
 
 use super::*;
 
+/// Build a bordered panel block and mark it when the pane owns keyboard focus.
 pub(super) fn block_with_title(title: &str, focused: bool, color_enabled: bool) -> Block<'static> {
     let border_style = if focused {
         focus_border_style(color_enabled)
@@ -24,6 +25,7 @@ pub(super) fn block_with_title(title: &str, focused: bool, color_enabled: bool) 
         .title(Span::styled(title, header_style(color_enabled)))
 }
 
+/// Build the compact card block used by summary statistics.
 pub(super) fn card_block(tone: Tone, color_enabled: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
@@ -32,6 +34,7 @@ pub(super) fn card_block(tone: Tone, color_enabled: bool) -> Block<'static> {
         .style(card_panel_style(tone, color_enabled))
 }
 
+/// Return the base style applied to the full TUI page.
 pub(super) fn page_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -42,6 +45,7 @@ pub(super) fn page_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the base style applied to regular content panels.
 pub(super) fn panel_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -52,10 +56,12 @@ pub(super) fn panel_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return subdued text styling that still inherits the panel background.
 pub(super) fn subtle_panel_text_style(color_enabled: bool) -> Style {
     panel_style(color_enabled).fg(muted_color(color_enabled))
 }
 
+/// Return the background style used by summary cards for a given tone.
 pub(super) fn card_panel_style(tone: Tone, color_enabled: bool) -> Style {
     if !color_enabled {
         return Style::default();
@@ -72,6 +78,7 @@ pub(super) fn card_panel_style(tone: Tone, color_enabled: bool) -> Style {
     Style::default().fg(body_color(color_enabled)).bg(bg)
 }
 
+/// Return the default foreground style for pane body text.
 pub(super) fn body_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default().fg(body_color(color_enabled))
@@ -80,6 +87,7 @@ pub(super) fn body_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used for prominent titles.
 pub(super) fn title_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -90,6 +98,7 @@ pub(super) fn title_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the OpenTelemetry "Open" brand color used in the title bar.
 pub(super) fn open_brand_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -100,6 +109,7 @@ pub(super) fn open_brand_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the OpenTelemetry "Telemetry" brand color used in the title bar.
 pub(super) fn telemetry_brand_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -110,6 +120,7 @@ pub(super) fn telemetry_brand_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used for section headers and table titles.
 pub(super) fn header_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -120,6 +131,7 @@ pub(super) fn header_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used by table header rows.
 pub(super) fn table_header_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -131,6 +143,7 @@ pub(super) fn table_header_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the subdued text style used for secondary metadata.
 pub(super) fn muted_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default().fg(muted_color(color_enabled))
@@ -139,6 +152,7 @@ pub(super) fn muted_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the standard panel border style.
 pub(super) fn border_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default().fg(Color::Rgb(73, 93, 115))
@@ -147,6 +161,7 @@ pub(super) fn border_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the emphasized border style used for the focused pane.
 pub(super) fn focus_border_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -157,6 +172,7 @@ pub(super) fn focus_border_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used for selected list and table rows.
 pub(super) fn selected_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -168,6 +184,7 @@ pub(super) fn selected_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used for unselected top-level and detail tabs.
 pub(super) fn tab_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -179,6 +196,7 @@ pub(super) fn tab_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used for the currently selected tab.
 pub(super) fn selected_tab_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -190,6 +208,7 @@ pub(super) fn selected_tab_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used for keyboard shortcut labels.
 pub(super) fn key_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -200,6 +219,7 @@ pub(super) fn key_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used for visual separators between header elements.
 pub(super) fn separator_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default().fg(Color::Rgb(83, 103, 122))
@@ -208,6 +228,7 @@ pub(super) fn separator_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used for the active target URL in the title bar.
 pub(super) fn target_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -218,6 +239,7 @@ pub(super) fn target_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Return the style used by the selected object strip under the header.
 pub(super) fn object_strip_style(color_enabled: bool) -> Style {
     if color_enabled {
         Style::default()
@@ -228,6 +250,7 @@ pub(super) fn object_strip_style(color_enabled: bool) -> Style {
     }
 }
 
+/// Map an operational tone to the foreground style used by text and table cells.
 pub(super) fn tone_style(tone: Tone, color_enabled: bool) -> Style {
     if !color_enabled {
         return match tone {
@@ -256,6 +279,7 @@ pub(super) fn tone_style(tone: Tone, color_enabled: bool) -> Style {
     }
 }
 
+/// Map an operational tone to the high-contrast style used by status chips.
 pub(super) fn chip_style(tone: Tone, color_enabled: bool) -> Style {
     if !color_enabled {
         return tone_style(tone, color_enabled).add_modifier(Modifier::BOLD);
@@ -272,6 +296,7 @@ pub(super) fn chip_style(tone: Tone, color_enabled: bool) -> Style {
     Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
 }
 
+/// Alternate table row backgrounds to improve scanability in dense panes.
 pub(super) fn stripe_style(index: usize, color_enabled: bool) -> Style {
     if color_enabled && index % 2 == 1 {
         Style::default().bg(Color::Rgb(21, 30, 42))
@@ -284,6 +309,7 @@ pub(super) fn stripe_style(index: usize, color_enabled: bool) -> Style {
     }
 }
 
+/// Map an operational tone to the border style used by summary cards.
 pub(super) fn card_border_style(tone: Tone, color_enabled: bool) -> Style {
     if !color_enabled {
         return Style::default();
@@ -300,6 +326,7 @@ pub(super) fn card_border_style(tone: Tone, color_enabled: bool) -> Style {
     Style::default().fg(color)
 }
 
+/// Return the default body foreground color.
 pub(super) fn body_color(color_enabled: bool) -> Color {
     if color_enabled {
         Color::Rgb(230, 238, 246)
@@ -308,6 +335,7 @@ pub(super) fn body_color(color_enabled: bool) -> Color {
     }
 }
 
+/// Return the default muted foreground color.
 pub(super) fn muted_color(color_enabled: bool) -> Color {
     if color_enabled {
         Color::Rgb(129, 145, 163)
@@ -316,6 +344,7 @@ pub(super) fn muted_color(color_enabled: bool) -> Color {
     }
 }
 
+/// Build a table cell that renders a short status badge.
 pub(super) fn badge_cell(text: &str, tone: Tone, color_enabled: bool) -> Cell<'static> {
     Cell::from(Span::styled(
         format!(" {text} "),
@@ -323,6 +352,7 @@ pub(super) fn badge_cell(text: &str, tone: Tone, color_enabled: bool) -> Cell<'s
     ))
 }
 
+/// Convert a tone into the short status badge text used in list rows.
 pub(super) fn tone_badge(tone: Tone) -> &'static str {
     match tone {
         Tone::Accent => "roll",
@@ -334,6 +364,7 @@ pub(super) fn tone_badge(tone: Tone) -> &'static str {
     }
 }
 
+/// Construct a summary card from display parts.
 pub(super) fn card(label: impl Into<String>, value: impl Into<String>, tone: Tone) -> StatCard {
     StatCard {
         label: label.into(),
@@ -342,6 +373,7 @@ pub(super) fn card(label: impl Into<String>, value: impl Into<String>, tone: Ton
     }
 }
 
+/// Compose the detail-pane title line from the current tab title, object title, and subtitle.
 pub(super) fn build_detail_header_line(app: &AppState, header: &DetailHeader) -> Line<'static> {
     let mut spans = vec![Span::styled(
         app.current_detail_title(),
@@ -375,10 +407,12 @@ pub(super) fn build_detail_header_line(app: &AppState, header: &DetailHeader) ->
     Line::from(spans)
 }
 
+/// Render a status chip as text so width calculations and styled spans stay aligned.
 pub(super) fn detail_chip_text(chip: &StatusChip) -> String {
     format!(" {}:{} ", chip.label, chip.value)
 }
 
+/// Convert detail header chips into styled spans with stable spacing.
 pub(super) fn detail_chip_spans(chips: &[StatusChip], color_enabled: bool) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (index, chip) in chips.iter().enumerate() {
@@ -393,6 +427,7 @@ pub(super) fn detail_chip_spans(chips: &[StatusChip], color_enabled: bool) -> Ve
     spans
 }
 
+/// Compute the terminal display width of a detail header chip list.
 pub(super) fn detail_chip_width(chips: &[StatusChip]) -> u16 {
     let mut width: u16 = 0;
     for (index, chip) in chips.iter().enumerate() {
@@ -404,6 +439,7 @@ pub(super) fn detail_chip_width(chips: &[StatusChip]) -> u16 {
     width
 }
 
+/// Return the visible slice of rows for the current scroll offset and viewport height.
 pub(super) fn slice<T>(rows: &[T], offset: usize, limit: Option<usize>, area_rows: usize) -> &[T] {
     if rows.is_empty() {
         return rows;

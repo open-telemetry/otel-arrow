@@ -6,6 +6,7 @@
 use super::*;
 use crate::BIN_NAME;
 
+/// Builds the redacted CLI prefix used by the TUI equivalent-command overlay.
 pub(crate) fn build_command_context(
     settings: &HttpAdminClientSettings,
     color: ColorChoice,
@@ -100,6 +101,7 @@ fn canonical_target_url(endpoint: &otap_df_admin_api::AdminEndpoint) -> String {
     url
 }
 
+/// Refreshes the active TUI view and records any user-visible refresh error.
 pub(super) async fn refresh_view(client: &AdminClient, app: &mut AppState, args: &UiArgs) {
     let compact_metrics = client
         .telemetry()
@@ -608,6 +610,7 @@ async fn refresh_log_feed(
     Ok(())
 }
 
+/// Updates the header vitals rail from compact metrics or marks existing data stale.
 pub(super) fn update_engine_vitals(
     app: &mut AppState,
     compact_metrics: Option<&telemetry::CompactMetricsResponse>,
@@ -624,6 +627,7 @@ pub(super) fn update_engine_vitals(
     }
 }
 
+/// Extracts engine CPU, memory, and pressure values from compact metrics.
 pub(super) fn extract_engine_vitals(metrics: &telemetry::CompactMetricsResponse) -> EngineVitals {
     let Some(metric_set) = metrics
         .metric_sets
@@ -840,6 +844,7 @@ async fn refresh_active_shutdown(
     }
 }
 
+/// Filters a full group status response down to one pipeline group.
 pub(super) fn selected_group_status(status: &groups::Status, group_id: &str) -> groups::Status {
     groups::Status {
         generated_at: status.generated_at.clone(),

@@ -11,6 +11,7 @@ use super::models::{
 use otap_df_admin_api::{groups, pipelines, telemetry};
 use std::collections::BTreeSet;
 
+/// Produces diagnosis findings for a coordinated group shutdown.
 pub fn diagnose_group_shutdown(
     status: &groups::Status,
     logs: &telemetry::LogsResponse,
@@ -31,6 +32,7 @@ pub fn diagnose_group_shutdown(
     finalize_diagnosis("group_shutdown", findings, all_terminal, false, false)
 }
 
+/// Produces diagnosis findings for a pipeline rollout.
 pub fn diagnose_pipeline_rollout(
     describe: &PipelineDescribeReport,
     rollout_status: Option<&pipelines::RolloutStatus>,
@@ -71,6 +73,7 @@ pub fn diagnose_pipeline_rollout(
     )
 }
 
+/// Produces diagnosis findings for a pipeline shutdown.
 pub fn diagnose_pipeline_shutdown(
     describe: &PipelineDescribeReport,
     shutdown_status: Option<&pipelines::ShutdownStatus>,

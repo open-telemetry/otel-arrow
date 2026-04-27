@@ -19,14 +19,23 @@ use serde_json::{Value, json};
 use std::io::Write;
 use std::time::SystemTime;
 
+/// Schema id for the `agent-json` envelope.
 pub(crate) const AGENT_ENVELOPE_SCHEMA: &str = "dfctl.agent-envelope.v1";
+/// Schema id for `dfctl commands --output json`.
 pub(crate) const COMMAND_CATALOG_SCHEMA: &str = "dfctl.command-catalog.v1";
+/// Schema id for diagnosis command output.
 pub(crate) const DIAGNOSE_REPORT_SCHEMA: &str = "dfctl.diagnose-report.v1";
+/// Schema id for machine-readable error output.
 pub(crate) const ERROR_SCHEMA: &str = "dfctl.error.v1";
+/// Schema id for schema documents emitted by `dfctl schemas <name>`.
 pub(crate) const JSON_SCHEMA_SCHEMA: &str = "dfctl.json-schema.v1";
+/// Schema id for mutation command output.
 pub(crate) const MUTATION_OUTCOME_SCHEMA: &str = "dfctl.mutation-outcome.v1";
+/// Schema id for the schema catalog emitted by `dfctl schemas`.
 pub(crate) const SCHEMA_CATALOG_SCHEMA: &str = "dfctl.schema-catalog.v1";
+/// Schema id for NDJSON watch events.
 pub(crate) const STREAM_EVENT_SCHEMA: &str = "dfctl.stream-event.v1";
+/// Schema id for group and pipeline support bundles.
 pub(crate) const SUPPORT_BUNDLE_SCHEMA: &str = "dfctl.support-bundle.v1";
 
 const CATALOG_SCHEMA_VERSION: &str = "dfctl-schema-catalog/v1";
@@ -34,6 +43,7 @@ const DOCUMENT_SCHEMA_VERSION: &str = "dfctl-schema-document/v1";
 const OUTPUT_SCHEMA_VERSION: &str = "dfctl/v1";
 const JSON_SCHEMA_DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
 
+/// Executes schema catalog or schema document lookup.
 pub(crate) fn run(
     stdout: &mut dyn Write,
     human_style: HumanStyle,

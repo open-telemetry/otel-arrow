@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::io::Write;
 
+/// Serializes a finite read-only response in JSON, YAML, or agent JSON form.
 pub fn write_read_output<T: Serialize>(
     writer: &mut dyn Write,
     output: ReadOutput,
@@ -39,6 +40,7 @@ pub fn write_read_output<T: Serialize>(
     Ok(())
 }
 
+/// Serializes a finite mutation response with its operation outcome.
 pub fn write_mutation_output<T: Serialize>(
     writer: &mut dyn Write,
     output: MutationOutput,
@@ -91,6 +93,7 @@ pub fn write_mutation_output<T: Serialize>(
     Ok(())
 }
 
+/// Writes an arbitrary value in the stable `dfctl/v1` agent envelope.
 pub fn write_agent_output<T: Serialize>(
     writer: &mut dyn Write,
     kind: &str,
@@ -104,6 +107,7 @@ pub fn write_agent_output<T: Serialize>(
     Ok(())
 }
 
+/// Serializes a support bundle in one of the bundle-supported machine formats.
 pub fn write_bundle_output<T: Serialize>(
     writer: &mut dyn Write,
     output: BundleOutput,
@@ -131,6 +135,7 @@ pub fn write_bundle_output<T: Serialize>(
     Ok(())
 }
 
+/// Writes one NDJSON snapshot event for a streamed resource.
 pub fn write_snapshot_event<T: Serialize>(
     writer: &mut dyn Write,
     resource: &str,
@@ -146,6 +151,7 @@ pub fn write_snapshot_event<T: Serialize>(
     Ok(())
 }
 
+/// Writes one retained-log entry as an NDJSON log event.
 pub fn write_log_event(
     writer: &mut dyn Write,
     entry: &telemetry::LogEntry,
@@ -167,6 +173,7 @@ pub fn write_log_event(
     Ok(())
 }
 
+/// Writes one generic NDJSON event envelope for watch output.
 pub fn write_event_output<T: Serialize>(
     writer: &mut dyn Write,
     resource: &str,
@@ -182,12 +189,14 @@ pub fn write_event_output<T: Serialize>(
     Ok(())
 }
 
+/// Writes finite human-rendered command output and flushes the writer.
 pub fn write_human(writer: &mut dyn Write, content: &str) -> Result<(), CliError> {
     writeln!(writer, "{content}")?;
     writer.flush()?;
     Ok(())
 }
 
+/// Writes one human-readable watch update with a resource header.
 pub fn write_stream_human(
     writer: &mut dyn Write,
     resource: &str,
@@ -201,6 +210,7 @@ pub fn write_stream_human(
     Ok(())
 }
 
+/// Writes a watch snapshot in the selected stream output mode.
 pub fn write_stream_snapshot<T: Serialize>(
     writer: &mut dyn Write,
     output: StreamOutput,
@@ -215,6 +225,7 @@ pub fn write_stream_snapshot<T: Serialize>(
     }
 }
 
+/// Converts serializer failures into the CLI's configuration-style error.
 pub(super) fn io_serialize_error(error: impl std::fmt::Display) -> CliError {
     CliError::config(format!("failed to serialize output: {error}"))
 }
