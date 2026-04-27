@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Human rendering and machine-output helpers for the CLI.
+//!
+//! Command modules should decide what data to fetch or mutate, not how that data
+//! is shaped for people, scripts, or agents. This module gathers the rendering
+//! adapters used by the CLI so human tables, event lines, structured JSON, NDJSON
+//! streams, and bundle outputs stay consistent across command families.
 
 #[path = "render/human.rs"]
 mod human;

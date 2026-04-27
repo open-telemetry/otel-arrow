@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Crypto-provider bootstrap for the admin SDK client.
+//!
+//! Rustls allows only one process-wide crypto provider to be installed, while
+//! this crate supports multiple feature-selected providers. This module keeps
+//! that initialization explicit, idempotent, and centralized so commands and the
+//! TUI can build TLS-capable admin clients without each caller knowing which
+//! provider feature was compiled.
 
 use crate::error::CliError;
 use std::sync::OnceLock;

@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `dfctl` library entrypoints for the OTAP Dataflow Engine admin CLI.
+//!
+//! This crate keeps the command implementation behind a small public surface so
+//! tests, the binary wrapper, and future embedders can execute the same parsed
+//! command tree. The module root owns cross-command wiring such as crypto setup,
+//! connection resolution, terminal-aware styling, diagnostics routing, and the
+//! shared installed binary name used by help text, generated metadata, and TUI
+//! command hints.
 
 mod args;
 mod commands;

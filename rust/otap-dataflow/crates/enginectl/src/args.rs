@@ -1,6 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Clap argument definitions and effective-default handling for `dfctl`.
+//!
+//! This module defines the public command tree, shared flags, output modes,
+//! validation conflicts, and parsers used by both human and agent-oriented
+//! command execution. Keeping the argument model centralized lets the command
+//! catalog, shell completions, generated help, and runtime dispatch stay aligned
+//! with the same Clap source of truth.
+
 use crate::BIN_NAME;
 use clap::parser::ValueSource;
 use clap::{

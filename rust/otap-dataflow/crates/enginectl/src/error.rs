@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! CLI error model, exit-code mapping, and machine-readable error rendering.
+//!
+//! `dfctl` needs predictable failure behavior for humans, shell scripts, and AI
+//! agents. This module normalizes IO errors, admin SDK failures, invalid usage,
+//! missing resources, and operation outcomes into stable exit codes plus either
+//! human text or JSON error envelopes.
+
 use crate::args::ErrorFormat;
 use otap_df_admin_api::operations::OperationErrorKind;
 use serde::Serialize;

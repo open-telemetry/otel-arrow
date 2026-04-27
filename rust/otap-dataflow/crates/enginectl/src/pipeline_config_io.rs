@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Pipeline-config parsing and serialization helpers shared by the CLI and TUI.
+//!
+//! Pipeline reconfiguration accepts input from files or stdin and supports both
+//! JSON and YAML because automation commonly emits JSON while humans usually
+//! edit YAML. Centralizing the detection, parsing, and YAML serialization here
+//! keeps command handlers focused on admin operations and gives the TUI editor
+//! path the same validation behavior as non-interactive `dfctl` commands.
 
 use crate::error::CliError;
 use otap_df_admin_api::config::pipeline::PipelineConfig;

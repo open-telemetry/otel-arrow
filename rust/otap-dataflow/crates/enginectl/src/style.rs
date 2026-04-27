@@ -1,6 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Human-output styling policy and terminal-safe text helpers.
+//!
+//! `dfctl` must be pleasant in an interactive terminal without leaking ANSI
+//! control sequences into pipes, logs, or machine-readable output. This module
+//! centralizes color enablement, severity/status coloring, and defensive text
+//! escaping so all human renderers follow the same `--color`, terminal-detection,
+//! and `NO_COLOR` behavior.
+
 use crate::args::ColorChoice;
 
 /// Lightweight ANSI styling policy for human-readable CLI output.

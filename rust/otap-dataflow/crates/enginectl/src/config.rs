@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Connection profile loading and admin-client settings resolution.
+//!
+//! This module merges CLI flags, environment variables, optional YAML profile
+//! files, and built-in defaults into the concrete admin SDK settings used by
+//! commands and the TUI. It also owns the redacted connection view so diagnostic
+//! output can explain the effective target without leaking TLS identity details.
+
 use crate::args::ConnectionArgs;
 use crate::error::CliError;
 use otap_df_admin_api::config::tls::{TlsClientConfig, TlsConfig};

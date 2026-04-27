@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Binary entrypoint for the `dfctl` OTAP Dataflow Engine admin CLI.
+//!
+//! This module is intentionally thin: it parses process arguments, detects
+//! whether stdout is a terminal, creates the Tokio runtime, and maps library
+//! errors to process exit codes. Keeping those process concerns here lets the
+//! library remain easy to test with in-memory stdout/stderr streams while still
+//! preserving the special terminal handling required by the interactive TUI.
 
 use std::io::{self, IsTerminal, Write};
 
