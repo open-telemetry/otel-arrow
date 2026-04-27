@@ -53,7 +53,7 @@ use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
     otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
 };
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
@@ -446,6 +446,9 @@ struct SignalBuffer<T: OtapPayloadHelpers> {
     /// Arrival time of the oldest data. This is reset whenever the number in the
     /// pending Inputs becomes non-empty.
     arrival: Option<Instant>,
+
+    /// Whether the local scheduler currently has a live wakeup for this signal.
+    wakeup_armed: bool,
 }
 
 /// Local (!Send) batch processor
@@ -538,6 +541,31 @@ pub struct BatchProcessorMetrics {
     /// Number of flushes triggered by timer (all signals)
     #[metric(unit = "{flush}")]
     flushes_timer: Counter<u64>,
+
+    /// Number of input requests pending at flush time
+    #[metric(unit = "{request}")]
+    flush_pending_requests: Mmsc,
+    /// Number of primary signal items pending at flush time
+    #[metric(unit = "{item}")]
+    flush_pending_items: Mmsc,
+    /// Number of bytes pending at flush time when byte size is known
+    #[metric(unit = "By")]
+    flush_pending_bytes: Mmsc,
+    /// Time from first pending input arrival to actual flush start
+    #[metric(unit = "ns")]
+    flush_age_duration: Mmsc,
+    /// Delay between scheduled timer wakeup and actual timer flush start
+    #[metric(unit = "ns")]
+    flush_timer_lateness_duration: Mmsc,
+    /// Number of output batches emitted by each flush
+    #[metric(unit = "{batch}")]
+    flush_output_batches: Mmsc,
+    /// Number of primary signal items emitted by each flush
+    #[metric(unit = "{item}")]
+    flush_output_items: Mmsc,
+    /// Number of bytes emitted by each flush when byte size is known
+    #[metric(unit = "By")]
+    flush_output_bytes: Mmsc,
 
     /// Number of messages dropped due to conversion failures
     #[metric(unit = "{msg}")]
@@ -879,23 +907,29 @@ where
             None
         };
 
-        // Set the arrival time when the current input is empty.
+        // Record the arrival time when the current input is empty. Defer
+        // scheduling the wakeup until after measuring the accepted payload, so
+        // one-request size flushes do not pay set/cancel timer overhead.
         let timeout = self.config.max_batch_duration;
-        let mut arrival: Option<Instant> = None;
-        if timeout != Duration::ZERO && self.buffer.inputs.is_empty() {
-            let now = Instant::now();
-            arrival = Some(now);
-            self.buffer
-                .set_arrival(self.signal, now, timeout, effect)
-                .await?;
-        }
+        let arrival = if timeout != Duration::ZERO && self.buffer.inputs.is_empty() {
+            Some(Instant::now())
+        } else {
+            None
+        };
 
         self.buffer
             .inputs
             .accept(payload, BatchPortion::new(inkey, items));
 
+        let pending_size = self.buffer.inputs.size_by(self.fmtcfg.sizer)?;
+
         // Flush based on size when the batch reaches the lower limit.
-        if timeout != Duration::ZERO && self.buffer.inputs.items < self.fmtcfg.lower_limit() {
+        if timeout != Duration::ZERO && pending_size < self.fmtcfg.lower_limit() {
+            if let Some(now) = arrival {
+                self.buffer
+                    .set_arrival(self.signal, now, timeout, effect)
+                    .await?;
+            }
             Ok(())
         } else {
             self.flush_signal_impl(
@@ -920,22 +954,54 @@ where
         now: Instant,
         reason: FlushReason,
     ) -> Result<(), EngineError> {
+        // Timer wakeups are already popped from the local scheduler before
+        // delivery. Only size/shutdown flushes need to cancel an armed timer.
+        if reason == FlushReason::Timer {
+            self.buffer.wakeup_armed = false;
+        }
+
         // If the input is empty.
         if self.buffer.inputs.is_empty() {
             return Ok(());
         }
 
-        let _ = effect.cancel_wakeup(SignalBuffer::<T>::wakeup_slot(self.signal));
+        if reason != FlushReason::Timer && self.buffer.wakeup_armed {
+            let _ = effect.cancel_wakeup(SignalBuffer::<T>::wakeup_slot(self.signal));
+            self.buffer.wakeup_armed = false;
+        }
 
         // If this is a timer-based flush and we were called too soon,
         // skip. this may happen if the batch for which the timer was set
         // flushes for size before the timer.
         if reason == FlushReason::Timer
             && self.config.max_batch_duration != Duration::ZERO
-            && now.duration_since(self.buffer.arrival.expect("timed"))
-                < self.config.max_batch_duration
+            && self
+                .buffer
+                .arrival
+                .is_some_and(|arrival| now.duration_since(arrival) < self.config.max_batch_duration)
         {
             return Ok(());
+        }
+
+        let flush_started = Instant::now();
+        self.metrics
+            .flush_pending_requests
+            .record(self.buffer.inputs.requests() as f64);
+        self.metrics
+            .flush_pending_items
+            .record(self.buffer.inputs.items as f64);
+        if let Some(bytes) = self.buffer.inputs.known_bytes() {
+            self.metrics.flush_pending_bytes.record(bytes as f64);
+        }
+        if let Some(arrival) = self.buffer.arrival {
+            self.metrics
+                .flush_age_duration
+                .record(flush_started.duration_since(arrival).as_nanos() as f64);
+        }
+        if reason == FlushReason::Timer {
+            self.metrics
+                .flush_timer_lateness_duration
+                .record(flush_started.saturating_duration_since(now).as_nanos() as f64);
         }
 
         let mut inputs = self.buffer.inputs.drain();
@@ -967,6 +1033,8 @@ where
 
         // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
+        let mut retained_partial = false;
+
         if self.config.max_batch_duration != Duration::ZERO
             && reason == FlushReason::Size
             && self.fmtcfg.max_size.is_some()
@@ -1004,7 +1072,21 @@ where
                 self.buffer
                     .set_arrival(self.signal, now, self.config.max_batch_duration, effect)
                     .await?;
+                retained_partial = true;
             }
+        }
+
+        self.metrics
+            .flush_output_batches
+            .record(output_batches.len() as f64);
+        self.metrics.flush_output_items.record(
+            output_batches
+                .iter()
+                .map(OtapPayloadHelpers::num_items)
+                .sum::<usize>() as f64,
+        );
+        if let Some(bytes) = known_total_bytes(&output_batches) {
+            self.metrics.flush_output_bytes.record(bytes as f64);
         }
 
         let mut input_context = inputs.take_context();
@@ -1065,6 +1147,11 @@ where
             }
 
             effect.send_message_with_source_node(pdata).await?;
+        }
+
+        if !retained_partial {
+            self.buffer.arrival = None;
+            self.buffer.wakeup_armed = false;
         }
 
         Ok(())
@@ -1181,11 +1268,18 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                     }
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
-                    } => metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                        EngineError::InternalError {
-                            message: e.to_string(),
-                        }
-                    }),
+                    } => {
+                        effect
+                            .report_local_scheduler_metrics(&mut metrics_reporter)
+                            .map_err(|e| EngineError::InternalError {
+                                message: e.to_string(),
+                            })?;
+                        metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                            EngineError::InternalError {
+                                message: e.to_string(),
+                            }
+                        })
+                    }
                     NodeControlMsg::Wakeup { slot, when, .. } => {
                         let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
                             return Ok(());
@@ -1311,6 +1405,20 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
         self.pending.len()
     }
 
+    fn known_bytes(&self) -> Option<usize> {
+        known_total_bytes(&self.pending)
+    }
+
+    fn size_by(&self, sizer: Sizer) -> Result<usize, PDataError> {
+        match sizer {
+            Sizer::Requests => Ok(self.requests()),
+            Sizer::Items => Ok(self.items),
+            Sizer::Bytes => self.known_bytes().ok_or_else(|| PDataError::Format {
+                error: "bytes encoding not known".into(),
+            }),
+        }
+    }
+
     fn accept(&mut self, batch: T, part: BatchPortion) {
         self.items += part.items;
         self.pending.push(batch);
@@ -1326,6 +1434,12 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
     }
 }
 
+fn known_total_bytes<T: OtapPayloadHelpers>(payloads: &[T]) -> Option<usize> {
+    payloads.iter().try_fold(0usize, |total, payload| {
+        payload.num_bytes().map(|bytes| total + bytes)
+    })
+}
+
 impl<T: OtapPayloadHelpers> SignalBuffer<T>
 where
     Inputs<T>: Default,
@@ -1337,6 +1451,7 @@ where
             inbound: SlotState::new(cfg.inbound_request_limit.get()),
             outbound: SlotState::new(cfg.outbound_request_limit.get()),
             arrival: None,
+            wakeup_armed: false,
         }
     }
 
@@ -1441,11 +1556,12 @@ where
         timeout: Duration,
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        self.arrival = Some(now);
-
         effect
             .set_wakeup(Self::wakeup_slot(signal), now + timeout)
-            .map(|_| ())
+            .map(|_| {
+                self.arrival = Some(now);
+                self.wakeup_armed = true;
+            })
             .map_err(|_| EngineError::ProcessorError {
                 processor: effect.processor_id(),
                 kind: ProcessorErrorKind::Other,
@@ -1608,6 +1724,27 @@ mod tests {
         );
         assert!(produced_batches != 0, "produced_batches != 0");
         assert!(consumed_batches != 0, "consumed_batches != 0");
+    }
+
+    fn mmsc_metric_count(
+        telemetry_registry: &TelemetryRegistryHandle,
+        set_name: &str,
+        metric_name: &str,
+    ) -> u64 {
+        let mut count = 0u64;
+        telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
+            if desc.name == set_name {
+                for (field, metric_value) in iter {
+                    if field.name == metric_name
+                        && let otap_df_telemetry::metrics::MetricValue::Mmsc(snapshot) =
+                            metric_value
+                    {
+                        count = snapshot.count;
+                    }
+                }
+            }
+        });
+        count
     }
 
     #[test]
@@ -2224,6 +2361,75 @@ mod tests {
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 verify_item_metrics(&telemetry_registry, SignalType::Logs, 9);
+            });
+    }
+
+    /// A size flush that empties the buffer must clear timer state. Otherwise
+    /// later one-request size flushes try to cancel a wakeup that is no longer
+    /// live, which inflates scheduler cancel-miss telemetry.
+    #[test]
+    fn test_size_flush_clears_timer_state_after_full_drain() {
+        fn logs_with_count(base_id: usize, count: usize) -> LogsData {
+            let base_time = 1_000_000_000 + (base_id * 1000) as u64;
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: (0..count)
+                            .map(|i| LogRecord {
+                                time_unix_nano: base_time + i as u64,
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }
+        }
+
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 5,
+                "max_size": 10,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                for (index, count) in [3, 3, 6, 6].into_iter().enumerate() {
+                    let rec = encode_logs_otap_batch(&logs_with_count(index, count))
+                        .expect("encode logs");
+                    ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                        .await
+                        .expect("process input");
+
+                    let outputs = ctx.drain_pdata().await;
+                    match index {
+                        0 => assert!(outputs.is_empty(), "first input should arm the timer"),
+                        _ => assert_eq!(outputs.len(), 1, "input {index} should size-flush"),
+                    }
+                }
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_item_metrics(&telemetry_registry, SignalType::Logs, 18);
+                assert_eq!(
+                    mmsc_metric_count(
+                        &telemetry_registry,
+                        "otap.processor.batch",
+                        "flush.age.duration"
+                    ),
+                    1,
+                    "only the flush of the timer-armed partial batch should use timer age"
+                );
             });
     }
 
@@ -2906,6 +3112,56 @@ mod tests {
     #[test]
     fn test_logs_nack_ordering_position_3() {
         test_split_with_nack_ordering(create_marked_logs, extract_log_markers, 3);
+    }
+
+    /// OTLP min_size is byte-based. The size flush decision must compare the
+    /// configured threshold against pending bytes, not against log-record count.
+    #[test]
+    fn test_otlp_byte_min_size_triggers_size_flush() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "otlp",
+            "otlp": {
+                "min_size": 4,
+                "sizer": "bytes",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let mut datagen = DataGenerator::new(1);
+                let logs: OtlpProtoMessage = datagen.generate_logs().into();
+                let input_bytes = otlp_message_to_bytes(&logs);
+                assert!(
+                    input_bytes.num_bytes() >= 4,
+                    "generated OTLP request should exceed the byte threshold"
+                );
+
+                ctx.process(Message::PData(OtapPdata::new_default(input_bytes.into())))
+                    .await
+                    .expect("process otlp bytes");
+
+                let outputs = ctx.drain_pdata().await;
+                assert_eq!(
+                    outputs.len(),
+                    1,
+                    "byte min_size should trigger an immediate size flush"
+                );
+                assert_eq!(outputs[0].signal_format(), SignalFormat::OtlpBytes);
+
+                let output_messages: Vec<_> = outputs.iter().map(otap_pdata_to_message).collect();
+                assert_equivalent(&[logs], &output_messages);
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
+            });
     }
 
     /// Test Preserve mode: this can't use the same test harness used above because it
