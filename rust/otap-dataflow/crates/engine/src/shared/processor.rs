@@ -296,6 +296,14 @@ impl<PData> EffectHandler<PData> {
         self.core.report_metrics(metrics)
     }
 
+    /// Reports processor-local wakeup scheduler metrics, if enabled.
+    pub fn report_local_scheduler_metrics(
+        &self,
+        metrics_reporter: &mut MetricsReporter,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_local_scheduler_metrics(metrics_reporter)
+    }
+
     /// Sets the runtime control message sender for this effect handler.
     ///
     /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
