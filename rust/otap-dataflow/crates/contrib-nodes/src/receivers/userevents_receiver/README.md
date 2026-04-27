@@ -72,8 +72,9 @@ algorithm itself.
 **Placement rule:** a pipeline assigned to core `K` opens the perf ring for
 CPU `K` only. If an application thread writes a `user_events` record while the
 kernel has scheduled it on CPU `X`, that record lands in the CPU `X` ring and
-is only visible to the receiver instance that owns CPU `X`. No other receiver
-instance sees it, and there is no cross-CPU aggregation layer in this receiver.
+is visible to receiver instances attached to CPU `X`. Within one df_engine
+instance, no other receiver instance sees it, and there is no cross-CPU
+aggregation layer in this receiver.
 
 ```text
   user_events write on CPU K
@@ -84,7 +85,7 @@ instance sees it, and there is no cross-CPU aggregation layer in this receiver.
              v
   receiver pipeline pinned to CPU K
 
-  No other receiver pipeline reads CPU K's ring.
+  No other receiver pipeline in this df_engine instance reads CPU K's ring.
 ```
 
 For an 8-core host, coverage looks like this:
@@ -104,11 +105,12 @@ If a CPU has no corresponding pipeline, writes on that CPU are not collected by
 this receiver deployment. They are not seen and then discarded; no receiver is
 attached to that CPU's ring. The engine does not emit a metric for these
 missing records because they are never observed by the receiver; they are lost
-silently.
+silently from the engine's point of view. A producer may still use
+`user_events` listener availability to detect whether it has an active reader.
 
 | Configuration                    | Writer pinned? | Result                                                     |
 |----------------------------------|----------------|------------------------------------------------------------|
-| `--num-cores 1`                  | No             | Racy; writes on CPUs 1..N not collected by this receiver   |
+| `--num-cores 1`                  | No             | Incomplete unless the writer stays on CPU 0                |
 | `--num-cores 1`                  | `taskset -c 0` | Reliable single-core capture                               |
 | `--core-id-range 0-3`            | No             | Writes on CPUs 4..N not collected by this receiver         |
 | `--core-id-range 0-3`            | Pinned to 0..3 | Reliable within the range                                  |
