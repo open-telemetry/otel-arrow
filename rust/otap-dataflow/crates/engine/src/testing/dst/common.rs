@@ -139,6 +139,7 @@ pub(super) fn build_manager<PData>(
             pipeline_group_id,
             pipeline_id,
             core_id: 0,
+            deployment_generation: 0,
         },
         pipeline_context.clone(),
         pipeline_rx,

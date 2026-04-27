@@ -4,7 +4,7 @@ retries = 2
 
 [profile.ci]
 slow-timeout = { period = "60s", terminate-after = 2 }
-max-fail = 10
+fail-fast = { max-fail = 10 }
 retries = 2
 
 # JUnit output for flaky test tracking.

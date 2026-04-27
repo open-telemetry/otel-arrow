@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::consts::BODY_FIELD_NAME;
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::{
@@ -12,7 +13,8 @@ use crate::pipeline::expr::{
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
-    try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
+    try_static_scalar_to_any_val_column, try_static_scalar_to_attr_literal,
+    try_static_scalar_to_literal_for_column,
 };
 use crate::pipeline::project::Projection;
 use crate::pipeline::state::ExecutionState;
@@ -273,25 +275,36 @@ impl FilterPlan {
 
         match left_arg {
             BinaryArg::Column(left_column) => match left_column {
-                ColumnAccessor::ColumnName(left_col_name) => match right_arg {
-                    BinaryArg::Literal(right_lit) => {
-                        // left = column & right = literal
-                        let right_expr =
-                            try_static_scalar_to_literal_for_column(&left_col_name, &right_lit)?;
-                        Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(col(left_col_name)),
-                            binary_op,
-                            Box::new(right_expr),
-                        ))))
+                ColumnAccessor::ColumnName(left_col_name) => {
+                    match right_arg {
+                        BinaryArg::Literal(right_lit) => {
+                            // left = column & right = literal
+                            let right_expr = try_static_scalar_to_literal_for_column(
+                                &left_col_name,
+                                &right_lit,
+                            )?;
+                            let left_col_expr = if left_col_name == BODY_FIELD_NAME {
+                                let any_val_field_name =
+                                    try_static_scalar_to_any_val_column(&right_lit)?;
+                                col(left_col_name).field(any_val_field_name)
+                            } else {
+                                col(left_col_name)
+                            };
+                            Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
+                                Box::new(left_col_expr),
+                                binary_op,
+                                Box::new(right_expr),
+                            ))))
+                        }
+                        BinaryArg::Null => {
+                            // left = column & right == null
+                            Ok(FilterPlan::from(col(left_col_name).is_null()))
+                        }
+                        _ => Self::try_from_binary_expr_via_expr_eval(
+                            left_expr, binary_op, right_expr, functions,
+                        ),
                     }
-                    BinaryArg::Null => {
-                        // left = column & right == null
-                        Ok(FilterPlan::from(col(left_col_name).is_null()))
-                    }
-                    _ => Self::try_from_binary_expr_via_expr_eval(
-                        left_expr, binary_op, right_expr, functions,
-                    ),
-                },
+                }
                 ColumnAccessor::StructCol(left_struct_name, left_struct_field) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
                         // left = struct col & right = literal
@@ -320,7 +333,6 @@ impl FilterPlan {
                         BinaryArg::Literal(right_lit) => {
                             // left = attribute & right = literal
                             Ok(FilterPlan::from(AttributesFilterPlan::new(
-                                // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
                                 Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                         &right_lit, binary_op,
@@ -333,7 +345,6 @@ impl FilterPlan {
                             // left = attribute & right = null (e.g. doesn't have attribute)
                             Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
                                 Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive),
-                                // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
                                 attrs_identifier,
                             ))))
                         }
@@ -352,14 +363,31 @@ impl FilterPlan {
                 }
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
-                        // left = literal & right = column
-                        let left_expr =
-                            try_static_scalar_to_literal_for_column(&right_col_name, &left_lit)?;
-                        Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(left_expr),
-                            binary_op,
-                            Box::new(col(right_col_name)),
-                        ))))
+                        let expr = if right_col_name == BODY_FIELD_NAME {
+                            let any_val_field_name =
+                                try_static_scalar_to_any_val_column(&left_lit)?;
+                            let left_expr = try_static_scalar_to_literal_for_column(
+                                any_val_field_name,
+                                &left_lit,
+                            )?;
+                            BinaryExpr::new(
+                                Box::new(left_expr),
+                                binary_op,
+                                Box::new(col(right_col_name).field(any_val_field_name)),
+                            )
+                        } else {
+                            // left = literal & right = column
+                            let left_expr = try_static_scalar_to_literal_for_column(
+                                &right_col_name,
+                                &left_lit,
+                            )?;
+                            BinaryExpr::new(
+                                Box::new(left_expr),
+                                binary_op,
+                                Box::new(col(right_col_name)),
+                            )
+                        };
+                        Ok(FilterPlan::from(Expr::BinaryExpr(expr)))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
                         // left = literal & right = struct col
@@ -376,8 +404,6 @@ impl FilterPlan {
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = literal & right = attribute
                         Ok(FilterPlan::from(AttributesFilterPlan::new(
-                            // col(consts::ATTRIBUTE_KEY)
-                            //     .eq(lit(attrs_key))
                             Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
                                 Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                     &left_lit, binary_op,
@@ -651,11 +677,14 @@ impl FilterPlan {
 
         match left_arg {
             BinaryArg::Column(left_column) => Ok(match left_column {
-                ColumnAccessor::ColumnName(left_col_name) => FilterPlan::from(binary_expr(
-                    col(left_col_name),
-                    Operator::RegexMatch,
-                    pattern,
-                )),
+                ColumnAccessor::ColumnName(left_col_name) => {
+                    let col_expr = if left_col_name == BODY_FIELD_NAME {
+                        col(left_col_name).field(consts::ATTRIBUTE_STR)
+                    } else {
+                        col(left_col_name)
+                    };
+                    FilterPlan::from(binary_expr(col_expr, Operator::RegexMatch, pattern))
+                }
                 ColumnAccessor::StructCol(struct_name, struct_field) => {
                     FilterPlan::from(binary_expr(
                         col(struct_name).field(struct_field),
@@ -774,7 +803,13 @@ impl FilterPlan {
     ) -> (Expr, Option<(AttributesIdentifier, String)>) {
         let mut attrs = None;
         let expr = match column_accessor {
-            ColumnAccessor::ColumnName(col_name) => col(col_name),
+            ColumnAccessor::ColumnName(col_name) => {
+                if col_name == BODY_FIELD_NAME {
+                    col(col_name).field(consts::ATTRIBUTE_STR)
+                } else {
+                    col(col_name)
+                }
+            }
             ColumnAccessor::StructCol(struct_name, struct_field) => {
                 col(struct_name).field(struct_field)
             }
@@ -2092,6 +2127,193 @@ mod test {
     #[tokio::test]
     async fn test_simple_attrs_filter_opl_parser() {
         test_simple_attrs_filter::<OplParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_logs_body() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_int(418))
+                .event_name("4")
+                .finish(),
+            LogRecord::build().event_name("5").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = "logs | where body == \"hello\"";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone(), input[5].clone()]
+        );
+
+        // ensure same result when body column ref on the right
+        let query = "logs | where \"hello\" == body";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone(), input[5].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_is_null() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build().event_name("4").finish(),
+        ];
+
+        let query = "logs | where body == null";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[1].clone(), input[3].clone()]
+        );
+
+        // ensure same result when body column ref on the right
+        let query = "logs | where null == body";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[1].clone(), input[3].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_using_matches() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_int(418))
+                .event_name("4")
+                .finish(),
+            LogRecord::build().event_name("5").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = "logs | where matches(body, \"hello .*\")";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_using_contains() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_int(418))
+                .event_name("4")
+                .finish(),
+            LogRecord::build().event_name("5").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = "logs | where contains(body, \"hello \")";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+
+        // check it works w/ body on the right
+        let query = "logs | where contains(\"hello world\", body)";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[2].clone(), input[5].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_by_body_using_expression() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+        ];
+
+        let query = r#"logs | where replace(body, "hello", "bonjour") == "bonjour world""#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
+
+        // check it works when the expressions on either side of predicate are flipped
+        let query = r#"logs | where "bonjour world" == replace(body, "hello", "bonjour")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
     }
 
     async fn test_filter_text_contains<P: Parser>(
