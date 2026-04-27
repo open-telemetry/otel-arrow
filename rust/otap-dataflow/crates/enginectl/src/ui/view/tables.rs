@@ -1,7 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared table rendering helpers used across the TUI.
+//! Shared table and summary-card rendering helpers used across the TUI.
+//!
+//! Tables are the dominant operational display in `dfctl ui`, so this module
+//! keeps column definitions, empty-state handling, row highlighting, striping,
+//! and compact summary cards consistent. Higher-level pane renderers decide
+//! which table to show; this module decides how those rows are drawn.
 
 use super::*;
 

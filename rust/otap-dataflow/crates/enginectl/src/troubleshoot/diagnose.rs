@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Diagnosis heuristics for rollout and shutdown troubleshooting flows.
+//! Diagnosis heuristics for rollout, shutdown, and readiness troubleshooting flows.
+//!
+//! This module consumes the normalized evidence prepared by `describe` and
+//! `filter` and turns it into findings, evidence excerpts, and recommended
+//! next steps. The heuristics stay client-side so `dfctl diagnose` and the TUI
+//! can explain likely failure modes even when the admin API only exposes raw
+//! status, retained logs, metrics, and operation snapshots.
 
 use super::describe::pipeline_is_terminal;
 use super::models::{

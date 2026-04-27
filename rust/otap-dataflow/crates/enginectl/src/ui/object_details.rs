@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Object-details pane assembly for the Engine, Groups, and Pipelines views.
+//!
+//! This module turns refreshed engine, group, and pipeline objects into the
+//! structured detail panes shown by the TUI. It centralizes the selection of
+//! summary cards, status chips, and field/value/detail rows so object detail
+//! rendering stays consistent across top-level views.
 
 use super::*;
 

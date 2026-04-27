@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Layout, hit-testing, and shared tab geometry for the TUI.
+//!
+//! This module centralizes terminal geometry so keyboard and mouse behavior
+//! match what is drawn on screen. It defines minimum terminal dimensions,
+//! computes stable regions for header/list/detail/status areas, and provides
+//! hit-testing helpers for tabs and state tables.
 
 use super::*;
 

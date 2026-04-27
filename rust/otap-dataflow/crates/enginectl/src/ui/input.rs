@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Keyboard and mouse input routing for the TUI.
+//!
+//! Input handling translates low-level Crossterm events into state transitions
+//! and high-level outcomes for the UI loop. The module owns keyboard shortcuts,
+//! mouse hit-testing, modal-specific input behavior, and refresh/action
+//! requests while leaving mutation execution and rendering to their dedicated
+//! modules.
 
 use super::*;
 

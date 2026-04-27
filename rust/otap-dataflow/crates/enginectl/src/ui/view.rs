@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! TUI layout and rendering helpers.
+//! TUI layout, hit-testing, theming, and rendering helpers.
+//!
+//! The view module is deliberately limited to drawing render-ready state and
+//! resolving mouse geometry. Its submodules split top-level chrome, pane
+//! drawing, table widgets, modal overlays, layout calculation, and theme
+//! constants so visual changes do not leak back into refresh, input, or
+//! mutation code.
 
 #[path = "view/chrome.rs"]
 mod chrome;

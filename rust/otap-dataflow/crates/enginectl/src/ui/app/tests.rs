@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Unit tests for app-state selection, command recipes, and palette behavior.
+//!
+//! These tests document the user-facing guarantees of the state layer without
+//! requiring terminal rendering: filters preserve useful selections, recipes
+//! point to executable CLI commands, pipeline badges reflect operational state,
+//! and the command palette chooses the expected action for the active context.
+
 use super::*;
 
 use otap_df_admin_api::pipelines::Status as PipelineStatus;

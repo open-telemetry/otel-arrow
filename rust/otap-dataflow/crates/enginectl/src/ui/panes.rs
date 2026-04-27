@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Pane assembly for pipeline, group, and engine detail views.
+//!
+//! Pane builders convert refreshed data and troubleshooting reports into
+//! render-ready view models. They keep aggregation and presentation decisions,
+//! such as which cards, tables, headers, and notes belong to each tab, separate
+//! from the lower-level drawing routines in `ui::view`.
 
 use super::*;
 

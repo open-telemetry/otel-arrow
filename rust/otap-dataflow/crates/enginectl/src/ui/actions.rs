@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Action execution helpers for mutating TUI workflows.
+//!
+//! This module is the boundary between interactive operator intent and admin
+//! API mutations. It validates the selected action, submits reconfigure,
+//! shutdown, and scaling requests through the SDK, and updates app state so the
+//! UI can immediately show operation progress without duplicating mutation
+//! logic in input handlers or rendering code.
 
 use super::*;
 

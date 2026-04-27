@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Render tests for TUI layout, chrome, panes, and theme behavior.
+//!
+//! These tests use Ratatui's test backend to verify visible UI guarantees
+//! without requiring a real terminal. They protect layout fallbacks, title and
+//! command overlays, tab ordering, shimmer behavior, and representative pane
+//! rendering from accidental regressions.
+
 use super::*;
 
 use crate::args::UiStartView;

@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Theme, block, and inline styling helpers for the TUI.
+//! Theme, block, badge, and inline styling helpers for the TUI.
+//!
+//! The theme module is the single place where semantic tones become terminal
+//! colors, borders, chips, cards, and brand styling. Keeping color and style
+//! choices here makes the TUI easier to refine visually while preserving the
+//! operational meaning of success, warning, failure, muted, accent, and neutral
+//! states across panes.
 
 use super::*;
 

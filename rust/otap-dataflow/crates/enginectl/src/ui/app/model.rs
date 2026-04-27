@@ -1,7 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Core UI data models and pane state types.
+//! Core UI data models, pane state, modal state, and render-ready row types.
+//!
+//! This module defines the data contract shared by refresh code, input handlers,
+//! pane builders, and renderers. The structs intentionally store already scoped,
+//! classified, or formatted data where useful so the rendering layer can stay
+//! simple and the rest of the TUI can reason about one authoritative state tree.
 
 use super::*;
 use crate::BIN_NAME;

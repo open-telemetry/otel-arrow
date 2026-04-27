@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Scenario tests for the troubleshoot describe, filter, and diagnosis helpers.
+//!
+//! The tests in this module document the behavior expected from client-side
+//! troubleshooting evidence: filters must preserve metadata, describe helpers
+//! must normalize status consistently, and diagnosis heuristics must produce
+//! stable findings that are useful to CLI users, the TUI, and automation.
+
 use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;

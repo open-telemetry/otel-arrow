@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! TUI application state, models, and CLI recipe generation helpers.
+//!
+//! The app module contains the state machine that sits between terminal events,
+//! admin API refreshes, and renderable panes. Its submodules separate raw data
+//! models, selection/focus behavior, command-palette behavior, helper
+//! formatting, and equivalent CLI recipe generation so interactive features can
+//! evolve without coupling them to terminal drawing code.
 
 #[path = "app/helpers.rs"]
 mod helpers;

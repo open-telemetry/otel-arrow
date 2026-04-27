@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared selection and formatting helpers for the app state.
+//! Shared selection, status-classification, and shell-formatting helpers for app state.
+//!
+//! The helpers module contains small but important rules that are reused by
+//! state transitions and command recipes: how selections wrap, how pipeline keys
+//! are split, how status tones are combined, and how equivalent shell commands
+//! are quoted. Keeping these rules together prevents subtle differences between
+//! list navigation, action menus, and command overlays.
 
 use super::*;
 

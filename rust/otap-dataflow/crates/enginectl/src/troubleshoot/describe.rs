@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Describe and event-normalization helpers for troubleshooting flows.
+//! Derived describe reports and normalized event extraction for troubleshooting flows.
+//!
+//! This module is the read-model layer between raw admin API status payloads
+//! and operator-facing reports. It computes group and pipeline summaries,
+//! flattens per-core lifecycle events into one sortable event stream, and
+//! builds progress snapshots used by watch commands without changing the
+//! underlying SDK response types.
 
 use super::models::{
     GroupShutdownWatchPipeline, GroupShutdownWatchSnapshot, GroupsDescribeReport, GroupsSummary,

@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Equivalent CLI recipe generation and action-menu assembly.
+//! Equivalent CLI recipe generation, modal state helpers, and action-menu assembly.
+//!
+//! Recipes explain which non-interactive `dfctl` command corresponds to the
+//! current TUI pane, making the UI a learning surface for automation. This
+//! module also owns modal transitions that are closely tied to those actions,
+//! such as opening action menus, staging config drafts, and preparing
+//! confirmation or scale editors.
 
 use super::*;
 

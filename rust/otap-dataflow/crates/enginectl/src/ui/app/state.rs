@@ -1,7 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! AppState behavior for selection, focus, and modal state.
+//! AppState construction and navigation behavior for selection, focus, and tabs.
+//!
+//! State methods in this module keep the core interaction model predictable:
+//! selected resources are preserved when possible, list movement wraps
+//! consistently, tab changes reset scroll where appropriate, and focus labels
+//! remain derived from state instead of duplicated by renderers.
 
 use super::*;
 

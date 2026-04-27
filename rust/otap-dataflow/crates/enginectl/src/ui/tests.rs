@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Integration-style tests for UI refresh, input, and command-context behavior.
+//!
+//! These tests document the guarantees expected from the TUI state machine:
+//! selections remain stable across refreshes, mouse and keyboard shortcuts map
+//! to the intended state transitions, redacted command recipes stay safe to
+//! display, and editor/config helpers preserve operator intent.
+
 use super::*;
 
 use crate::args::UiStartView;

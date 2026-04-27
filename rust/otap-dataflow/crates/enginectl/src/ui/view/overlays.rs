@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Modal overlays and the status bar for the TUI.
+//! Modal overlays and the footer status bar for the TUI.
+//!
+//! Overlay rendering handles transient UI surfaces that sit above the main
+//! panes: help, equivalent commands, command palette, filters, action menus,
+//! confirmations, and scale editors. Grouping them here keeps modal visual
+//! behavior consistent and avoids scattering `Clear` overlays through the main
+//! renderer.
 
 use super::*;
 use crate::BIN_NAME;

@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Top-level chrome and primary view dispatch for the TUI.
+//!
+//! Chrome rendering owns the frame-level composition: title bar, target, engine
+//! vitals, first-level tabs, resource list, detail body, status bar, and modal
+//! overlays. It is the only renderer that knows how the major UI regions fit
+//! together; specialized pane and table rendering stays delegated to sibling
+//! modules.
 
 use super::*;
 use crate::BIN_NAME;

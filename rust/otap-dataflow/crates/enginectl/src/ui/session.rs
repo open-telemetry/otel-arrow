@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Terminal session lifecycle and event-thread helpers for the TUI.
+//!
+//! Session handling owns raw-terminal setup, teardown, event polling, and
+//! temporary suspension when external tools such as editors run. This separation
+//! keeps terminal-mode safety and cross-thread event delivery out of the
+//! business logic that decides what the UI should display or mutate.
 
 use super::*;
 use tokio::sync::mpsc::error::TrySendError;

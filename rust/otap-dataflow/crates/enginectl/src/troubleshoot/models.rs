@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Troubleshooting data models shared across describe, filter, and diagnosis flows.
+//! Stable troubleshooting report, filter, diagnosis, and bundle data models.
+//!
+//! These structs and enums form the boundary between internal admin SDK
+//! responses and `dfctl`'s human-readable, JSON, NDJSON, and agent-oriented
+//! outputs. Keeping the shapes in one module makes it clear which fields are
+//! command-facing contracts and lets describe, filter, diagnose, render, and
+//! TUI code share the same vocabulary.
 
 use otap_df_admin_api::{groups, pipelines, telemetry};
 use serde::Serialize;

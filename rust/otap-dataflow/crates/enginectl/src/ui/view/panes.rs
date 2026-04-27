@@ -1,7 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Pane rendering for summaries, logs, metrics, and operation details.
+//! Pane rendering for summaries, logs, metrics, config previews, and operation details.
+//!
+//! This module arranges render-ready pane models into terminal sections and
+//! chooses which shared table or text widgets to draw. It intentionally works
+//! with already prepared pane data so layout decisions stay separate from
+//! refresh-time aggregation and troubleshooting logic.
 
 use super::*;
 

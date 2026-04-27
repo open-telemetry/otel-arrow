@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Searchable command palette assembly and state transitions.
+//!
+//! The palette module exposes the keyboard-driven command discovery surface
+//! inside the TUI. It builds context-aware entries, filters them from user
+//! input, tracks selection, and maps the selected entry back to a high-level
+//! `PaletteAction` without embedding that behavior in the generic key handler.
 
 use super::*;
 

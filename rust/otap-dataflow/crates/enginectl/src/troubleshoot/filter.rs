@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Client-side filtering helpers for events, logs, and metrics.
+//! Client-side filtering helpers for troubleshooting events, retained logs, and metrics.
+//!
+//! The admin API returns broad status and telemetry snapshots, while CLI users
+//! often ask for a narrower pipeline, node, event kind, or metric subset. This
+//! module applies those scopes after retrieval while preserving response
+//! metadata such as cursors and timestamps, keeping filtering behavior shared
+//! across snapshot commands, watch commands, bundles, diagnosis, and the TUI.
 
 use super::models::{EventFilters, LogFilters, MetricsFilters, NormalizedEvent};
 use otap_df_admin_api::telemetry;

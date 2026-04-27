@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! External-editor integration for live pipeline config editing.
+//!
+//! This module handles the disruptive parts of interactive configuration
+//! editing: suspending the terminal UI, launching the user's editor with a YAML
+//! file, parsing and diffing the result, then staging a deployable draft. Keeping
+//! that flow isolated protects the main event loop from terminal-mode mistakes
+//! and makes live reconfiguration behavior easier to review.
 
 use super::*;
 use crate::BIN_NAME;

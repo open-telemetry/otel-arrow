@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Interactive TUI entrypoint plus shared imports for the internal UI modules.
+//!
+//! The UI module owns the `dfctl ui` event loop and coordinates state refresh,
+//! input handling, rendering, modal workflows, and admin API mutations. Its
+//! submodules are split by responsibility so the TUI can stay operationally
+//! useful without mixing terminal lifecycle code, app state transitions,
+//! command recipes, pane construction, and drawing logic in one place.
 
 mod actions;
 mod app;

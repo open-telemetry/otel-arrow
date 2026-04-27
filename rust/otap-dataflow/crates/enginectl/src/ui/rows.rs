@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Row builders and tone helpers shared by TUI panes.
+//!
+//! This module normalizes admin API and troubleshooting records into compact
+//! table rows with precomputed operational tones. It keeps the status
+//! classification rules used by list and table rendering in one place so the
+//! same pipeline, event, probe, rollout, and diagnosis states look consistent
+//! across the TUI.
 
 use super::*;
 use crate::style::terminal_safe;

@@ -1,7 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Client-side describe, filter, and diagnosis helpers used by the CLI and TUI.
+//! Client-side troubleshooting primitives shared by the CLI command handlers and the TUI.
+//!
+//! The troubleshoot layer turns raw admin API responses into higher-level
+//! evidence that is easier for humans, shell scripts, and AI agents to consume.
+//! The submodules have intentionally narrow responsibilities: `models` defines
+//! the stable report and bundle shapes, `describe` derives summaries and
+//! normalized events from status payloads, `filter` applies client-side
+//! scoping to logs/events/metrics, and `diagnose` converts the collected
+//! evidence into actionable findings.
 
 #[path = "troubleshoot/describe.rs"]
 mod describe;

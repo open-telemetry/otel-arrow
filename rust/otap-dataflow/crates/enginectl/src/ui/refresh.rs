@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Refresh, polling, and UI command-context helpers.
+//!
+//! Refresh code fetches admin API snapshots and merges them into a new
+//! `AppState` for the event loop to display. It also builds the redacted command
+//! context used by the equivalent-CLI overlay and extracts engine vitals from
+//! telemetry, keeping network polling separate from input and rendering.
 
 use super::*;
 use crate::BIN_NAME;
