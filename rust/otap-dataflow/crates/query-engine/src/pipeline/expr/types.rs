@@ -106,6 +106,7 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
         consts::SEVERITY_NUMBER => ExprLogicalType::Int32,
         consts::SEVERITY_TEXT => ExprLogicalType::String,
         consts::EVENT_NAME => ExprLogicalType::String,
+        consts::BODY => ExprLogicalType::AnyValue,
 
         // traces fields
         consts::DURATION_TIME_UNIX_NANO => ExprLogicalType::DurationNanoSecond,
