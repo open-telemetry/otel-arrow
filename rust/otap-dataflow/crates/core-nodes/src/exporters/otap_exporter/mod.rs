@@ -371,9 +371,14 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 .accept_compressed(encoding);
         }
 
-        // TODO comment on the purpose of these
-        // TODO import so can use as just "channel" here
-        // TODO check if we can use our local channel since we are already using `tokio::task::spawn_local`.
+        // Each signal type is exported through one or more long-lived stream
+        // workers. The exporter task only converts incoming pdata and enqueues
+        // it into a bounded per-stream queue; the worker owns the gRPC request
+        // stream and response correlation for that queue.
+        //
+        // Keeping these queues bounded preserves backpressure. Increasing
+        // `streams_per_signal` adds independently progressing gRPC streams
+        // instead of hiding pressure behind a deeper single queue.
         let stream_queue_capacity = self.config.stream_queue_capacity;
         let streams_per_signal = self.config.streams_per_signal;
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
@@ -384,7 +389,9 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         )
         .then(|| arrow_ipc::CompressionType::ZSTD);
 
-        // TODO check if we can expose/use spawn_local method in the effect handler
+        // Tonic clients are cheap to clone because they share the underlying
+        // Channel. Each clone below is used by exactly one worker, which lets
+        // the workers drive separate streaming RPCs concurrently.
         let (logs_senders, logs_handles) = spawn_stream_workers(
             arrow_logs_client,
             SignalType::Logs,
@@ -468,6 +475,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             }
                         };
 
+                        // Route each batch to the stream with the smallest
+                        // local backlog. This is intentionally based on queue
+                        // occupancy, not response latency: queue depth is the
+                        // backpressure signal available before enqueueing.
                         let sender = match signal_type {
                             SignalType::Logs => least_loaded_stream_sender(&logs_senders),
                             SignalType::Metrics => least_loaded_stream_sender(&metrics_senders),
@@ -501,6 +512,12 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
     }
 }
 
+/// Starts the per-signal stream worker pool.
+///
+/// Each worker receives batches through its own bounded queue and turns those
+/// batches into one streaming RPC. Multiple workers therefore mean multiple
+/// independent HTTP/2 request/response streams for the same signal type. That
+/// is the behavior controlled by `streams_per_signal`.
 fn spawn_stream_workers<T>(
     client: T,
     signal_type: SignalType,
@@ -517,6 +534,9 @@ where
     let mut handles = Vec::with_capacity(streams_per_signal);
 
     for _ in 0..streams_per_signal {
+        // The queue is per stream, not shared across the pool. This keeps
+        // backpressure local to the stream that is lagging and gives the
+        // exporter a useful depth signal for least-loaded routing.
         let (sender, receiver) = tokio::sync::mpsc::channel::<StreamBatch>(stream_queue_capacity);
         senders.push(sender);
         handles.push(tokio::task::spawn_local(stream_arrow_batches(
@@ -532,6 +552,11 @@ where
     (senders, handles)
 }
 
+/// Selects the stream queue with the smallest current backlog.
+///
+/// `tokio::sync::mpsc::Sender` exposes remaining capacity rather than length,
+/// so occupancy is computed as `max_capacity - capacity`. The config rejects
+/// `streams_per_signal = 0`, which makes the final `expect` an invariant check.
 fn least_loaded_stream_sender(senders: &[Sender<StreamBatch>]) -> &Sender<StreamBatch> {
     senders
         .iter()
@@ -539,6 +564,11 @@ fn least_loaded_stream_sender(senders: &[Sender<StreamBatch>]) -> &Sender<Stream
         .expect("streams_per_signal validation must create at least one stream")
 }
 
+/// Waits for all stream workers belonging to one signal type.
+///
+/// Worker errors are already represented through pdata ACK/NACK updates where
+/// possible; a join failure during shutdown should not prevent the exporter
+/// from completing its terminal-state path.
 async fn await_stream_handles(handles: Vec<JoinHandle<()>>) {
     for handle in handles {
         _ = handle.await;
