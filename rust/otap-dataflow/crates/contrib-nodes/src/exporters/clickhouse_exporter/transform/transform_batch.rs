@@ -38,11 +38,14 @@
 //! step, including attribute normalization, ID remapping, and column-level coercions needed by the
 //! exporter’s table layouts.
 use std::ops::ControlFlow;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use arrow::array::{
-    Array, ArrayBuilder, ListBuilder, MapBuilder, PrimitiveArray, StringBuilder,
-    TimestampNanosecondBuilder, UInt32Builder, make_builder,
+    make_builder, Array, ArrayBuilder, ListBuilder, MapBuilder, PrimitiveArray, StringBuilder,
+    TimestampNanosecondBuilder, UInt32Builder,
 };
 use arrow::datatypes::UInt16Type;
 use arrow::{
@@ -52,9 +55,9 @@ use arrow::{
 use arrow_array::builder::FixedSizeBinaryBuilder;
 use arrow_array::{MapArray, StringArray, TimestampNanosecondArray, UInt32Array};
 use arrow_schema::{DataType, TimeUnit};
-use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
+use otap_df_pdata::OtapArrowRecords;
 
 use crate::clickhouse_exporter::arrays::get_u16_array_opt;
 use crate::clickhouse_exporter::config::Config;
@@ -63,7 +66,7 @@ use crate::clickhouse_exporter::transform::build_payload_transform_map;
 use crate::clickhouse_exporter::transform::transform_attributes::{
     group_attributes_to_json_ser, group_attributes_to_map_str, group_rows_by_id,
 };
-use crate::clickhouse_exporter::transform::transform_column::{ColumnOpCtx, apply_one_op};
+use crate::clickhouse_exporter::transform::transform_column::{apply_one_op, ColumnOpCtx};
 use crate::clickhouse_exporter::transform::transform_plan::{
     ColumnOperations, ColumnTransformOp, MultiColumnTransformOp, TransformationPlan,
 };
@@ -156,9 +159,24 @@ impl BatchTransformer {
     ) -> Result<HashMap<ArrowPayloadType, RecordBatch>, ClickhouseExporterError> {
         let mut writable_batches: HashMap<ArrowPayloadType, RecordBatch> = HashMap::new();
         let mut multi_col_results: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        let mut payload_order: Vec<ArrowPayloadType> = arrow_records
+            .allowed_payload_types()
+            .iter()
+            .copied()
+            .collect();
+
+        payload_order.sort_by_key(|pt| match pt {
+            // In the single-column stage, `apply_column_ops` removes each payload's entry
+            // from `multi_col_results` via `.remove()`. Child attribute payloads (e.g.
+            // ResourceAttrs) drop all their columns and never reinsert the entry. Parent
+            // signal payloads (Logs/Spans) need those child entries for InlineAttribute /
+            // InlineChildLists ops, so they must run first.
+            ArrowPayloadType::Logs | ArrowPayloadType::Spans => 0,
+            _ => 1,
+        });
 
         // Multi-column stage
-        for &payload_type in arrow_records.allowed_payload_types() {
+        for &payload_type in &payload_order {
             let Some(rb) = arrow_records.get(payload_type) else {
                 continue;
             };
@@ -171,7 +189,7 @@ impl BatchTransformer {
         }
 
         // Single-column stage
-        for &payload_type in arrow_records.allowed_payload_types() {
+        for &payload_type in &payload_order {
             let Some(plan) = self.payload_transform_plans.get(&payload_type) else {
                 continue;
             };
@@ -609,20 +627,31 @@ fn apply_column_ops(
             }
         }
 
-        // Second pass: process ops registered for columns that were created during the
-        // first pass (e.g., columns produced by FlattenStructField that need further
-        // transformation such as EnumToString).
-        for (col_name, col_ops) in &ops.column_ops {
-            if original_names.contains(col_name) {
-                continue; // already processed
+        // Second pass: process ops for columns created during the first pass (for example,
+        // flattened struct fields or columns produced by InlineAttribute / EnumToString).
+        // We iterate until no new planned columns appear so chained synthetic-column ops run.
+        let mut processed_second_pass: HashSet<String> = HashSet::new();
+        loop {
+            let pending: Vec<(String, Vec<ColumnTransformOp>)> = ops
+                .column_ops
+                .iter()
+                .filter(|(col_name, _)| !original_names.contains(*col_name))
+                .filter(|(col_name, _)| ctx.contains(col_name))
+                .filter(|(col_name, _)| !processed_second_pass.contains(*col_name))
+                .map(|(col_name, col_ops)| (col_name.clone(), col_ops.clone()))
+                .collect();
+
+            if pending.is_empty() {
+                break;
             }
-            if !ctx.contains(col_name) {
-                continue; // column doesn't exist
-            }
-            let mut current_name = col_name.clone();
-            for op in col_ops {
-                if let ControlFlow::Break(()) = apply_one_op(&mut ctx, &mut current_name, op)? {
-                    break;
+
+            for (col_name, col_ops) in pending {
+                _ = processed_second_pass.insert(col_name.clone());
+                let mut current_name = col_name;
+                for op in &col_ops {
+                    if let ControlFlow::Break(()) = apply_one_op(&mut ctx, &mut current_name, op)? {
+                        break;
+                    }
                 }
             }
         }
@@ -708,7 +737,9 @@ mod runner_sequence_tests {
 #[cfg(test)]
 mod apply_column_ops_tests {
     #![allow(unused_results)]
-    use arrow_array::UInt32Array;
+    use crate::clickhouse_exporter::consts as ch_consts;
+    use arrow::array::StringBuilder;
+    use arrow_array::{MapArray, UInt16Array, UInt32Array};
 
     use super::*;
     use std::collections::HashMap;
@@ -770,6 +801,164 @@ mod apply_column_ops_tests {
 
         // And the transformed results should be reinserted for later ops
         assert!(multi.contains_key(&payload_type));
+    }
+
+    #[test]
+    fn apply_column_ops_keeps_inlined_attribute_column_from_original_id_column() {
+        let payload_type = ArrowPayloadType::Logs;
+
+        let mut columns: HashMap<String, ArrayRef> = HashMap::new();
+        columns.insert(
+            ch_consts::RESOURCE_ID.into(),
+            Arc::new(UInt16Array::from(vec![10u16, 11u16])),
+        );
+
+        let result = MultiColumnOpResult {
+            columns,
+            remapped_ids: None,
+        };
+
+        let mut child_builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        child_builder.keys().append_value("service.name");
+        child_builder.values().append_value("checkout");
+        child_builder.append(true).unwrap();
+        child_builder.keys().append_value("service.name");
+        child_builder.values().append_value("payments");
+        child_builder.append(true).unwrap();
+
+        let child_result = MultiColumnOpResult {
+            columns: vec![(
+                consts::ATTRIBUTES.to_string(),
+                Arc::new(child_builder.finish()) as ArrayRef,
+            )]
+            .into_iter()
+            .collect(),
+            remapped_ids: Some(vec![(10u32, 0u32), (11u32, 1u32)].into_iter().collect()),
+        };
+
+        let mut multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        multi.insert(payload_type, result);
+        multi.insert(ArrowPayloadType::ResourceAttrs, child_result);
+
+        let ops = col_ops(vec![(
+            ch_consts::RESOURCE_ID.into(),
+            vec![ColumnTransformOp::InlineAttribute(
+                ArrowPayloadType::ResourceAttrs,
+                crate::clickhouse_exporter::config::AttributeRepresentation::StringMap,
+            )],
+        )]);
+
+        let out = apply_column_ops(&mut multi, payload_type, &ops, true)
+            .unwrap()
+            .expect("batch should be produced");
+
+        assert!(out
+            .schema()
+            .fields()
+            .iter()
+            .any(|field| field.name() == ch_consts::CH_RESOURCE_ATTRIBUTES));
+
+        let attrs = out
+            .column(
+                out.schema()
+                    .index_of(ch_consts::CH_RESOURCE_ATTRIBUTES)
+                    .expect("resource attributes column"),
+            )
+            .as_any()
+            .downcast_ref::<MapArray>()
+            .expect("resource attributes should be map");
+        assert_eq!(attrs.len(), 2);
+    }
+
+    #[test]
+    fn apply_column_ops_inlines_resource_and_scope_attributes_for_logs_parent_batch() {
+        let payload_type = ArrowPayloadType::Logs;
+
+        let mut columns: HashMap<String, ArrayRef> = HashMap::new();
+        columns.insert(
+            ch_consts::RESOURCE_ID.into(),
+            Arc::new(UInt16Array::from(vec![10u16, 10u16])),
+        );
+        columns.insert(
+            ch_consts::SCOPE_ID.into(),
+            Arc::new(UInt16Array::from(vec![20u16, 20u16])),
+        );
+
+        let parent_result = MultiColumnOpResult {
+            columns,
+            remapped_ids: None,
+        };
+
+        let mut resource_builder =
+            MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        resource_builder.keys().append_value("service.name");
+        resource_builder.values().append_value("checkout");
+        resource_builder
+            .keys()
+            .append_value("deployment.environment");
+        resource_builder.values().append_value("prod");
+        resource_builder.append(true).unwrap();
+
+        let mut scope_builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        scope_builder.keys().append_value("scope.attr");
+        scope_builder.values().append_value("scope-value");
+        scope_builder.append(true).unwrap();
+
+        let resource_result = MultiColumnOpResult {
+            columns: vec![(
+                consts::ATTRIBUTES.to_string(),
+                Arc::new(resource_builder.finish()) as ArrayRef,
+            )]
+            .into_iter()
+            .collect(),
+            remapped_ids: Some(vec![(10u32, 0u32)].into_iter().collect()),
+        };
+        let scope_result = MultiColumnOpResult {
+            columns: vec![(
+                consts::ATTRIBUTES.to_string(),
+                Arc::new(scope_builder.finish()) as ArrayRef,
+            )]
+            .into_iter()
+            .collect(),
+            remapped_ids: Some(vec![(20u32, 0u32)].into_iter().collect()),
+        };
+
+        let mut multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        multi.insert(payload_type, parent_result);
+        multi.insert(ArrowPayloadType::ResourceAttrs, resource_result);
+        multi.insert(ArrowPayloadType::ScopeAttrs, scope_result);
+
+        let ops = col_ops(vec![
+            (
+                ch_consts::RESOURCE_ID.into(),
+                vec![ColumnTransformOp::InlineAttribute(
+                    ArrowPayloadType::ResourceAttrs,
+                    crate::clickhouse_exporter::config::AttributeRepresentation::StringMap,
+                )],
+            ),
+            (
+                ch_consts::SCOPE_ID.into(),
+                vec![ColumnTransformOp::InlineAttribute(
+                    ArrowPayloadType::ScopeAttrs,
+                    crate::clickhouse_exporter::config::AttributeRepresentation::StringMap,
+                )],
+            ),
+        ]);
+
+        let out = apply_column_ops(&mut multi, payload_type, &ops, true)
+            .unwrap()
+            .expect("batch should be produced");
+
+        assert!(out
+            .schema()
+            .fields()
+            .iter()
+            .any(|field| field.name() == ch_consts::CH_RESOURCE_ATTRIBUTES));
+        assert!(out
+            .schema()
+            .fields()
+            .iter()
+            .any(|field| field.name() == ch_consts::CH_SCOPE_ATTRIBUTES));
     }
 }
 
@@ -908,7 +1097,9 @@ mod multi_plus_single_tests {
 mod realistic_otap_tests {
     #![allow(unused_results)]
 
-    use arrow::array::{Array, ListArray, RecordBatch, StringArray, UInt64Array};
+    use std::collections::HashMap;
+
+    use arrow::array::{Array, ListArray, MapArray, RecordBatch, StringArray, UInt64Array};
     use arrow::datatypes::DataType;
     use bytes::Bytes;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -922,10 +1113,11 @@ mod realistic_otap_tests {
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::{
-        ResourceSpans, ScopeSpans, Span, Status,
         span::{Event, Link, SpanKind},
         status::StatusCode,
+        ResourceSpans, ScopeSpans, Span, Status,
     };
+    use otap_df_pdata::schema::consts;
     use otap_df_pdata::testing::fixtures;
     use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes};
     use prost::Message;
@@ -933,6 +1125,12 @@ mod realistic_otap_tests {
     use super::BatchTransformer;
     use crate::clickhouse_exporter::config::{Config, ConfigPatch};
     use crate::clickhouse_exporter::consts as ch_consts;
+    use crate::clickhouse_exporter::transform::transform_batch::{
+        apply_column_ops, run_multi_column_stage, MultiColumnOpResult,
+    };
+    use crate::clickhouse_exporter::transform::transform_plan::{
+        MultiColumnTransformOp, TransformationPlan,
+    };
 
     fn test_config() -> Config {
         let json = serde_json::json!({
@@ -1008,6 +1206,40 @@ mod realistic_otap_tests {
             .downcast_ref::<ListArray>()
             .expect("column must be ListArray");
         col.value(row).len()
+    }
+
+    fn map_value_at(batch: &RecordBatch, name: &str, row: usize, key: &str) -> Option<String> {
+        let col = batch
+            .column(batch.schema().index_of(name).expect("column must exist"))
+            .as_any()
+            .downcast_ref::<MapArray>()
+            .expect("column must be MapArray");
+
+        if col.is_null(row) {
+            return None;
+        }
+
+        let keys = col
+            .keys()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("map keys must be strings");
+        let values = col
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("map values must be strings");
+        let offsets = col.offsets();
+        let start = offsets[row] as usize;
+        let end = offsets[row + 1] as usize;
+
+        for idx in start..end {
+            if !keys.is_null(idx) && keys.value(idx) == key {
+                return (!values.is_null(idx)).then(|| values.value(idx).to_string());
+            }
+        }
+
+        None
     }
 
     fn build_logs_with_service_name() -> ExportLogsServiceRequest {
@@ -1298,6 +1530,138 @@ mod realistic_otap_tests {
     }
 
     #[test]
+    fn apply_plan_logs_inlines_resource_and_scope_attribute_values() {
+        let mut transformer = BatchTransformer::new_from_config(&test_config());
+        let arrow_records = logs_to_arrow_records(build_logs_with_service_name());
+
+        let results = transformer
+            .apply_plan(arrow_records)
+            .expect("transform logs");
+        let batch = results
+            .get(&ArrowPayloadType::Logs)
+            .expect("logs batch must exist");
+
+        let names = column_names(batch);
+        assert!(
+            names
+                .iter()
+                .any(|name| name == ch_consts::CH_RESOURCE_ATTRIBUTES),
+            "missing resource attributes column"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name == ch_consts::CH_SCOPE_ATTRIBUTES),
+            "missing scope attributes column"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name == ch_consts::CH_LOG_ATTRIBUTES),
+            "missing log attributes column"
+        );
+        for row in 0..batch.num_rows() {
+            assert_eq!(
+                map_value_at(
+                    batch,
+                    ch_consts::CH_RESOURCE_ATTRIBUTES,
+                    row,
+                    "service.name"
+                ),
+                Some("checkout".to_string())
+            );
+            assert_eq!(
+                map_value_at(
+                    batch,
+                    ch_consts::CH_RESOURCE_ATTRIBUTES,
+                    row,
+                    "deployment.environment",
+                ),
+                Some("prod".to_string())
+            );
+            assert_eq!(
+                map_value_at(batch, ch_consts::CH_SCOPE_ATTRIBUTES, row, "scope.attr"),
+                Some("scope-value".to_string())
+            );
+            if row == 0 {
+                assert_eq!(
+                    map_value_at(batch, ch_consts::CH_LOG_ATTRIBUTES, row, "http.method"),
+                    Some("GET".to_string())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn realistic_logs_apply_column_ops_with_real_child_batches_inlines_all_attr_types() {
+        let arrow_records = logs_to_arrow_records(build_logs_with_service_name());
+        let logs_batch = arrow_records
+            .get(ArrowPayloadType::Logs)
+            .expect("logs payload must exist");
+        let resource_attrs = arrow_records
+            .get(ArrowPayloadType::ResourceAttrs)
+            .expect("resource attrs payload must exist");
+        let scope_attrs = arrow_records
+            .get(ArrowPayloadType::ScopeAttrs)
+            .expect("scope attrs payload must exist");
+        let log_attrs = arrow_records
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("log attrs payload must exist");
+
+        let plan = TransformationPlan::from_config(&ArrowPayloadType::Logs, &test_config());
+        let mut multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        multi.insert(
+            ArrowPayloadType::Logs,
+            run_multi_column_stage(logs_batch, &[]).expect("transform logs batch"),
+        );
+        multi.insert(
+            ArrowPayloadType::ResourceAttrs,
+            run_multi_column_stage(
+                resource_attrs,
+                &[MultiColumnTransformOp::AttributesToStringMap],
+            )
+            .expect("transform resource attrs"),
+        );
+        multi.insert(
+            ArrowPayloadType::ScopeAttrs,
+            run_multi_column_stage(
+                scope_attrs,
+                &[MultiColumnTransformOp::AttributesToStringMap],
+            )
+            .expect("transform scope attrs"),
+        );
+        multi.insert(
+            ArrowPayloadType::LogAttrs,
+            run_multi_column_stage(log_attrs, &[MultiColumnTransformOp::AttributesToStringMap])
+                .expect("transform log attrs"),
+        );
+
+        let batch = apply_column_ops(&mut multi, ArrowPayloadType::Logs, &plan.column_ops, true)
+            .expect("apply column ops")
+            .expect("logs batch should be rebuilt");
+
+        let names = column_names(&batch);
+        assert!(
+            names
+                .iter()
+                .any(|name| name == ch_consts::CH_RESOURCE_ATTRIBUTES),
+            "missing resource attributes column"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name == ch_consts::CH_SCOPE_ATTRIBUTES),
+            "missing scope attributes column"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name == ch_consts::CH_LOG_ATTRIBUTES),
+            "missing log attributes column"
+        );
+    }
+
+    #[test]
     fn apply_plan_spans_fixture_inlines_child_payloads_and_core_columns() {
         let mut transformer = BatchTransformer::new_from_config(&test_config());
         let arrow_records = traces_to_arrow_records(build_traces_with_children());
@@ -1352,6 +1716,14 @@ mod realistic_otap_tests {
 
         assert_eq!(list_len_at(batch, ch_consts::CH_EVENTS_NAME, 0), 2);
         assert_eq!(list_len_at(batch, ch_consts::CH_LINKS_SPAN_ID, 0), 1);
+
+        // Intermediate foreign-key columns must NOT leak into the final batch.
+        for unwanted in [ch_consts::SCOPE_ID, ch_consts::RESOURCE_ID, consts::ID] {
+            assert!(
+                !names.iter().any(|name| name == unwanted),
+                "intermediate column {unwanted} must not appear in the final spans batch"
+            );
+        }
     }
 
     #[test]

@@ -367,20 +367,6 @@ impl TransformationPlan {
         self.column_ops
             .rename_column(consts::EVENT_NAME, ch_consts::CH_EVENT_NAME);
         self.column_ops.coerce_body_values();
-
-        // Drop any remaining ID fields if present.
-        self.column_ops.add_op(
-            ch_consts::RESOURCE_ID,
-            ColumnTransformOp::Drop { },
-        );
-        self.column_ops.add_op(
-            ch_consts::SCOPE_ID,
-            ColumnTransformOp::Drop { },
-        );
-        self.column_ops.add_op(
-            consts::ID,
-            ColumnTransformOp::Drop { },
-        );
     }
 
     /// Handle transformation logic for Spans
@@ -482,19 +468,11 @@ impl TransformationPlan {
         self.column_ops
             .status_code_to_string(ch_consts::CH_STATUS_CODE, ch_consts::CH_STATUS_CODE);
 
-        // Drop any remaining ID fields if present.
-        self.column_ops.add_op(
-            ch_consts::RESOURCE_ID,
-            ColumnTransformOp::Drop { },
-        );
-        self.column_ops.add_op(
-            ch_consts::SCOPE_ID,
-            ColumnTransformOp::Drop { },
-        );
-        self.column_ops.add_op(
-            consts::ID,
-            ColumnTransformOp::Drop { },
-        );
+        // Drop scope_id: unlike Logs, Spans do not inline ScopeAttrs, so the
+        // intermediate foreign-key column produced by flattening `scope` must be
+        // explicitly removed to keep it out of the final ClickHouse batch.
+        self.column_ops
+            .add_op(ch_consts::SCOPE_ID, ColumnTransformOp::Drop {});
     }
 
     fn configure_for_span_links(&mut self) {
@@ -851,7 +829,15 @@ mod tests {
         let plan = TransformationPlan::from_config(&ArrowPayloadType::Spans, &test_config());
 
         assert!(
-            plan.column_ops.get_ops(ch_consts::SCOPE_ID).is_none(),
+            !plan
+                .column_ops
+                .column_ops
+                .values()
+                .flatten()
+                .any(|op| matches!(
+                    op,
+                    ColumnTransformOp::InlineAttribute(ArrowPayloadType::ScopeAttrs, _)
+                )),
             "spans plan should not inline ScopeAttrs for traces"
         );
 
