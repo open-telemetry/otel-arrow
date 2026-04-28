@@ -65,7 +65,7 @@ exporters:
       # disable_downgrade forces this connection to use Arrow.
       disable_downgrade: true
 
-      # num_streams can be set to the the number of available CPUs
+      # num_streams can be set to the number of available CPUs
       # to maximize throughput.
       num_streams: 4
 
