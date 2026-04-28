@@ -1673,7 +1673,7 @@ impl AttributeFilterExec {
 }
 
 impl Composite<AttributeFilterExec> {
-    /// Executes the base filter, and combines the the parent_id to using the logical expression
+    /// Executes the base filter, and combines the parent_id to using the logical expression
     /// defined by the composite tree. The reason we do here, instead of say combining everything
     /// in `Composite<FilterExec>`, is that this saves us from doing additional conversions between
     /// the parent_id bitmap to a selection vector for the parent record batch.

@@ -187,7 +187,7 @@ impl Exporter<OtapPdata> for FlakyExporter {
                         .unwrap_or(false);
 
                     // The counters are used by tests for shutdown triggers,
-                    // so we need to ensure the the ACK/NACK is queued before observers
+                    // so we need to ensure the ACK/NACK is queued before observers
                     // see the counters change.
                     if should_ack {
                         // ACK mode: acknowledge first, then count.

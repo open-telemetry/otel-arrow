@@ -82,7 +82,7 @@ pub struct Assignment<'a> {
 /// Pipeline stage for assigning the result of an expression evaluation to an OTAP column.
 ///
 /// This can do more than one assignment to a given record batch at a time. This minimizes the
-/// overhead of of materializing intermediate results multiple times when there are multiple
+/// overhead of materializing intermediate results multiple times when there are multiple
 /// assignments to be made.
 pub(crate) struct AssignPipelineStage {
     /// Identifier of the destination column
@@ -585,7 +585,7 @@ impl AssignPipelineStage {
                 // the resulting record batch.
                 let ColumnarValue::Array(result_values) = &eval_result.values else {
                     // safety: this is the else block of an if statement where we've tried to check if
-                    // this is is a scalar. Since we've determined it's not scalar, it must be array.
+                    // this is a scalar. Since we've determined it's not scalar, it must be array.
                     unreachable!("expected ColumnarResult::Array")
                 };
                 let left_join_input = &PhysicalExprEvalResult::new_with_parent_ids(
