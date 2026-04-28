@@ -17,7 +17,6 @@ workspace = true
 otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-engine = { workspace = true }
-otap-df-engine-macros = { workspace = true }
 otap-df-otap = { workspace = true }
 otap-df-pdata = { workspace = true }
 otap-df-pdata-views = { workspace = true }

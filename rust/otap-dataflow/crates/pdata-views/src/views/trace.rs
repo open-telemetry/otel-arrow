@@ -55,7 +55,7 @@ pub trait ResourceSpansView {
     where
         Self: 'scp;
 
-    /// The associated iterator type for this impl of the the trait. The iterator will yield
+    /// The associated iterator type for this impl of the trait. The iterator will yield
     /// borrowed references that must live as long as the lifetime 'scp
     type ScopesIter<'scp>: Iterator<Item = Self::ScopeSpans<'scp>>
     where
@@ -84,7 +84,7 @@ pub trait ScopeSpansView {
     where
         Self: 'sp;
 
-    /// The associated iterator type for this impl of the the trait. The iterator will yield
+    /// The associated iterator type for this impl of the trait. The iterator will yield
     /// borrowed references that must live as long as the lifetime 'sp
     type SpanIter<'sp>: Iterator<Item = Self::Span<'sp>>
     where
@@ -121,7 +121,7 @@ pub trait SpanView {
     where
         Self: 'ev;
 
-    /// The associated iterator type for this impl of the the trait. The iterator will yield
+    /// The associated iterator type for this impl of the trait. The iterator will yield
     /// borrowed references that must live as long as the lifetime 'scp
     type EventsIter<'ev>: Iterator<Item = Self::Event<'ev>>
     where
@@ -132,7 +132,7 @@ pub trait SpanView {
     where
         Self: 'ln;
 
-    /// The associated iterator type for this impl of the the trait. The iterator will yield
+    /// The associated iterator type for this impl of the trait. The iterator will yield
     /// borrowed references that must live as long as the lifetime 'scp
     type LinksIter<'ln>: Iterator<Item = Self::Link<'ln>>
     where

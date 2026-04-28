@@ -1804,7 +1804,7 @@ fn transform_keys(
 struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     new_keys: DictionaryArray<K>,
 
-    /// Ranges of of the additional columns which should be kept.
+    /// Ranges of the additional columns which should be kept.
     keep_ranges: Option<Vec<Range<usize>>>,
 
     /// Ranges of the original record batch to which the transformation was applied. This can be used
