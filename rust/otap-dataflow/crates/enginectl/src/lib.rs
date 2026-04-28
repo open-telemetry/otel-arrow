@@ -62,7 +62,6 @@ pub async fn run_with_terminal_and_diagnostics(
     stdout_is_terminal: bool,
     stderr: &mut dyn Write,
 ) -> Result<(), CliError> {
-    ensure_crypto_provider()?;
     let ParsedCli {
         agent: _,
         connection,
@@ -109,6 +108,8 @@ pub async fn run_with_terminal_and_diagnostics(
         Command::Ui(args) => Some(ui::build_command_context(&resolved.settings, color, args)),
         _ => None,
     };
+
+    ensure_crypto_provider()?;
     let client = otap_df_admin_api::AdminClient::builder()
         .http(resolved.settings)
         .build()?;

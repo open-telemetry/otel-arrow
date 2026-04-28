@@ -16,11 +16,15 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+rustls-symcrypt = { workspace = true, optional = true }
+
 [features]
 default = ["crypto-ring"]
 crypto-ring = ["otap-df-admin-api/crypto-ring", "dep:rustls", "rustls/ring"]
 crypto-aws-lc = ["otap-df-admin-api/crypto-aws-lc", "dep:rustls", "rustls/aws_lc_rs"]
 crypto-openssl = ["otap-df-admin-api/crypto-openssl", "dep:rustls", "dep:rustls-openssl"]
+crypto-symcrypt = ["otap-df-admin-api/crypto-symcrypt", "dep:rustls", "dep:rustls-symcrypt"]
 
 [dependencies]
 otap-df-admin-api = { path = "../admin-api", default-features = false, features = ["http-client"] }

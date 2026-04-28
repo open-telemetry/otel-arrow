@@ -39,14 +39,26 @@ pub(crate) fn ensure_crypto_provider() -> Result<(), CliError> {
             Ok(())
         }
 
+        #[cfg(all(
+            feature = "crypto-symcrypt",
+            not(feature = "crypto-openssl"),
+            not(feature = "crypto-aws-lc"),
+            not(feature = "crypto-ring")
+        ))]
+        {
+            let _ = rustls_symcrypt::default_symcrypt_provider().install_default();
+            Ok(())
+        }
+
         #[cfg(not(any(
             feature = "crypto-ring",
             feature = "crypto-aws-lc",
-            feature = "crypto-openssl"
+            feature = "crypto-openssl",
+            feature = "crypto-symcrypt"
         )))]
         {
             Err(
-                "admin TLS support requires one of the crypto features: crypto-ring, crypto-aws-lc, or crypto-openssl"
+                "admin TLS support requires one of the crypto features: crypto-ring, crypto-aws-lc, crypto-openssl, or crypto-symcrypt"
                     .to_string(),
             )
         }
