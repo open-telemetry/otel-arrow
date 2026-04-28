@@ -345,7 +345,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 };
 
                             if !context.may_return_payload() {
-                                // drop the original OTAP batch if the the context indicates it
+                                // drop the original OTAP batch if the context indicates it
                                 // does not wish it to be returned
                                 _ = otap_batch.take_payload();
                             }
