@@ -853,11 +853,12 @@ fn remap_map_array_to_parent_order(
             continue;
         }
 
-        let src_row = *old_to_new.get(&(parent_ids.value(i) as u32)).ok_or(
-            ClickhouseExporterError::CoercionError {
-                error: format!("Unknown src index while remapping array values: {}", i),
-            },
-        )? as usize;
+        let Some(src_row) = old_to_new.get(&(parent_ids.value(i) as u32)) else {
+            // Parent rows without a child attr group should produce an empty map.
+            map_builder.append(true)?;
+            continue;
+        };
+        let src_row = *src_row as usize;
 
         let start = offsets[src_row] as usize;
         let end = offsets[src_row + 1] as usize;
@@ -1122,6 +1123,14 @@ fn inline_attribute(
 ) -> Result<(), ClickhouseExporterError> {
     // Take parent IDs (u16).
     let id_arr = ctx.take(current_name)?;
+    let id_arr = if matches!(
+        id_arr.data_type(),
+        DataType::Dictionary(_, value_type) if **value_type == DataType::UInt32
+    ) {
+        cast(&id_arr, &DataType::UInt16)?
+    } else {
+        id_arr
+    };
     let id_arr_u16 = id_arr
         .as_any()
         .downcast_ref::<UInt16Array>()
@@ -1449,6 +1458,67 @@ mod tests {
     }
 
     #[test]
+    fn inline_attribute_string_map_casts_dictionary_encoded_parent_ids() {
+        let dict_values = Arc::new(UInt32Array::from(vec![10u32, 11u32]));
+        let dict_keys = PrimitiveArray::<UInt8Type>::from(vec![Some(0u8), Some(1u8)]);
+        let dict_ids = DictionaryArray::try_new(dict_keys, dict_values).unwrap();
+
+        let mut parent_cols: HashMap<String, ArrayRef> = HashMap::new();
+        parent_cols.insert("attr_id".into(), Arc::new(dict_ids));
+
+        let child_map = make_child_attr_map_2rows();
+        let mut child_cols: HashMap<String, ArrayRef> = HashMap::new();
+        child_cols.insert(consts::ATTRIBUTES.into(), Arc::new(child_map));
+
+        let mut remap: HashMap<u32, u32> = HashMap::new();
+        remap.insert(10, 0);
+        remap.insert(11, 1);
+
+        let child_result = MultiColumnOpResult {
+            columns: child_cols,
+            remapped_ids: Some(remap),
+        };
+
+        let mut multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        multi.insert(ArrowPayloadType::ResourceAttrs, child_result);
+
+        let mut ctx = ctx_with(&mut parent_cols, &multi);
+        let mut current = "attr_id".to_string();
+        inline_attribute(
+            &mut ctx,
+            &mut current,
+            ArrowPayloadType::ResourceAttrs,
+            &AttributeRepresentation::StringMap,
+        )
+        .unwrap();
+
+        assert_eq!(current, ch_consts::CH_RESOURCE_ATTRIBUTES);
+
+        let out = ctx.columns[ch_consts::CH_RESOURCE_ATTRIBUTES]
+            .as_any()
+            .downcast_ref::<MapArray>()
+            .unwrap();
+
+        assert_eq!(out.len(), 2);
+
+        let keys = out.keys().as_any().downcast_ref::<StringArray>().unwrap();
+        let vals = out.values().as_any().downcast_ref::<StringArray>().unwrap();
+        let offsets = out.offsets();
+
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[1], 1);
+        assert_eq!(keys.value(0), "k1");
+        assert_eq!(vals.value(0), "v1");
+
+        assert_eq!(offsets[1], 1);
+        assert_eq!(offsets[2], 3);
+        assert_eq!(keys.value(1), "a");
+        assert_eq!(vals.value(1), "b");
+        assert_eq!(keys.value(2), "c");
+        assert_eq!(vals.value(2), "d");
+    }
+
+    #[test]
     fn cast_and_rename_duration_dictionary_to_u64() {
         let values = Arc::new(DurationNanosecondArray::from(vec![100_i64, 200, 300]));
         let keys = PrimitiveArray::<UInt8Type>::from(vec![Some(0_u8), Some(2_u8), Some(1_u8)]);
@@ -1747,7 +1817,7 @@ mod tests {
     }
 
     #[test]
-    fn remap_array_column_errors_on_unknown_parent_id() {
+    fn remap_array_column_unknown_parent_id_produces_empty_map_row() {
         let parent_ids = UInt16Array::from(vec![10u16, 99u16]); // 99 missing
 
         let mut remap: HashMap<u32, u32> = HashMap::new();
@@ -1755,11 +1825,16 @@ mod tests {
 
         let values = make_map_array_two_rows();
 
-        let err = remap_map_array_to_parent_order(&parent_ids, &remap, &values).unwrap_err();
-        match err {
-            ClickhouseExporterError::CoercionError { .. } => {}
-            other => panic!("expected CoercionError, got {other:?}"),
-        }
+        let out = remap_map_array_to_parent_order(&parent_ids, &remap, &values).unwrap();
+        let offsets = out.offsets();
+
+        // row0 maps to compact row0 => 1 item
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[1], 1);
+
+        // row1 has no remap entry => empty map
+        assert_eq!(offsets[1], 1);
+        assert_eq!(offsets[2], 1);
     }
 
     // ── EnumToString tests ──────────────────────────────────────────────
