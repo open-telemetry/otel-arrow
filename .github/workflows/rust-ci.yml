@@ -383,7 +383,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Only otap-dataflow has a structure check
         folder: [otap-dataflow]
     runs-on: ubuntu-latest
     steps:
