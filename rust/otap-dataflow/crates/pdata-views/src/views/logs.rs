@@ -48,7 +48,7 @@ pub trait ResourceLogsView {
     where
         Self: 'scp;
 
-    /// The associated iterator type for this impl of the the trait. The iterator will yield
+    /// The associated iterator type for this impl of the trait. The iterator will yield
     /// borrowed references that must live as long as the lifetime 'scp
     type ScopesIter<'scp>: Iterator<Item = Self::ScopeLogs<'scp>>
     where
@@ -77,7 +77,7 @@ pub trait ScopeLogsView {
     where
         Self: 'rec;
 
-    /// The associated iterator type for this impl of the the trait. The iterator will yield
+    /// The associated iterator type for this impl of the trait. The iterator will yield
     /// borrowed references that must live as long as the lifetime 'scp
     type LogRecordsIter<'rec>: Iterator<Item = Self::LogRecord<'rec>>
     where

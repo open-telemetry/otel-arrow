@@ -244,7 +244,7 @@ pub(crate) fn wrap_as_any_value_struct(values: &ArrayRef) -> Result<ArrayRef> {
     let (type_val, field_name) = arrow_type_to_any_value_type(values.data_type())?;
     let num_rows = values.len();
 
-    // lift the nulls off the original column for use in the the struct
+    // lift the nulls off the original column for use in the struct
     let nulls = values.nulls().cloned();
 
     // Build uniform type discriminant column
