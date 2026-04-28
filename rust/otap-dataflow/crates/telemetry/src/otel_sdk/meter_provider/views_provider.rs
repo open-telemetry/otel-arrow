@@ -195,13 +195,13 @@ mod tests {
                 instrument_name: None,
                 scope_name: Some("my.library".to_string()),
                 scope_attributes: Some(HashMap::from([
-                    ("env".to_string(), "production".to_string()),
-                    ("region".to_string(), "us-east-1".to_string()),
+                    ("version".to_string(), "0.0.1".to_string()),
+                    ("feature_flag".to_string(), "experimental".to_string()),
                 ])),
             },
             stream: MetricStream {
                 name: None,
-                description: Some("Production histograms".to_string()),
+                description: Some("Experimental library metrics".to_string()),
             },
         };
         let views_config = vec![view_config];
