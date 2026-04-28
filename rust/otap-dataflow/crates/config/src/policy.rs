@@ -249,7 +249,7 @@ pub struct TelemetryPolicy {
 /// synchronous compute duration across a contiguous range of processor nodes.
 ///
 /// The engine accumulates per-message `compute_ns` from each processor frame
-/// between `start_node` and `stop_node` (inclusive) during ack-path unwinding,
+/// between `start_node` and `stop_node` (inclusive) on the forward path,
 /// and records the sum into a dedicated stopwatch metric entity.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
