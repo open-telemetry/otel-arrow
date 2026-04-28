@@ -194,9 +194,10 @@ mod tests {
             selector: MetricSelector {
                 instrument_name: None,
                 scope_name: Some("my.library".to_string()),
-                scope_attributes: Some(HashMap::from([
-                    ("feature_flag".to_string(), "experimental".to_string()),
-                ])),
+                scope_attributes: Some(HashMap::from([(
+                    "feature_flag".to_string(),
+                    "experimental".to_string(),
+                )])),
             },
             stream: MetricStream {
                 name: None,
