@@ -215,8 +215,8 @@ zip = "=4.6.1"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-azure_core = {version = "0.34.0", default-features = false }
-azure_identity = {version = "0.34.0", default-features = false }
+azure_core = {version = "0.35.0", default-features = false }
+azure_identity = {version = "0.35.0", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
