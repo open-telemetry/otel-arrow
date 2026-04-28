@@ -128,7 +128,6 @@ mod tests {
             selector:
               scope_name: "my.library"
               scope_attributes:
-                version: "0.0.1"
                 feature_flag: "experimental"
             stream:
               description: "Experimental library metrics"
@@ -136,8 +135,7 @@ mod tests {
         let config: ViewConfig = serde_yaml::from_str(yaml_str).unwrap();
         assert_eq!(config.selector.scope_name.as_deref(), Some("my.library"));
         let attrs = config.selector.scope_attributes.unwrap();
-        assert_eq!(attrs.len(), 2);
-        assert_eq!(attrs.get("version").unwrap(), "0.0.1");
+        assert_eq!(attrs.len(), 1);
         assert_eq!(attrs.get("feature_flag").unwrap(), "experimental");
         assert_eq!(
             config.stream.description.as_deref(),

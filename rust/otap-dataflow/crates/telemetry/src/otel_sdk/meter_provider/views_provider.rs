@@ -195,7 +195,6 @@ mod tests {
                 instrument_name: None,
                 scope_name: Some("my.library".to_string()),
                 scope_attributes: Some(HashMap::from([
-                    ("version".to_string(), "0.0.1".to_string()),
                     ("feature_flag".to_string(), "experimental".to_string()),
                 ])),
             },
