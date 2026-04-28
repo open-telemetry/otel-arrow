@@ -27,7 +27,7 @@ use tokio::net::{TcpListener, UdpSocket};
 #[derive(Clone, Copy)]
 pub enum SourceTagging {
     /// Disabled means no source node-id will be automatically
-    /// inserted for nodes that do not not otherwise subscribe to
+    /// inserted for nodes that do not otherwise subscribe to
     /// Ack/Nack.
     Disabled,
 

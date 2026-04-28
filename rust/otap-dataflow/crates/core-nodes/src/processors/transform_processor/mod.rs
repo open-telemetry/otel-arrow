@@ -1697,7 +1697,7 @@ mod test {
                     .expect_err("process error");
                 assert!(err.to_string().contains("outbound slots not available"));
 
-                // now drain and ack the the messages from the first batch to clear out the slot map
+                // now drain and ack the messages from the first batch to clear out the slot map
                 let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 

@@ -61,8 +61,8 @@ use crate::pipeline::expr::{
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::anyval::{
-    fill_null_type_as_empty, is_any_value_data_type, project_any_value_columns,
-    wrap_as_any_value_struct,
+    attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
+    is_any_value_data_type, wrap_as_any_value_struct,
 };
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
@@ -82,7 +82,7 @@ pub struct Assignment<'a> {
 /// Pipeline stage for assigning the result of an expression evaluation to an OTAP column.
 ///
 /// This can do more than one assignment to a given record batch at a time. This minimizes the
-/// overhead of of materializing intermediate results multiple times when there are multiple
+/// overhead of materializing intermediate results multiple times when there are multiple
 /// assignments to be made.
 pub(crate) struct AssignPipelineStage {
     /// Identifier of the destination column
@@ -585,7 +585,7 @@ impl AssignPipelineStage {
                 // the resulting record batch.
                 let ColumnarValue::Array(result_values) = &eval_result.values else {
                     // safety: this is the else block of an if statement where we've tried to check if
-                    // this is is a scalar. Since we've determined it's not scalar, it must be array.
+                    // this is a scalar. Since we've determined it's not scalar, it must be array.
                     unreachable!("expected ColumnarResult::Array")
                 };
                 let left_join_input = &PhysicalExprEvalResult::new_with_parent_ids(
@@ -1658,32 +1658,6 @@ fn coerce_to_any_value_struct_column(values: ArrayRef) -> Result<ArrayRef> {
         }
         _ => Ok(values), // not dict-encoded, use as-is
     }
-}
-
-/// Attempt to coerce the values array (a struct array representing an AnyValue) into the concrete
-/// values type. If the passed array contains multiple types, the original array is returned
-/// because coercion was not successful.
-fn attempt_coerce_value_column_from_any_value_struct_column(values: &ArrayRef) -> Result<ArrayRef> {
-    // build a temporary record batch containing the column to maybe partition by type
-    let rb = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "",
-            values.data_type().clone(),
-            true,
-        )])),
-        vec![Arc::clone(values)],
-    )?;
-
-    // attempt to partition the AnyValue column by type
-    let partitions = project_any_value_columns(&rb, &[0])?;
-    let result = if partitions.len() == 1 {
-        partitions[0].batch.column(0)
-    } else {
-        // just return the original array
-        values
-    };
-
-    Ok(Arc::clone(result))
 }
 
 /// Inserts the column into the record batch if the column does not exist, otherwise replaces the
