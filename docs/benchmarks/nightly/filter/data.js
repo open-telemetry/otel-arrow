@@ -1,150 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777397519367,
+  "lastUpdate": 1777397524843,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Jake Dern",
-            "username": "JakeDern",
-            "email": "33842784+JakeDern@users.noreply.github.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "d389678b03da242781069e748a409d90ffddf610",
-          "message": "fix: Temporarily disable the nightly otap-filter-otap Go collector scenario (#2396)\n\n# Change Summary\n\nThis scenario has been blocking all the nightly benchmarks for a few\nweeks now and we can't fix it until this is released and we take a\nversion bump:\nhttps://github.com/open-telemetry/opentelemetry-collector-contrib/pull/46879\n\nIt looks like it will be another couple of weeks for the next otel\ncollector contrib release as the last one was just a few days ago. I'm\nproposing to disable the scenario for now to unblock everything else.",
-          "timestamp": "2026-03-21T01:34:17Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/d389678b03da242781069e748a409d90ffddf610"
-        },
-        "date": 1774114735962,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.67118835449219,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 47.24543178329374,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 56.6607416640698,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 312.6015625,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 458.25,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 104995.83341534396,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3495.1113023331523,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002381,
-            "unit": "seconds",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 33525.93286997437,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2516274.5421650764,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.67904663085938,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 53.37653067561686,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 56.48823365785813,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 21.222005208333332,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 22.9375,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 104995.72842378197,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3486.8581429878827,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002441,
-            "unit": "seconds",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 66019.23404432545,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2491372.908395617,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -18220,6 +18078,88 @@ window.BENCHMARK_DATA = {
             "value": 2568976.0163524346,
             "unit": "bytes/sec",
             "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9eab7837283aaa7f64ea77ae318fbb236d1f3794",
+          "message": "Update Rust crate zip to v8 (#2762)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [zip](https://redirect.github.com/zip-rs/zip2) |\nworkspace.dependencies | major | `=4.6.1` → `=8.6.0` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>zip-rs/zip2 (zip)</summary>\n\n###\n[`v8.6.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#860---2026-04-25)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v8.5.1...v8.6.0)\n\n##### <!-- 0 -->🚀 Features\n\n- add `compression not supported` as enum error\n([#&#8203;774](https://redirect.github.com/zip-rs/zip2/pull/774))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- allow for `[u8]` as filename\n([#&#8203;775](https://redirect.github.com/zip-rs/zip2/pull/775))\n\n##### <!-- 2 -->🚜 Refactor\n\n- mark `ZipFlags` as non-exhaustive and add test for `HasZipMetadata`\n([#&#8203;777](https://redirect.github.com/zip-rs/zip2/pull/777))\n- use and simplify is\\_dir\n([#&#8203;776](https://redirect.github.com/zip-rs/zip2/pull/776))\n\n###\n[`v8.5.1`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#851---2026-04-06)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v8.5.0...v8.5.1)\n\n##### <!-- 2 -->🚜 Refactor\n\n- change magic finder to stack buffer\n([#&#8203;763](https://redirect.github.com/zip-rs/zip2/pull/763))\n- simplify extra field parsing\n([#&#8203;764](https://redirect.github.com/zip-rs/zip2/pull/764))\n\n###\n[`v8.5.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#850---2026-04-01)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v8.4.0...v8.5.0)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- remove `zip64 comment` and add `zip64 extensible data sector`\n([#&#8203;747](https://redirect.github.com/zip-rs/zip2/pull/747))\n\n##### <!-- 2 -->🚜 Refactor\n\n- remove useless magic in struct\n([#&#8203;730](https://redirect.github.com/zip-rs/zip2/pull/730))\n- change extra\\_field from Arc\\<Vec<u8>> to Arc<\\[u8]>\n([#&#8203;741](https://redirect.github.com/zip-rs/zip2/pull/741))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- cleanup README\n([#&#8203;758](https://redirect.github.com/zip-rs/zip2/pull/758))\n\n###\n[`v8.4.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#840---2026-03-23)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v8.3.1...v8.4.0)\n\n##### <!-- 0 -->🚀 Features\n\n- add a check for building benches\n([#&#8203;748](https://redirect.github.com/zip-rs/zip2/pull/748))\n\n##### <!-- 2 -->🚜 Refactor\n\n- split part of `read.rs` for code readability\n([#&#8203;744](https://redirect.github.com/zip-rs/zip2/pull/744))\n- remove unused allow\n([#&#8203;745](https://redirect.github.com/zip-rs/zip2/pull/745))\n\n##### <!-- 4 -->⚡ Performance\n\n- skip BufReader for Stored files in make\\_reader\n([#&#8203;739](https://redirect.github.com/zip-rs/zip2/pull/739))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- move pull request template to correct folder\n([#&#8203;749](https://redirect.github.com/zip-rs/zip2/pull/749))\n\n###\n[`v8.3.1`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#831---2026-03-21)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v8.3.0...v8.3.1)\n\n##### <!-- 2 -->🚜 Refactor\n\n- use `AexEncryption::new`\n([#&#8203;736](https://redirect.github.com/zip-rs/zip2/pull/736))\n- update tests to add big endian miri check\n([#&#8203;735](https://redirect.github.com/zip-rs/zip2/pull/735))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- cleanup repository files\n([#&#8203;743](https://redirect.github.com/zip-rs/zip2/pull/743))\n\n###\n[`v8.3.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#830---2026-03-19)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v8.2.0...v8.3.0)\n\n##### <!-- 0 -->🚀 Features\n\n- add must\\_use\n([#&#8203;727](https://redirect.github.com/zip-rs/zip2/pull/727))\n- improve and fix extended timestamp extra field parsing\n([#&#8203;713](https://redirect.github.com/zip-rs/zip2/pull/713))\n- add crc32 ignore option\n([#&#8203;710](https://redirect.github.com/zip-rs/zip2/pull/710))\n- path related code in single file\n([#&#8203;712](https://redirect.github.com/zip-rs/zip2/pull/712))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- Malformed ZIP64 file output\n([#&#8203;715](https://redirect.github.com/zip-rs/zip2/pull/715))\n([#&#8203;717](https://redirect.github.com/zip-rs/zip2/pull/717))\n\n##### <!-- 2 -->🚜 Refactor\n\n- refactor some imports\n([#&#8203;734](https://redirect.github.com/zip-rs/zip2/pull/734))\n- move code to distinct file (datetime, FixedSizeBlock)\n([#&#8203;733](https://redirect.github.com/zip-rs/zip2/pull/733))\n- move stream code to `src/read/stream.rs`\n([#&#8203;731](https://redirect.github.com/zip-rs/zip2/pull/731))\n- remove zip64 extra field update\n([#&#8203;732](https://redirect.github.com/zip-rs/zip2/pull/732))\n- improve part of the code with clippy help\n([#&#8203;725](https://redirect.github.com/zip-rs/zip2/pull/725))\n- simplify code for unicode extra field and improve error message\n([#&#8203;724](https://redirect.github.com/zip-rs/zip2/pull/724))\n- reorganize code\n([#&#8203;714](https://redirect.github.com/zip-rs/zip2/pull/714))\n\n##### Deps\n\n- avoid pulling in `zeroize_derive`\n([#&#8203;720](https://redirect.github.com/zip-rs/zip2/pull/720))\n\n###\n[`v8.2.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#820---2026-03-02)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v8.1.0...v8.2.0)\n\n##### <!-- 0 -->🚀 Features\n\n- allow custom salt\n([#&#8203;680](https://redirect.github.com/zip-rs/zip2/pull/680))\n- Support compressing bzip2 when feature `bzip2-rs` is enabled, since\n`bzip2/bzip2-sys` now supports it\n([#&#8203;685](https://redirect.github.com/zip-rs/zip2/pull/685))\n- enforce clippy in CI\n([#&#8203;674](https://redirect.github.com/zip-rs/zip2/pull/674))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- zip64 central header (issue 617)\n([#&#8203;629](https://redirect.github.com/zip-rs/zip2/pull/629))\n- allow aes password as bytes\n([#&#8203;686](https://redirect.github.com/zip-rs/zip2/pull/686))\n- handle extra field padding\n([#&#8203;682](https://redirect.github.com/zip-rs/zip2/pull/682))\n\n##### <!-- 2 -->🚜 Refactor\n\n- Simplify 2 type conversions in src/write.rs\n([#&#8203;687](https://redirect.github.com/zip-rs/zip2/pull/687))\n\n##### <!-- 4 -->⚡ Performance\n\n- AI tweaks for string type conversions in src/types.rs\n([#&#8203;670](https://redirect.github.com/zip-rs/zip2/pull/670))\n\n###\n[`v8.1.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#810---2026-02-16)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v8.0.0...v8.1.0)\n\n##### <!-- 0 -->🚀 Features\n\n- *(writer)* Allow getting underlying writer of ZipWriter\n([#&#8203;464](https://redirect.github.com/zip-rs/zip2/pull/464))\n- add system to FileOption, so byte-for-byte identical archives can be\ncreated across platforms\n([#&#8203;660](https://redirect.github.com/zip-rs/zip2/pull/660))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- Bugs in extra-data length calculation in src/write.rs\n([#&#8203;662](https://redirect.github.com/zip-rs/zip2/pull/662))\n\n###\n[`v8.0.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#800---2026-02-14)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v7.4.0...v8.0.0)\n\n##### <!-- 0 -->🚀 Features\n\n- document zip flags as enum\n([#&#8203;639](https://redirect.github.com/zip-rs/zip2/pull/639))\n- Migrate to Rust 2024\n([#&#8203;650](https://redirect.github.com/zip-rs/zip2/pull/650))\n- \\[**breaking**] Remove deprecated methods of `DateTime`\n([#&#8203;597](https://redirect.github.com/zip-rs/zip2/pull/597))\n\n###\n[`v7.4.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#740---2026-02-05)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v7.3.0...v7.4.0)\n\n##### <!-- 0 -->🚀 Features\n\n- Increase MSRV to 1.88 and update dependencies\n([#&#8203;626](https://redirect.github.com/zip-rs/zip2/pull/626))\n\n###\n[`v7.3.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#730---2026-02-04)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v7.2.0...v7.3.0)\n\n##### <!-- 0 -->🚀 Features\n\n- cleanup the benchmarks and Cargo.toml\n([#&#8203;606](https://redirect.github.com/zip-rs/zip2/pull/606))\n- Add support for per-file comments\n([#&#8203;543](https://redirect.github.com/zip-rs/zip2/pull/543))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- Document feature `unreserved` and make the mapping of extra fields\npublic ([#&#8203;616](https://redirect.github.com/zip-rs/zip2/pull/616))\n- Return an error if abort\\_file() fails when exceeding non-large-file\nlimit ([#&#8203;598](https://redirect.github.com/zip-rs/zip2/pull/598))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- Bump version to 7.3.0 (semver checks fail if it's still 7.3.0-pre1)\n\n###\n[`v7.2.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#720---2026-01-20)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v7.1.0...v7.2.0)\n\n##### <!-- 0 -->🚀 Features\n\n- add read\\_zipfile\\_from\\_stream\\_with\\_compressed\\_size\n([#&#8203;70](https://redirect.github.com/zip-rs/zip2/pull/70))\n- Allow choosing bzip2 rust backend\n([#&#8203;329](https://redirect.github.com/zip-rs/zip2/pull/329))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- Need to include zip64 extra field in central directory (fix\n[#&#8203;353](https://redirect.github.com/zip-rs/zip2/issues/353))\n([#&#8203;360](https://redirect.github.com/zip-rs/zip2/pull/360))\n- Fails to extract file which might or might not be malformed\n([#&#8203;376](https://redirect.github.com/zip-rs/zip2/pull/376))\n([#&#8203;426](https://redirect.github.com/zip-rs/zip2/pull/426))\n- *(aes)* Allow AES encryption while streaming\n([#&#8203;463](https://redirect.github.com/zip-rs/zip2/pull/463))\n- Default \"platform\" field in zip files should be set to the local\nplatform, rather than always \"Unix\"\n([#&#8203;470](https://redirect.github.com/zip-rs/zip2/pull/470))\n([#&#8203;471](https://redirect.github.com/zip-rs/zip2/pull/471))\n\n##### <!-- 2 -->🚜 Refactor\n\n- Define cfg\\_if! and cfg\\_if\\_expr! internal macros\n([#&#8203;438](https://redirect.github.com/zip-rs/zip2/pull/438))\n\n##### <!-- 4 -->⚡ Performance\n\n- Change an assert to debug\\_assert when encrypting/decrypting AES, and\neliminate a fallible operation\n([#&#8203;521](https://redirect.github.com/zip-rs/zip2/pull/521))\n- eliminate a String clone per new file added to archive, and other\nrelated refactors\n([#&#8203;522](https://redirect.github.com/zip-rs/zip2/pull/522))\n\n###\n[`v7.1.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#710---2026-01-14)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v7.0.0...v7.1.0)\n\n##### <!-- 0 -->🚀 Features\n\n- display the underlying error in Display impl for `ZipError`\n([#&#8203;483](https://redirect.github.com/zip-rs/zip2/pull/483))\n- Enable creation of `ZipArchive` without reparsing\n([#&#8203;485](https://redirect.github.com/zip-rs/zip2/pull/485))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- Return InvalidPassword rather than panic when AES key is the wrong\nlength ([#&#8203;457](https://redirect.github.com/zip-rs/zip2/pull/457))\n- bench with auto zip64 comment\n([#&#8203;505](https://redirect.github.com/zip-rs/zip2/pull/505))\n- add condition for `getrandom` dependency\n([#&#8203;504](https://redirect.github.com/zip-rs/zip2/pull/504))\n- *(zipcrypto)* Support streaming ZipCrypto encryption, don't store\nentire file in memory\n([#&#8203;462](https://redirect.github.com/zip-rs/zip2/pull/462))\n\n##### <!-- 2 -->🚜 Refactor\n\n- Clean up imports and move types\n([#&#8203;461](https://redirect.github.com/zip-rs/zip2/pull/461))\n- Replace handwritten `Ord` and `PartialOrd` for `DateTime`\n([#&#8203;484](https://redirect.github.com/zip-rs/zip2/pull/484))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- Lock `lzma-rust2` to at least 0.15.5\n([#&#8203;491](https://redirect.github.com/zip-rs/zip2/pull/491))\n\n###\n[`v7.0.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#700---2025-12-05)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v6.0.0...v7.0.0)\n\n##### <!-- 9 -->⚠️ Breaking Changes\n\n- Removed the following features: `getrandom`, `hmac`, `pbkdf2`, `sha1`,\n`zeroize`.\n- Removed `lzma-static` and `xz-static` feature flags, which were\ndeprecated synonyms of `lzma` and `xz`.\n([#&#8203;405](https://redirect.github.com/zip-rs/zip2/pull/405),\n[#&#8203;425](https://redirect.github.com/zip-rs/zip2/pull/425))\n\n##### <!-- 0 -->🚀 Features\n\n- *(`SimpleFileOptions`)* const DEFAULT implementation\n([#&#8203;474](https://redirect.github.com/zip-rs/zip2/pull/474))\n- ZipWriter `set_auto_large_file()` method to enable large-file data\ndescriptor when necessary\n([#&#8203;468](https://redirect.github.com/zip-rs/zip2/pull/468))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- print previous error when failing to search another cde\n([#&#8203;460](https://redirect.github.com/zip-rs/zip2/pull/460))\n- cargo doc warnings\n([#&#8203;472](https://redirect.github.com/zip-rs/zip2/pull/472))\n- Write ZIP64 data descriptors when large\\_file option is true\n([#&#8203;467](https://redirect.github.com/zip-rs/zip2/pull/467))\n- Pin generic-array to an old version to work around\n[RustCrypto/traits#2036](https://redirect.github.com/RustCrypto/traits/issues/2036)\nuntil next RustCrypto & aes-crypto releases\n([#&#8203;458](https://redirect.github.com/zip-rs/zip2/pull/458))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- Revert version bump so that release-plz will trigger\n- expose more flate2 feature flags\n([#&#8203;476](https://redirect.github.com/zip-rs/zip2/pull/476))\n- Next release will be 7.0.0\n- release v6.0.0\n([#&#8203;442](https://redirect.github.com/zip-rs/zip2/pull/442))\n\n##### Deps\n\n- Bump lzma-rust2 to v0.15\n([#&#8203;465](https://redirect.github.com/zip-rs/zip2/pull/465))\n\n###\n[`v6.0.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#700---2025-12-05)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v5.1.1...v6.0.0)\n\n##### <!-- 9 -->⚠️ Breaking Changes\n\n- Removed the following features: `getrandom`, `hmac`, `pbkdf2`, `sha1`,\n`zeroize`.\n- Removed `lzma-static` and `xz-static` feature flags, which were\ndeprecated synonyms of `lzma` and `xz`.\n([#&#8203;405](https://redirect.github.com/zip-rs/zip2/pull/405),\n[#&#8203;425](https://redirect.github.com/zip-rs/zip2/pull/425))\n\n##### <!-- 0 -->🚀 Features\n\n- *(`SimpleFileOptions`)* const DEFAULT implementation\n([#&#8203;474](https://redirect.github.com/zip-rs/zip2/pull/474))\n- ZipWriter `set_auto_large_file()` method to enable large-file data\ndescriptor when necessary\n([#&#8203;468](https://redirect.github.com/zip-rs/zip2/pull/468))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- print previous error when failing to search another cde\n([#&#8203;460](https://redirect.github.com/zip-rs/zip2/pull/460))\n- cargo doc warnings\n([#&#8203;472](https://redirect.github.com/zip-rs/zip2/pull/472))\n- Write ZIP64 data descriptors when large\\_file option is true\n([#&#8203;467](https://redirect.github.com/zip-rs/zip2/pull/467))\n- Pin generic-array to an old version to work around\n[RustCrypto/traits#2036](https://redirect.github.com/RustCrypto/traits/issues/2036)\nuntil next RustCrypto & aes-crypto releases\n([#&#8203;458](https://redirect.github.com/zip-rs/zip2/pull/458))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- Revert version bump so that release-plz will trigger\n- expose more flate2 feature flags\n([#&#8203;476](https://redirect.github.com/zip-rs/zip2/pull/476))\n- Next release will be 7.0.0\n- release v6.0.0\n([#&#8203;442](https://redirect.github.com/zip-rs/zip2/pull/442))\n\n##### Deps\n\n- Bump lzma-rust2 to v0.15\n([#&#8203;465](https://redirect.github.com/zip-rs/zip2/pull/465))\n\n###\n[`v5.1.1`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#511---2025-09-11)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v5.1.0...v5.1.1)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- panic when reading empty extended-timestamp field\n([#&#8203;404](https://redirect.github.com/zip-rs/zip2/pull/404))\n([#&#8203;422](https://redirect.github.com/zip-rs/zip2/pull/422))\n- Restore original file timestamp when unzipping with `chrono`\n([#&#8203;46](https://redirect.github.com/zip-rs/zip2/pull/46))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- Configure Amazon Q rules\n([#&#8203;421](https://redirect.github.com/zip-rs/zip2/pull/421))\n\n###\n[`v5.1.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#510---2025-09-10)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v5.0.1...v5.1.0)\n\n##### <!-- 0 -->🚀 Features\n\n- Add legacy shrink/reduce/implode compression\n([#&#8203;303](https://redirect.github.com/zip-rs/zip2/pull/303))\n\n###\n[`v5.0.1`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#501---2025-09-09)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v5.0.0...v5.0.1)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- AES metadata was not copied correctly in raw copy methods, which could\ncorrupt the copied file.\n([#&#8203;417](https://redirect.github.com/zip-rs/zip2/pull/417))\n\n###\n[`v5.0.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#500---2025-09-05)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v4.6.1...v5.0.0)\n\n##### <!-- 0 -->🚀 Features\n\n- Implement by\\_path\\*() methods on ZipArchive\n([#&#8203;382](https://redirect.github.com/zip-rs/zip2/pull/382))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4xNDEuMyIsInVwZGF0ZWRJblZlciI6IjQzLjE0MS4zIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-04-28T03:20:25Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9eab7837283aaa7f64ea77ae318fbb236d1f3794"
+        },
+        "date": 1777397524237,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.75499725341797,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 69.68690570633326,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 70.69288303640589,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 20.448307291666666,
+            "unit": "MiB",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 21.5390625,
+            "unit": "MiB",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99996.10348516752,
+            "unit": "logs/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3244.8735580936864,
+            "unit": "logs/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002338,
+            "unit": "seconds",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 84360.06374670964,
+            "unit": "bytes/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2580310.08498118,
+            "unit": "bytes/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
           }
         ]
       }
