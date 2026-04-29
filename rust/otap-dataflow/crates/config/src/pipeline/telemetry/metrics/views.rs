@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::pipeline::telemetry::AttributeValue;
+
 /// OpenTelemetry Metrics View configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ViewConfig {
@@ -29,7 +31,8 @@ pub struct MetricSelector {
     /// The instrumentation scope attributes to match.
     /// When set, the view only applies to instruments whose scope contains all
     /// of the specified attribute key-value pairs.
-    pub scope_attributes: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub scope_attributes: HashMap<String, AttributeValue>,
 }
 
 /// OpenTelemetry Metric Stream configuration.
@@ -134,9 +137,12 @@ mod tests {
             "#;
         let config: ViewConfig = serde_yaml::from_str(yaml_str).unwrap();
         assert_eq!(config.selector.scope_name.as_deref(), Some("my.library"));
-        let attrs = config.selector.scope_attributes.unwrap();
+        let attrs = &config.selector.scope_attributes;
         assert_eq!(attrs.len(), 1);
-        assert_eq!(attrs.get("feature_flag").unwrap(), "experimental");
+        assert_eq!(
+            attrs.get("feature_flag").unwrap(),
+            &AttributeValue::String("experimental".to_string())
+        );
         assert_eq!(
             config.stream.description.as_deref(),
             Some("Experimental library metrics")
