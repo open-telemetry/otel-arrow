@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777336698705,
+  "lastUpdate": 1777423113301,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3728,6 +3728,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 103.94,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "c1ly",
+            "username": "c1ly",
+            "email": "129437996+c1ly@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8a0e66ad7a59d2f5cb6477f64db12b3668938b9b",
+          "message": "Validation framework - transport header support (#2733)\n\n# Change Summary\n\n- Updated Pipeline, Capture, Generator structs with transport header\nfields and new functions to allow user to configure transport headers\nand transport header policies to use\n\n- Updated templates to insert transport headers and transport header\npolicy\n\n## What issue does this PR close?\n\n* Closes #2704\n\n## How are these changes tested?\n\nunit tests and validation test\n\n## Are there any user-facing changes?\nno",
+          "timestamp": "2026-04-28T23:15:49Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8a0e66ad7a59d2f5cb6477f64db12b3668938b9b"
+        },
+        "date": 1777423105321,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 104.03,
             "unit": "MB"
           }
         ]
