@@ -132,29 +132,6 @@ struct Config {
 }
 
 impl Config {
-    /// Creates a new Config for TCP.
-    #[must_use]
-    #[allow(dead_code)]
-    const fn new_tcp(listening_addr: SocketAddr) -> Self {
-        Self {
-            protocol: Protocol::Tcp(TcpConfig {
-                listening_addr,
-                tls: None,
-            }),
-            batch: None,
-        }
-    }
-
-    /// Creates a new Config for UDP.
-    #[must_use]
-    #[allow(dead_code)]
-    const fn new_udp(listening_addr: SocketAddr) -> Self {
-        Self {
-            protocol: Protocol::Udp(UdpConfig { listening_addr }),
-            batch: None,
-        }
-    }
-
     /// Returns the effective max batch duration, using the configured value or the default.
     fn max_batch_duration(&self) -> Duration {
         self.batch
@@ -1019,6 +996,30 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of TCP connections rejected or closed due to process-wide memory pressure.
     #[metric(unit = "{conn}")]
     pub tcp_connections_rejected_memory_pressure: Counter<u64>,
+}
+
+#[cfg(test)]
+impl Config {
+    /// Creates a new Config for TCP. Test-only helper.
+    #[must_use]
+    const fn new_tcp(listening_addr: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Tcp(TcpConfig {
+                listening_addr,
+                tls: None,
+            }),
+            batch: None,
+        }
+    }
+
+    /// Creates a new Config for UDP. Test-only helper.
+    #[must_use]
+    const fn new_udp(listening_addr: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Udp(UdpConfig { listening_addr }),
+            batch: None,
+        }
+    }
 }
 
 #[cfg(test)]
