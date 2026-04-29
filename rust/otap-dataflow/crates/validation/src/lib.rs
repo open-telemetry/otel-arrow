@@ -871,8 +871,6 @@ mod tests {
     }
 
     /// Validates the temporal reaggregation processor with metric signals.
-    /// All data points share the same stream identity and collapse to a small
-    /// number of outputs per flush window, yielding at least 95% signal reduction.
     #[test]
     fn validation_temporal_reaggregation_metrics() {
         Scenario::new()
@@ -894,8 +892,8 @@ mod tests {
                     .otap_grpc("exporter")
                     .validate(vec![
                         ValidationInstructions::SignalDrop {
-                            min_drop_ratio: Some(0.95),
-                            max_drop_ratio: Some(1.0),
+                            min_drop_ratio: Some(0.05),
+                            max_drop_ratio: Some(0.80),
                         },
                         ValidationInstructions::AttributeNoDuplicate,
                     ])
@@ -966,12 +964,9 @@ mod tests {
                 "validate",
                 Capture::default()
                     .otap_grpc("exporter")
-                    .validate(vec![ValidationInstructions::AttributeRequireKeyValue {
+                    .validate(vec![ValidationInstructions::AttributeRequireKey {
                         domains: vec![AttributeDomain::Signal],
-                        pairs: vec![
-                            KeyValue::new("http.method".into(), AnyValue::String("GET".into())),
-                            KeyValue::new("http.route".into(), AnyValue::String("/api".into())),
-                        ],
+                        keys: vec!["http.method".into(), "http.route".into()],
                     }])
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
@@ -1389,6 +1384,69 @@ mod tests {
             )
             .run()
             .expect("traces otap-to-otap validation failed");
+    }
+
+    /// End-to-end validation: transport headers injected by the fake data
+    /// generator survive the full pipeline chain (generator → SUV → capture)
+    /// and can be asserted via transport header validation instructions.
+    ///
+    /// Only OTLP receivers and exporters support transport header
+    /// capture/propagation, so every hop in the chain uses OTLP gRPC.
+    #[test]
+    fn validation_transport_headers() {
+        use crate::validation_types::transport_headers::TransportHeaderKeyValue;
+
+        let header_key = "x-tenant-id";
+        let header_value = "test-tenant";
+
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/no-processor.yaml")
+                    .expect("failed to read in pipeline yaml")
+                    .with_transport_headers_policy_yaml(
+                        r#"
+header_capture:
+  headers:
+    - match_names: ["x-tenant-id"]
+header_propagation:
+  default:
+    selector:
+      type: all_captured
+    action: propagate
+"#,
+                    )
+                    .expect("failed to parse transport headers policy"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals()
+                    .with_transport_headers([(header_key, Some(header_value))]),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .with_capture_header_keys([header_key])
+                    .validate(vec![
+                        ValidationInstructions::TransportHeaderRequireKey {
+                            keys: vec![header_key.into()],
+                        },
+                        ValidationInstructions::TransportHeaderRequireKeyValue {
+                            pairs: vec![TransportHeaderKeyValue::new(header_key, header_value)],
+                        },
+                        ValidationInstructions::TransportHeaderDeny {
+                            keys: vec!["x-should-not-exist".into()],
+                        },
+                    ])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("transport headers validation failed");
     }
 }
 

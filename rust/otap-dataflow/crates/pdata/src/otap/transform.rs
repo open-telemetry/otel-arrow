@@ -170,7 +170,6 @@ where
 ///
 /// This returns a new RecordBatch with the parent_id column replaced with the materialized id.
 ///
-#[allow(unused)] // TODO -- remove allow(unused) when we use this to optimize decoding OTAP
 pub fn materialize_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<RecordBatch>
 where
     T: ParentId,
@@ -1804,7 +1803,7 @@ fn transform_keys(
 struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     new_keys: DictionaryArray<K>,
 
-    /// Ranges of of the additional columns which should be kept.
+    /// Ranges of the additional columns which should be kept.
     keep_ranges: Option<Vec<Range<usize>>>,
 
     /// Ranges of the original record batch to which the transformation was applied. This can be used

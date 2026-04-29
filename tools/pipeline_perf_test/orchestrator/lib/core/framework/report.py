@@ -270,7 +270,7 @@ class Report:
 
     def display_template(self):
         """
-        Fetch the display template for the the TestReport given the current aggregation.
+        Fetch the display template for the TestReport given the current aggregation.
         """
         return self.get_template(mode=ReportAggregation.NONE)
 
