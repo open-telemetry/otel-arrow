@@ -21,7 +21,7 @@
 //! attributes, not the original raw tracepoint sample bytes. Unknown static
 //! fields may be preserved as per-field base64 string attributes.
 //!
-//! In `event_header` mode, the producer-defined data is decoded as an
+//! In EventHeader mode, the producer-defined data is decoded as an
 //! EventHeader payload:
 //!
 //! ```text
