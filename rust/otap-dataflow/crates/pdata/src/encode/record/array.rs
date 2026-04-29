@@ -708,7 +708,6 @@ pub type Float64ArrayBuilder = PrimitiveArrayBuilder<Float64Type>;
 pub type UInt8ArrayBuilder = PrimitiveArrayBuilder<UInt8Type>;
 pub type UInt16ArrayBuilder = PrimitiveArrayBuilder<UInt16Type>;
 pub type UInt32ArrayBuilder = PrimitiveArrayBuilder<UInt32Type>;
-#[allow(dead_code)]
 pub type UInt64ArrayBuilder = PrimitiveArrayBuilder<UInt64Type>;
 #[allow(dead_code)]
 pub type Int8ArrayBuilder = PrimitiveArrayBuilder<Int8Type>;
@@ -717,7 +716,6 @@ pub type Int16ArrayBuilder = PrimitiveArrayBuilder<Int16Type>;
 pub type Int32ArrayBuilder = PrimitiveArrayBuilder<Int32Type>;
 pub type Int64ArrayBuilder = PrimitiveArrayBuilder<Int64Type>;
 pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanosecondType>;
-#[allow(dead_code)]
 pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
 /// Convert an array containing binary data to one which contains UTF-8 Data. This will handle

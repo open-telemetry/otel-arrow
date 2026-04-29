@@ -170,7 +170,6 @@ where
 ///
 /// This returns a new RecordBatch with the parent_id column replaced with the materialized id.
 ///
-#[allow(unused)] // TODO -- remove allow(unused) when we use this to optimize decoding OTAP
 pub fn materialize_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<RecordBatch>
 where
     T: ParentId,
