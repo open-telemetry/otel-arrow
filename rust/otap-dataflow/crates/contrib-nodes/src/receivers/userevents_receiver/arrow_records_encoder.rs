@@ -3,7 +3,6 @@
 
 //! Arrow encoding for Linux userevents logs.
 
-use chrono::Utc;
 use otap_df_pdata::encode::Result;
 use otap_df_pdata::encode::record::{
     attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
@@ -53,6 +52,8 @@ impl ArrowRecordsBuilder {
     /// Appends a decoded userevents record.
     pub(super) fn append(&mut self, record: DecodedUsereventsRecord) {
         self.logs.append_time_unix_nano(record.time_unix_nano);
+        self.logs
+            .append_observed_time_unix_nano(record.time_unix_nano);
         self.logs.body.append_str(record.body.as_bytes());
         self.logs.append_severity_number(record.severity_number);
         self.logs
@@ -108,9 +109,6 @@ impl ArrowRecordsBuilder {
             .scope
             .append_dropped_attributes_count_n(0, log_record_count);
 
-        let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        self.logs
-            .append_observed_time_unix_nano_n(observed_time, log_record_count);
         self.logs.append_schema_url_n(None, log_record_count);
         self.logs
             .append_dropped_attributes_count_n(0, log_record_count);
@@ -174,6 +172,12 @@ mod tests {
             .expect("time column");
         let time_values = time_col.as_primitive::<TimestampNanosecondType>();
         assert_eq!(time_values.value(0), 1234);
+
+        let observed_time_col = logs_rb
+            .column_by_name("observed_time_unix_nano")
+            .expect("observed time column");
+        let observed_time_values = observed_time_col.as_primitive::<TimestampNanosecondType>();
+        assert_eq!(observed_time_values.value(0), 1234);
 
         let body_col = logs_rb.column_by_name("body").expect("body column");
         let body_struct = body_col

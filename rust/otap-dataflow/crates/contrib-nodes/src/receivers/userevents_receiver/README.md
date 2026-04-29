@@ -365,12 +365,15 @@ mapping to OTLP log attributes.
 The receiver emits OTAP logs. Structural data is represented as flat log
 attributes with source types preserved where possible (`Int`/`Bool`/`Double`/
 `Str`). The typed `event_name` field is set to the configured tracepoint name,
-and `time_unix_nano` uses the perf sample timestamp. The receiver also emits
-`linux.userevents.process.pid` and `linux.userevents.thread.id` from perf
-sample metadata when available, because multiple processes or threads can emit
-the same tracepoint. Schema-specific promotion to typed OTLP fields is
-intentionally left to processors. The original raw tracepoint sample is not
-part of the normal output contract after structural decode succeeds.
+and `time_unix_nano` and `observed_time_unix_nano` use the perf sample
+timestamp. Processors may later replace `time_unix_nano` with a producer-provided
+event time, for example Common Schema `PartA.time`, while preserving the perf
+sample timestamp as observed time. The receiver also emits
+`linux.userevents.process.pid` and `linux.userevents.thread.id` from perf sample
+metadata when available, because multiple processes or threads can emit the same
+tracepoint. Schema-specific promotion to typed OTLP fields is intentionally left
+to processors. The original raw tracepoint sample is not part of the normal
+output contract after structural decode succeeds.
 
 The receiver intentionally does **not** emit receiver-internal
 transport/diagnostic fields such as tracepoint name, provider name,
