@@ -39,9 +39,6 @@ jobs:
           ref: refs/pull/${{ inputs.pr_number }}/merge
           submodules: true
           fetch-depth: 0
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
