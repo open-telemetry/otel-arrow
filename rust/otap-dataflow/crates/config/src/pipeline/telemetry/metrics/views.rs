@@ -3,8 +3,12 @@
 
 //! Metrics views level configurations.
 
+use std::collections::HashMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::pipeline::telemetry::AttributeValue;
 
 /// OpenTelemetry Metrics View configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -24,6 +28,11 @@ pub struct MetricSelector {
     /// The instrumentation scope (meter) name to match.
     /// When set, the view only applies to instruments created under this scope.
     pub scope_name: Option<String>,
+    /// The instrumentation scope attributes to match.
+    /// When set, the view only applies to instruments whose scope contains all
+    /// of the specified attribute key-value pairs.
+    #[serde(default)]
+    pub scope_attributes: HashMap<String, AttributeValue>,
 }
 
 /// OpenTelemetry Metric Stream configuration.
@@ -113,6 +122,30 @@ mod tests {
         assert_eq!(
             config.stream.name.as_deref(),
             Some("exporter_sent_log_records")
+        );
+    }
+
+    #[test]
+    fn test_view_config_with_scope_attributes() {
+        let yaml_str = r#"
+            selector:
+              scope_name: "my.library"
+              scope_attributes:
+                feature_flag: "experimental"
+            stream:
+              description: "Experimental library metrics"
+            "#;
+        let config: ViewConfig = serde_yaml::from_str(yaml_str).unwrap();
+        assert_eq!(config.selector.scope_name.as_deref(), Some("my.library"));
+        let attrs = &config.selector.scope_attributes;
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(
+            attrs.get("feature_flag").unwrap(),
+            &AttributeValue::String("experimental".to_string())
+        );
+        assert_eq!(
+            config.stream.description.as_deref(),
+            Some("Experimental library metrics")
         );
     }
 }
