@@ -1401,7 +1401,7 @@ mod tests {
 
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/no-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")
                     .expect("failed to read in pipeline yaml")
                     .with_transport_headers_policy_yaml(
                         r#"
