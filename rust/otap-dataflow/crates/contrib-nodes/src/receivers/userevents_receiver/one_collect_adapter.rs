@@ -24,6 +24,8 @@ use super::session::{TracefsField, TracefsFieldLocation};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CollectedEvent {
     pub timestamp_unix_nano: u64,
+    pub process_id: Option<u32>,
+    pub thread_id: Option<u32>,
     pub event_data: Vec<u8>,
     pub user_data_offset: usize,
     pub fields: Arc<[TracefsField]>,
@@ -163,6 +165,8 @@ impl OneCollectUserEventsSession {
         let lost_samples = Rc::new(Cell::new(0u64));
         let dropped_pending_overflow = Rc::new(Cell::new(0u64));
         let time_field = session.time_data_ref();
+        let pid_field = session.pid_field_ref();
+        let tid_field = session.tid_data_ref();
         // TODO: Prefer a one_collect-owned sample-time to realtime conversion API
         // once the session exposes one.
         let tracefs = TraceFS::open().map_err(CollectInitError::Io)?;
@@ -242,6 +246,8 @@ impl OneCollectUserEventsSession {
             let max_pending_events = config.max_pending_events;
             let max_pending_bytes = config.max_pending_bytes;
             let event_time_field = time_field.clone();
+            let event_pid_field = pid_field.clone();
+            let event_tid_field = tid_field.clone();
             let event_fields = Arc::clone(&fields);
 
             event.add_callback(move |data| {
@@ -266,9 +272,13 @@ impl OneCollectUserEventsSession {
                     .try_get_u64(full_data)
                     .map(|sample_time| time_anchor.sample_perf_time_to_unix_nano(sample_time))
                     .unwrap_or_else(current_time_unix_nano);
+                let process_id = event_pid_field.try_get_u32(full_data);
+                let thread_id = event_tid_field.try_get_u32(full_data);
 
                 event_pending.borrow_mut().push_back(CollectedEvent {
                     timestamp_unix_nano: timestamp,
+                    process_id,
+                    thread_id,
                     event_data,
                     user_data_offset,
                     fields: Arc::clone(&event_fields),

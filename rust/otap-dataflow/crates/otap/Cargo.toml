@@ -94,6 +94,8 @@ rustls = { workspace = true, features = ["ring"] }
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
+otap-df-contrib-nodes = { workspace = true }
+otap-df-core-nodes = { workspace = true, features = ["dev-tools"] }
 weaver_common.workspace = true
 otap-test-tls-certs.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }

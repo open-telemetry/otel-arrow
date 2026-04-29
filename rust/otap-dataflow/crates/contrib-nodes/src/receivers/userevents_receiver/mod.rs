@@ -881,6 +881,8 @@ mod config_tests {
         RawUsereventsRecord {
             subscription_index,
             timestamp_unix_nano: 123,
+            process_id: None,
+            thread_id: None,
             event_data: Vec::new(),
             user_data_offset: 0,
             fields: Arc::<[TracefsField]>::from(Vec::<TracefsField>::new().into_boxed_slice()),

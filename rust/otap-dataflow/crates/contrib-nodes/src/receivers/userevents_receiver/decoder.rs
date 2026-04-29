@@ -132,8 +132,21 @@ impl DecodedUsereventsRecord {
     fn base_record(
         tracepoint: &str,
         value: RawUsereventsRecord,
-        attributes: Vec<(Cow<'static, str>, DecodedAttrValue)>,
+        mut attributes: Vec<(Cow<'static, str>, DecodedAttrValue)>,
     ) -> Self {
+        if let Some(process_id) = value.process_id {
+            attributes.push((
+                Cow::Borrowed("linux.userevents.process.pid"),
+                DecodedAttrValue::Int(i64::from(process_id)),
+            ));
+        }
+        if let Some(thread_id) = value.thread_id {
+            attributes.push((
+                Cow::Borrowed("linux.userevents.thread.id"),
+                DecodedAttrValue::Int(i64::from(thread_id)),
+            ));
+        }
+
         Self {
             time_unix_nano: i64::try_from(value.timestamp_unix_nano).unwrap_or(i64::MAX),
             body: String::new(),
@@ -385,9 +398,20 @@ mod tests {
     const FMT_DEFAULT: u8 = 0;
 
     fn raw_record(fields: Vec<TracefsField>, event_data: Vec<u8>) -> RawUsereventsRecord {
+        raw_record_with_sample_metadata(fields, event_data, None, None)
+    }
+
+    fn raw_record_with_sample_metadata(
+        fields: Vec<TracefsField>,
+        event_data: Vec<u8>,
+        process_id: Option<u32>,
+        thread_id: Option<u32>,
+    ) -> RawUsereventsRecord {
         RawUsereventsRecord {
             subscription_index: 0,
             timestamp_unix_nano: 42,
+            process_id,
+            thread_id,
             event_data,
             user_data_offset: 8,
             fields: Arc::from(fields),
@@ -495,6 +519,27 @@ mod tests {
         assert_eq!(decoded.attributes[0].1, DecodedAttrValue::Int(200));
         assert_eq!(decoded.attributes[1].0, "endpoint");
         assert_eq!(decoded.attributes[1].1, "/checkout");
+    }
+
+    #[test]
+    fn tracefs_includes_perf_process_and_thread_metadata() {
+        let mut event_data = vec![0; 8];
+        event_data.extend_from_slice(&200u32.to_ne_bytes());
+        let fields = vec![field("status", "u32", TracefsFieldLocation::Static, 8, 4)];
+        let raw = raw_record_with_sample_metadata(fields, event_data, Some(123), Some(456));
+
+        let decoded =
+            DecodedUsereventsRecord::from_raw("user_events:my_event", raw, &FormatConfig::Tracefs);
+
+        assert_eq!(attr(&decoded, "status"), Some(&DecodedAttrValue::Int(200)));
+        assert_eq!(
+            attr(&decoded, "linux.userevents.process.pid"),
+            Some(&DecodedAttrValue::Int(123))
+        );
+        assert_eq!(
+            attr(&decoded, "linux.userevents.thread.id"),
+            Some(&DecodedAttrValue::Int(456))
+        );
     }
 
     #[test]

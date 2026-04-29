@@ -42,6 +42,10 @@ mod imp {
     pub(crate) struct RawUsereventsRecord {
         pub subscription_index: usize,
         pub timestamp_unix_nano: u64,
+        /// Process id from perf `PERF_SAMPLE_TID` metadata, when present.
+        pub process_id: Option<u32>,
+        /// Thread id from perf `PERF_SAMPLE_TID` metadata, when present.
+        pub thread_id: Option<u32>,
         /// Full raw tracepoint sample bytes as delivered by the perf session.
         ///
         /// Conceptually, for normal tracefs decoding this is:
@@ -145,6 +149,8 @@ mod imp {
                 out.push(RawUsereventsRecord {
                     subscription_index: source.subscription_index,
                     timestamp_unix_nano: event.timestamp_unix_nano,
+                    process_id: event.process_id,
+                    thread_id: event.thread_id,
                     event_data: event.event_data,
                     user_data_offset: event.user_data_offset,
                     fields: event.fields,
@@ -256,6 +262,8 @@ mod imp {
     pub(crate) struct RawUsereventsRecord {
         pub subscription_index: usize,
         pub timestamp_unix_nano: u64,
+        pub process_id: Option<u32>,
+        pub thread_id: Option<u32>,
         pub event_data: Vec<u8>,
         pub user_data_offset: usize,
         pub fields: std::sync::Arc<[TracefsField]>,

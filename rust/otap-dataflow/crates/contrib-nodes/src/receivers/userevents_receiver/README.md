@@ -88,17 +88,17 @@ aggregation layer in this receiver.
   No other receiver pipeline in this df_engine instance reads CPU K's ring.
 ```
 
-For an 8-core host, coverage looks like this:
+For a 4-core host, coverage looks like this:
 
 ```text
-  CPU:        0      1      2      3      4      5      6      7
-              |      |      |      |      |      |      |      |
-  ring:      R0     R1     R2     R3     R4     R5     R6     R7
-              ^      ^      ^      ^      ^      ^      ^      ^
-              |      |      |      |      |      |      |      |
-  pipeline:  P0     P1     P2     P3     P4     P5     P6     P7
+  CPU:        0      1      2      3
+              |      |      |      |
+  ring:      R0     R1     R2     R3
+              ^      ^      ^      ^
+              |      |      |      |
+  pipeline:  P0     P1     P2     P3
 
-  P0 reads only R0. P1 reads only R1. ... P7 reads only R7.
+  P0 reads only R0. P1 reads only R1. P2 reads only R2. P3 reads only R3.
 ```
 
 If a CPU has no corresponding pipeline, writes on that CPU are not collected by
@@ -355,17 +355,19 @@ not emitted as attributes yet.
 The receiver emits OTAP logs. Structural data is represented as flat log
 attributes with source types preserved where possible (`Int`/`Bool`/`Double`/
 `Str`). The typed `event_name` field is set to the configured tracepoint name,
-and `time_unix_nano` uses the perf sample timestamp. Schema-specific promotion
-to typed OTLP fields is intentionally left to processors. The original raw
-tracepoint sample is not part of the normal output contract after structural
-decode succeeds.
+and `time_unix_nano` uses the perf sample timestamp. The receiver also emits
+`linux.userevents.process.pid` and `linux.userevents.thread.id` from perf
+sample metadata when available, because multiple processes or threads can emit
+the same tracepoint. Schema-specific promotion to typed OTLP fields is
+intentionally left to processors. The original raw tracepoint sample is not
+part of the normal output contract after structural decode succeeds.
 
 The receiver intentionally does **not** emit receiver-internal
 transport/diagnostic fields such as tracepoint name, provider name,
-EventHeader level/keyword, CPU, PID/TID, sample id, payload size, body
-encoding, or decode mode. These describe the receiver itself rather than the
-application payload; surfacing them as OTLP log attributes would pollute
-downstream backends with receiver implementation details.
+EventHeader level/keyword, CPU, sample id, payload size, body encoding, or
+decode mode. These describe the receiver itself rather than the application
+payload; surfacing them as OTLP log attributes would pollute downstream
+backends with receiver implementation details.
 
 ## Receiver Internals
 
