@@ -313,6 +313,13 @@ tracepoint sessions.
 | `batching.max_duration` | `50ms` | Flush interval for partially-filled batches. |
 | `overflow.on_downstream_full` | `drop` | Drop the batch if downstream is full; blocking the perf drain loop is intentionally avoided. |
 
+TODO: Add human-readable byte sizes such as `10KB`/`16MiB` if the dataflow
+configuration layer standardizes byte-size parsing.
+
+Batching avoids sending one Arrow payload per perf sample. Each flush has fixed
+Arrow/message overhead, so the receiver groups records by count or time to keep
+low-volume traces timely while making higher-volume traces more efficient.
+
 ### Tracepoint Naming
 
 Tracepoints must be configured with the `user_events:` group prefix. The receiver
@@ -349,6 +356,9 @@ Only scalar EventHeader values that map to the receiver's current attribute
 types are surfaced: strings, signed integers, booleans, and floating point
 values. EventHeader arrays, binary blobs, and other non-scalar encodings are
 not emitted as attributes yet.
+
+TODO: Add support for non-scalar EventHeader values once there is a stable
+mapping to OTLP log attributes.
 
 ## Output Shape
 
