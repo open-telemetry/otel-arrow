@@ -1460,6 +1460,8 @@ impl FilterExec {
             ColumnarValue::Array(arr) => arr.clone(),
         };
 
+        println!("result_array = {result_array:?}");
+
         let boolean_arr =
             as_boolean_array(&result_array)
                 .cloned()
@@ -2159,10 +2161,11 @@ mod test {
     use super::*;
 
     use arrow::array::{
-        DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder, RecordBatch,
-        StringArray, UInt8Array, UInt16Array,
+        BinaryArray, DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder,
+        RecordBatch, StringArray, UInt8Array, UInt16Array,
     };
     use arrow::buffer::MutableBuffer;
+    use arrow::compute::kernels::cmp::gt;
     use arrow::datatypes::{DataType, Field, Schema};
 
     /// Test helper to build an IdBitmap from a slice of u32 values.
@@ -6580,13 +6583,14 @@ mod test {
                 .attributes([
                     KeyValue::new("attr_always_string", AnyValue::new_string("hello")),
                     KeyValue::new("attr_always_int", AnyValue::new_int(1)),
+                    KeyValue::new("mixed_types", AnyValue::new_string("hello")),
                 ])
                 .finish(),
             LogRecord::build()
-                .attributes([KeyValue::new(
-                    "attr_always_string",
-                    AnyValue::new_string("hello"),
-                )])
+                .attributes([
+                    KeyValue::new("attr_always_string", AnyValue::new_string("hello")),
+                    KeyValue::new("mixed_types", AnyValue::new_bool(false)),
+                ])
                 .finish(),
         ];
 
@@ -6623,6 +6627,24 @@ mod test {
             &expected
         );
 
-        // TODO mixed types
+        // check we select correctly only some rows have the attribute
+        let query = "logs | where attributes[\"mixed_types\"] is String";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // check we select correctly only some rows have the attribute
+        let query = "logs | where attributes[\"mixed_types\"] is Boolean";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
     }
 }
