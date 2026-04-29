@@ -57,10 +57,9 @@ impl DeclarativeView {
 
             if !config.selector.scope_attributes.is_empty() {
                 for (key, value) in &config.selector.scope_attributes {
-                    let matched = instrument
-                        .scope()
-                        .attributes()
-                        .any(|kv| kv.key.as_str() == key && attribute_value_matches(value, &kv.value));
+                    let matched = instrument.scope().attributes().any(|kv| {
+                        kv.key.as_str() == key && attribute_value_matches(value, &kv.value)
+                    });
                     if !matched {
                         return None;
                     }
@@ -81,7 +80,10 @@ impl DeclarativeView {
 }
 
 /// Checks if a config `AttributeValue` matches an OTel SDK `Value`.
-fn attribute_value_matches(config_value: &AttributeValue, otel_value: &opentelemetry::Value) -> bool {
+fn attribute_value_matches(
+    config_value: &AttributeValue,
+    otel_value: &opentelemetry::Value,
+) -> bool {
     match config_value {
         AttributeValue::String(s) => {
             if let opentelemetry::Value::String(v) = otel_value {
@@ -97,7 +99,7 @@ fn attribute_value_matches(config_value: &AttributeValue, otel_value: &opentelem
             // Array matching is currently not supported for scope attribute selectors.
             // TODO: implement array matching for scope attribute selectors if needed in the future
             false
-        },
+        }
     }
 }
 
