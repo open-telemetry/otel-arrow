@@ -8,11 +8,11 @@ use data_engine_expressions::{
 use data_engine_parser_abstractions::{ParserError, to_query_location};
 use pest::iterators::Pair;
 
-use crate::parser::expression::{
+use crate::opl::parser::expression::{
     parse_attribute_selection_expression, parse_expression, parse_index_expression,
 };
-use crate::parser::pipeline::PipelineBuilder;
-use crate::parser::{Rule, invalid_child_rule_error};
+use crate::opl::parser::pipeline::PipelineBuilder;
+use crate::opl::parser::{Rule, invalid_child_rule_error};
 
 pub(crate) fn parse_assignment_expression(
     rule: Pair<'_, Rule>,
@@ -102,7 +102,7 @@ mod test {
     use pest::Parser;
 
     use super::*;
-    use crate::parser::{pest::OplPestParser, pipeline::RootPipelineBuilder};
+    use crate::opl::parser::{pest::OplPestParser, pipeline::RootPipelineBuilder};
 
     #[test]
     fn test_simple_assignment() {

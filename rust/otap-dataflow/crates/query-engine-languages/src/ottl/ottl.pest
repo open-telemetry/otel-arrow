@@ -1,0 +1,43 @@
+// OTTL Grammar is heavily influenced by the following source:
+// https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md
+
+// These two special rules, when defined, are implicitly allowed at:
+// - at every sequence (split by ~)
+// - between every repetition (+ or *)
+// Atomics (marked with @) are excluded
+// See https://pest.rs/book/grammars/syntax.html#implicit-whitespace
+WHITESPACE = _{ " " | NEWLINE }
+COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
+
+// Literals
+true_literal = @{ "true" }
+false_literal = @{ "false" }
+null_literal = @{ "nil" }
+integer_literal = @{
+    ("+" | "-")?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+    ~ !("." ~ ASCII_DIGIT)
+}
+float_literal = @{
+    ("+" | "-")?
+    ~ ((ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+) | ("." ~ ASCII_DIGIT+))
+}
+double_quote_string_char = _{
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+}
+string_literal = @{
+    "\"" ~ double_quote_string_char* ~ "\""
+}
+
+// Expressions
+boolean_expression = _{ true_literal | false_literal }
+
+scalar_expression = {
+    boolean_expression
+    | float_literal
+    | integer_literal
+    | string_literal
+    | null_literal
+    | ("(" ~ scalar_expression ~ ")")
+}

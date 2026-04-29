@@ -20,13 +20,13 @@ mod temporal;
 #[allow(missing_docs)]
 mod pest {
     #[derive(pest_derive::Parser)]
-    #[grammar = "opl.pest"]
+    #[grammar = "opl/opl.pest"]
     pub struct OplPestParser;
 }
 
 pub(crate) use pest::Rule;
 
-use crate::parser::pipeline::parse_pipeline;
+use crate::opl::parser::pipeline::parse_pipeline;
 
 /// Parser for OPL programs.
 pub struct OplParser;

@@ -1,6 +1,6 @@
 [package]
-name = "otap-df-opl"
-description = "Observability Processing Language (OPL)"
+name = "otap-df-query-engine-languages"
+description = "Query engine language parsers for OTAP dataflow"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

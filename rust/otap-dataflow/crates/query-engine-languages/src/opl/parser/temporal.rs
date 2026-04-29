@@ -121,7 +121,7 @@ mod test {
     use data_engine_expressions::{DateTimeValue, ScalarExpression, StaticScalarExpression};
     use pest::Parser;
 
-    use crate::parser::{Rule, expression::parse_tagged_literal, pest::OplPestParser};
+    use crate::opl::parser::{Rule, expression::parse_tagged_literal, pest::OplPestParser};
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_with_tz(

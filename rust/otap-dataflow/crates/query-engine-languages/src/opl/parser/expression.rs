@@ -26,7 +26,7 @@ use pest::{
 };
 use regex::Regex;
 
-use crate::parser::{
+use crate::opl::parser::{
     Rule, invalid_child_rule_error, pipeline::PipelineBuilder, temporal::parse_date_time,
 };
 
@@ -979,7 +979,7 @@ mod test {
     use pretty_assertions::assert_eq;
     use regex::Regex;
 
-    use crate::parser::{
+    use crate::opl::parser::{
         Rule,
         expression::{
             LogicalOrScalarExpr, parse_additive_expression, parse_expression,

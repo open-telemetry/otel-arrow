@@ -61,7 +61,6 @@ impl PipelineStage for AttributeTransformPipelineStage {
 #[cfg(test)]
 mod test {
     use data_engine_kql_parser::{KqlParser, Parser};
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
         otap::Logs,
@@ -76,6 +75,7 @@ mod test {
         },
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
 

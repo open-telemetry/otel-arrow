@@ -9,8 +9,8 @@ use data_engine_parser_abstractions::{
 };
 use pest::iterators::Pair;
 
-use crate::parser::operator::parse_operator_call;
-use crate::parser::{Rule, invalid_child_rule_error};
+use crate::opl::parser::operator::parse_operator_call;
+use crate::opl::parser::{Rule, invalid_child_rule_error};
 
 /// Trait for building pipelines.
 ///
@@ -156,7 +156,7 @@ pub(crate) fn parse_pipeline_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::pest::OplPestParser;
+    use crate::opl::parser::pest::OplPestParser;
     use pest::Parser as _;
 
     #[test]

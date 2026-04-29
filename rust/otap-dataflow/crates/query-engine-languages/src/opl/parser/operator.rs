@@ -18,13 +18,13 @@ use data_engine_parser_abstractions::{
 };
 use pest::iterators::Pair;
 
-use crate::parser::assignment::parse_assignment_expression;
-use crate::parser::expression::{
+use crate::opl::parser::assignment::parse_assignment_expression;
+use crate::opl::parser::expression::{
     no_inner_rule_error, parse_attribute_selection_expression, parse_expression,
     parse_index_expression, parse_member_expression,
 };
-use crate::parser::pipeline::{InnerPipelineBuilder, PipelineBuilder, parse_pipeline_stage};
-use crate::parser::{Rule, invalid_child_rule_error};
+use crate::opl::parser::pipeline::{InnerPipelineBuilder, PipelineBuilder, parse_pipeline_stage};
+use crate::opl::parser::{Rule, invalid_child_rule_error};
 
 pub(crate) fn parse_operator_call(
     rule: Pair<'_, Rule>,
@@ -485,10 +485,10 @@ mod tests {
     use pest::Parser as _;
     use pretty_assertions::assert_eq;
 
-    use crate::parser::operator::parse_operator_call;
-    use crate::parser::pest::OplPestParser;
-    use crate::parser::pipeline::RootPipelineBuilder;
-    use crate::parser::{OplParser, Rule};
+    use crate::opl::parser::operator::parse_operator_call;
+    use crate::opl::parser::pest::OplPestParser;
+    use crate::opl::parser::pipeline::RootPipelineBuilder;
+    use crate::opl::parser::{OplParser, Rule};
 
     #[test]
     fn test_route_to_operator_call() {

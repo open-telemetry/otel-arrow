@@ -1938,7 +1938,6 @@ mod test {
     }
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
@@ -1958,6 +1957,7 @@ mod test {
     use otap_df_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::test::{
         exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,

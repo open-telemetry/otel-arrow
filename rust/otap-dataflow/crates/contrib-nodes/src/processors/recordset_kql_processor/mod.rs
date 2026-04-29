@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) mod config;
+pub(crate) mod otlp_bridge;
 pub(crate) mod processor;
 
 use self::config::RecordsetKqlProcessorConfig;

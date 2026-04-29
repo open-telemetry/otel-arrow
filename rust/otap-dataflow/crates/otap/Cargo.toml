@@ -48,7 +48,7 @@ otap-df-engine = { workspace = true }
 otap-df-engine-macros = { workspace = true }
 otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
-otap-df-opl = { workspace = true }
+otap-df-query-engine-languages = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-pdata-views = { workspace = true }
 otap-df-query-engine = { workspace = true }
