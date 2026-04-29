@@ -1818,12 +1818,9 @@ mod tests {
         run_test_success(
             Value::DateTime(&DateTimeScalarExpression::new(
                 QueryLocation::new_fake(),
-                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
+                Utc.timestamp_nanos(1).into(),
             )),
-            Value::DateTime(&DateTimeScalarExpression::new(
-                QueryLocation::new_fake(),
-                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
-            )),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
             false,
             true,
         );
@@ -1835,10 +1832,33 @@ mod tests {
             )),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
-                "hello world",
+                "2025-06-29T00:00:00Z",
             )),
             false,
+            true,
+        );
+
+        run_test_success(
+            Value::TimeSpan(&TimeSpanScalarExpression::new(
+                QueryLocation::new_fake(),
+                TimeDelta::nanoseconds(1),
+            )),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
             false,
+            true,
+        );
+
+        run_test_success(
+            Value::TimeSpan(&TimeSpanScalarExpression::new(
+                QueryLocation::new_fake(),
+                TimeDelta::hours(1),
+            )),
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "01:00:00",
+            )),
+            false,
+            true,
         );
 
         run_test_success(
