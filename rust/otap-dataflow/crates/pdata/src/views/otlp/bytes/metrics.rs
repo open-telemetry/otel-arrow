@@ -2110,7 +2110,7 @@ impl ExemplarView for RawExemplar<'_> {
 mod test {
     use super::*;
     use crate::{
-        otlp::ProtoBuffer,
+        otlp::{ProtoBuffer, common::BoundedBuf},
         proto::opentelemetry::metrics::v1::{
             Metric, NumberDataPoint, Sum, metric::Data, number_data_point,
         },

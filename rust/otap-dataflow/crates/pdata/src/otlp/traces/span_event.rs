@@ -3,6 +3,7 @@
 
 use arrow::array::{RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Array};
 
+use crate::otlp::common::BoundedBuf;
 use crate::{
     arrays::{
         NullableArrayAccessor, StringArrayAccessor, get_timestamp_nanosecond_array_opt,

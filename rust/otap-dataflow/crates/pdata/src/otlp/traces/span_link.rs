@@ -3,6 +3,7 @@
 
 use arrow::array::{RecordBatch, UInt16Array, UInt32Array};
 
+use crate::otlp::common::BoundedBuf;
 use crate::{
     arrays::{
         FixedSizeBinaryArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_u16_array,

@@ -5,6 +5,7 @@ use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch, StringArray}
 use arrow::datatypes::{UInt16Type, UInt32Type};
 use num_enum::TryFromPrimitive;
 
+use crate::otlp::common::BoundedBuf;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
 use crate::error::{Error, Result};
 use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;

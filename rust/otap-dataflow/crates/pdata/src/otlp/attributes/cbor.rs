@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::otlp::common::BoundedBuf;
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::proto::consts::field_num::common::{

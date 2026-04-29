@@ -1021,6 +1021,7 @@ mod test {
     };
 
     use crate::otlp::ProtoBuffer;
+    use crate::otlp::common::BoundedBuf;
     use crate::otlp::attributes::AttributeValueType;
     use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;
     use crate::otlp::metrics::MetricType;

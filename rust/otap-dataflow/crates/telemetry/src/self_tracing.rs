@@ -12,7 +12,7 @@ pub mod formatter;
 
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
-use otap_df_pdata::otlp::ProtoBufferInline;
+use otap_df_pdata::otlp::common::{ProtoBuffer, StackProtoBuffer};
 use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
@@ -138,7 +138,7 @@ impl SavedCallsite {
 /// - [`into_record()`](Self::into_record) to produce an owned `LogRecord`
 ///   with reference-counted `Bytes` storage
 pub struct StackLogRecord {
-    buf: ProtoBufferInline<LOG_ARGUMENTS_ENCODE_INLINE>,
+    buf: StackProtoBuffer<LOG_ARGUMENTS_ENCODE_INLINE>,
     callsite_id: Identifier,
     dropped_count: u32,
 }
@@ -147,7 +147,7 @@ impl StackLogRecord {
     /// Construct from an event, encoding body/attributes on the stack.
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
-        let mut buf = ProtoBufferInline::<LOG_ARGUMENTS_ENCODE_INLINE>::with_inline();
+        let mut buf = StackProtoBuffer::<LOG_ARGUMENTS_ENCODE_INLINE>::with_inline();
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
@@ -176,7 +176,7 @@ impl StackLogRecord {
     pub fn into_record(self, context: LogContext) -> LogRecord {
         LogRecord {
             dropped_attributes_count: self.dropped_count as u16,
-            body_attrs_bytes: self.buf.into_bytes(),
+            body_attrs_bytes: self.buf.to_bytes(),
             callsite_id: self.callsite_id,
             context,
         }
@@ -193,16 +193,17 @@ impl LogRecord {
         Self::new_bounded::<LOG_ARGUMENTS_ENCODE_INLINE>(event, context)
     }
 
-    /// Construct a log record encoding into a buffer of `INLINE` bytes.
+    /// Construct a log record encoding into a heap buffer pre-allocated to
+    /// `INLINE` bytes and bounded by `INLINE`.
     ///
-    /// The encoding phase uses only stack storage up to `INLINE` bytes;
-    /// attributes that don't fit are counted via `dropped_attributes_count`.
-    /// After encoding, the result is converted to `Bytes`.
+    /// The pre-allocation ensures the encoder never grows the Vec on the hot
+    /// path. Attributes that don't fit are counted via
+    /// `dropped_attributes_count`.
     #[must_use]
     pub fn new_bounded<const INLINE: usize>(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
-        let mut buf = ProtoBufferInline::<INLINE>::with_inline();
+        let mut buf = ProtoBuffer::with_capacity_and_limit(INLINE, INLINE);
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);

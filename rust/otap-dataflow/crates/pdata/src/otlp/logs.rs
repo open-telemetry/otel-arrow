@@ -6,6 +6,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Fields};
 
+use crate::otlp::common::BoundedBuf;
 use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
     StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,

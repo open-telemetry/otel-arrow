@@ -3,6 +3,7 @@
 
 use arrow::array::Array;
 
+use crate::otlp::common::BoundedBuf;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;

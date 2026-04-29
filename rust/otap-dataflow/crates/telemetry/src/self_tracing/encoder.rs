@@ -8,8 +8,7 @@ use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
 use bytes::Bytes;
-use otap_df_pdata::otlp::common::{Dropped, EncodeResult};
-use otap_df_pdata::otlp::{ProtoBuffer, ProtoBufferInline};
+use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
@@ -18,14 +17,14 @@ use std::time::SystemTime;
 use tracing::Level;
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
-pub struct DirectLogRecordEncoder<'buf, const INLINE: usize = 0> {
-    buf: &'buf mut ProtoBufferInline<INLINE>,
+pub struct DirectLogRecordEncoder<'buf, B: BoundedBuf + std::io::Write> {
+    buf: &'buf mut B,
 }
 
-impl<'buf, const INLINE: usize> DirectLogRecordEncoder<'buf, INLINE> {
+impl<'buf, B: BoundedBuf + std::io::Write> DirectLogRecordEncoder<'buf, B> {
     /// Create a new encoder that writes to the provided buffer.
     #[inline]
-    pub const fn new(buf: &'buf mut ProtoBufferInline<INLINE>) -> Self {
+    pub const fn new(buf: &'buf mut B) -> Self {
         Self { buf }
     }
 
@@ -83,8 +82,8 @@ impl<'buf, const INLINE: usize> DirectLogRecordEncoder<'buf, INLINE> {
 
 /// Encode the event name from callsite metadata.
 /// Format: "target::name (file:line)" or "target::name" if no file/line.
-fn encode_event_name<const INLINE: usize>(
-    buf: &mut ProtoBufferInline<INLINE>,
+fn encode_event_name<B: BoundedBuf + std::io::Write>(
+    buf: &mut B,
     callsite: SavedCallsite,
 ) -> EncodeResult {
     buf.encode_len_delimited(LOG_RECORD_EVENT_NAME, |buf| {
@@ -94,14 +93,14 @@ fn encode_event_name<const INLINE: usize>(
 }
 
 /// Visitor that directly encodes tracing fields to protobuf.
-pub struct DirectFieldVisitor<'buf, const INLINE: usize = 0> {
-    buf: &'buf mut ProtoBufferInline<INLINE>,
+pub struct DirectFieldVisitor<'buf, B: BoundedBuf + std::io::Write> {
+    buf: &'buf mut B,
     dropped_count: u32,
 }
 
-impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
+impl<'buf, B: BoundedBuf + std::io::Write> DirectFieldVisitor<'buf, B> {
     /// Create a new DirectFieldVisitor that writes to the provided buffer.
-    pub const fn new(buf: &'buf mut ProtoBufferInline<INLINE>) -> Self {
+    pub const fn new(buf: &'buf mut B) -> Self {
         Self {
             buf,
             dropped_count: 0,
@@ -120,11 +119,11 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     /// value was truncated (with a `[...]` suffix), or `Err(Dropped)` if even
     /// a truncated form would not fit. On `Err`, the buffer is left in a state
     /// that is invalid for OTLP (an unfinished partial KeyValue may have been
-    /// written), so callers must invoke this within a [`ProtoBufferInline::try_encode`]
+    /// written), so callers must invoke this within a [`BoundedBuf::try_encode`]
     /// transaction so the partial bytes are rolled back.
     #[inline]
     fn encode_string_attribute_truncating_to(
-        buf: &mut ProtoBufferInline<INLINE>,
+        buf: &mut B,
         key: &str,
         value: &str,
     ) -> Result<bool, Dropped> {
@@ -151,7 +150,7 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     /// Encode an i64 attribute into a buffer.
     #[inline]
     fn encode_int_attribute_to(
-        buf: &mut ProtoBufferInline<INLINE>,
+        buf: &mut B,
         key: &str,
         value: i64,
     ) -> EncodeResult {
@@ -167,7 +166,7 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     /// Encode a bool attribute into a buffer.
     #[inline]
     fn encode_bool_attribute_to(
-        buf: &mut ProtoBufferInline<INLINE>,
+        buf: &mut B,
         key: &str,
         value: bool,
     ) -> EncodeResult {
@@ -183,7 +182,7 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     /// Encode a double attribute into a buffer.
     #[inline]
     fn encode_double_attribute_to(
-        buf: &mut ProtoBufferInline<INLINE>,
+        buf: &mut B,
         key: &str,
         value: f64,
     ) -> EncodeResult {
@@ -199,7 +198,7 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
     /// Encode a Debug attribute into a buffer.
     #[inline]
     fn encode_debug_attribute_to(
-        buf: &mut ProtoBufferInline<INLINE>,
+        buf: &mut B,
         key: &str,
         value: &dyn std::fmt::Debug,
     ) -> EncodeResult {
@@ -242,11 +241,10 @@ impl<'buf, const INLINE: usize> DirectFieldVisitor<'buf, INLINE> {
 /// Helper to encode a Debug value as a protobuf string field.
 /// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
 #[inline]
-fn encode_debug_string<const INLINE: usize>(
-    buf: &mut ProtoBufferInline<INLINE>,
+fn encode_debug_string<B: BoundedBuf + std::io::Write>(
+    buf: &mut B,
     value: &dyn std::fmt::Debug,
 ) -> EncodeResult {
-    use std::io::Write;
     buf.encode_len_delimited(ANY_VALUE_STRING_VALUE, |buf| {
         let _ = write!(buf, "{:?}", value);
         Ok(())
@@ -260,11 +258,11 @@ fn encode_debug_string<const INLINE: usize>(
 /// pre-counting the field set, while still preventing one large value from
 /// consuming the entire remaining buffer.
 #[inline]
-fn attr_budget<const INLINE: usize>(buf: &ProtoBufferInline<INLINE>) -> usize {
+fn attr_budget<B: BoundedBuf + std::io::Write>(buf: &B) -> usize {
     buf.remaining().div_ceil(2)
 }
 
-impl<const INLINE: usize> tracing::field::Visit for DirectFieldVisitor<'_, INLINE> {
+impl<B: BoundedBuf + std::io::Write> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         if field.name() == "message" {
             return;
@@ -864,7 +862,7 @@ mod tests {
     #[test]
     fn record_str_halves_remaining_budget_across_attributes() {
         use crate::self_tracing::encoder::DirectFieldVisitor;
-        use otap_df_pdata::otlp::ProtoBufferInline;
+        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
         use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
         use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
         use prost::Message;
@@ -882,7 +880,7 @@ mod tests {
 
         // Drive the visitor directly with each (field, value) pair, which is
         // what `event.record(visitor)` does internally.
-        let mut buf = ProtoBufferInline::<INLINE>::with_inline();
+        let mut buf = StackProtoBuffer::<INLINE>::with_inline();
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         visitor.record_str(&a, big.as_str());
         visitor.record_str(&b, big.as_str());

@@ -25,7 +25,6 @@ use arrow::datatypes::{DataType, Field, Fields};
 use otap_df_config::ConversionOptions;
 
 use bytes::Bytes;
-use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;
@@ -344,23 +343,13 @@ impl fmt::Display for Dropped {
 /// Result type for buffer write methods.
 pub type EncodeResult = std::result::Result<(), Dropped>;
 
-/// Buffer for encoding protobuf bytes with optional inline storage.
+/// Saved buffer position for transactional encoding.
 ///
-/// Write methods return [`EncodeResult`], enabling `?`
-/// propagation through recursive protobuf encoding. The caller
-/// is responsible for counting dropped fields.
-///
-/// The [`try_encode()`](Self::try_encode) method provides atomic
-/// field-level writes: either the entire field is written, or the
-/// buffer is rolled back to its previous state.
-#[derive(Debug)]
-pub struct ProtoBufferInline<const INLINE: usize> {
-    buffer: SmallVec<[u8; INLINE]>,
-    limit: usize,
+/// Created internally by [`BoundedBuf::try_encode`].
+#[derive(Debug, Clone, Copy)]
+pub struct Checkpoint {
+    pos: usize,
 }
-
-/// Heap-backed protobuf encoding buffer.
-pub type ProtoBuffer = ProtoBufferInline<0>;
 
 const fn tag_width_limit(tagw: usize) -> usize {
     1 << (7 * tagw)
@@ -371,139 +360,106 @@ const MAX_TAG_WIDTH: usize = 4;
 /// The maximum supported protocol buffer size limit (1 << 28) = 256MiB.
 pub const MAX_OTLP_SIZE_LIMIT: usize = tag_width_limit(MAX_TAG_WIDTH);
 
-impl<const INLINE: usize> Default for ProtoBufferInline<INLINE> {
-    fn default() -> Self {
-        Self {
-            limit: MAX_OTLP_SIZE_LIMIT,
-            buffer: SmallVec::new_const(),
-        }
+/// Compute the number of bytes needed to encode a varint value.
+#[inline]
+const fn varint_len(value: u64) -> usize {
+    // Each byte encodes 7 bits; we need ceil(bits_needed / 7), minimum 1.
+    if value == 0 {
+        return 1;
     }
+    let bits = 64 - value.leading_zeros() as usize;
+    bits.div_ceil(7)
 }
 
-impl<const INLINE: usize> ProtoBufferInline<INLINE> {
-    /// This is an alias for default().
-    ///
-    /// TODO: Replace this with Default::default or place behind #[cfg(test)]
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+/// Truncate a string to at most `max_bytes` bytes at a UTF-8 character boundary.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
     }
-
-    /// Construct a new buffer with the default limit.
-    #[must_use]
-    pub fn new_with_options(opts: ConversionOptions) -> Self {
-        Self::default().with_options(opts)
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
     }
+    &s[..end]
+}
 
-    /// Construct an unbounded buffer with starting allocation of `capacity` bytes.
-    #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            buffer: SmallVec::with_capacity(MAX_OTLP_SIZE_LIMIT.min(capacity)),
-            limit: MAX_OTLP_SIZE_LIMIT,
-        }
-    }
+/// Build an `N`-byte zero-valued varint placeholder at compile time.
+const fn make_len_placeholder<const N: usize>() -> [u8; N] {
+    let mut arr = [0x80u8; N];
+    arr[N - 1] = 0x00;
+    arr
+}
 
-    /// Modify the ProtoBuffer with options.
-    #[must_use]
-    fn with_options(mut self, opts: ConversionOptions) -> Self {
-        if let Some(limit) = opts.otlp_size_limit {
-            self.limit = MAX_OTLP_SIZE_LIMIT.min(limit.get());
-        }
-        self
-    }
+/// Trait for buffers that support bounded protobuf encoding.
+///
+/// The trait exposes a small set of storage primitives; all higher-level
+/// encoding methods are provided as default methods so that two concrete
+/// storage strategies (heap-backed [`ProtoBuffer`] and stack-backed
+/// [`StackProtoBuffer`]) can share the encoding logic.
+///
+/// Write methods return [`EncodeResult`], enabling `?` propagation through
+/// recursive protobuf encoding. Callers are responsible for counting
+/// dropped fields. The [`try_encode`](Self::try_encode) method provides
+/// atomic field-level writes: either the entire field is written, or the
+/// buffer is rolled back to its previous state.
+pub trait BoundedBuf {
+    // ===== Storage primitives =====
 
-    /// Construct a buffer bounded to exactly `INLINE` bytes, avoiding allocation.
-    #[must_use]
-    pub const fn with_inline() -> Self {
-        Self {
-            buffer: SmallVec::new_const(),
-            limit: INLINE,
-        }
-    }
+    /// Current write position (encoded byte count).
+    fn len(&self) -> usize;
 
-    /// Returns the current limit.
-    #[must_use]
+    /// Maximum byte count the buffer will accept.
+    fn limit(&self) -> usize;
+
+    /// Set a new write limit.
+    fn set_limit(&mut self, limit: usize);
+
+    /// Append bytes if they fit within the limit; otherwise return `Err(Dropped)`
+    /// without writing any bytes.
+    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult;
+
+    /// Truncate the buffer to the given position. Used for rollback.
+    fn truncate(&mut self, pos: usize);
+
+    /// Borrow the encoded bytes.
+    fn as_slice(&self) -> &[u8];
+
+    /// Borrow the encoded bytes mutably (used by [`patch_len_placeholder`]).
+    fn as_mut_slice(&mut self) -> &mut [u8];
+
+    /// Reset the buffer to empty (preserves any underlying allocation).
+    fn clear(&mut self);
+
+    // ===== Default methods =====
+
+    /// Returns true if no bytes have been written.
     #[inline]
-    pub const fn limit(&self) -> usize {
-        self.limit
-    }
-
-    /// Append a slice if it fits entirely, otherwise return `Err(Dropped)`.
-    #[inline]
-    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult {
-        if self.buffer.len() + slice.len() <= self.limit {
-            self.buffer.extend_from_slice(slice);
-            Ok(())
-        } else {
-            Err(Dropped)
-        }
-    }
-
-    /// Returns a Bytes representation.
-    #[must_use]
-    pub fn into_bytes(self) -> Bytes {
-        Bytes::from(self.buffer.into_vec())
-    }
-
-    /// Extract the inner buffer as a `SmallVec`.
-    #[must_use]
-    pub fn into_inner(self) -> SmallVec<[u8; INLINE]> {
-        self.buffer
-    }
-
-    /// Save the current buffer position for potential rollback.
-    #[must_use]
-    #[inline]
-    fn checkpoint(&self) -> Checkpoint {
-        Checkpoint {
-            pos: self.buffer.len(),
-        }
-    }
-
-    /// Roll the buffer back to a previously saved checkpoint.
-    #[inline]
-    fn rollback(&mut self, cp: Checkpoint) {
-        self.buffer.truncate(cp.pos);
-    }
-
-    /// Try to encode a complete field atomically.
-    ///
-    /// If the closure returns an error (e.g., `Dropped` or any other
-    /// error type), the buffer is rolled back to its state before the
-    /// call and the error is returned. The caller can then distinguish
-    /// `Dropped` from real errors and count drops accordingly.
-    #[inline]
-    pub fn try_encode<E>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E> {
-        let cp = self.checkpoint();
-        match f(self) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                self.rollback(cp);
-                Err(e)
-            }
-        }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Returns the number of bytes remaining before the limit.
-    #[must_use]
     #[inline]
-    pub fn remaining(&self) -> usize {
-        self.limit.saturating_sub(self.buffer.len())
+    fn remaining(&self) -> usize {
+        self.limit().saturating_sub(self.len())
+    }
+
+    /// Append pre-encoded protocol bytes (alias for [`try_extend`]).
+    #[inline]
+    fn extend_from_slice(&mut self, slice: &[u8]) -> EncodeResult {
+        self.try_extend(slice)
     }
 
     /// Encodes a varint containing type (3 bits) and tag value.
-    pub fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) -> EncodeResult {
+    #[inline]
+    fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) -> EncodeResult {
         let key = (field_number << 3) | wire_type;
         self.encode_varint(key)
     }
 
     /// An unsigned varint encoding.
     #[inline]
-    pub fn encode_varint(&mut self, value: u64) -> EncodeResult {
+    fn encode_varint(&mut self, value: u64) -> EncodeResult {
         if value < 0x80 {
             return self.try_extend(&[value as u8]);
         }
@@ -526,53 +482,38 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     /// Encodes the signed varint type (e.g. sint32, sint64) using zig-zag encoding.
     /// <https://protobuf.dev/programming-guides/encoding/#signed-ints>
     #[inline]
-    pub fn encode_sint32(&mut self, value: i32) -> EncodeResult {
+    fn encode_sint32(&mut self, value: i32) -> EncodeResult {
         self.encode_varint(((value << 1) ^ (value >> 31)) as u64)
     }
 
-    /// Append pre-encoded protocol bytes.
-    pub fn extend_from_slice(&mut self, slice: &[u8]) -> EncodeResult {
-        self.try_extend(slice)
-    }
-
-    /// Length of the current encoding.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Returns the current capacity of the underlying buffer.
-    #[must_use]
-    pub fn capacity(&self) -> usize {
-        self.buffer.capacity()
-    }
-
-    /// Is the buffer empty?
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
-    }
-
-    /// Reset the buffer (retains capacity and limit).
-    pub fn clear(&mut self) {
-        self.buffer.clear();
-    }
-
     /// Encode a string field by tag number.
-    pub fn encode_string(&mut self, field_tag: u64, val: &str) -> EncodeResult {
+    #[inline]
+    fn encode_string(&mut self, field_tag: u64, val: &str) -> EncodeResult {
         self.encode_field_tag(field_tag, wire_types::LEN)?;
         self.encode_varint(val.len() as u64)?;
-        self.extend_from_slice(val.as_bytes())
+        self.try_extend(val.as_bytes())
     }
 
-    /// Encode a string field, truncating with a suffix if it won't fit.
-    pub fn encode_string_bounded(&mut self, field_tag: u64, val: &str) -> EncodeResult {
+    /// Encode a bytes field by tag number.
+    #[inline]
+    fn encode_bytes(&mut self, field_tag: u64, val: &[u8]) -> EncodeResult {
+        self.encode_field_tag(field_tag, wire_types::LEN)?;
+        self.encode_varint(val.len() as u64)?;
+        self.try_extend(val)
+    }
+
+    /// Encode a string field, truncating with a `[...]` suffix if it won't fit.
+    ///
+    /// Returns `Err(Dropped)` if not even a minimal truncated form fits.
+    /// On `Err`, the buffer may have partial bytes written; callers that need
+    /// atomicity should wrap in [`try_encode`](Self::try_encode).
+    fn encode_string_bounded(&mut self, field_tag: u64, val: &str) -> EncodeResult {
         let full_len = val.len();
         let tag_bytes = varint_len((field_tag << 3) | wire_types::LEN);
 
         // Check if the full string fits.
         let full_field_size = tag_bytes + varint_len(full_len as u64) + full_len;
-        if self.buffer.len() + full_field_size <= self.limit {
+        if self.len() + full_field_size <= self.limit() {
             return self.encode_string(field_tag, val);
         }
 
@@ -606,22 +547,16 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
         let truncated_str = truncate_utf8(val, content_len);
         let payload_len = truncated_str.len() + suffix_len;
 
-        // Write the truncated field directly (bypassing try_extend to avoid
-        // early Dropped returns mid-write, since we've pre-validated the fit).
+        // Pre-validated: each write fits within the limit.
         self.encode_field_tag(field_tag, wire_types::LEN)
             .expect("pre-validated fit");
         self.encode_varint(payload_len as u64)
             .expect("pre-validated fit");
-        self.buffer.extend_from_slice(truncated_str.as_bytes());
-        self.buffer.extend_from_slice(TRUNCATION_SUFFIX);
+        self.try_extend(truncated_str.as_bytes())
+            .expect("pre-validated fit");
+        self.try_extend(TRUNCATION_SUFFIX)
+            .expect("pre-validated fit");
         Err(Dropped)
-    }
-
-    /// Encode a bytes field by tag number.
-    pub fn encode_bytes(&mut self, field_tag: u64, val: &[u8]) -> EncodeResult {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
-        self.encode_varint(val.len() as u64)?;
-        self.extend_from_slice(val)
     }
 
     /// Encode a string field, truncating with a suffix if it won't fit.
@@ -631,39 +566,28 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     /// - `Ok(true)` if the value was truncated (with `[...]` suffix appended).
     /// - `Err(Dropped)` if even a minimum truncated form would not fit;
     ///   the buffer is left unchanged in this case.
-    pub fn encode_string_truncating(
+    fn encode_string_truncating(
         &mut self,
         field_tag: u64,
         val: &str,
     ) -> std::result::Result<bool, Dropped> {
-        let start = self.buffer.len();
+        let start = self.len();
         match self.encode_string_bounded(field_tag, val) {
             Ok(()) => Ok(false),
             Err(Dropped) => {
-                if self.buffer.len() == start {
-                    // Nothing was written; hard fail.
+                if self.len() == start {
                     Err(Dropped)
                 } else {
-                    // Truncated bytes have been written; report truncation.
                     Ok(true)
                 }
             }
         }
     }
 
-    /// Take the encoded bytes, returning them as `Bytes`, and reserve the original capacity.
-    /// This lets callers reuse the same buffer (growth preserved) without a second temporary.
-    pub fn take_into_bytes(&mut self) -> (Bytes, usize) {
-        let buffer = std::mem::take(&mut self.buffer);
-        let capacity = buffer.capacity();
-        (Bytes::from(buffer.into_vec()), capacity)
-    }
-
     /// Returns the narrowest placeholder width (1–4 bytes) sufficient
     /// for this buffer's remaining space.
-    #[must_use]
     #[inline]
-    pub fn placeholder_width(&self) -> usize {
+    fn placeholder_width(&self) -> usize {
         if self.remaining() < tag_width_limit(1) {
             1
         } else if self.remaining() < tag_width_limit(2) {
@@ -681,11 +605,15 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     /// remaining space, then writes the field tag, a length placeholder, the
     /// closure's content, and patches the length. If any write fails,
     /// the error propagates via `?`.
-    pub fn encode_len_delimited<E: From<Dropped>>(
+    #[inline]
+    fn encode_len_delimited<E: From<Dropped>>(
         &mut self,
         field_tag: u64,
         f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E> {
+    ) -> std::result::Result<(), E>
+    where
+        Self: Sized,
+    {
         match self.placeholder_width() {
             1 => self.encode_len_delimited_with::<1, E, _>(field_tag, f),
             2 => self.encode_len_delimited_with::<2, E, _>(field_tag, f),
@@ -694,18 +622,22 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
         }
     }
 
-    fn encode_len_delimited_with<
-        const N: usize,
-        E: From<Dropped>,
-        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
-    >(
+    /// Implementation of [`encode_len_delimited`](Self::encode_len_delimited)
+    /// with an explicit `N`-byte placeholder width.
+    #[inline]
+    fn encode_len_delimited_with<const N: usize, E, F>(
         &mut self,
         field_tag: u64,
         f: F,
-    ) -> std::result::Result<(), E> {
+    ) -> std::result::Result<(), E>
+    where
+        E: From<Dropped>,
+        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
+        Self: Sized,
+    {
         self.encode_field_tag(field_tag, wire_types::LEN)?;
         let len_start_pos = self.len();
-        self.extend_from_slice(&make_len_placeholder::<N>())?;
+        self.try_extend(&make_len_placeholder::<N>())?;
         f(self)?;
         let len = self.len() - len_start_pos - N;
         patch_len_placeholder::<N, _>(self, len, len_start_pos);
@@ -719,14 +651,15 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     /// content and signal truncation via `Err`. The caller is responsible for
     /// arranging that any "hard failure" (where no useful bytes were written)
     /// is rolled back at an outer transaction boundary via [`try_encode`].
-    ///
-    /// If writing the field tag or placeholder itself fails, no length is
-    /// patched (there is no placeholder to patch) and the error is returned.
-    pub fn encode_len_delimited_partial<E: From<Dropped>>(
+    #[inline]
+    fn encode_len_delimited_partial<E: From<Dropped>>(
         &mut self,
         field_tag: u64,
         f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E> {
+    ) -> std::result::Result<(), E>
+    where
+        Self: Sized,
+    {
         match self.placeholder_width() {
             1 => self.encode_len_delimited_partial_with::<1, E, _>(field_tag, f),
             2 => self.encode_len_delimited_partial_with::<2, E, _>(field_tag, f),
@@ -735,18 +668,22 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
         }
     }
 
-    fn encode_len_delimited_partial_with<
-        const N: usize,
-        E: From<Dropped>,
-        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
-    >(
+    /// Implementation of [`encode_len_delimited_partial`](Self::encode_len_delimited_partial)
+    /// with an explicit `N`-byte placeholder width.
+    #[inline]
+    fn encode_len_delimited_partial_with<const N: usize, E, F>(
         &mut self,
         field_tag: u64,
         f: F,
-    ) -> std::result::Result<(), E> {
+    ) -> std::result::Result<(), E>
+    where
+        E: From<Dropped>,
+        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
+        Self: Sized,
+    {
         self.encode_field_tag(field_tag, wire_types::LEN)?;
         let len_start_pos = self.len();
-        self.extend_from_slice(&make_len_placeholder::<N>())?;
+        self.try_extend(&make_len_placeholder::<N>())?;
         let result = f(self);
         let len = self.len() - len_start_pos - N;
         patch_len_placeholder::<N, _>(self, len, len_start_pos);
@@ -760,17 +697,131 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     /// callers cap how many bytes a single nested encoding may consume,
     /// without touching the underlying buffer's outer limit.
     #[inline]
-    pub fn with_max_remaining<R>(
+    fn with_max_remaining<R>(
         &mut self,
         max_remaining: usize,
         f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        let saved = self.limit;
-        let scoped = self.buffer.len().saturating_add(max_remaining).min(saved);
-        self.limit = scoped;
+    ) -> R
+    where
+        Self: Sized,
+    {
+        let saved = self.limit();
+        let scoped = self.len().saturating_add(max_remaining).min(saved);
+        self.set_limit(scoped);
         let result = f(self);
-        self.limit = saved;
+        self.set_limit(saved);
         result
+    }
+
+    /// Try to encode a complete field atomically.
+    ///
+    /// If the closure returns an error (e.g., `Dropped` or any other
+    /// error type), the buffer is rolled back to its state before the
+    /// call and the error is returned.
+    #[inline]
+    fn try_encode<E>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        Self: Sized,
+    {
+        let cp = Checkpoint { pos: self.len() };
+        match f(self) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.truncate(cp.pos);
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Heap-backed protobuf encoding buffer.
+///
+/// Backed by a `Vec<u8>`. Use [`with_capacity`](Self::with_capacity) or
+/// [`with_capacity_and_limit`](Self::with_capacity_and_limit) to pre-allocate
+/// when the maximum size is known to avoid Vec growth on the hot path.
+#[derive(Debug)]
+pub struct ProtoBuffer {
+    buffer: Vec<u8>,
+    limit: usize,
+}
+
+impl Default for ProtoBuffer {
+    fn default() -> Self {
+        Self {
+            buffer: Vec::new(),
+            limit: MAX_OTLP_SIZE_LIMIT,
+        }
+    }
+}
+
+impl ProtoBuffer {
+    /// Construct a new heap-backed buffer with the maximum default limit.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Construct a new buffer applying [`ConversionOptions`].
+    #[must_use]
+    pub fn new_with_options(opts: ConversionOptions) -> Self {
+        let mut s = Self::default();
+        if let Some(limit) = opts.otlp_size_limit {
+            s.limit = MAX_OTLP_SIZE_LIMIT.min(limit.get());
+        }
+        s
+    }
+
+    /// Construct an unbounded buffer with starting allocation of `capacity` bytes.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffer: Vec::with_capacity(MAX_OTLP_SIZE_LIMIT.min(capacity)),
+            limit: MAX_OTLP_SIZE_LIMIT,
+        }
+    }
+
+    /// Pre-allocate `capacity` bytes and bound writes to `limit`.
+    ///
+    /// Used by callers that know the bound up front (e.g. self-tracing log
+    /// records) to avoid both Vec growth and per-write storage-discriminator
+    /// branches that would arise from a SmallVec-like inline option.
+    #[must_use]
+    pub fn with_capacity_and_limit(capacity: usize, limit: usize) -> Self {
+        let limit = MAX_OTLP_SIZE_LIMIT.min(limit);
+        let cap = MAX_OTLP_SIZE_LIMIT.min(capacity).min(limit);
+        Self {
+            buffer: Vec::with_capacity(cap),
+            limit,
+        }
+    }
+
+    /// Returns the current capacity of the underlying allocation.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.buffer.capacity()
+    }
+
+    /// Consume the buffer and return its bytes as a `Bytes` (zero-copy).
+    #[must_use]
+    pub fn into_bytes(self) -> Bytes {
+        Bytes::from(self.buffer)
+    }
+
+    /// Consume the buffer and return its inner `Vec<u8>`.
+    #[must_use]
+    pub fn into_inner(self) -> Vec<u8> {
+        self.buffer
+    }
+
+    /// Take encoded bytes, returning them as `Bytes`, plus the previous capacity
+    /// so the caller can re-allocate a same-size buffer for reuse.
+    pub fn take_into_bytes(&mut self) -> (Bytes, usize) {
+        let buffer = std::mem::take(&mut self.buffer);
+        let capacity = buffer.capacity();
+        (Bytes::from(buffer), capacity)
     }
 
     /// Ensure the underlying buffer has at least the requested capacity.
@@ -781,52 +832,59 @@ impl<const INLINE: usize> ProtoBufferInline<INLINE> {
     }
 }
 
-/// Saved buffer position for transactional encoding.
-///
-/// Created by [`ProtoBufferInline::checkpoint`], consumed by
-/// [`ProtoBufferInline::rollback`].
-#[derive(Debug, Clone, Copy)]
-pub struct Checkpoint {
-    pos: usize,
+impl BoundedBuf for ProtoBuffer {
+    #[inline]
+    fn len(&self) -> usize {
+        self.buffer.len()
+    }
+    #[inline]
+    fn limit(&self) -> usize {
+        self.limit
+    }
+    #[inline]
+    fn set_limit(&mut self, limit: usize) {
+        self.limit = limit;
+    }
+    #[inline]
+    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult {
+        if self.buffer.len() + slice.len() <= self.limit {
+            self.buffer.extend_from_slice(slice);
+            Ok(())
+        } else {
+            Err(Dropped)
+        }
+    }
+    #[inline]
+    fn truncate(&mut self, pos: usize) {
+        self.buffer.truncate(pos);
+    }
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        &self.buffer
+    }
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.buffer
+    }
+    #[inline]
+    fn clear(&mut self) {
+        self.buffer.clear();
+    }
 }
 
-/// Compute the number of bytes needed to encode a varint value.
-#[inline]
-const fn varint_len(value: u64) -> usize {
-    // Each byte encodes 7 bits; we need ceil(bits_needed / 7), minimum 1.
-    if value == 0 {
-        return 1;
-    }
-    let bits = 64 - value.leading_zeros() as usize;
-    bits.div_ceil(7)
-}
-
-/// Truncate a string to at most `max_bytes` bytes at a UTF-8 character boundary.
-fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    // Find the last valid char boundary at or before max_bytes.
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
-impl<const INLINE: usize> AsRef<[u8]> for ProtoBufferInline<INLINE> {
+impl AsRef<[u8]> for ProtoBuffer {
     fn as_ref(&self) -> &[u8] {
         &self.buffer
     }
 }
 
-impl<const INLINE: usize> AsMut<[u8]> for ProtoBufferInline<INLINE> {
+impl AsMut<[u8]> for ProtoBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.buffer
     }
 }
 
-impl<const INLINE: usize> std::io::Write for ProtoBufferInline<INLINE> {
+impl std::io::Write for ProtoBuffer {
     /// Write bytes to the buffer, ignoring the size limit.
     ///
     /// This is provided for compatibility with `std::io::Write`-based
@@ -844,26 +902,153 @@ impl<const INLINE: usize> std::io::Write for ProtoBufferInline<INLINE> {
     }
 }
 
-/// Helper for encoding with const length.
+/// Stack-backed protobuf encoding buffer with fixed `N`-byte capacity.
 ///
-/// Our proto encoding algorithm tries to encode in a single pass over the OTAP data, but it will
-/// not know the size of the nested child messages a priori. Because the length fields are encoded
-/// in a varint, we don't know how many bytes we need to set aside for the length before we start
-/// appending the encoded child.
+/// Performs zero allocations: storage is an inline `[u8; N]` array with a
+/// running cursor. Used by zero-allocation paths like
+/// `raw_error!`/`StackLogRecord` where a small bounded buffer is sufficient.
+pub struct StackProtoBuffer<const N: usize> {
+    buf: [u8; N],
+    pos: usize,
+    limit: usize,
+}
+
+impl<const N: usize> fmt::Debug for StackProtoBuffer<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StackProtoBuffer")
+            .field("len", &self.pos)
+            .field("limit", &self.limit)
+            .field("capacity", &N)
+            .finish()
+    }
+}
+
+impl<const N: usize> StackProtoBuffer<N> {
+    /// Construct a stack buffer bounded to `N` bytes.
+    #[must_use]
+    pub const fn with_inline() -> Self {
+        Self {
+            buf: [0u8; N],
+            pos: 0,
+            limit: N,
+        }
+    }
+
+    /// Borrow the encoded bytes (zero-copy).
+    #[must_use]
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        // SAFETY: pos is always <= N and tracks initialized bytes.
+        &self.buf[..self.pos]
+    }
+
+    /// Copy encoded bytes into a `Bytes` (allocates).
+    #[must_use]
+    pub fn to_bytes(&self) -> Bytes {
+        Bytes::copy_from_slice(self.as_slice())
+    }
+}
+
+impl<const N: usize> Default for StackProtoBuffer<N> {
+    fn default() -> Self {
+        Self::with_inline()
+    }
+}
+
+impl<const N: usize> BoundedBuf for StackProtoBuffer<N> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.pos
+    }
+    #[inline]
+    fn limit(&self) -> usize {
+        self.limit
+    }
+    #[inline]
+    fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.min(N);
+    }
+    #[inline]
+    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult {
+        let new_pos = self.pos + slice.len();
+        if new_pos <= self.limit {
+            self.buf[self.pos..new_pos].copy_from_slice(slice);
+            self.pos = new_pos;
+            Ok(())
+        } else {
+            Err(Dropped)
+        }
+    }
+    #[inline]
+    fn truncate(&mut self, pos: usize) {
+        if pos < self.pos {
+            self.pos = pos;
+        }
+    }
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        &self.buf[..self.pos]
+    }
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.buf[..self.pos]
+    }
+    #[inline]
+    fn clear(&mut self) {
+        self.pos = 0;
+    }
+}
+
+impl<const N: usize> AsRef<[u8]> for StackProtoBuffer<N> {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<const N: usize> AsMut<[u8]> for StackProtoBuffer<N> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.buf[..self.pos]
+    }
+}
+
+impl<const N: usize> std::io::Write for StackProtoBuffer<N> {
+    /// Write bytes to the buffer up to the fixed capacity `N`.
+    ///
+    /// Unlike [`ProtoBuffer`], this cannot grow; if the buffer is full
+    /// the call returns `Ok(0)` and excess bytes are dropped.
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let avail = N.saturating_sub(self.pos);
+        let n = avail.min(buf.len());
+        if n == 0 {
+            return Ok(0);
+        }
+        self.buf[self.pos..self.pos + n].copy_from_slice(&buf[..n]);
+        self.pos += n;
+        Ok(n)
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Helper for encoding a length-delimited field with an explicit
+/// placeholder width. Prefer [`BoundedBuf::encode_len_delimited`] which
+/// auto-selects the placeholder width; this macro is retained only for
+/// tests that need explicit control.
 ///
-/// An optional fourth argument specifies how many bytes to reserve for the length placeholder.
-/// An N-byte placeholder supports sizes up to 2^(8*n-1) bytes: 1=127, 2=16KiB, 3=2MiB, 4=256MiB
-///
-/// Prefer [`ProtoBufferInline::encode_len_delimited`] which auto-selects the
-/// placeholder width. This macro is retained only for tests that need explicit control.
+/// An N-byte placeholder supports sizes up to 2^(7*n)-1 bytes:
+/// 1=127, 2=16KiB-1, 3=2MiB-1, 4=256MiB-1.
 #[macro_export]
 macro_rules! proto_encode_len_delimited_of_size {
     ($field_tag: expr, $encode_fn:expr, $buf:expr, $placeholder_bytes:literal) => {{
         $buf.encode_field_tag($field_tag, $crate::proto::consts::wire_types::LEN)?;
-        let len_start_pos = $buf.len();
+        let len_start_pos = $crate::otlp::common::BoundedBuf::len($buf);
         $crate::otlp::common::encode_len_placeholder::<$placeholder_bytes, _>($buf)?;
         $encode_fn;
-        let len = $buf.len() - len_start_pos - $placeholder_bytes;
+        let len = $crate::otlp::common::BoundedBuf::len($buf) - len_start_pos - $placeholder_bytes;
         $crate::otlp::common::patch_len_placeholder::<$placeholder_bytes, _>(
             $buf,
             len,
@@ -878,37 +1063,30 @@ macro_rules! proto_encode_len_delimited_of_size {
 /// value bits zeroed. `N` must be between 1 and 4 inclusive (enforced at
 /// compile time).
 ///
-/// Do not call directly — use [`proto_encode_len_delimited_of_size!`].
+/// Do not call directly — use [`proto_encode_len_delimited_of_size!`] or
+/// [`BoundedBuf::encode_len_delimited`].
 #[inline]
-pub fn encode_len_placeholder<const N: usize, const INLINE: usize>(
-    buf: &mut ProtoBufferInline<INLINE>,
-) -> EncodeResult {
+pub fn encode_len_placeholder<const N: usize, B: BoundedBuf>(buf: &mut B) -> EncodeResult {
     const {
         assert!(
             N >= 1 && N <= MAX_TAG_WIDTH,
             "placeholder must be 1-4 bytes"
         )
     }
-    buf.extend_from_slice(&make_len_placeholder::<N>())
-}
-
-/// Build an `N`-byte zero-valued varint placeholder at compile time.
-const fn make_len_placeholder<const N: usize>() -> [u8; N] {
-    let mut arr = [0x80u8; N];
-    arr[N - 1] = 0x00;
-    arr
+    buf.try_extend(&make_len_placeholder::<N>())
 }
 
 /// Patch a previously written length placeholder with the actual length.
 ///
-/// Do not call directly — use [`proto_encode_len_delimited_of_size!`].
+/// Do not call directly — use [`proto_encode_len_delimited_of_size!`] or
+/// [`BoundedBuf::encode_len_delimited`].
 #[inline]
-pub fn patch_len_placeholder<const N: usize, const INLINE: usize>(
-    buf: &mut ProtoBufferInline<INLINE>,
+pub fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
+    buf: &mut B,
     len: usize,
     len_start_pos: usize,
 ) {
-    let slice = buf.as_mut();
+    let slice = buf.as_mut_slice();
     for i in 0..N {
         slice[len_start_pos + i] += ((len >> (i * 7)) & 0x7f) as u8;
     }
@@ -1549,7 +1727,7 @@ mod test {
 
     #[test]
     fn test_encode_len_placeholder_sizes() {
-        use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
+        use crate::otlp::common::{BoundedBuf, ProtoBuffer, encode_len_placeholder};
 
         fn check<const N: usize>() {
             let mut buf = ProtoBuffer::new();
@@ -1569,7 +1747,7 @@ mod test {
 
     #[test]
     fn test_patch_len_placeholder_roundtrip() {
-        use crate::otlp::common::{ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
+        use crate::otlp::common::{BoundedBuf, ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
 
         // Verify that encoding+patching with each placeholder size produces
         // valid varints that a standard decoder would read correctly.
@@ -1601,7 +1779,7 @@ mod test {
 
     #[test]
     fn test_macro_with_custom_placeholder_size() {
-        use crate::otlp::common::{EncodeResult, ProtoBuffer};
+        use crate::otlp::common::{BoundedBuf, EncodeResult, ProtoBuffer};
 
         fn encode_large(buf: &mut ProtoBuffer) -> EncodeResult {
             proto_encode_len_delimited_of_size!(
@@ -1645,11 +1823,11 @@ mod test {
 
     #[test]
     fn test_encode_len_delimited_auto_width() {
-        use crate::otlp::common::{ProtoBufferInline, Result};
+        use crate::otlp::common::{BoundedBuf, ProtoBuffer, Result, StackProtoBuffer};
 
         // A small inline buffer (127 bytes) should use a 1-byte placeholder.
-        let mut buf = ProtoBufferInline::<127>::with_inline();
-        buf.encode_len_delimited(1, |buf: &mut ProtoBufferInline<127>| -> Result<()> {
+        let mut buf = StackProtoBuffer::<127>::with_inline();
+        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<127>| -> Result<()> {
             Ok(buf.encode_string(1, "hi")?)
         })
         .unwrap();
@@ -1657,8 +1835,8 @@ mod test {
         assert_eq!(buf.len(), 6);
 
         // A 128-byte inline buffer should use a 2-byte placeholder (128 >= 2^7).
-        let mut buf = ProtoBufferInline::<128>::with_inline();
-        buf.encode_len_delimited(1, |buf: &mut ProtoBufferInline<128>| -> Result<()> {
+        let mut buf = StackProtoBuffer::<128>::with_inline();
+        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<128>| -> Result<()> {
             Ok(buf.encode_string(1, "hi")?)
         })
         .unwrap();
@@ -1666,7 +1844,7 @@ mod test {
         assert_eq!(buf.len(), 7);
 
         // A default (256MiB limit) buffer should use a 4-byte placeholder.
-        let mut buf = ProtoBufferInline::<0>::new();
+        let mut buf = ProtoBuffer::new();
         buf.encode_len_delimited(1, |buf| -> Result<()> { Ok(buf.encode_string(1, "hi")?) })
             .unwrap();
         // tag(1) + placeholder(4) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 9
@@ -1683,7 +1861,7 @@ mod test {
 
     #[test]
     fn try_encode_rolls_back_buffer_on_error() {
-        use crate::otlp::common::{Dropped, EncodeResult, ProtoBuffer};
+        use crate::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
 
         let mut buf = ProtoBuffer::new();
         buf.encode_string(1, "before").unwrap();
@@ -1712,9 +1890,9 @@ mod test {
         // an unpatched 0-length placeholder followed by partial content bytes.
         // The bytes are wire-corrupt and MUST be wrapped in try_encode by
         // callers (this is the bug that bit encode_body_string).
-        use crate::otlp::common::{Dropped, EncodeResult, ProtoBufferInline};
+        use crate::otlp::common::{BoundedBuf, Dropped, EncodeResult, StackProtoBuffer};
 
-        let mut buf = ProtoBufferInline::<8>::with_inline();
+        let mut buf = StackProtoBuffer::<8>::with_inline();
         let r: EncodeResult = buf.encode_len_delimited(1, |b| {
             // Write enough partial content to force overflow before completion.
             b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA")?;
@@ -1728,7 +1906,7 @@ mod test {
         assert_eq!(buf.as_ref()[1], 0x00, "placeholder remained unpatched");
 
         // The safe pattern: wrap in try_encode so partial bytes roll back.
-        let mut buf = ProtoBufferInline::<8>::with_inline();
+        let mut buf = StackProtoBuffer::<8>::with_inline();
         let r: EncodeResult = buf.try_encode(|b| {
             b.encode_len_delimited(1, |b| b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA"))
         });
@@ -1738,13 +1916,13 @@ mod test {
 
     #[test]
     fn encode_len_delimited_partial_patches_length_on_err() {
-        use crate::otlp::common::{Dropped, EncodeResult, ProtoBufferInline};
+        use crate::otlp::common::{BoundedBuf, Dropped, EncodeResult, StackProtoBuffer};
         use crate::proto::consts::wire_types;
 
         // Partial mode: even when the inner closure returns Err mid-way, the
         // length placeholder reflects the bytes actually written, leaving a
         // valid LEN-prefixed wire field that can be parsed.
-        let mut buf = ProtoBufferInline::<128>::with_inline();
+        let mut buf = StackProtoBuffer::<128>::with_inline();
         // Pre-write a marker field so we can detect mis-parsing of trailing data.
         buf.encode_string(7, "marker").unwrap();
         let len_before = buf.len();
@@ -1775,23 +1953,23 @@ mod test {
 
     #[test]
     fn encode_string_truncating_three_outcomes() {
-        use crate::otlp::common::{Dropped, ProtoBufferInline, TRUNCATION_SUFFIX};
+        use crate::otlp::common::{BoundedBuf, Dropped, StackProtoBuffer, TRUNCATION_SUFFIX};
 
         // (a) Full fit -> Ok(false), no suffix.
-        let mut buf = ProtoBufferInline::<64>::with_inline();
+        let mut buf = StackProtoBuffer::<64>::with_inline();
         let r = buf.encode_string_truncating(1, "hi");
         assert_eq!(r, Ok(false));
         assert!(!buf.as_ref().windows(5).any(|w| w == TRUNCATION_SUFFIX));
 
         // (b) Truncated -> Ok(true), output ends with suffix.
-        let mut buf = ProtoBufferInline::<32>::with_inline();
+        let mut buf = StackProtoBuffer::<32>::with_inline();
         let long = "X".repeat(1000);
         let r = buf.encode_string_truncating(1, &long);
         assert_eq!(r, Ok(true));
         assert!(buf.as_ref().ends_with(TRUNCATION_SUFFIX));
 
         // (c) Hard fail -> Err(Dropped), buffer unchanged.
-        let mut buf = ProtoBufferInline::<4>::with_inline();
+        let mut buf = StackProtoBuffer::<4>::with_inline();
         // Pre-fill so remaining < min_overhead.
         buf.extend_from_slice(b"abcd").unwrap();
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
@@ -1802,20 +1980,20 @@ mod test {
 
     #[test]
     fn encode_string_truncating_round_trips_via_prost() {
-        use crate::otlp::common::ProtoBufferInline;
+        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
         use prost::Message;
 
         // Encode a truncating string as if it were the "string_value" of an
         // AnyValue (field 1 = string) and decode via prost to confirm the
         // bytes form a valid wire message ending in the truncation suffix.
-        let mut buf = ProtoBufferInline::<48>::with_inline();
+        let mut buf = StackProtoBuffer::<48>::with_inline();
         let long = "Y".repeat(500);
         let r = buf.encode_string_truncating(1, &long);
         assert_eq!(r, Ok(true));
 
         // Decode as AnyValue (field 1 = string_value).
         use crate::proto::opentelemetry::common::v1::AnyValue;
-        let av = AnyValue::decode(buf.into_bytes()).expect("valid wire bytes");
+        let av = AnyValue::decode(buf.to_bytes()).expect("valid wire bytes");
         let s = match av.value {
             Some(crate::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s,
             other => panic!("unexpected AnyValue variant: {:?}", other),
@@ -1826,11 +2004,11 @@ mod test {
 
     #[test]
     fn truncate_at_utf8_boundary_does_not_panic() {
-        use crate::otlp::common::ProtoBufferInline;
+        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
 
         // A string of 4-byte UTF-8 chars (😀) where truncation lands mid-char.
         let s: String = std::iter::repeat('😀').take(20).collect();
-        let mut buf = ProtoBufferInline::<24>::with_inline();
+        let mut buf = StackProtoBuffer::<24>::with_inline();
         let r = buf.encode_string_truncating(1, &s);
         assert!(matches!(r, Ok(true) | Err(_)));
         // If anything was written, it must be valid UTF-8 between the length
@@ -1840,9 +2018,9 @@ mod test {
 
     #[test]
     fn with_max_remaining_restores_outer_limit() {
-        use crate::otlp::common::ProtoBufferInline;
+        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
 
-        let mut buf = ProtoBufferInline::<64>::with_inline();
+        let mut buf = StackProtoBuffer::<64>::with_inline();
         let outer_limit = buf.limit();
         let outer_remaining = buf.remaining();
 
@@ -1858,9 +2036,9 @@ mod test {
 
     #[test]
     fn with_max_remaining_nests_correctly() {
-        use crate::otlp::common::ProtoBufferInline;
+        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
 
-        let mut buf = ProtoBufferInline::<128>::with_inline();
+        let mut buf = StackProtoBuffer::<128>::with_inline();
         let outer = buf.limit();
 
         buf.with_max_remaining(50, |b| {
@@ -1877,9 +2055,9 @@ mod test {
 
     #[test]
     fn with_max_remaining_saturates_and_honors_outer() {
-        use crate::otlp::common::ProtoBufferInline;
+        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
 
-        let mut buf = ProtoBufferInline::<32>::with_inline();
+        let mut buf = StackProtoBuffer::<32>::with_inline();
         let outer = buf.limit();
 
         // usize::MAX should saturate without overflow and never exceed outer.

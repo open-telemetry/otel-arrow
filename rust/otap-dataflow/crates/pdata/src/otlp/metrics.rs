@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::otlp::common::BoundedBuf;
 use crate::arrays::{
     Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
     get_bool_array_opt, get_u8_array, get_u16_array,
