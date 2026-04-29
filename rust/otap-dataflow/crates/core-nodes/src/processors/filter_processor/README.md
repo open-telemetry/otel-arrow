@@ -10,6 +10,16 @@ For reference please the golang version of the filter processor.
 
 ```yaml
 config:
+  metrics:
+    include:
+      match_type: strict
+      metric_names:
+        - http.server.request.count
+        - process.cpu.utilization
+    exclude:
+      match_type: regexp
+      metric_names:
+        - ^internal\..*$
   logs:
     include:
       match_type: strict
@@ -77,7 +87,15 @@ config:
           value: false
 ```
 
-Currently we don't support metric filtering
+For a runnable metric-name filter pipeline, see
+[`configs/fake-metric-filter-debug-noop.yaml`](../../../../configs/fake-metric-filter-debug-noop.yaml).
+
+### Metrics
+
+To filter metrics, define `metrics.include` or `metrics.exclude` with a
+`match_type` and `metric_names`. Supported `match_type` values are `strict` and
+`regexp`. When both `include` and `exclude` are defined, include filtering runs
+first, and exclude filtering is applied to that result.
 
 ### Logs
 
