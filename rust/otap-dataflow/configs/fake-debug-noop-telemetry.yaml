@@ -15,8 +15,6 @@ engine:
         - selector:
             scope_name: "fake_data_generator.receiver.metrics"
             instrument_name: "logs.produced"
-            scope_attributes:
-              feature_flag: "experimental"
           stream:
             name: "otlp.logs.produced.count"
             description: "Count of logs produced"
