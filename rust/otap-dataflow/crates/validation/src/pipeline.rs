@@ -8,6 +8,7 @@
 use crate::error::ValidationError;
 use crate::template::render_jinja;
 use minijinja::context;
+use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
 use serde_yaml::{Mapping, Value};
 use std::fs;
 
@@ -131,6 +132,9 @@ pub struct Pipeline {
     /// Container connections declared on this pipeline, consumed during
     /// config wiring.
     pub(crate) container_connections: Vec<PipelineContainerConnection>,
+    /// Optional transport headers policy to embed in the SUV pipeline's
+    /// `policies.transport_headers` section.
+    pub(crate) transport_headers_policy: Option<TransportHeadersPolicy>,
 }
 
 impl Pipeline {
@@ -169,6 +173,7 @@ impl Pipeline {
             core_start: 0,
             core_end: 0,
             container_connections: Vec::new(),
+            transport_headers_policy: None,
         })
     }
 
@@ -193,6 +198,41 @@ impl Pipeline {
     pub fn connect_container(mut self, conn: PipelineContainerConnection) -> Self {
         self.container_connections.push(conn);
         self
+    }
+
+    /// Set a transport headers policy for the SUV pipeline from a typed
+    /// [`TransportHeadersPolicy`] struct.
+    #[must_use]
+    pub fn with_transport_headers_policy(mut self, policy: TransportHeadersPolicy) -> Self {
+        self.transport_headers_policy = Some(policy);
+        self
+    }
+
+    /// Set a transport headers policy for the SUV pipeline from a YAML
+    /// string.
+    pub fn with_transport_headers_policy_yaml(
+        mut self,
+        policy_yaml: impl AsRef<str>,
+    ) -> Result<Self, ValidationError> {
+        let policy: TransportHeadersPolicy =
+            serde_yaml::from_str(policy_yaml.as_ref()).map_err(|e| {
+                ValidationError::Config(format!("invalid transport headers policy yaml: {e}"))
+            })?;
+        self.transport_headers_policy = Some(policy);
+        Ok(self)
+    }
+
+    /// Serialize the transport headers policy as a YAML string for template
+    /// injection. Returns an empty string when no policy is configured.
+    pub(crate) fn transport_headers_policy_yaml(&self) -> Result<String, ValidationError> {
+        match &self.transport_headers_policy {
+            Some(policy) => serde_yaml::to_string(policy).map_err(|e| {
+                ValidationError::Config(format!(
+                    "failed to serialize transport headers policy: {e}"
+                ))
+            }),
+            None => Ok(String::new()),
+        }
     }
 
     /// Rewrite a config value in the pipeline YAML at the given
@@ -315,6 +355,7 @@ fn set_config_by_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_config::transport_headers_policy::*;
 
     fn sample_yaml() -> &'static str {
         r#"
@@ -523,6 +564,130 @@ nodes:
             .set_node_config_value("nonexistent", "key", "value")
             .unwrap_err();
         assert!(matches!(err, ValidationError::Config(_)));
+    }
+
+    #[test]
+    fn with_transport_headers_policy_stores_struct() {
+        let policy = TransportHeadersPolicy {
+            header_capture: HeaderCapturePolicy::new(
+                CaptureDefaults::default(),
+                vec![CaptureRule {
+                    match_names: vec!["x-tenant-id".into()],
+                    store_as: None,
+                    sensitive: false,
+                    value_kind: None,
+                }],
+            ),
+            header_propagation: HeaderPropagationPolicy::new(
+                PropagationDefault {
+                    selector: PropagationSelector {
+                        selector_type: PropagationSelectorType::AllCaptured,
+                        named: None,
+                    },
+                    ..Default::default()
+                },
+                vec![],
+            ),
+        };
+        let pipeline = Pipeline::from_yaml(sample_yaml())
+            .unwrap()
+            .with_transport_headers_policy(policy.clone());
+        assert_eq!(pipeline.transport_headers_policy, Some(policy));
+    }
+
+    #[test]
+    fn with_transport_headers_policy_yaml_parses_and_stores() {
+        let policy_yaml = r#"
+header_capture:
+  headers:
+    - match_names: ["x-tenant-id"]
+header_propagation:
+  default:
+    selector:
+      type: all_captured
+    action: propagate
+"#;
+        let pipeline = Pipeline::from_yaml(sample_yaml())
+            .unwrap()
+            .with_transport_headers_policy_yaml(policy_yaml)
+            .expect("valid yaml should parse");
+        let policy = pipeline.transport_headers_policy.as_ref().unwrap();
+
+        // Verify the parsed struct matches what we'd build programmatically.
+        let expected = TransportHeadersPolicy {
+            header_capture: HeaderCapturePolicy::new(
+                CaptureDefaults::default(),
+                vec![CaptureRule {
+                    match_names: vec!["x-tenant-id".into()],
+                    store_as: None,
+                    sensitive: false,
+                    value_kind: None,
+                }],
+            ),
+            header_propagation: HeaderPropagationPolicy::new(
+                PropagationDefault {
+                    selector: PropagationSelector {
+                        selector_type: PropagationSelectorType::AllCaptured,
+                        named: None,
+                    },
+                    ..Default::default()
+                },
+                vec![],
+            ),
+        };
+        assert_eq!(policy, &expected);
+    }
+
+    #[test]
+    fn with_transport_headers_policy_yaml_rejects_invalid() {
+        let result = Pipeline::from_yaml(sample_yaml())
+            .unwrap()
+            .with_transport_headers_policy_yaml("not: {valid: [policy");
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(err.to_string().contains("invalid transport headers policy"));
+    }
+
+    #[test]
+    fn transport_headers_policy_none_by_default() {
+        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
+        assert!(pipeline.transport_headers_policy.is_none());
+    }
+
+    #[test]
+    fn transport_headers_policy_yaml_empty_when_none() {
+        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
+        let yaml = pipeline.transport_headers_policy_yaml().unwrap();
+        assert!(yaml.is_empty());
+    }
+
+    #[test]
+    fn transport_headers_policy_yaml_roundtrips() {
+        let policy = TransportHeadersPolicy {
+            header_capture: HeaderCapturePolicy::new(
+                CaptureDefaults::default(),
+                vec![CaptureRule {
+                    match_names: vec!["x-tenant-id".into()],
+                    store_as: None,
+                    sensitive: false,
+                    value_kind: None,
+                }],
+            ),
+            ..Default::default()
+        };
+        let pipeline = Pipeline::from_yaml(sample_yaml())
+            .unwrap()
+            .with_transport_headers_policy(policy);
+        let yaml = pipeline.transport_headers_policy_yaml().unwrap();
+        assert!(!yaml.is_empty());
+        // the serialized YAML should parse back to the same policy.
+        let reserailized_policy: TransportHeadersPolicy =
+            serde_yaml::from_str(&yaml).expect("roundtrip parse");
+        assert_eq!(
+            pipeline.transport_headers_policy.as_ref().unwrap(),
+            &reserailized_policy
+        );
     }
 
     #[test]

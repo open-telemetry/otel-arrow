@@ -16,6 +16,7 @@
 {% set generator_core_start = generator_core_start | default(2) -%}
 {% set generator_core_end = generator_core_end | default(2) -%}
 {% set data_source = data_source | default(static) %}
+{% set transport_headers = transport_headers | default(false) -%}
 
 {{ generator_label }}:
   policies:
@@ -25,6 +26,14 @@
         set:
           - start: {{ generator_core_start }}
             end: {{ generator_core_end }}
+{% if transport_headers %}
+    transport_headers:
+      header_propagation:
+        default:
+          selector:
+            type: all_captured
+          action: propagate
+{% endif %}
   nodes:
 {{ generator_label | indent(4, true)}}:
       type: "urn:otel:receiver:traffic_generator"
@@ -37,6 +46,16 @@
           metric_weight: {{ metric_weight }}
           trace_weight: {{ trace_weight }}
           log_weight: {{ log_weight }}
+{% if transport_headers %}
+        transport_headers:
+{% for key, value in transport_headers | items %}
+{% if value %}
+          {{ key }}: "{{ value }}"
+{% else %}
+          {{ key }}:
+{% endif %}
+{% endfor %}
+{% endif %}
         registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
     fanout:
       type: "urn:otel:processor:fanout_temp"

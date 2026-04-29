@@ -13,7 +13,7 @@ pub trait ResourceView {
     where
         Self: 'att;
 
-    /// The associated iterator type for this impl of the the trait. The iterator will yield
+    /// The associated iterator type for this impl of the trait. The iterator will yield
     /// borrowed references that must live as long as the lifetime 'att
     type AttributesIter<'att>: Iterator<Item = Self::Attribute<'att>>
     where
