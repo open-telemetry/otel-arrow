@@ -328,12 +328,6 @@ impl Value<'_> {
                         *right_array,
                         case_insensitive,
                     )
-                } else if let Value::String(right_string) = right {
-                    Ok(Self::are_string_values_equal(
-                        right_string.get_value(),
-                        left,
-                        case_insensitive,
-                    ))
                 } else {
                     Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
@@ -348,12 +342,6 @@ impl Value<'_> {
             (Value::Map(left_map), right) => {
                 if let Value::Map(right_map) = right {
                     map_value::equal_to(query_location, *left_map, *right_map, case_insensitive)
-                } else if let Value::String(right_string) = right {
-                    Ok(Self::are_string_values_equal(
-                        right_string.get_value(),
-                        left,
-                        case_insensitive,
-                    ))
                 } else {
                     Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
