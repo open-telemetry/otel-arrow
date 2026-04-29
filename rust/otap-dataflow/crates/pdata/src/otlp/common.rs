@@ -804,6 +804,24 @@ impl ProtoBuffer {
         self.buffer.capacity()
     }
 
+    /// Returns the current length in bytes (inherent shortcut for [`BoundedBuf::len`]).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Returns true if the buffer has no bytes (inherent shortcut for [`BoundedBuf::is_empty`]).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    /// Reset the buffer length to zero, keeping allocated capacity.
+    /// Inherent shortcut for [`BoundedBuf::clear`].
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+
     /// Consume the buffer and return its bytes as a `Bytes` (zero-copy).
     #[must_use]
     pub fn into_bytes(self) -> Bytes {
@@ -1727,7 +1745,7 @@ mod test {
 
     #[test]
     fn test_encode_len_placeholder_sizes() {
-        use crate::otlp::common::{BoundedBuf, ProtoBuffer, encode_len_placeholder};
+        use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
 
         fn check<const N: usize>() {
             let mut buf = ProtoBuffer::new();
@@ -1747,7 +1765,7 @@ mod test {
 
     #[test]
     fn test_patch_len_placeholder_roundtrip() {
-        use crate::otlp::common::{BoundedBuf, ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
+        use crate::otlp::common::{ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
 
         // Verify that encoding+patching with each placeholder size produces
         // valid varints that a standard decoder would read correctly.
