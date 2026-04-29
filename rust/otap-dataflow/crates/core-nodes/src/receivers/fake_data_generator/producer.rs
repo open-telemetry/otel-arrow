@@ -201,6 +201,16 @@ pub struct TrafficRun<'a> {
     idx: usize,
 }
 
+impl TrafficRun<'_> {
+    /// The number of signals remaining in the current run.
+    #[must_use]
+    pub fn remaining_signal_count(&self) -> u64 {
+        (self.idx..self.strategy.len())
+            .map(|idx| self.strategy.size_at(idx) as u64)
+            .sum()
+    }
+}
+
 impl<'a> Iterator for TrafficRun<'a> {
     type Item = GenerateResult;
 
