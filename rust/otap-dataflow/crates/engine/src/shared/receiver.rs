@@ -162,36 +162,6 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the accumulated per-message synchronous compute duration
-    /// in nanoseconds for the current PData message.
-    ///
-    /// Receivers do not call `timed()`, so this always returns 0.
-    #[must_use]
-    pub fn per_message_compute_ns(&self) -> u64 {
-        0
-    }
-
-    /// Returns whether this node is a stopwatch start node.
-    ///
-    /// Receivers do not participate in stopwatch roles.
-    #[must_use]
-    pub fn is_stopwatch_start(&self) -> bool {
-        false
-    }
-
-    /// Returns whether this node is a stopwatch stop node.
-    ///
-    /// Receivers do not participate in stopwatch roles.
-    #[must_use]
-    pub fn is_stopwatch_stop(&self) -> bool {
-        false
-    }
-
-    /// Record stopwatch stop.
-    ///
-    /// No-op for receivers — they do not participate in stopwatch roles.
-    pub fn record_stopwatch_stop(&self, _total: u64) {}
-
     /// Returns the capture policy if a header capture policy is configured.
     ///
     /// Returns `None` when no capture policy is active (zero overhead).

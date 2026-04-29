@@ -17,6 +17,7 @@ use otap_df_telemetry::instrument::Mmsc;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::{attribute_set, metric_set};
 
+use crate::Interests;
 use crate::attributes::PipelineAttributeSet;
 use crate::context::PipelineContext;
 use otap_df_config::policy::TelemetryPolicy;
@@ -74,15 +75,37 @@ pub(crate) struct StopwatchState {
 /// Resolves stopwatch start/stop node names to node indices, validates
 /// that endpoints are processor nodes and ranges don't overlap, registers
 /// metric entities, and builds the lookup tables used for processor wiring.
+///
+/// Stopwatches require the per-node `PROCESS_DURATION` interest to measure
+/// elapsed time. If `node_interests` does not include `PROCESS_DURATION`
+/// (e.g. `runtime_metrics: basic` or `none`), all configured stopwatches
+/// are skipped with a single warning so users see a clear signal rather
+/// than silent zero-duration metrics.
 pub(crate) fn build_stopwatch_state(
     telemetry_policy: &TelemetryPolicy,
     node_name_to_index: &HashMap<String, usize>,
     processor_indices: &HashSet<usize>,
+    node_interests: Interests,
     pipeline_context: &PipelineContext,
 ) -> StopwatchState {
     let mut metrics = Vec::new();
     let mut stop_nodes: HashMap<usize, usize> = HashMap::new();
     let mut start_nodes: HashSet<usize> = HashSet::new();
+
+    if !telemetry_policy.stopwatches.is_empty()
+        && !node_interests.contains(Interests::PROCESS_DURATION)
+    {
+        otap_df_telemetry::otel_warn!(
+            "stopwatch.config.metric_level_disabled",
+            count = telemetry_policy.stopwatches.len() as u64,
+            "Stopwatches require runtime_metrics level that enables PROCESS_DURATION (normal or detailed); skipping all configured stopwatches"
+        );
+        return StopwatchState {
+            metrics,
+            stop_nodes,
+            start_nodes,
+        };
+    }
 
     let pipeline_attrs = pipeline_context.pipeline_attribute_set();
 
@@ -115,10 +138,14 @@ pub(crate) fn build_stopwatch_state(
             continue;
         }
 
-        // Non-overlapping: a node cannot be the start (or stop) of more than
-        // one stopwatch.  The second definition would silently overwrite the
+        // Non-overlapping: a node cannot appear in either role across
+        // stopwatches. The second definition would silently overwrite the
         // first accumulator on PData.
-        if start_nodes.contains(&start_idx) || stop_nodes.contains_key(&stop_idx) {
+        if start_nodes.contains(&start_idx)
+            || stop_nodes.contains_key(&start_idx)
+            || start_nodes.contains(&stop_idx)
+            || stop_nodes.contains_key(&stop_idx)
+        {
             otap_df_telemetry::otel_warn!(
                 "stopwatch.config.overlap",
                 name = sw_config.name,
@@ -265,7 +292,8 @@ mod tests {
         let (names, procs) = test_maps(&["a", "b", "c"], &[]);
         let policy = policy_with(vec![sw("sw1", "a", "c")]);
 
-        let state = build_stopwatch_state(&policy, &names, &procs, &ctx);
+        let state =
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
 
         assert_eq!(state.metrics.len(), 1);
         assert!(state.start_nodes.contains(&0)); // "a" = index 0
@@ -278,7 +306,8 @@ mod tests {
         let (names, procs) = test_maps(&["a", "b"], &[]);
         let policy = policy_with(vec![sw("sw1", "a", "missing")]);
 
-        let state = build_stopwatch_state(&policy, &names, &procs, &ctx);
+        let state =
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
 
         assert!(state.metrics.is_empty());
         assert!(state.start_nodes.is_empty());
@@ -291,7 +320,8 @@ mod tests {
         let (names, procs) = test_maps(&["recv", "proc1", "proc2"], &["recv"]);
         let policy = policy_with(vec![sw("sw1", "recv", "proc2")]);
 
-        let state = build_stopwatch_state(&policy, &names, &procs, &ctx);
+        let state =
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
 
         assert!(state.metrics.is_empty());
     }
@@ -302,7 +332,8 @@ mod tests {
         let (names, procs) = test_maps(&["proc1", "proc2", "exp"], &["exp"]);
         let policy = policy_with(vec![sw("sw1", "proc1", "exp")]);
 
-        let state = build_stopwatch_state(&policy, &names, &procs, &ctx);
+        let state =
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
 
         assert!(state.metrics.is_empty());
     }
@@ -314,7 +345,8 @@ mod tests {
         // Two stopwatches share "a" as start node.
         let policy = policy_with(vec![sw("sw1", "a", "b"), sw("sw2", "a", "d")]);
 
-        let state = build_stopwatch_state(&policy, &names, &procs, &ctx);
+        let state =
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
 
         // Only the first should be registered.
         assert_eq!(state.metrics.len(), 1);
@@ -330,12 +362,29 @@ mod tests {
         // Two stopwatches share "d" as stop node.
         let policy = policy_with(vec![sw("sw1", "a", "d"), sw("sw2", "c", "d")]);
 
-        let state = build_stopwatch_state(&policy, &names, &procs, &ctx);
+        let state =
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
 
         // Only the first should be registered.
         assert_eq!(state.metrics.len(), 1);
         assert!(state.start_nodes.contains(&0)); // "a"
         assert!(!state.start_nodes.contains(&2)); // "c" not registered
+    }
+
+    #[test]
+    fn stop_of_one_is_start_of_another_is_rejected() {
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c"], &[]);
+        let policy = policy_with(vec![sw("sw1", "a", "b"), sw("sw2", "b", "c")]);
+
+        let state =
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+
+        assert_eq!(state.metrics.len(), 1);
+        assert!(state.start_nodes.contains(&0));
+        assert_eq!(state.stop_nodes.get(&1), Some(&0));
+        assert!(!state.start_nodes.contains(&2));
+        assert!(!state.stop_nodes.contains_key(&2));
     }
 
     #[test]
@@ -345,12 +394,27 @@ mod tests {
         // Non-overlapping: a→b and c→d.
         let policy = policy_with(vec![sw("sw1", "a", "b"), sw("sw2", "c", "d")]);
 
-        let state = build_stopwatch_state(&policy, &names, &procs, &ctx);
+        let state =
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
 
         assert_eq!(state.metrics.len(), 2);
         assert!(state.start_nodes.contains(&0)); // "a"
         assert!(state.start_nodes.contains(&2)); // "c"
         assert_eq!(state.stop_nodes.get(&1), Some(&0)); // "b" → sw1
         assert_eq!(state.stop_nodes.get(&3), Some(&1)); // "d" → sw2
+    }
+
+    #[test]
+    fn stopwatches_skipped_when_process_duration_disabled() {
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b"], &[]);
+        let policy = policy_with(vec![sw("sw1", "a", "b")]);
+
+        // Empty interests => PROCESS_DURATION not set; all stopwatches skipped.
+        let state = build_stopwatch_state(&policy, &names, &procs, Interests::empty(), &ctx);
+
+        assert!(state.metrics.is_empty());
+        assert!(state.start_nodes.is_empty());
+        assert!(state.stop_nodes.is_empty());
     }
 }

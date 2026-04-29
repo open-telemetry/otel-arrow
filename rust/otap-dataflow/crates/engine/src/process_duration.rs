@@ -100,7 +100,9 @@ impl ComputeDuration {
     /// Like [`timed`](Self::timed), but also returns the wall-clock
     /// nanoseconds consumed by `f` (0 when timing is disabled).
     /// Used by the stopwatch path to accumulate per-message compute
-    /// duration.
+    /// duration. Stopwatches are wired up only when the metric level
+    /// includes `PROCESS_DURATION` (validated at pipeline build time),
+    /// so the disabled branch here is unreachable in stopwatch use.
     #[inline]
     pub fn timed_with_elapsed<T, E>(
         &self,

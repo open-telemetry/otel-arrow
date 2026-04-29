@@ -42,7 +42,6 @@ use crate::error::{Error, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
-use crate::process_duration::ComputeDuration;
 use crate::processor::ProcessorRuntimeRequirements;
 use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
@@ -175,59 +174,6 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         self.core.node_interests()
-    }
-
-    /// Returns the accumulated per-message synchronous compute duration
-    /// in nanoseconds for the current PData message.
-    ///
-    /// Stopwatch support is scoped to local processors; shared processors
-    /// always return 0.
-    #[must_use]
-    pub fn per_message_compute_ns(&self) -> u64 {
-        0
-    }
-
-    /// Returns whether this node is a stopwatch start node.
-    ///
-    /// Stopwatch support is scoped to local processors; always returns false.
-    #[must_use]
-    pub fn is_stopwatch_start(&self) -> bool {
-        false
-    }
-
-    /// Returns whether this node is a stopwatch stop node.
-    ///
-    /// Stopwatch support is scoped to local processors; always returns false.
-    #[must_use]
-    pub fn is_stopwatch_stop(&self) -> bool {
-        false
-    }
-
-    /// Record stopwatch stop.
-    ///
-    /// No-op for shared processors — stopwatch support is scoped to local
-    /// processors.
-    pub fn record_stopwatch_stop(&self, _total: u64) {}
-
-    /// Time a synchronous, fallible closure if process-duration timing
-    /// is enabled.
-    ///
-    /// Delegates to [`ComputeDuration::timed`] with this handler's
-    /// precomputed interests.  Duration is recorded into the `ok` or
-    /// `err` accumulator based on the closure's `Result` outcome.
-    ///
-    /// Stopwatch accumulation is not supported for shared processors;
-    /// the elapsed value returned by `timed()` is discarded.
-    ///
-    /// The closure-based API structurally prevents timing from
-    /// spanning `.await` points.
-    #[inline]
-    pub fn timed<T, E>(
-        &self,
-        cd: &ComputeDuration,
-        f: impl FnOnce() -> Result<T, E>,
-    ) -> Result<T, E> {
-        cd.timed(self.core.node_interests(), f)
     }
 
     /// Sends a message to the next node(s) in the pipeline.

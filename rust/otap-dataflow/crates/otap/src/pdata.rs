@@ -13,6 +13,8 @@
 //! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
 //! This functionality is exposed through various traits implemented by effect handlers.
 
+use std::num::NonZeroU64;
+
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
@@ -44,10 +46,11 @@ pub struct Context {
     transport_headers: Option<TransportHeaders>,
     /// Active stopwatch accumulator (nanoseconds).
     ///
-    /// `Some(ns)` when a message is inside a stopwatch range (between
-    /// start and stop nodes).  At most one stopwatch can be active at
-    /// a time (non-overlapping ranges).
-    stopwatch_compute_ns: Option<u64>,
+    /// `Some(ns + 1)` when a message is inside a stopwatch range (between
+    /// start and stop nodes). The +1 bias represents active-with-zero while
+    /// preserving `Option<NonZeroU64>` niche optimization.
+    /// At most one stopwatch can be active at a time (non-overlapping ranges).
+    stopwatch_compute_ns: Option<NonZeroU64>,
 }
 
 impl Context {
@@ -357,17 +360,21 @@ impl StopwatchAccumulation for OtapPdata {
                  overlapping ranges are not supported — previous accumulator discarded"
             );
         }
-        self.context.stopwatch_compute_ns = Some(0);
+        self.context.stopwatch_compute_ns = Some(NonZeroU64::new(1).expect("1 is non-zero"));
     }
 
     fn add_stopwatch_compute(&mut self, ns: u64) {
         if let Some(acc) = &mut self.context.stopwatch_compute_ns {
-            *acc = acc.saturating_add(ns);
+            *acc = NonZeroU64::new(acc.get().saturating_add(ns))
+                .expect("biased stopwatch accumulator is non-zero");
         }
     }
 
     fn take_stopwatch_compute(&mut self) -> Option<u64> {
-        self.context.stopwatch_compute_ns.take()
+        self.context
+            .stopwatch_compute_ns
+            .take()
+            .map(|acc| acc.get() - 1)
     }
 }
 
@@ -709,9 +716,6 @@ macro_rules! impl_stopwatch_handler {
 }
 
 impl_stopwatch_handler!(otap_df_engine::local::processor::EffectHandler<OtapPdata>);
-impl_stopwatch_handler!(otap_df_engine::shared::processor::EffectHandler<OtapPdata>);
-impl_stopwatch_handler!(otap_df_engine::local::receiver::EffectHandler<OtapPdata>);
-impl_stopwatch_handler!(otap_df_engine::shared::receiver::EffectHandler<OtapPdata>);
 
 /// Forward-path stopwatch accumulation for non-overlapping ranges.
 fn stopwatch_accumulate(handler: &impl StopwatchHandler, data: &mut OtapPdata) {
@@ -739,8 +743,15 @@ fn stopwatch_accumulate(handler: &impl StopwatchHandler, data: &mut OtapPdata) {
 ///   $trait_name   – `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
 ///   $handler      – fully-qualified EffectHandler type
 ///   $id_method    – `processor_id` or `receiver_id`
+macro_rules! maybe_stopwatch_accumulate {
+    (stopwatch, $handler:expr, $data:expr) => {
+        stopwatch_accumulate($handler, $data);
+    };
+    (no_stopwatch, $handler:expr, $data:expr) => {};
+}
+
 macro_rules! impl_message_source_ext {
-    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident) => {
+    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident, $stopwatch:ident) => {
         #[$async_attr]
         impl $trait_name<OtapPdata> for $handler {
             async fn send_message_with_source_node(
@@ -748,7 +759,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                stopwatch_accumulate(self, &mut data);
+                maybe_stopwatch_accumulate!($stopwatch, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -757,7 +768,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                stopwatch_accumulate(self, &mut data);
+                maybe_stopwatch_accumulate!($stopwatch, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -770,7 +781,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                stopwatch_accumulate(self, &mut data);
+                maybe_stopwatch_accumulate!($stopwatch, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -783,7 +794,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                stopwatch_accumulate(self, &mut data);
+                maybe_stopwatch_accumulate!($stopwatch, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }
@@ -794,25 +805,29 @@ impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otap_df_engine::local::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    stopwatch
 );
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    no_stopwatch
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    no_stopwatch
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    no_stopwatch
 );
 
 /* -------- ReceivedAtNode implementation -------- */
