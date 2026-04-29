@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777493992562,
+  "lastUpdate": 1777495029819,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "lalit_fin@yahoo.com",
-            "name": "Lalit Kumar Bhasin",
-            "username": "lalitb"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "63a4ec5909141aff852a07faf63dc6ad1254eaa6",
-          "message": "fix: repair arm64 Docker build by switching to musl.cc toolchain   (#2214)\n\n## Problem\n                                                    \nThe `aarch64-unknown-linux-musl` build was silently compiling C code\nagainst\n  glibc headers while linking against musl libc.                       \n  `rust:1.94` ships Debian 13 / glibc 2.40+, where `_GNU_SOURCE` implies\n  `_ISOC23_SOURCE`, redirecting `strtol` and `sscanf` to C23 variants.\n`aws-lc-sys/bcm.c` defines `_GNU_SOURCE`, so its object files reference\n`__isoc23_strtol` and `__isoc23_sscanf` — symbols that only exist in\nglibc,\n  not musl. Linker explodes:\n\nundefined reference to __isoc23_strtol' undefined reference to\n__isoc23_sscanf'\n\n  The culprits:\n- **Native arm64 builds** (macOS M1, Linux arm64 runners): no C compiler\nwas\nexplicitly set, Cargo fell back to the system `gcc` which uses glibc\nheaders\n- **Cross amd64 -> arm64 builds**: `gcc-aarch64-linux-gnu` (Debian's\nglibc-based\ncross-compiler) brings glibc system headers into what is supposed to be\na\n    musl build\n\n  ## Fix\n\n  Split the arm64 path on `BUILDPLATFORM`:\n\n  - **Native arm64** (`BUILDPLATFORM=linux/arm64`): use the musl.cc\n`aarch64-linux-musl-native.tgz` toolchain — an arm64-hosted compiler\nwith\nits own musl headers. `musl-tools` from apt was considered but rejected\n    because its unprefixed `musl-gcc` confuses jemalloc's configure into\n    misdetecting atomics support. Also adds a symlink\n`aarch64-linux-musl-ar -> aarch64-linux-musl-gcc-ar` since the native\ntarball\n    only ships the latter but cmake-based crates expect the former.\n\n- **Cross amd64 -> arm64** (`BUILDPLATFORM=linux/amd64`): use the\nmusl.cc\n`aarch64-linux-musl-cross.tgz` toolchain - an x86_64-hosted\ncross-compiler\nwith its own musl headers, replacing `gcc-aarch64-linux-gnu`. Tarball\n    integrity verified with `sha256sum`.\n\nBoth toolchains avoid glibc headers entirely, eliminating the C23\nredirect.\n\n## Testing\n                                                                       \n| Scenario | BUILDPLATFORM | TARGETPLATFORM | Tested on |\n  |---|---|---|---|                                                    \n| Native arm64 | `linux/arm64` | `linux/arm64` | macOS Apple Silicon\n(Docker Desktop) - `docker buildx build --platform linux/arm64` |\n| Cross amd64→arm64 | `linux/amd64` | `linux/arm64` | macOS Apple\nSilicon (Docker Desktop) - `docker buildx build --platform linux/arm64\n--build-arg BUILDPLATFORM=linux/amd64` |\n| Native amd64 | `linux/amd64` | `linux/amd64` | Not tested locally -\nunchanged code path, covered by CI `ubuntu-24.04` runner |\n\nNote: Scenario 3 was simulated on macOS by overriding BUILDPLATFORM via\n--build-arg. The x86_64 cross-compiler binaries ran under Docker\nDesktop's binfmt support. The true cross-compile path will be exercised\nby CI on an amd64 runner",
-          "timestamp": "2026-03-12T19:28:25Z",
-          "tree_id": "fedcac2be6a4ffb4ab5a0274936e97c64fea9873",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/63a4ec5909141aff852a07faf63dc6ad1254eaa6"
-        },
-        "date": 1773345872441,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.8790891766548157,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.71315350731182,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.14849380470332,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 53.00703125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 56.1640625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 473687.5420007659,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 477851.6780523651,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001882,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10913094.076692436,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10851390.169664245,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 176378.75664862656,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "30638925+marcsnid@users.noreply.github.com",
+            "name": "Marc Snider",
+            "username": "marcsnid"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "92b39f8c06f710fc7d0f4ac4f39e8ac9dc02dfa8",
+          "message": "Fix: skip boolean column when all values are false for optional arrays (#2759)\n\n# Change Summary\n\nFix `AdaptiveBooleanArrayBuilder` to skip producing an array when all\nvalues are `false` or null for optional columns. Previously, the builder\nonly skipped on all-null:`false` values triggered array creation even\nthough `false` is the boolean default value. This makes boolean columns\nconsistent with how integer (`0`) and string (`\"\"`) columns handle\ndefaults.\n\nChanges:\n- Added `has_true_value` and `optional` fields to\n`AdaptiveBooleanArrayBuilder`\n- `finish()` now returns `None` when `optional` and  `!has_true_value`\n- Updated `test_metrics_round_trip` to reflect that the `is_monotonic`\ncolumn (all `false`/null) is now correctly omitted\n\n## What issue does this PR close?\ncloses #1449\n\n## How are these changes tested?\n\n- Added 4 new unit tests in `boolean.rs`:\n- `test_adaptive_boolean_builder_all_false` — all-false optional →\n`None`\n- `test_adaptive_boolean_builder_false_and_null` — mixed false+null\noptional → `None`\n- `test_adaptive_boolean_builder_false_then_true` — false then true →\n`Some(array)` with correct values\n- `test_adaptive_boolean_builder_all_false_non_optional` — non-optional\nalways produces array\n- All existing tests in `otap-df-pdata` continue to pass (including the\nupdated `test_metrics_round_trip`).\n\n## Are there any user-facing changes?\n\nNo. This is an internal encoding optimization. Optional boolean columns\nthat contain only default values (`false`/null) are no longer included\nin Arrow record batches, reducing payload size.\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-04-29T19:14:26Z",
+          "tree_id": "77767c46ca2232bb5db0e6c40f21986f84856cee",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/92b39f8c06f710fc7d0f4ac4f39e8ac9dc02dfa8"
+        },
+        "date": 1777495028864,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.2955524921417236,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.750827733963406,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.211584632001235,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.037239583333335,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.484375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 5946.068533245167,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6082.563650220666,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.016799,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 212233.66375381665,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 175266.55041791502,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
