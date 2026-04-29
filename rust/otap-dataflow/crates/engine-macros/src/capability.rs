@@ -311,7 +311,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
         /// `SharedAsLocal` adapter — wraps a shared implementation and
         /// exposes it as a local trait object.
-        struct #shared_as_local_name(Box<dyn shared::#trait_name>);
+        struct #shared_as_local_name(::std::boxed::Box<dyn shared::#trait_name>);
 
         #[::async_trait::async_trait(?Send)]
         impl local::#trait_name for #shared_as_local_name {
@@ -425,7 +425,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             type Shared = dyn shared::#trait_name;
 
             fn wrap_shared_as_local(
-                shared: Box<Self::Shared>,
+                shared: ::std::boxed::Box<Self::Shared>,
             ) -> ::std::rc::Rc<Self::Local> {
                 let adapter = #shared_as_local_name(shared);
                 ::std::rc::Rc::new(adapter)

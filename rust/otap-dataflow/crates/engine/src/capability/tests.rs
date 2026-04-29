@@ -206,21 +206,34 @@ fn macro_dual_form() {
     (ec.register_local)("ext".into(), local_factory("l-dual"), &mut registry)
         .expect("register_local");
 
-    // Native dual: local and shared are *distinct* registrations
-    // (different concrete types) and therefore have independent
-    // one-shot guards. A single node may claim both — each yields
-    // the value of its own concrete type. The per-binding one-shot
-    // contract only collapses local and shared for the SharedAsLocal
-    // fallback path (where they back the same underlying object).
-    let caps = resolve(&registry);
+    // Native dual: local and shared are distinct registrations
+    // (different concrete types), but the per-binding one-shot
+    // contract applies uniformly — claiming either execution model
+    // on a node invalidates the other on the same node. To observe
+    // both concrete values we resolve twice, claiming a different
+    // side from each independent `Capabilities`.
+    let caps_shared = resolve(&registry);
     assert_eq!(
-        caps.require_shared::<MacroTestCap>().unwrap().value(),
+        caps_shared
+            .require_shared::<MacroTestCap>()
+            .unwrap()
+            .value(),
         "s-dual"
     );
+    assert!(matches!(
+        caps_shared.require_local::<MacroTestCap>(),
+        Err(crate::capability::registry::Error::CapabilityAlreadyConsumed { .. })
+    ));
+
+    let caps_local = resolve(&registry);
     assert_eq!(
-        caps.require_local::<MacroTestCap>().unwrap().value(),
+        caps_local.require_local::<MacroTestCap>().unwrap().value(),
         "l-dual"
     );
+    assert!(matches!(
+        caps_local.require_shared::<MacroTestCap>(),
+        Err(crate::capability::registry::Error::CapabilityAlreadyConsumed { .. })
+    ));
 
     // Each execution model is still one-shot in isolation.
     let caps = resolve(&registry);

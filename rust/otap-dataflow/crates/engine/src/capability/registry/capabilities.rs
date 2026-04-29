@@ -54,19 +54,24 @@ impl Capabilities {
     /// call each accessor at most once at construction, store the
     /// returned handle, and clone/share it within the node as needed.
     ///
-    /// **SharedAsLocal fallback.** When a binding's extension only
-    /// registered a shared variant, `require_local` falls through to
-    /// the shared entry and routes its output through the
-    /// capability's adapter. In that case there is only one
-    /// underlying produce closure, so `require_local` and
-    /// `require_shared` share a single one-shot guard \u2014 claiming
-    /// either accessor consumes the binding for both. A second call
-    /// returns [`Error::CapabilityAlreadyConsumed`].
+    /// The contract is **per-binding**, not per-execution-model: a
+    /// node claims a binding at most once, regardless of which
+    /// accessor (`require_local`, `require_shared`, `optional_local`,
+    /// `optional_shared`) is used. Claiming one execution model
+    /// invalidates the other on the same node, so a subsequent call
+    /// to the alternative accessor returns
+    /// [`Error::CapabilityAlreadyConsumed`].
     ///
-    /// **Native dual.** When a binding's extension registered both a
-    /// native local and a native shared variant, the two are
-    /// distinct objects with independent guards: a node may claim
-    /// `require_local` and `require_shared` and receive both.
+    /// This holds uniformly across both binding shapes:
+    /// - **SharedAsLocal fallback** (extension registered only a
+    ///   shared variant): there is one underlying produce closure,
+    ///   so the shared entry's `Cell::take()` is the single guard.
+    /// - **Native dual** (extension registered both native local and
+    ///   native shared variants): the two resolved entries are
+    ///   distinct, but a successful claim on either side also takes
+    ///   (and drops, unrun) the alternative entry's produce closure
+    ///   on this node, so the per-binding contract holds without an
+    ///   auxiliary flag.
     ///
     /// # Errors
     ///
@@ -106,6 +111,16 @@ impl Capabilities {
                     )
                 });
             entry.tracker_consumed.set(true);
+            // Per-binding one-shot: invalidate the native-shared
+            // alternative on this node so a subsequent
+            // `require_shared`/`optional_shared` returns
+            // `CapabilityAlreadyConsumed`. In the SharedAsLocal
+            // fallback there is no separate native local entry, so
+            // this branch does not run for that path — the shared
+            // entry's `Cell::take()` below is the single guard.
+            if let Some(shared_entry) = self.shared.get(&id) {
+                let _ = shared_entry.produce.take();
+            }
             return Ok(trait_object);
         }
 
@@ -191,6 +206,15 @@ impl Capabilities {
                 )
             });
         entry.tracker_consumed.set(true);
+        // Per-binding one-shot: invalidate the native-local
+        // alternative on this node so a subsequent
+        // `require_local`/`optional_local` returns
+        // `CapabilityAlreadyConsumed`. In the SharedAsLocal fallback
+        // (no native local entry) this is a no-op — the shared
+        // entry's `Cell::take()` above already serves both sides.
+        if let Some(local_entry) = self.local.get(&id) {
+            let _ = local_entry.produce.take();
+        }
         Ok(trait_object)
     }
 

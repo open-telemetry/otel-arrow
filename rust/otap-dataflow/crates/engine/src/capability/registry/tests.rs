@@ -689,6 +689,37 @@ fn test_optional_local_second_call_returns_already_consumed() {
 }
 
 #[test]
+fn test_optional_shared_second_call_returns_already_consumed() {
+    // Symmetric to `test_optional_local_second_call_returns_already_consumed`:
+    // even when the binding exists, `optional_shared` is governed by the
+    // same per-node one-shot guard as `require_shared`, so a second call
+    // on the same node returns `CapabilityAlreadyConsumed` rather than
+    // silently re-minting an instance.
+    let mut reg = CapabilityRegistry::new();
+    register_shared(&mut reg, "ext-a", "val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let first = caps.optional_shared::<TestCap>().unwrap();
+    assert!(first.is_some());
+    let err = match caps.optional_shared::<TestCap>() {
+        Err(e) => e,
+        Ok(_) => panic!("expected CapabilityAlreadyConsumed"),
+    };
+    assert!(matches!(
+        err,
+        crate::error::Error::CapabilityAlreadyConsumed { .. }
+    ));
+}
+
+#[test]
 fn test_fallback_local_and_shared_share_one_shot_guard() {
     // SharedAsLocal fallback creates two per-node resolved entries
     // (one in `local_entries`, one in `shared_entries`) backed by the
@@ -1175,5 +1206,114 @@ fn test_fallback_local_consumption_flips_shared_bucket() {
     assert!(
         tracker.unconsumed_shared().is_empty(),
         "fallback consumption must flip the shared bucket",
+    );
+}
+
+#[test]
+fn test_native_dual_local_claim_invalidates_shared_on_same_node() {
+    // Native dual: extension `ext-a` registered both a native local and
+    // a native shared implementation. The per-binding one-shot contract
+    // applies uniformly: claiming `require_local` on a node consumes the
+    // binding for that node, so a subsequent `require_shared` on the same
+    // node returns `CapabilityAlreadyConsumed` even though the shared
+    // entry is a distinct object. This is enforced by `require_local`
+    // taking (and dropping unrun) the shared entry's `produce` cell on
+    // success — no auxiliary flag needed.
+    //
+    // Counterpart: `test_native_dual_shared_claim_invalidates_local_on_same_node`
+    // verifies the symmetric direction.
+    let mut reg = CapabilityRegistry::new();
+    register_local(&mut reg, "ext-a", "local-val");
+    register_shared(&mut reg, "ext-a", "shared-val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    // First: native-local claim succeeds and yields the native local
+    // implementation (not the shared-as-local adapter).
+    let local = caps.require_local::<TestCap>().unwrap();
+    assert_eq!(local.value(), "local-val");
+
+    // Per-binding one-shot: shared side is now invalidated on this node.
+    match caps.require_shared::<TestCap>() {
+        Err(crate::error::Error::CapabilityAlreadyConsumed { capability }) => {
+            assert_eq!(capability, "test_cap");
+        }
+        Err(other) => panic!("expected CapabilityAlreadyConsumed, got {other:?}"),
+        Ok(_) => panic!("expected CapabilityAlreadyConsumed after native-local claim, got Ok"),
+    }
+    // Same for the second call on the originally-claimed side.
+    assert!(matches!(
+        caps.require_local::<TestCap>(),
+        Err(crate::error::Error::CapabilityAlreadyConsumed { .. })
+    ));
+
+    // Cross-node tracker: only the local bucket flipped — the shared
+    // variant was *not* consumed by any node, just invalidated locally.
+    // The engine should still call `drop_shared()` on `ext-a` if no
+    // other node claims it.
+    assert!(
+        tracker.unconsumed_local().is_empty(),
+        "native local claim must flip the local bucket",
+    );
+    assert_eq!(
+        tracker.unconsumed_shared().len(),
+        1,
+        "native local claim must NOT flip the shared bucket — invalidating \
+         the shared alternative is not the same as consuming it",
+    );
+}
+
+#[test]
+fn test_native_dual_shared_claim_invalidates_local_on_same_node() {
+    // Symmetric counterpart to
+    // `test_native_dual_local_claim_invalidates_shared_on_same_node`:
+    // claiming `require_shared` first invalidates the native-local entry
+    // on the same node, so a subsequent `require_local` returns
+    // `CapabilityAlreadyConsumed`.
+    let mut reg = CapabilityRegistry::new();
+    register_local(&mut reg, "ext-a", "local-val");
+    register_shared(&mut reg, "ext-a", "shared-val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let shared = caps.require_shared::<TestCap>().unwrap();
+    assert_eq!(shared.value(), "shared-val");
+
+    match caps.require_local::<TestCap>() {
+        Err(crate::error::Error::CapabilityAlreadyConsumed { capability }) => {
+            assert_eq!(capability, "test_cap");
+        }
+        Err(other) => panic!("expected CapabilityAlreadyConsumed, got {other:?}"),
+        Ok(_) => panic!("expected CapabilityAlreadyConsumed after native-shared claim, got Ok"),
+    }
+    assert!(matches!(
+        caps.require_shared::<TestCap>(),
+        Err(crate::error::Error::CapabilityAlreadyConsumed { .. })
+    ));
+
+    // Cross-node tracker: only the shared bucket flipped.
+    assert!(
+        tracker.unconsumed_shared().is_empty(),
+        "native shared claim must flip the shared bucket",
+    );
+    assert_eq!(
+        tracker.unconsumed_local().len(),
+        1,
+        "native shared claim must NOT flip the local bucket — invalidating \
+         the local alternative is not the same as consuming it",
     );
 }

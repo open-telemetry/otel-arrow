@@ -77,8 +77,11 @@ pub(crate) fn expand_pipeline_factory(
         pub static #extension_factories_name: [::otap_df_engine::ExtensionFactory] = [..];
 
         /// The factory registry instance.
-        #registry_vis static #registry_name: std::sync::LazyLock<PipelineFactory<#pdata_type>> = std::sync::LazyLock::new(|| {
-            // Reference build_registry to avoid unused import warning, even though we don't call it
+        #registry_vis static #registry_name: ::std::sync::LazyLock<PipelineFactory<#pdata_type>> = ::std::sync::LazyLock::new(|| {
+            // Reference build_factory unqualified to keep the user's
+            // `use otap_df_engine::build_factory;` import live; the macro
+            // replaces the static's initializer body, so without this the
+            // user would get an unused-import warning at their call site.
             let _ = build_factory::<#pdata_type>;
             PipelineFactory::new(
                 &#receiver_factories_name,
@@ -89,22 +92,22 @@ pub(crate) fn expand_pipeline_factory(
         });
 
         /// Gets the receiver factory map, initializing it if necessary.
-        pub fn #get_receiver_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ReceiverFactory<#pdata_type>> {
+        pub fn #get_receiver_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otap_df_engine::ReceiverFactory<#pdata_type>> {
             #registry_name.get_receiver_factory_map()
         }
 
         /// Gets the processor factory map, initializing it if necessary.
-        pub fn #get_processor_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ProcessorFactory<#pdata_type>> {
+        pub fn #get_processor_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otap_df_engine::ProcessorFactory<#pdata_type>> {
             #registry_name.get_processor_factory_map()
         }
 
         /// Gets the exporter factory map, initializing it if necessary.
-        pub fn #get_exporter_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExporterFactory<#pdata_type>> {
+        pub fn #get_exporter_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otap_df_engine::ExporterFactory<#pdata_type>> {
             #registry_name.get_exporter_factory_map()
         }
 
         /// Gets the extension factory map, initializing it if necessary.
-        pub fn #get_extension_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExtensionFactory> {
+        pub fn #get_extension_factory_map_name() -> &'static ::std::collections::HashMap<&'static str, ::otap_df_engine::ExtensionFactory> {
             #registry_name.get_extension_factory_map()
         }
     }
