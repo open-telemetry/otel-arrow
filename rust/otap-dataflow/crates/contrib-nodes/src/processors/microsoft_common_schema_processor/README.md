@@ -44,6 +44,8 @@ promoted. Other records are forwarded unchanged.
 `PartB.name` takes precedence over `PartA.name`. `PartB.eventId` takes
 precedence over `PartC.eventId`. Severity values above the OTLP range are
 clamped to `24`; severity `0` is preserved as OTLP `UNSPECIFIED`.
+Recognized `PartA.*` and `PartB.*` fields are removed after promotion. Unknown
+`PartA.*` and `PartB.*` fields are preserved with their original names.
 
 Malformed trace and span IDs are kept as attributes named `trace.id` and
 `span.id` instead of being promoted to typed ID fields.
@@ -53,8 +55,9 @@ Malformed trace and span IDs are kept as attributes named `trace.id` and
 The current implementation promotes records by converting payloads to OTLP proto
 bytes and mutating OTLP `LogsData` / `LogRecord` values. Incoming Arrow batches
 that do not contain a `__csver__` log attribute are forwarded without this
-conversion. Arrow batches that may contain Common Schema records still pay the
-Arrow-to-OTLP conversion cost.
+conversion. Arrow batches that contain a `__csver__` log attribute still pay the
+Arrow-to-OTLP conversion cost. If no records are promoted after inspection, the
+original Arrow payload is forwarded unchanged.
 
 This processor should be wired only where Common Schema records are expected.
 Using it in a heterogeneous logs pipeline may add conversion work to batches

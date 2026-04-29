@@ -113,59 +113,25 @@ impl local::Processor<OtapPdata> for MicrosoftCommonSchemaProcessor {
                 }
 
                 let (context, payload) = pdata.into_parts();
-                if let OtapPayload::OtapArrowRecords(records) = &payload {
-                    if arrow_logs_have_no_csver(records) {
-                        self.metrics.arrow_batches_skipped_no_csver.inc();
-                        return effect_handler
-                            .send_message_with_source_node(OtapPdata::new(context, payload))
-                            .await
-                            .map_err(Into::into);
-                    }
+                let result = promote_microsoft_common_schema_payload(
+                    payload,
+                    effect_handler.processor_id(),
+                )?;
+                if result.arrow_skipped_no_csver {
+                    self.metrics.arrow_batches_skipped_no_csver.inc();
                 }
-
-                let otlp_bytes: OtlpProtoBytes = payload.try_into().map_err(|e| {
-                    processor_error(
-                        effect_handler.processor_id(),
-                        format!("failed to convert input to OTLP logs: {e}"),
-                    )
-                })?;
-                let OtlpProtoBytes::ExportLogsRequest(bytes) = &otlp_bytes else {
-                    return effect_handler
-                        .send_message_with_source_node(OtapPdata::new(context, otlp_bytes.into()))
-                        .await
-                        .map_err(Into::into);
-                };
-
-                let mut logs = LogsData::decode(bytes.as_ref()).map_err(|e| {
-                    processor_error(
-                        effect_handler.processor_id(),
-                        format!("failed to decode OTLP logs: {e}"),
-                    )
-                })?;
-                let stats = promote_microsoft_common_schema_logs(&mut logs);
+                let stats = result.stats;
                 self.metrics.records_seen.add(stats.records_seen);
                 self.metrics.records_promoted.add(stats.records_promoted);
                 self.metrics
                     .records_skipped_not_common_schema
                     .add(stats.records_skipped_not_common_schema());
-                if !stats.promoted_any() {
-                    return effect_handler
-                        .send_message_with_source_node(OtapPdata::new(context, otlp_bytes.into()))
-                        .await
-                        .map_err(Into::into);
+                if result.promoted {
+                    self.metrics.batches_promoted.inc();
                 }
 
-                let mut out = BytesMut::new();
-                logs.encode(&mut out).map_err(|e| {
-                    processor_error(
-                        effect_handler.processor_id(),
-                        format!("failed to encode OTLP logs: {e}"),
-                    )
-                })?;
-                self.metrics.batches_promoted.inc();
-                let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(out.freeze()));
                 effect_handler
-                    .send_message_with_source_node(OtapPdata::new(context, payload))
+                    .send_message_with_source_node(OtapPdata::new(context, result.payload))
                     .await
                     .map_err(Into::into)
             }
@@ -228,6 +194,76 @@ impl PromotionStats {
     fn records_skipped_not_common_schema(self) -> u64 {
         self.records_seen.saturating_sub(self.records_promoted)
     }
+}
+
+#[derive(Debug)]
+struct PayloadPromotion {
+    payload: OtapPayload,
+    stats: PromotionStats,
+    arrow_skipped_no_csver: bool,
+    promoted: bool,
+}
+
+fn promote_microsoft_common_schema_payload(
+    payload: OtapPayload,
+    processor: NodeId,
+) -> Result<PayloadPromotion, EngineError> {
+    if let OtapPayload::OtapArrowRecords(records) = &payload {
+        if arrow_logs_have_no_csver(records) {
+            return Ok(PayloadPromotion {
+                payload,
+                stats: PromotionStats::default(),
+                arrow_skipped_no_csver: true,
+                promoted: false,
+            });
+        }
+    }
+
+    let original_arrow_payload = match &payload {
+        OtapPayload::OtapArrowRecords(_) => Some(payload.clone()),
+        OtapPayload::OtlpBytes(_) => None,
+    };
+
+    let otlp_bytes: OtlpProtoBytes = payload.try_into().map_err(|e| {
+        processor_error(
+            processor.clone(),
+            format!("failed to convert input to OTLP logs: {e}"),
+        )
+    })?;
+    let OtlpProtoBytes::ExportLogsRequest(bytes) = &otlp_bytes else {
+        return Ok(PayloadPromotion {
+            payload: otlp_bytes.into(),
+            stats: PromotionStats::default(),
+            arrow_skipped_no_csver: false,
+            promoted: false,
+        });
+    };
+
+    let mut logs = LogsData::decode(bytes.as_ref()).map_err(|e| {
+        processor_error(
+            processor.clone(),
+            format!("failed to decode OTLP logs: {e}"),
+        )
+    })?;
+    let stats = promote_microsoft_common_schema_logs(&mut logs);
+    if !stats.promoted_any() {
+        return Ok(PayloadPromotion {
+            payload: original_arrow_payload.unwrap_or_else(|| otlp_bytes.into()),
+            stats,
+            arrow_skipped_no_csver: false,
+            promoted: false,
+        });
+    }
+
+    let mut out = BytesMut::new();
+    logs.encode(&mut out)
+        .map_err(|e| processor_error(processor, format!("failed to encode OTLP logs: {e}")))?;
+    Ok(PayloadPromotion {
+        payload: OtlpProtoBytes::ExportLogsRequest(out.freeze()).into(),
+        stats,
+        arrow_skipped_no_csver: false,
+        promoted: true,
+    })
 }
 
 fn promote_microsoft_common_schema_logs(logs: &mut LogsData) -> PromotionStats {
@@ -418,7 +454,9 @@ fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
                     }
                 }
             }
-            key if key.starts_with("PartA.") || key.starts_with("PartB.") => {}
+            key if key.starts_with("PartA.") || key.starts_with("PartB.") => {
+                promoted.push(attr);
+            }
             _ => promoted.push(attr),
         }
     }
@@ -475,10 +513,29 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_engine::node::NodeId;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 
     fn attr<'a>(log: &'a LogRecord, key: &str) -> Option<&'a AnyValue> {
         find_attr_value(&log.attributes, key)
+    }
+
+    fn test_processor_id() -> NodeId {
+        NodeId {
+            index: 0,
+            name: "common_schema".into(),
+        }
+    }
+
+    fn logs_payload(logs: LogsData) -> OtapPayload {
+        let mut bytes = BytesMut::new();
+        logs.encode(&mut bytes).expect("encode logs");
+        OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into()
+    }
+
+    fn logs_arrow_payload(logs: LogsData) -> OtapPayload {
+        let records: OtapArrowRecords = logs_payload(logs).try_into().expect("convert to arrow");
+        records.into()
     }
 
     #[test]
@@ -545,6 +602,32 @@ mod tests {
             Some("checkout")
         );
         assert_eq!(attr(&log, "status").and_then(any_int), Some(500));
+    }
+
+    #[test]
+    fn preserves_unknown_part_a_and_part_b_fields() {
+        let mut log = LogRecord {
+            attributes: vec![
+                KeyValue::new("__csver__", AnyValue::new_int(0x400)),
+                KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
+                KeyValue::new("PartA.futureField", AnyValue::new_string("part-a")),
+                KeyValue::new("PartB.futureField", AnyValue::new_string("part-b")),
+                KeyValue::new("PartB.body", AnyValue::new_string("body")),
+            ],
+            ..Default::default()
+        };
+
+        assert!(promote_microsoft_common_schema_log(&mut log));
+        assert_eq!(
+            attr(&log, "PartA.futureField").and_then(any_str),
+            Some("part-a")
+        );
+        assert_eq!(
+            attr(&log, "PartB.futureField").and_then(any_str),
+            Some("part-b")
+        );
+        assert!(find_attr_value(&log.attributes, "__csver__").is_none());
+        assert!(find_attr_value(&log.attributes, "PartB._typeName").is_none());
     }
 
     #[test]
@@ -789,6 +872,35 @@ mod tests {
         assert_eq!(stats.records_seen, 1);
         assert_eq!(stats.records_promoted, 0);
         assert_eq!(stats.records_skipped_not_common_schema(), 1);
+    }
+
+    #[test]
+    fn arrow_payload_with_csver_but_no_promoted_records_stays_arrow() {
+        let payload = logs_arrow_payload(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            KeyValue::new("__csver__", AnyValue::new_int(0x300)),
+                            KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
+                            KeyValue::new("PartB.body", AnyValue::new_string("unsupported")),
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        });
+
+        let result = promote_microsoft_common_schema_payload(payload, test_processor_id())
+            .expect("payload promotion");
+
+        assert!(!result.promoted);
+        assert!(!result.arrow_skipped_no_csver);
+        assert_eq!(result.stats.records_seen, 1);
+        assert_eq!(result.stats.records_promoted, 0);
+        assert!(matches!(result.payload, OtapPayload::OtapArrowRecords(_)));
     }
 
     #[test]
