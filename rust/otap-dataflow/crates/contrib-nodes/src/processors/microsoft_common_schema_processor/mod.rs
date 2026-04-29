@@ -350,7 +350,6 @@ fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
     let mut promoted = Vec::with_capacity(log.attributes.len());
     let mut part_a_name = None;
     let mut part_b_name = None;
-    let has_part_b_event_id = find_attr_value(&log.attributes, "PartB.eventId").is_some();
     for attr in log.attributes.drain(..) {
         match attr.key.as_str() {
             "__csver__" | "PartB._typeName" => {}
@@ -439,19 +438,10 @@ fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
                     log.severity_text = text.to_owned();
                 }
             }
-            "PartB.eventId" => {
-                if let Some(value) = attr.value {
-                    promoted.push(KeyValue::new("eventId", value));
-                }
-            }
             key if key.starts_with("PartC.") => {
                 if let Some(value) = attr.value {
                     let key = key.trim_start_matches("PartC.");
-                    // PartB.eventId is the canonical event identifier when both
-                    // PartB and PartC carry the field.
-                    if key != "eventId" || !has_part_b_event_id {
-                        promoted.push(KeyValue::new(key, value));
-                    }
+                    promoted.push(KeyValue::new(key, value));
                 }
             }
             key if key.starts_with("PartA.") || key.starts_with("PartB.") => {
@@ -752,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn part_b_event_id_takes_precedence_over_part_c_event_id() {
+    fn preserves_part_b_event_id_with_common_schema_name() {
         let mut log = LogRecord {
             attributes: vec![
                 KeyValue::new("__csver__", AnyValue::new_int(0x400)),
@@ -764,14 +754,8 @@ mod tests {
         };
 
         assert!(promote_microsoft_common_schema_log(&mut log));
-        assert_eq!(attr(&log, "eventId").and_then(any_int), Some(2));
-        assert_eq!(
-            log.attributes
-                .iter()
-                .filter(|attr| attr.key == "eventId")
-                .count(),
-            1
-        );
+        assert_eq!(attr(&log, "eventId").and_then(any_int), Some(1));
+        assert_eq!(attr(&log, "PartB.eventId").and_then(any_int), Some(2));
     }
 
     #[test]

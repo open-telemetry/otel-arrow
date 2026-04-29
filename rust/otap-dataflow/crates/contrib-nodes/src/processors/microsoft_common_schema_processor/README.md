@@ -38,12 +38,10 @@ promoted. Other records are forwarded unchanged.
 | `PartB.body` | `body` |
 | `PartB.severityNumber` | `severity_number` |
 | `PartB.severityText` | `severity_text` |
-| `PartB.eventId` | `eventId` attribute |
 | `PartC.*` | Attribute with the `PartC.` prefix removed |
 
-`PartB.name` takes precedence over `PartA.name`. `PartB.eventId` takes
-precedence over `PartC.eventId`. Severity values above the OTLP range are
-clamped to `24`; severity `0` is preserved as OTLP `UNSPECIFIED`.
+`PartB.name` takes precedence over `PartA.name`. Severity values above the OTLP
+range are clamped to `24`; severity `0` is preserved as OTLP `UNSPECIFIED`.
 Recognized `PartA.*` and `PartB.*` fields are removed after promotion. Unknown
 `PartA.*` and `PartB.*` fields are preserved with their original names.
 
