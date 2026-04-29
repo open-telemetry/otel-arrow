@@ -243,7 +243,7 @@ def monitor(
     meter: Meter,
     logger: LoggerAdapter,
     test_suite_context: ScenarioContext,
-    interval: float = 1.0,
+    interval: float = 0.25,
     allocated_cores: Optional[int] = None,
 ):
     """
