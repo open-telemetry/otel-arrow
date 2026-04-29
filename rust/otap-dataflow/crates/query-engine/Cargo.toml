@@ -17,13 +17,13 @@ datafusion = { workspace = true, features = [
 ] }
 futures-core = { workspace = true }
 memchr = { workspace = true }
-paste = { workspace = true }
 parking_lot = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
 data_engine_parser_abstractions = { workspace = true }
 
+otap-df-config = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 
 [dev-dependencies]

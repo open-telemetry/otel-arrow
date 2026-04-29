@@ -215,7 +215,7 @@ fn any_value_type_to_column_name(type_val: AttributeValueType) -> Result<&'stati
 ///
 /// This is the reverse of [`any_value_type_to_column_name`] — given an expression result's
 /// Arrow type, determine which AnyValue field it belongs in.
-fn arrow_type_to_any_value_type(
+pub(crate) fn arrow_type_to_any_value_type(
     dt: &DataType,
 ) -> Result<(AttributeValueType, Option<&'static str>)> {
     match dt {
@@ -244,7 +244,7 @@ pub(crate) fn wrap_as_any_value_struct(values: &ArrayRef) -> Result<ArrayRef> {
     let (type_val, field_name) = arrow_type_to_any_value_type(values.data_type())?;
     let num_rows = values.len();
 
-    // lift the nulls off the original column for use in the the struct
+    // lift the nulls off the original column for use in the struct
     let nulls = values.nulls().cloned();
 
     // Build uniform type discriminant column
@@ -281,6 +281,34 @@ pub(crate) fn wrap_as_any_value_struct(values: &ArrayRef) -> Result<ArrayRef> {
 
     let struct_arr = StructArray::try_new(fields.into(), columns, nulls)?;
     Ok(Arc::new(struct_arr))
+}
+
+/// Attempt to coerce the values array (a struct array representing an AnyValue) into the concrete
+/// values type. If the passed array contains multiple types, the original array is returned
+/// because coercion was not successful.
+pub(crate) fn attempt_coerce_value_column_from_any_value_struct_column(
+    values: &ArrayRef,
+) -> Result<ArrayRef> {
+    // build a temporary record batch containing the column to maybe partition by type
+    let rb = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            "",
+            values.data_type().clone(),
+            true,
+        )])),
+        vec![Arc::clone(values)],
+    )?;
+
+    // attempt to partition the AnyValue column by type
+    let partitions = project_any_value_columns(&rb, &[0])?;
+    let result = if partitions.len() == 1 {
+        partitions[0].batch.column(0)
+    } else {
+        // just return the original array
+        values
+    };
+
+    Ok(Arc::clone(result))
 }
 
 /// Replace a single AnyValue struct column in a batch with its concrete typed field.

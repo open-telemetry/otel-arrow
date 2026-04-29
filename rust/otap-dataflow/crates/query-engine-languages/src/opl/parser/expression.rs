@@ -7,9 +7,9 @@ use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
     CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
     ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression, DoubleValue,
-    EqualToLogicalExpression, Expression, GreaterThanLogicalExpression,
-    GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, IntegerValue,
-    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    EqualToLogicalExpression, Expression, GetRecordTypeScalarExpression,
+    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
+    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
     ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
     NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
     RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
@@ -137,8 +137,8 @@ pub(crate) fn parse_and_expression(
     let left_expr = parse_next_child_rule(
         pipeline_builder,
         &mut inner_rules,
-        Rule::rel_expression,
-        parse_rel_expression,
+        Rule::type_check_expression,
+        parse_type_check_expression,
     )
     .transpose()?
     .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
@@ -195,6 +195,62 @@ impl From<LogicalOrScalarExpr> for ScalarExpression {
             LogicalOrScalarExpr::Logical(l) => Self::Logical(Box::new(l)),
             LogicalOrScalarExpr::Scalar(s) => s,
         }
+    }
+}
+
+pub(crate) fn parse_type_check_expression(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
+) -> Result<LogicalOrScalarExpr, ParserError> {
+    let type_check_rule_query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+
+    match inner_rules.len() {
+        // If there is one rule, it's simply a relative expression.
+        1 => {
+            // we have a simple relative expression, with
+            let inner_rule = inner_rules.next().expect("one rule");
+            parse_rel_expression(inner_rule, pipeline_builder)
+        }
+        // IF there are two rules, we have an expression like (is <Type>) meaning we're checking
+        // that an element of the stream is some type
+        2 => {
+            let type_check_expr = ScalarExpression::GetRecordType(
+                GetRecordTypeScalarExpression::new(type_check_rule_query_location.clone()),
+            );
+
+            let type_name_rule = inner_rules.nth(1).expect("two rules");
+            let type_check_expected_type = ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    to_query_location(&type_name_rule),
+                    type_name_rule.as_str(),
+                )),
+            );
+            Ok(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                type_check_rule_query_location.clone(),
+                type_check_expr,
+                type_check_expected_type,
+                false,
+            ))
+            .into())
+        }
+        // If there are three rules, we have an expression like (<field> is <Type>) meaning we're
+        // checking that some field on the stream element is some type
+        3 => {
+            // TODO - we will support this soon
+            Err(ParserError::SyntaxNotSupported(
+                type_check_rule_query_location,
+                "Checking if a field of stream element is a type is not yet supported".into(),
+            ))
+        }
+
+        other_len => Err(ParserError::SyntaxError(
+            type_check_rule_query_location,
+            format!(
+                "Invalid number of expressions in type_check_expression. \
+                Found {other_len}, expected 1, 2 or 3"
+            ),
+        )),
     }
 }
 

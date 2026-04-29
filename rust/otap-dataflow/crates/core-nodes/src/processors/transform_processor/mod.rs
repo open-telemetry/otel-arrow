@@ -473,7 +473,7 @@ mod test {
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
                 resource::v1::Resource,
-                trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
+                trace::v1::{ResourceSpans, ScopeSpans, Span, Status, TracesData},
             },
         },
         schema::consts,
@@ -1030,6 +1030,125 @@ mod test {
                     _ => panic!("unexpected payload type"),
                 }
                 // TODO when we support Ack/Nack here assert on routed context
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_conditional_on_signal_type() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"signals | 
+            if (is Log) {
+                set attributes["is_log"] = true
+            } else if (is Metric) {
+                set attributes["is_metric"] = true
+            } else if (is Span) {
+                set attributes["is_span"] = true
+            }"#;
+        let processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_record = LogRecord::build().severity_text("ERROR").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![log_record.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let span = Span::build()
+                    .name("hello")
+                    .trace_id([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                    .span_id([0, 0, 0, 0, 0, 0, 0, 0])
+                    .status(Status {
+                        message: "hello".into(),
+                        code: 0,
+                    })
+                    .finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+                    resource_spans: vec![ResourceSpans::new(
+                        Resource::default(),
+                        vec![ScopeSpans::new(
+                            InstrumentationScope::default(),
+                            vec![span.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let metric = Metric::build().name("my_metric").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![ScopeMetrics::new(
+                            InstrumentationScope::default(),
+                            vec![metric.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // check anything not routed get outputted to the default port
+                let mut out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap)
+                    .map(|otap_batch| otap_to_otlp(&otap_batch));
+
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Logs(output_logs) = result else {
+                    panic!("expected logs, got {result:?}")
+                };
+                assert_eq!(
+                    &output_logs.resource_logs[0].scope_logs[0].log_records[0],
+                    &LogRecord {
+                        attributes: vec![KeyValue::new("is_log", AnyValue::new_bool(true))],
+                        ..log_record
+                    }
+                );
+
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Traces(output_traces) = result else {
+                    panic!("expected trace, got {result:?}")
+                };
+                assert_eq!(
+                    &output_traces.resource_spans[0].scope_spans[0].spans[0],
+                    &Span {
+                        attributes: vec![KeyValue::new("is_span", AnyValue::new_bool(true))],
+                        ..span
+                    }
+                );
+
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Metrics(output_metrics) = result else {
+                    panic!("expected metric, got {result:?}")
+                };
+                assert_eq!(
+                    &output_metrics.resource_metrics[0].scope_metrics[0].metrics[0],
+                    &Metric {
+                        metadata: vec![KeyValue::new("is_metric", AnyValue::new_bool(true))],
+                        ..metric
+                    }
+                )
             })
             .validate(|_ctx| async move {})
     }
@@ -1697,7 +1816,7 @@ mod test {
                     .expect_err("process error");
                 assert!(err.to_string().contains("outbound slots not available"));
 
-                // now drain and ack the the messages from the first batch to clear out the slot map
+                // now drain and ack the messages from the first batch to clear out the slot map
                 let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
