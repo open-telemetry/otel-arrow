@@ -938,19 +938,14 @@ mod linux_integration_tests {
         let decoded = eventheader_records
             .into_iter()
             .map(|record| {
-                super::decoder::DecodedUsereventsRecord::from_raw(
-                    &tracepoint,
-                    record,
-                    &FormatConfig::EventHeader,
-                )
+                DecodedUsereventsRecord::from_raw(&tracepoint, record, &FormatConfig::EventHeader)
             })
             .find(|record| {
                 record.attributes.iter().any(|(key, value)| {
                     key.as_ref() == "ci_message"
                         && matches!(
                             value,
-                            super::decoder::DecodedAttrValue::Str(value)
-                                if value == "hello-from-ci"
+                            decoder::DecodedAttrValue::Str(value) if value == "hello-from-ci"
                         )
                 })
             });
