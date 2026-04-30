@@ -147,12 +147,8 @@ fn is_logically_type(source: &DataType, expected: &DataType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{
-        ArrayRef, BinaryArray, BooleanArray, DurationNanosecondArray, FixedSizeBinaryArray,
-        Float64Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray, UInt8Array,
-        UInt32Array,
-    };
-    use arrow::datatypes::{DataType, Field, Int32Type, TimeUnit};
+    use arrow::array::{ArrayRef, Int32Array, StringArray, UInt8Array};
+    use arrow::datatypes::{DataType, Field, TimeUnit};
     use datafusion::config::ConfigOptions;
     use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
     use datafusion::scalar::ScalarValue;

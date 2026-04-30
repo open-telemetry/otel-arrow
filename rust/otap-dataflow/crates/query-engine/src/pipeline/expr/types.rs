@@ -5,7 +5,6 @@
 
 use crate::pipeline::expr::{ScopedLogicalExpr, VALUE_COLUMN_NAME};
 use arrow::datatypes::{DataType, TimeUnit};
-use data_engine_expressions::ValueType;
 use datafusion::logical_expr::cast;
 use otap_df_pdata::schema::consts;
 
@@ -25,9 +24,8 @@ pub enum ExprLogicalType {
     /// numeric. The actual type may be one of Int64 or Float64
     AnyValueNumeric,
 
-    // TODO the comments on this no longer make sense ...
-    /// This type represents the value of an integer scalar expression that could not be determined
-    /// to be a concrete type. When parsing, we may receive an expression such as `1`, and will
+    /// This type represents the value of an integer expression whose concrete type has not yet
+    /// been determined. i.e when parsing, we may receive an expression such as `1`, and wil
     /// consider the type to be this generic unknown Int type until such time as it is used in
     /// conjunction with an expr that a known type is expected. For example `1 + severity_number`
     /// would result in static scalar `1`'s type being resolved to Int32, because that is the type
@@ -56,7 +54,9 @@ impl ExprLogicalType {
         matches!(self, Self::Int32 | Self::Int64)
     }
 
-    // TODO comments
+    /// Returns true if the logical type represents an unambiguous single type. This will return
+    /// false if the type could be resolved to multiple different types, such is the case with
+    /// variants `AnyValue`, `AnyValueNumeric` and `AnyInt`
     pub fn is_concrete(&self) -> bool {
         !matches!(self, Self::AnyValue | Self::AnyValueNumeric | Self::AnyInt)
     }

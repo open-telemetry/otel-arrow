@@ -571,11 +571,13 @@ impl FilterPlan {
                 };
 
                 if expr_source.expr_type == expected_type {
-                    // TODO return scalar true
+                    return Ok(Some(FilterPlan::from(lit(true))));
                 }
 
                 if expr_source.expr_type.is_concrete() {
-                    // TODO return scalar false
+                    // since the type we're not equal, and we know what type exactly the
+                    // expression will return, we know the types do not match here:
+                    return Ok(Some(FilterPlan::from(lit(false))));
                 }
 
                 // call the is_type function on the result of the expression
@@ -585,8 +587,6 @@ impl FilterPlan {
                     )))),
                     vec![expr_source.logical_expr],
                 ));
-
-                // TODO - also set the scope to scalar ...
 
                 Ok(Some(FilterPlan::from_expr(ExprFilterPlan::Unary(
                     expr_source,
@@ -6646,5 +6646,28 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &expected
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_known_type() {
+        let log_records = vec![
+            LogRecord::build().severity_text("DEBUG").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+        ];
+
+        let query = "logs | where severity_text is String";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        let query = "logs | where severity_text is Integer";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
     }
 }
