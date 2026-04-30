@@ -70,8 +70,6 @@ impl ScalarUDFImpl for IsTypeFunc {
             );
         }
 
-        println!("called w/ args {:?}", args[0]);
-
         let arg_data_type = args[0].data_type();
 
         let type_matches = match self.expected_type {

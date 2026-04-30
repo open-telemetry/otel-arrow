@@ -522,9 +522,9 @@ impl FilterPlan {
                 Operator::Eq,
                 ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
             ) => {
-                // since the source accessor has no selectors, it means we're checking the type
-                // of elements of the stream for this pipeline. We'll try to determine if the
-                // type name is a stream type that is handled by this query engine ...
+                // here we are handling an expression that checks the type of some some batch
+                // for example `is Log`
+
                 let type_name = typename_expr.get_value();
                 let stream_element_type =
                     StreamElementType::from_str(type_name).ok_or_else(|| {
@@ -543,6 +543,9 @@ impl FilterPlan {
                 Operator::Eq,
                 ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
             ) => {
+                // here we are handling an expression that checks the type of some field
+                // for example `attributes["x"] is String`
+
                 let expr_planner = ExprLogicalPlanner::default();
                 let mut expr_source =
                     expr_planner.plan_scalar_expr(get_type_expr.get_value(), functions)?;
@@ -562,15 +565,18 @@ impl FilterPlan {
                     ValueType::Integer => ExprLogicalType::AnyInt,
                     ValueType::String => ExprLogicalType::String,
                     ValueType::TimeSpan => ExprLogicalType::DurationNanoSecond,
-                    ValueType::Array | ValueType::Map | ValueType::Regex => {
-                        todo!("not supported")
-                    }
-                    ValueType::Null => {
-                        todo!("handle null differently")
+                    ValueType::Array | ValueType::Map | ValueType::Null | ValueType::Regex => {
+                        return Err(Error::NotYetSupportedError {
+                            message: "type check logical expression using type \
+                                {value_type} not yet supported"
+                                .into(),
+                        });
                     }
                 };
 
                 if expr_source.expr_type == expected_type {
+                    // here we know the expression returns the type we are seeking. This may be
+                    // a trivial expression such as `severity_text is String`
                     return Ok(Some(FilterPlan::from(lit(true))));
                 }
 
@@ -1459,8 +1465,6 @@ impl FilterExec {
             }
             ColumnarValue::Array(arr) => arr.clone(),
         };
-
-        println!("result_array = {result_array:?}");
 
         let boolean_arr =
             as_boolean_array(&result_array)
