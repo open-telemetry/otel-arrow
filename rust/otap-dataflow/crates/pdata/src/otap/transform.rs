@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arrow::array::{
     Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, DictionaryArray,
     MutableArrayData, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, StructArray,
-    UInt8Array, UInt16Array, UInt32Array, make_array,
+    UInt16Array, UInt32Array, make_array,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::{eq, gt_eq, lt};
@@ -2069,37 +2069,25 @@ where
         return Ok(Vec::new());
     }
 
-    // Extract the raw offset/values buffers from the key column.
-    // For dictionary-encoded keys, we run find_matching_key_ranges on dictionary values
-    // then use arrow compute kernels (eq/gt_eq/lt) on the integer dict keys array
-    // to efficiently map dict value indices back to row indices.
-    let (array_len, values_buf, offsets, dict_keys_ref) = match key_col.data_type() {
-        DataType::Utf8 => {
-            let str_arr = key_col
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| Error::UnexpectedRecordBatchState {
-                    reason: "expected Utf8 key column".into(),
-                })?;
-            (
-                str_arr.len(),
-                str_arr.values().clone(),
-                str_arr.offsets().clone(),
-                None::<&UInt16Array>,
-            )
-        }
+    // For dictionary-encoded keys, delegate to the generic dictionary path
+    // which operates on the dict keys array directly.
+    match key_col.data_type() {
+        DataType::Utf8 => {}
         DataType::Dictionary(k, _) => {
             let dict_values = extract_dict_string_values(key_col)?;
             let offsets = dict_values.offsets().clone();
             let values_buf = dict_values.values().clone();
-            // Take the dictionary keys array directly — no Vec<usize> materialization.
-            // We only support UInt8 and UInt16 dict key types; for UInt8 we cast to
-            // UInt16 so we can use a single code path with eq/gt_eq/lt kernels.
-            let dict_keys_arr: &UInt16Array = match k.as_ref() {
+            match k.as_ref() {
                 DataType::UInt8 => {
-                    return find_rename_collisions_dict_u8(
+                    let dict = key_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                            reason: "expected Dict<UInt8, _> key column".into(),
+                        })?;
+                    return find_rename_collisions_dict(
                         num_rows,
-                        key_col,
+                        dict.keys(),
                         parent_ids,
                         rename,
                         dict_values,
@@ -2114,7 +2102,15 @@ where
                         .ok_or_else(|| Error::UnexpectedRecordBatchState {
                             reason: "expected Dict<UInt16, _> key column".into(),
                         })?;
-                    dict.keys()
+                    return find_rename_collisions_dict(
+                        num_rows,
+                        dict.keys(),
+                        parent_ids,
+                        rename,
+                        dict_values,
+                        offsets,
+                        values_buf,
+                    );
                 }
                 other => {
                     return Err(Error::UnsupportedDictionaryKeyType {
@@ -2122,8 +2118,7 @@ where
                         actual: other.clone(),
                     });
                 }
-            };
-            (dict_values.len(), values_buf, offsets, Some(dict_keys_arr))
+            }
         }
         other => {
             return Err(Error::UnexpectedRecordBatchState {
@@ -2132,6 +2127,17 @@ where
         }
     };
 
+    // Native StringArray path: offsets/values map directly to row indices.
+    let str_arr = key_col
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| Error::UnexpectedRecordBatchState {
+            reason: "expected Utf8 key column".into(),
+        })?;
+    let array_len = str_arr.len();
+    let values_buf = str_arr.values().clone();
+    let offsets = str_arr.offsets().clone();
+
     let mut ranges = Vec::new();
     let mut source_parents = IdBitmap::new();
 
@@ -2139,8 +2145,6 @@ where
         let old_key_bytes = &rename.target_bytes[rename_idx];
         let new_key_bytes = &rename.replacement_bytes[rename_idx];
 
-        // Step 1: Check if new_key exists using find_matching_key_ranges.
-        // Collisions are rare, so exiting early here is the biggest win.
         let new_key_result = find_matching_key_ranges(
             array_len,
             &values_buf,
@@ -2152,7 +2156,6 @@ where
             continue;
         }
 
-        // Step 2: Check if old_key exists and collect parent_ids for old_key rows.
         let old_key_result = find_matching_key_ranges(
             array_len,
             &values_buf,
@@ -2166,30 +2169,10 @@ where
 
         source_parents.clear();
 
-        if let Some(dict_keys) = dict_keys_ref {
-            // Dictionary-encoded (UInt16): use eq/gt_eq/lt kernels on dict keys
-            // to build a row mask, then iterate with BitSliceIterator.
-            for range in &old_key_result.ranges {
-                let row_mask = dict_value_range_to_row_mask(dict_keys, range)?;
-                let row_mask_buffer = row_mask.values();
-                for (start, end) in BitSliceIterator::new(
-                    row_mask_buffer.inner(),
-                    row_mask_buffer.offset(),
-                    row_mask.len(),
-                ) {
-                    for i in start..end {
-                        let pid: u64 = parent_ids.value(i).into();
-                        source_parents.insert(pid as u32);
-                    }
-                }
-            }
-        } else {
-            // Native StringArray: ranges are row indices directly.
-            for range in &old_key_result.ranges {
-                for i in range.start()..range.end() {
-                    let pid: u64 = parent_ids.value(i).into();
-                    source_parents.insert(pid as u32);
-                }
+        for range in &old_key_result.ranges {
+            for i in range.start()..range.end() {
+                let pid: u64 = parent_ids.value(i).into();
+                source_parents.insert(pid as u32);
             }
         }
 
@@ -2197,78 +2180,30 @@ where
             continue;
         }
 
-        // Step 3: Find rows with new_key whose parent_id collides.
-        if let Some(dict_keys) = dict_keys_ref {
-            let mut range_start: Option<usize> = None;
-            for new_range in &new_key_result.ranges {
-                let row_mask = dict_value_range_to_row_mask(dict_keys, new_range)?;
-                let row_mask_buffer = row_mask.values();
-                for (bit_start, bit_end) in BitSliceIterator::new(
-                    row_mask_buffer.inner(),
-                    row_mask_buffer.offset(),
-                    row_mask.len(),
-                ) {
-                    for row in bit_start..bit_end {
-                        let pid: u64 = parent_ids.value(row).into();
-                        if source_parents.contains(pid as u32) {
-                            if range_start.is_none() {
-                                range_start = Some(row);
-                            }
-                            continue;
-                        }
-                        if let Some(s) = range_start.take() {
-                            ranges.push(KeyTransformRange {
-                                range: s..row,
-                                idx: None,
-                                range_type: KeyTransformRangeType::Delete,
-                            });
-                        }
+        let mut range_start: Option<usize> = None;
+        for new_range in &new_key_result.ranges {
+            for i in new_range.start()..new_range.end() {
+                let pid: u64 = parent_ids.value(i).into();
+                if source_parents.contains(pid as u32) {
+                    if range_start.is_none() {
+                        range_start = Some(i);
                     }
-                    // Flush any open range at the end of this bit slice — rows outside
-                    // the mask do NOT have the new_key and must not be included.
-                    if let Some(s) = range_start.take() {
-                        ranges.push(KeyTransformRange {
-                            range: s..bit_end,
-                            idx: None,
-                            range_type: KeyTransformRangeType::Delete,
-                        });
-                    }
-                }
-            }
-            if let Some(s) = range_start.take() {
-                ranges.push(KeyTransformRange {
-                    range: s..num_rows,
-                    idx: None,
-                    range_type: KeyTransformRangeType::Delete,
-                });
-            }
-        } else {
-            // Native StringArray: ranges are row indices.
-            let mut range_start: Option<usize> = None;
-            for new_range in &new_key_result.ranges {
-                for i in new_range.start()..new_range.end() {
-                    let pid: u64 = parent_ids.value(i).into();
-                    if source_parents.contains(pid as u32) {
-                        if range_start.is_none() {
-                            range_start = Some(i);
-                        }
-                        continue;
-                    }
-                    if let Some(s) = range_start.take() {
-                        ranges.push(KeyTransformRange {
-                            range: s..i,
-                            idx: None,
-                            range_type: KeyTransformRangeType::Delete,
-                        });
-                    }
+                    continue;
                 }
                 if let Some(s) = range_start.take() {
                     ranges.push(KeyTransformRange {
-                        range: s..new_range.end(),
+                        range: s..i,
                         idx: None,
                         range_type: KeyTransformRangeType::Delete,
                     });
                 }
+            }
+            if let Some(s) = range_start.take() {
+                ranges.push(KeyTransformRange {
+                    range: s..new_range.end(),
+                    idx: None,
+                    range_type: KeyTransformRangeType::Delete,
+                });
             }
         }
     }
@@ -2278,28 +2213,39 @@ where
 
 /// Build a boolean row-mask that is `true` for every row in `dict_keys` whose
 /// value falls inside the half-open range `[range.start(), range.end())`.
-///
-/// Uses the Arrow `eq` kernel for single-element ranges and `gt_eq`/`lt`/`and`
-/// for multi-element ranges, which is much faster than iterating the entire
-/// dictionary keys array for each value index.
-fn dict_value_range_to_row_mask(
-    dict_keys: &UInt16Array,
+fn dict_value_range_to_row_mask<DK: ArrowPrimitiveType>(
+    dict_keys: &PrimitiveArray<DK>,
     range: &KeyTransformRange,
-) -> Result<BooleanArray> {
-    let mask = if range.end() - range.start() == 1 {
-        eq(dict_keys, &UInt16Array::new_scalar(range.start() as u16)).map_err(|e| {
+) -> Result<BooleanArray>
+where
+    DK::Native: ArrowNativeType,
+{
+    let start_scalar =
+        DK::Native::from_usize(range.start()).ok_or_else(|| Error::UnexpectedRecordBatchState {
+            reason: format!(
+                "dict key range start {} overflows native type",
+                range.start()
+            ),
+        })?;
+    let mask = if range.len() == 1 {
+        eq(dict_keys, &PrimitiveArray::<DK>::new_scalar(start_scalar)).map_err(|e| {
             Error::UnexpectedRecordBatchState {
                 reason: format!("eq kernel failed on dict keys: {e}"),
             }
         })?
     } else {
+        let end_scalar = DK::Native::from_usize(range.end()).ok_or_else(|| {
+            Error::UnexpectedRecordBatchState {
+                reason: format!("dict key range end {} overflows native type", range.end()),
+            }
+        })?;
         let geq_start =
-            gt_eq(dict_keys, &UInt16Array::new_scalar(range.start() as u16)).map_err(|e| {
+            gt_eq(dict_keys, &PrimitiveArray::<DK>::new_scalar(start_scalar)).map_err(|e| {
                 Error::UnexpectedRecordBatchState {
                     reason: format!("gt_eq kernel failed on dict keys: {e}"),
                 }
             })?;
-        let lt_end = lt(dict_keys, &UInt16Array::new_scalar(range.end() as u16)).map_err(|e| {
+        let lt_end = lt(dict_keys, &PrimitiveArray::<DK>::new_scalar(end_scalar)).map_err(|e| {
             Error::UnexpectedRecordBatchState {
                 reason: format!("lt kernel failed on dict keys: {e}"),
             }
@@ -2311,28 +2257,20 @@ fn dict_value_range_to_row_mask(
     Ok(mask)
 }
 
-/// UInt8 variant of the dictionary collision detection. Uses the same algorithm
-/// as the UInt16 path but operates on `UInt8Array` dict keys to avoid a costly
-/// `Vec<usize>` materialization.
-fn find_rename_collisions_dict_u8<K: ArrowPrimitiveType>(
+/// Dictionary-encoded collision detection, generic over the dict key type.
+fn find_rename_collisions_dict<DK: ArrowPrimitiveType, PK: ArrowPrimitiveType>(
     num_rows: usize,
-    key_col: &ArrayRef,
-    parent_ids: &PrimitiveArray<K>,
+    dict_keys: &PrimitiveArray<DK>,
+    parent_ids: &PrimitiveArray<PK>,
     rename: &RenameTransform,
     dict_values: &StringArray,
     offsets: OffsetBuffer<i32>,
     values_buf: Buffer,
 ) -> Result<Vec<KeyTransformRange>>
 where
-    K::Native: Into<u64>,
+    DK::Native: ArrowNativeType,
+    PK::Native: Into<u64>,
 {
-    let dict = key_col
-        .as_any()
-        .downcast_ref::<DictionaryArray<UInt8Type>>()
-        .ok_or_else(|| Error::UnexpectedRecordBatchState {
-            reason: "expected Dict<UInt8, _> key column".into(),
-        })?;
-    let dict_keys = dict.keys();
     let array_len = dict_values.len();
 
     let mut ranges = Vec::new();
@@ -2366,32 +2304,14 @@ where
 
         source_parents.clear();
 
-        // Collect parent_ids for old_key rows using eq/gt_eq/lt on UInt8 dict keys
         for range in &old_key_result.ranges {
-            let mask = if range.end() - range.start() == 1 {
-                eq(dict_keys, &UInt8Array::new_scalar(range.start() as u8)).map_err(|e| {
-                    Error::UnexpectedRecordBatchState {
-                        reason: format!("eq kernel failed: {e}"),
-                    }
-                })?
-            } else {
-                let geq = gt_eq(dict_keys, &UInt8Array::new_scalar(range.start() as u8)).map_err(
-                    |e| Error::UnexpectedRecordBatchState {
-                        reason: format!("gt_eq kernel failed: {e}"),
-                    },
-                )?;
-                let lt_e =
-                    lt(dict_keys, &UInt8Array::new_scalar(range.end() as u8)).map_err(|e| {
-                        Error::UnexpectedRecordBatchState {
-                            reason: format!("lt kernel failed: {e}"),
-                        }
-                    })?;
-                and(&geq, &lt_e).map_err(|e| Error::UnexpectedRecordBatchState {
-                    reason: format!("and kernel failed: {e}"),
-                })?
-            };
-            let buf = mask.values();
-            for (start, end) in BitSliceIterator::new(buf.inner(), buf.offset(), mask.len()) {
+            let row_mask = dict_value_range_to_row_mask(dict_keys, range)?;
+            let row_mask_buffer = row_mask.values();
+            for (start, end) in BitSliceIterator::new(
+                row_mask_buffer.inner(),
+                row_mask_buffer.offset(),
+                row_mask.len(),
+            ) {
                 for i in start..end {
                     let pid: u64 = parent_ids.value(i).into();
                     source_parents.insert(pid as u32);
@@ -2403,32 +2323,15 @@ where
             continue;
         }
 
-        // Find collision rows for new_key
         let mut range_start: Option<usize> = None;
         for new_range in &new_key_result.ranges {
-            let mask =
-                if new_range.end() - new_range.start() == 1 {
-                    eq(dict_keys, &UInt8Array::new_scalar(new_range.start() as u8)).map_err(
-                        |e| Error::UnexpectedRecordBatchState {
-                            reason: format!("eq kernel failed: {e}"),
-                        },
-                    )?
-                } else {
-                    let geq = gt_eq(dict_keys, &UInt8Array::new_scalar(new_range.start() as u8))
-                        .map_err(|e| Error::UnexpectedRecordBatchState {
-                            reason: format!("gt_eq kernel failed: {e}"),
-                        })?;
-                    let lt_e = lt(dict_keys, &UInt8Array::new_scalar(new_range.end() as u8))
-                        .map_err(|e| Error::UnexpectedRecordBatchState {
-                            reason: format!("lt kernel failed: {e}"),
-                        })?;
-                    and(&geq, &lt_e).map_err(|e| Error::UnexpectedRecordBatchState {
-                        reason: format!("and kernel failed: {e}"),
-                    })?
-                };
-            let buf = mask.values();
-            for (bit_start, bit_end) in BitSliceIterator::new(buf.inner(), buf.offset(), mask.len())
-            {
+            let row_mask = dict_value_range_to_row_mask(dict_keys, new_range)?;
+            let row_mask_buffer = row_mask.values();
+            for (bit_start, bit_end) in BitSliceIterator::new(
+                row_mask_buffer.inner(),
+                row_mask_buffer.offset(),
+                row_mask.len(),
+            ) {
                 for row in bit_start..bit_end {
                     let pid: u64 = parent_ids.value(row).into();
                     if source_parents.contains(pid as u32) {
@@ -2445,7 +2348,6 @@ where
                         });
                     }
                 }
-                // Flush any open range at the end of this bit slice.
                 if let Some(s) = range_start.take() {
                     ranges.push(KeyTransformRange {
                         range: s..bit_end,
