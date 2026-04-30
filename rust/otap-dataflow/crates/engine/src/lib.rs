@@ -234,7 +234,12 @@ pub struct ExtensionFactory {
     /// URL to the extension's documentation.
     pub documentation_url: &'static str,
     /// The capabilities this extension provides.
-    pub capabilities: capability::ExtensionCapabilities,
+    ///
+    /// `Some(caps)` for active or passive extensions (caps lists are
+    /// non-empty by macro construction). `None` marks a Background
+    /// extension — engine-driven event loop with no capabilities
+    /// exposed to nodes; `register_into` skips capability registration.
+    pub capabilities: Option<capability::ExtensionCapabilities>,
     /// A function that creates a new extension instance.
     pub create: fn(
         pipeline: PipelineContext,
@@ -2391,7 +2396,7 @@ mod test {
             name: "urn:test:example",
             description: "test extension",
             documentation_url: "",
-            capabilities: capability::ExtensionCapabilities::none(),
+            capabilities: None,
             create: dummy_create,
             validate_config: dummy_validate,
         };
@@ -2437,7 +2442,7 @@ mod test {
             name: "urn:test:example",
             description: "test",
             documentation_url: "",
-            capabilities: capability::ExtensionCapabilities::none(),
+            capabilities: None,
             create: dummy_create,
             validate_config: dummy_validate,
         };

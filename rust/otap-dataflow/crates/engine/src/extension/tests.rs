@@ -541,3 +541,82 @@ fn test_extension_set_iter() {
         .unwrap();
     assert_eq!(set.iter().count(), 2);
 }
+
+// ── Background lifecycle tests ───────────────────────────────────────────────
+
+#[test]
+fn test_background_shared() {
+    // `.background().shared(...).build()` produces a bundle with a single
+    // shared variant whose runtime lifecycle is Active (engine-driven event
+    // loop). Authors will pair this with `capabilities: None` on the factory.
+    let (n, u, c) = ext_config("bg-shared");
+    let mut set = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    assert!(set.local().is_none());
+    let w = set.take_shared().unwrap();
+    // Background reuses the Active event-loop machinery.
+    assert!(!w.is_passive());
+    assert!(w.extension_control_sender().is_some());
+}
+
+#[test]
+fn test_background_local() {
+    let (n, u, c) = ext_config("bg-local");
+    let mut set = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+        .build()
+        .unwrap();
+    assert!(set.shared().is_none());
+    let w = set.take_local().unwrap();
+    assert!(!w.is_passive());
+    assert!(w.extension_control_sender().is_some());
+}
+
+#[test]
+fn test_background_factory_capabilities_none() {
+    // The convention paired with `.background()`: an ExtensionFactory built
+    // around the bundle sets `capabilities: None`. `register_into` skips
+    // capability registration, so the bundle contributes zero entries to the
+    // CapabilityRegistry.
+    use crate::capability::registry::CapabilityRegistry;
+
+    let (n, u, c) = ext_config("bg-noreg");
+    let bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+
+    let mut registry = CapabilityRegistry::new();
+    bundle
+        .register_into(None, &mut registry)
+        .expect("Background register_into is a no-op");
+    // Registry remains empty — Background extensions contribute zero entries.
+    // (No `is_empty` accessor is exposed; instead we rely on the absence of
+    // any entries being observable via `get_local`/`get_shared` returning
+    // `None` for any (TypeId, ExtensionId) we might query. The strongest
+    // available assertion here: the no-op call returns `Ok(())`.)
+    let _ = registry;
+}
+
+// Compile-time invariants enforced by typestate (illustrative; not run):
+//
+// ```compile_fail
+// // Cannot register two variants on `.background()`.
+// let (n, u, c) = ext_config("bg");
+// let _ = ExtensionWrapper::builder(n, u, &c)
+//     .background()
+//     .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+//     .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+//     .build();
+// ```
+//
+// ```compile_fail
+// // Cannot `.build()` a Background bundle without a registration.
+// let (n, u, c) = ext_config("bg");
+// let _ = ExtensionWrapper::builder(n, u, &c).background().build();
+// ```

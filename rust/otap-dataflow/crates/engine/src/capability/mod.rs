@@ -183,39 +183,6 @@ pub struct ExtensionCapabilities {
     ) -> Result<(), registry::Error>,
 }
 
-impl ExtensionCapabilities {
-    /// No-op `register_shared` fn pointer. Used by the
-    /// `extension_capabilities!` macro arms that don't provide a shared
-    /// variant, and by [`ExtensionCapabilities::none`].
-    #[doc(hidden)]
-    pub const NOOP_REGISTER_SHARED: fn(
-        otap_df_config::ExtensionId,
-        SharedInstanceFactory,
-        &mut registry::CapabilityRegistry,
-    ) -> Result<(), registry::Error> = |_, _, _| Ok(());
-
-    /// No-op `register_local` fn pointer. Counterpart of
-    /// [`NOOP_REGISTER_SHARED`](Self::NOOP_REGISTER_SHARED).
-    #[doc(hidden)]
-    pub const NOOP_REGISTER_LOCAL: fn(
-        otap_df_config::ExtensionId,
-        LocalInstanceFactory,
-        &mut registry::CapabilityRegistry,
-    ) -> Result<(), registry::Error> = |_, _, _| Ok(());
-
-    /// No capabilities — used by extensions that only have a lifecycle
-    /// (active) but don't expose any capabilities to nodes.
-    #[must_use]
-    pub const fn none() -> Self {
-        ExtensionCapabilities {
-            shared: &[],
-            local: &[],
-            register_shared: Self::NOOP_REGISTER_SHARED,
-            register_local: Self::NOOP_REGISTER_LOCAL,
-        }
-    }
-}
-
 /// Declares which capabilities an extension provides.
 ///
 /// The left-hand side names the extension type(s) — one or two,
@@ -260,7 +227,7 @@ macro_rules! extension_capabilities {
                 )+
                 Ok(())
             },
-            register_local: $crate::capability::ExtensionCapabilities::NOOP_REGISTER_LOCAL,
+            register_local: |_, _, _| Ok(()),
         }
     };
     // Local-only extension.
@@ -268,7 +235,7 @@ macro_rules! extension_capabilities {
         $crate::capability::ExtensionCapabilities {
             shared: &[],
             local: &[$(<$cap as $crate::capability::ExtensionCapability>::NAME),+],
-            register_shared: $crate::capability::ExtensionCapabilities::NOOP_REGISTER_SHARED,
+            register_shared: |_, _, _| Ok(()),
             register_local: |ext_id, factory, registry| {
                 $(
                     registry.register_local(

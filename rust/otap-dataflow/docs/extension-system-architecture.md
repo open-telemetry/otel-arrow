@@ -166,7 +166,33 @@ themselves, and they never touch pipeline data directly.
    `Extension`; the `.passive()` stage does not require
    that trait.
 
-4. **Instance policy (Passive only).** After `.passive()`,
+4. **Background lifecycle (zero capabilities).** A third
+   lifecycle, `.background()`, sits alongside `.active()`
+   / `.passive()` for engine-driven services that expose
+   no capability -- periodic reporters, schedulers, health
+   monitors, global rate-limit coordinators. The builder
+   shape is `.background().shared(impl_)` or
+   `.background().local(Rc::new(impl_))` followed by
+   `.build()`; exactly one registration is required and a
+   second is unrepresentable in the typestate. The choice
+   of `.shared(...)` vs `.local(...)` only governs how the
+   engine hosts the instance (`Send + Clone` vs `!Send`,
+   per-pipeline). Background extensions never appear as
+   the right-hand side of a capability binding; their
+   factory's `capabilities` field is `Option<_>::None`,
+   and that `None` is the engine's runtime signal "this is
+   a Background extension" -- capability registration is
+   skipped entirely. For lifecycle dispatch (event loop,
+   control channel, shutdown sequencing) Background is
+   handled exactly like Active. The shape constraints are
+   compile-time enforced by the typestate builder:
+   - Active and Passive **must** register >=1 capability.
+   - Background **must** register 0 capabilities (no
+     `extension_capabilities!` invocation).
+   - Background **must** register exactly one of
+     `.shared(...)` / `.local(...)` -- never both.
+
+5. **Instance policy (Passive only).** After `.passive()`,
    the extension author picks an instance policy. The
    choice is **provider-side only** -- capability
    consumers call `require_shared()` / `require_local()`
@@ -190,7 +216,7 @@ themselves, and they never touch pipeline data directly.
    exposes no `.constructed()` method, so the invalid
    combination is a compile-time error.
 
-5. **Local/Shared split.** Each lifecycle/policy stage
+6. **Local/Shared split.** Each lifecycle/policy stage
    lets the user register at most one `.shared(...)`
    variant and one `.local(...)` variant. A single
    extension can provide one or both:
@@ -212,7 +238,7 @@ themselves, and they never touch pipeline data directly.
      -- no lifecycle; each consumer invokes the stored
      constructor closure.
 
-6. **Type-safe capability resolution.** Consumers call
+7. **Type-safe capability resolution.** Consumers call
    `capabilities.require_local::<BearerTokenProvider>()`
    (returns `Rc<dyn local::BearerTokenProvider>`) or
    `capabilities.require_shared::<KeyValueStore>()`
@@ -232,7 +258,7 @@ themselves, and they never touch pipeline data directly.
    `wrap_shared_as_local` adapter to produce
    `Rc<dyn C::Local>`.
 
-7. **`#[capability]` proc macro.** Each capability is
+8. **`#[capability]` proc macro.** Each capability is
    defined via a single `#[capability]` attribute on a
    trait definition. The macro generates: `local::` and
    `shared::` trait variants, a `wrap_shared_as_local`

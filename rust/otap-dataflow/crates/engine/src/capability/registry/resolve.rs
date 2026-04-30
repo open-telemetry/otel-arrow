@@ -35,6 +35,10 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn resolve_bindings(
     bindings: &HashMap<otap_df_config::CapabilityId, ExtensionId>,
     registry: &CapabilityRegistry,
+    // Duplicate extension names are rejected at the config layer by
+    // `PipelineConfigBuilder::add_extension` (returns
+    // `Error::DuplicateExtension`); a `&HashSet` is structurally
+    // dedup-safe, so no runtime check is needed here.
     known_extensions: &HashSet<ExtensionId>,
     tracker: &mut ConsumedTracker,
 ) -> Result<Capabilities, Error> {

@@ -509,6 +509,77 @@ impl PassiveConstructedCompleteStage {
     }
 }
 
+// ── Background lifecycle (engine-driven, no capabilities) ───────────────────
+
+/// Lifecycle-selected: Background (engine drives an event loop, no
+/// capabilities exposed to nodes).
+///
+/// Pick exactly **one** of [`shared()`](Self::shared) or
+/// [`local()`](Self::local) — the bg task instance — then `.build()`. The
+/// flavor (shared vs local) chooses how the engine hosts the instance
+/// (Send+Clone vs !Send), but only one registration is allowed because
+/// a Background extension does not expose capabilities and there is no
+/// reason to maintain two parallel instances of the same task.
+///
+/// Authors writing a Background extension should set
+/// [`ExtensionFactory::capabilities`](crate::ExtensionFactory::capabilities)
+/// to `None`; that `None` is the engine's runtime signal that this is a
+/// Background extension (`register_into` skips capability registration).
+#[doc(hidden)]
+pub struct BackgroundEmptyStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl BackgroundEmptyStage {
+    /// Register the shared (Send + Clone) bg task instance.
+    ///
+    /// Same parameter shape as [`ActiveStage::shared`] — the difference
+    /// is purely typestate: Background allows exactly one registration.
+    #[must_use]
+    pub fn shared<E>(mut self, extension: E) -> BackgroundCompleteStage
+    where
+        E: shared_ext::Extension + Clone + Send + 'static,
+    {
+        self.parent.set_shared_active(extension);
+        BackgroundCompleteStage {
+            parent: self.parent,
+        }
+    }
+
+    /// Register the local (!Send) bg task instance.
+    ///
+    /// Same parameter shape as [`ActiveStage::local`] — the difference
+    /// is purely typestate: Background allows exactly one registration.
+    #[must_use]
+    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> BackgroundCompleteStage
+    where
+        E: local_ext::Extension + 'static,
+    {
+        self.parent.set_local_active(extension);
+        BackgroundCompleteStage {
+            parent: self.parent,
+        }
+    }
+}
+
+/// Background + the single bg task instance registered. Only `.build()`
+/// remains — neither a second `.shared(...)` nor `.local(...)` is reachable.
+#[doc(hidden)]
+pub struct BackgroundCompleteStage {
+    parent: ExtensionBundleBuilder,
+}
+
+impl BackgroundCompleteStage {
+    /// Finalize the bundle.
+    ///
+    /// # Errors
+    ///
+    /// See [`ExtensionBundleBuilder::build`].
+    pub fn build(self) -> Result<ExtensionBundle, Error> {
+        self.parent.build()
+    }
+}
+
 // ── Builder ──────────────────────────────────────────────────────────────────
 
 /// Builder for [`ExtensionBundle`].
@@ -643,6 +714,25 @@ impl ExtensionBundleBuilder {
     #[must_use]
     pub fn passive(self) -> PassiveStage {
         PassiveStage { parent: self }
+    }
+
+    /// Select the **Background** lifecycle for this extension bundle.
+    ///
+    /// Background extensions are engine-driven services that run a
+    /// `start()` event loop but expose **no** capabilities to nodes —
+    /// periodic reporters, schedulers, health monitors, global
+    /// coordinators. The engine hosts them exactly like Active
+    /// extensions (same control channel, same shutdown sequencing); the
+    /// only difference is that capability registration is a no-op.
+    ///
+    /// Pick exactly one of `.shared(...)` / `.local(...)` on the
+    /// returned stage, then `.build()`. The factory built around this
+    /// bundle should set
+    /// [`ExtensionFactory::capabilities`](crate::ExtensionFactory::capabilities)
+    /// to `None`.
+    #[must_use]
+    pub fn background(self) -> BackgroundEmptyStage {
+        BackgroundEmptyStage { parent: self }
     }
 
     /// Build the [`ExtensionBundle`].

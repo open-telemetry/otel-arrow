@@ -575,6 +575,10 @@ impl ExtensionBundle {
     /// with a clone of the wrapper's corresponding instance factory.
     /// The fn pointers fan out one registry entry per listed capability.
     ///
+    /// `capabilities` is `Some(_)` for active or passive extensions and
+    /// `None` for Background extensions (no capabilities exposed); when
+    /// `None` this method is a no-op.
+    ///
     /// # Errors
     ///
     /// - [`Error::InternalError`](crate::capability::registry::Error::InternalError)
@@ -592,9 +596,19 @@ impl ExtensionBundle {
     ///   (e.g. duplicate `(capability, extension)` registration).
     pub fn register_into(
         &self,
-        capabilities: &crate::capability::ExtensionCapabilities,
+        capabilities: Option<&crate::capability::ExtensionCapabilities>,
         registry: &mut crate::capability::registry::CapabilityRegistry,
     ) -> Result<(), crate::capability::registry::Error> {
+        // Background extensions carry `None` here - engine-driven event
+        // loop only, no capability registration. The `Option`
+        // discriminant is the source of truth: a `.background()` builder
+        // path always pairs with `capabilities: None` on the factory.
+        // (Invariant: builder typestate guides authors but does not
+        //  feed back into the bundle, so we trust the `Option`.)
+        let Some(capabilities) = capabilities else {
+            return Ok(());
+        };
+
         // Fail fast on metadata-vs-bundle drift: the
         // `extension_capabilities!` macro only checks that the listed
         // types implement the listed capability traits. It cannot see

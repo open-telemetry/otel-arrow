@@ -2,8 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! [`ConsumedTracker`] — records which capability variants were consumed
-//! by node factories so the engine can drop unused extension variants
+//! by node factories so the engine can drop unused extension *variants*
 //! after the build phase.
+//!
+//! The tracker observes capability **consumption**, not extension
+//! lifetime. It exists solely to answer: "for each capability variant an
+//! extension exposed, did any node bind to it?" If the answer is no, the
+//! engine drops that variant (`drop_local` / `drop_shared`). The
+//! tracker has no opinion on whether the extension itself keeps running
+//! — an extension's `start()` event loop is wholly independent of
+//! tracker state.
+//!
+//! Background extensions (the lifecycle that registers an engine-driven
+//! event loop and exposes **zero** capabilities) are intentionally
+//! absent from this structure: they have nothing for any node to
+//! consume, so there are no `(TypeId, ExtensionId)` keys to track and
+//! the engine never calls `drop_local` / `drop_shared` on them.
 
 use otap_df_config::ExtensionId;
 use std::any::TypeId;
@@ -16,12 +30,18 @@ use std::rc::Rc;
 /// Created alongside per-node [`Capabilities`](super::Capabilities)
 /// during [`resolve_bindings`](super::resolve_bindings). After all node
 /// factories have run, the engine inspects this tracker to determine
-/// which extension variants are unused and can be dropped.
+/// which extension *variants* are unused and can be dropped.
 ///
 /// Keyed by `(capability TypeId, extension ID)` so multiple providers of
-/// the same capability are tracked independently. The `Rc<Cell<bool>>`
-/// for a given key is shared across all nodes that bind to that
-/// provider — once any of them consumes the capability the cell is set.
+/// the same capability are tracked independently. An extension that
+/// exposes N capabilities therefore appears under N distinct keys in
+/// each of [`unconsumed_local`](Self::unconsumed_local) /
+/// [`unconsumed_shared`](Self::unconsumed_shared) — once per
+/// `(TypeId, ExtensionId)` pair — so the same `ExtensionId` shows up
+/// multiple times when iterating, once per capability it provides.
+/// The `Rc<Cell<bool>>` for a given key is shared across all nodes that
+/// bind to that provider — once any of them consumes the capability the
+/// cell is set.
 pub(crate) struct ConsumedTracker {
     local: HashMap<(TypeId, ExtensionId), ConsumedEntry>,
     shared: HashMap<(TypeId, ExtensionId), ConsumedEntry>,

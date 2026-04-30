@@ -382,19 +382,12 @@ fn test_optional_returns_none_when_not_bound() {
 }
 
 #[test]
-fn test_extension_capabilities_none() {
-    let ec = super::super::ExtensionCapabilities::none();
-    assert!(ec.shared.is_empty());
-    assert!(ec.local.is_empty());
-}
-
-#[test]
 fn test_extension_capabilities_shared_only() {
     let ec = super::super::ExtensionCapabilities {
         shared: &["bearer_token_provider"],
         local: &[],
-        register_shared: super::super::ExtensionCapabilities::none().register_shared,
-        register_local: super::super::ExtensionCapabilities::none().register_local,
+        register_shared: |_, _, _| Ok(()),
+        register_local: |_, _, _| Ok(()),
     };
     assert_eq!(ec.shared, &["bearer_token_provider"]);
     assert!(ec.local.is_empty());
@@ -814,13 +807,13 @@ fn test_end_to_end_shared_only_via_bundle() {
                 TestCap::shared_entry::<SharedImpl>(ext_id, factory),
             )
         },
-        register_local: ExtensionCapabilities::none().register_local,
+        register_local: |_, _, _| Ok(()),
     };
 
     // 3. Drain bundle → registry via register_into.
     let mut registry = CapabilityRegistry::new();
     bundle
-        .register_into(&caps, &mut registry)
+        .register_into(Some(&caps), &mut registry)
         .expect("register_into");
 
     // 4. Resolve a fake node's bindings and consume the shared cap.
@@ -877,7 +870,7 @@ fn test_end_to_end_local_only_via_bundle() {
     let caps = ExtensionCapabilities {
         shared: &[],
         local: &["test_cap"],
-        register_shared: ExtensionCapabilities::none().register_shared,
+        register_shared: |_, _, _| Ok(()),
         register_local: |ext_id, factory, registry| {
             registry.register_local(
                 TypeId::of::<TestCap>(),
@@ -888,7 +881,7 @@ fn test_end_to_end_local_only_via_bundle() {
 
     let mut registry = CapabilityRegistry::new();
     bundle
-        .register_into(&caps, &mut registry)
+        .register_into(Some(&caps), &mut registry)
         .expect("register_into");
 
     let mut tracker = ConsumedTracker::new();
@@ -957,12 +950,12 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
                 TestCap::shared_entry::<ConstructedImpl>(ext_id, factory),
             )
         },
-        register_local: ExtensionCapabilities::none().register_local,
+        register_local: |_, _, _| Ok(()),
     };
 
     let mut registry = CapabilityRegistry::new();
     bundle
-        .register_into(&caps, &mut registry)
+        .register_into(Some(&caps), &mut registry)
         .expect("register_into");
 
     let mut tracker = ConsumedTracker::new();
@@ -1049,7 +1042,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
 
     let mut registry = CapabilityRegistry::new();
     let err = bundle
-        .register_into(&caps, &mut registry)
+        .register_into(Some(&caps), &mut registry)
         .expect_err("register_into must reject metadata-vs-bundle drift");
     match err {
         Error::InternalError { message } => {
@@ -1091,7 +1084,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
         },
     };
     let err = bundle
-        .register_into(&caps, &mut registry)
+        .register_into(Some(&caps), &mut registry)
         .expect_err("register_into must reject metadata-vs-bundle drift");
     match err {
         Error::InternalError { message } => {
@@ -1315,5 +1308,105 @@ fn test_native_dual_shared_claim_invalidates_local_on_same_node() {
         1,
         "native shared claim must NOT flip the local bucket — invalidating \
          the local alternative is not the same as consuming it",
+    );
+}
+
+// ── Background extension tests ──────────────────────────────────────────────
+
+/// Background extensions pass `None` to `register_into` and contribute zero
+/// entries to the registry. `ConsumedTracker` is untouched because no
+/// resolution can target a Background extension.
+#[test]
+fn test_register_into_background_no_op() {
+    use crate::config::ExtensionConfig;
+    use crate::control::ExtensionControlMsg;
+    use crate::error::Error as EngineError;
+    use crate::extension::ExtensionWrapper;
+    use crate::shared::extension as shared_ext;
+    use crate::terminal_state::TerminalState;
+    use async_trait::async_trait;
+    use otap_df_config::extension::ExtensionUserConfig;
+    use std::sync::Arc;
+
+    // A minimal shared bg-task type. The body of `start()` is irrelevant
+    // for this test — we only build the bundle and call register_into.
+    #[derive(Clone)]
+    struct BgTask;
+
+    #[async_trait]
+    impl shared_ext::Extension for BgTask {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl: shared_ext::ControlChannel,
+            _eh: crate::extension::EffectHandler,
+        ) -> Result<TerminalState, EngineError> {
+            loop {
+                if let ExtensionControlMsg::Shutdown { .. } = ctrl.recv().await? {
+                    break;
+                }
+            }
+            Ok(TerminalState::default())
+        }
+    }
+
+    let name: ExtensionId = "bg".into();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        "urn:test:bg".into(),
+        serde_json::Value::Null,
+    ));
+    let runtime_config = ExtensionConfig::new("bg");
+
+    let bundle = ExtensionWrapper::builder(name.clone(), user_config, &runtime_config)
+        .background()
+        .shared(BgTask)
+        .build()
+        .expect("background bundle builds");
+
+    // Background factories use `capabilities: None`, which `register_into`
+    // treats as a no-op. The registry stays empty.
+    let mut registry = CapabilityRegistry::new();
+    bundle
+        .register_into(None, &mut registry)
+        .expect("background register_into is a no-op");
+
+    assert!(
+        registry
+            .get_shared(&TypeId::of::<TestCap>(), "bg")
+            .is_none()
+    );
+    assert!(registry.get_local(&TypeId::of::<TestCap>(), "bg").is_none());
+
+    let tracker = ConsumedTracker::new();
+    assert!(tracker.unconsumed_shared().is_empty());
+    assert!(tracker.unconsumed_local().is_empty());
+}
+
+/// A node config that tries to bind a capability to a Background extension
+/// should surface the existing Step-4 error: the Background extension is
+/// known (it is loaded), but it does not provide the requested capability.
+/// This is the same behavior as binding to any active/passive extension
+/// that simply doesn't list the capability — Background is not a special
+/// case at the resolution layer.
+#[test]
+fn test_resolve_bindings_background_not_a_provider() {
+    // Registry contains `provider-ext` providing `test_cap`. The node
+    // config tries to bind `test_cap` to `bg-ext` — a known-loaded
+    // Background extension that registered nothing.
+    let mut reg = CapabilityRegistry::new();
+    register_shared(&mut reg, "provider-ext", "v");
+
+    let mut tracker = ConsumedTracker::new();
+    let result = resolve_bindings(
+        &bindings("test_cap", "bg-ext"),
+        &reg,
+        &known_exts(&["bg-ext", "provider-ext"]),
+        &mut tracker,
+    );
+
+    let err = result.expect_err("must reject binding to Background extension");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("does not provide"),
+        "expected Step-4 'does not provide' error; got: {msg}",
     );
 }
