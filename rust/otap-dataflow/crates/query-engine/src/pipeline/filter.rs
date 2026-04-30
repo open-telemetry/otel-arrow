@@ -2118,7 +2118,6 @@ mod test {
     }
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
-    use otap_df_query_engine_languages::opl::parser::OplParser;
     use otap_df_pdata::otap::{Logs, Traces};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
