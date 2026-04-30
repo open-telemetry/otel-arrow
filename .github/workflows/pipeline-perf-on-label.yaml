@@ -1,8 +1,8 @@
-# This action runs the pipeline perf continuous benchmarking suite on every PR.
-# - With 'pipelineperf' label: runs on dedicated Oracle bare-metal hardware for accurate benchmarks
-# - Without label: runs on ubuntu-latest for basic validation
-# In either case, the results does not update the charts.
-name: Pipeline Perf Pre-Merge
+# This action runs the pipeline perf benchmarking suite on dedicated Oracle
+# bare-metal hardware when the 'pipelineperf' label is added to a PR.
+# Basic perf validation on ubuntu-latest is handled by Rust-CI (rust-ci.yml).
+# The results from this workflow do not update the charts.
+name: Pipeline Perf Dedicated
 
 on:
   pull_request:
@@ -18,29 +18,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Check for the pipelineperf label to determine which runner to use
-  label-check:
-    name: Check for pipelineperf label
-    runs-on: ubuntu-latest
-    outputs:
-      has_label: ${{ steps.check_label.outputs.has_label }}
-    steps:
-      - name: Check if PR has 'pipelineperf' label
-        id: check_label
-        run: |
-          labels=$(echo '${{ toJson(github.event.pull_request.labels) }}' | jq -r '.[].name')
-          if echo "$labels" | grep -q "pipelineperf"; then
-            echo "Label pipelineperf found - will use dedicated hardware"
-            echo "has_label=true" >> $GITHUB_OUTPUT
-          else
-            echo "Label 'pipelineperf' not found - will use ubuntu-latest"
-            echo "has_label=false" >> $GITHUB_OUTPUT
-          fi
-
   # Run on dedicated Oracle hardware when 'pipelineperf' label is present
   pipeline-perf-test-dedicated:
-    needs: label-check
-    if: needs.label-check.outputs.has_label == 'true'
+    if: contains(github.event.pull_request.labels.*.name, 'pipelineperf')
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -122,42 +102,3 @@ jobs:
           echo ""
           echo "=== Docker disk usage ==="
           docker system df -v 2>/dev/null || true
-
-  # Run on ubuntu-latest for basic validation when no label is present
-  pipeline-perf-test-basic:
-    needs: label-check
-    if: needs.label-check.outputs.has_label == 'false'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.14"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-
-      - name: Build dataflow_engine
-        run: |
-          git submodule init
-          git submodule update
-          cd rust/otap-dataflow
-          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-          cd ../..
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
-          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
-
-      - name: Run pipeline performance test suite
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
