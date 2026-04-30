@@ -5,6 +5,76 @@
 
 //! Session wrapper for Linux userevents collection.
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TracefsFieldLocation {
+    Static,
+    StaticString,
+    DynRelative,
+    DynAbsolute,
+    StaticLenPrefixArray,
+    StaticUtf16String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TracefsField {
+    pub name: String,
+    pub type_name: String,
+    pub location: TracefsFieldLocation,
+    pub offset: usize,
+    pub size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RawUsereventsRecord {
+    pub subscription_index: usize,
+    pub timestamp_unix_nano: u64,
+    /// Process id from perf `PERF_SAMPLE_TID` metadata, when present.
+    pub process_id: Option<u32>,
+    /// Thread id from perf `PERF_SAMPLE_TID` metadata, when present.
+    pub thread_id: Option<u32>,
+    /// Full raw tracepoint sample bytes as delivered by the perf session.
+    ///
+    /// Conceptually, for normal tracefs decoding this is:
+    ///
+    /// ```text
+    /// +----------------------+-------------------------------+
+    /// | common_* fields      | user-declared tracefs fields  |
+    /// | fixed trace metadata | producer payload fields       |
+    /// +----------------------+-------------------------------+
+    /// 0                      user_data_offset
+    /// ```
+    ///
+    /// For EventHeader tracepoints, the user-declared region starts with
+    /// the EventHeader bytes:
+    ///
+    /// ```text
+    /// +----------------------+------------------------------------------+
+    /// | common_* fields      | EventHeader + extensions + event payload |
+    /// +----------------------+------------------------------------------+
+    /// 0                      user_data_offset
+    /// ```
+    ///
+    /// The receiver keeps these layers separate: tracefs metadata tells us
+    /// where the user region begins, and `FormatConfig` decides whether the
+    /// user region is decoded as standard tracefs fields or as EventHeader.
+    pub event_data: Vec<u8>,
+    /// Byte offset from the start of `event_data` to the first non-common
+    /// tracefs field. This is the beginning of the producer-defined payload
+    /// region for EventHeader decoding.
+    pub user_data_offset: usize,
+    /// Tracefs field metadata for the tracepoint. These fields come from
+    /// the tracefs `format` file, not from the sample payload itself.
+    pub fields: std::sync::Arc<[TracefsField]>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionDrainStats {
+    pub received_samples: u64,
+    pub dropped_no_subscription: u64,
+    pub lost_samples: u64,
+    pub dropped_pending_overflow: u64,
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use std::io;
@@ -18,76 +88,7 @@ mod imp {
     };
 
     use super::super::{DrainConfig, SessionConfig, SubscriptionConfig};
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum TracefsFieldLocation {
-        Static,
-        StaticString,
-        DynRelative,
-        DynAbsolute,
-        StaticLenPrefixArray,
-        StaticUtf16String,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) struct TracefsField {
-        pub name: String,
-        pub type_name: String,
-        pub location: TracefsFieldLocation,
-        pub offset: usize,
-        pub size: usize,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) struct RawUsereventsRecord {
-        pub subscription_index: usize,
-        pub timestamp_unix_nano: u64,
-        /// Process id from perf `PERF_SAMPLE_TID` metadata, when present.
-        pub process_id: Option<u32>,
-        /// Thread id from perf `PERF_SAMPLE_TID` metadata, when present.
-        pub thread_id: Option<u32>,
-        /// Full raw tracepoint sample bytes as delivered by the perf session.
-        ///
-        /// Conceptually, for normal tracefs decoding this is:
-        ///
-        /// ```text
-        /// +----------------------+-------------------------------+
-        /// | common_* fields      | user-declared tracefs fields  |
-        /// | fixed trace metadata | producer payload fields       |
-        /// +----------------------+-------------------------------+
-        /// 0                      user_data_offset
-        /// ```
-        ///
-        /// For EventHeader tracepoints, the user-declared region starts with
-        /// the EventHeader bytes:
-        ///
-        /// ```text
-        /// +----------------------+------------------------------------------+
-        /// | common_* fields      | EventHeader + extensions + event payload |
-        /// +----------------------+------------------------------------------+
-        /// 0                      user_data_offset
-        /// ```
-        ///
-        /// The receiver keeps these layers separate: tracefs metadata tells us
-        /// where the user region begins, and `FormatConfig` decides whether the
-        /// user region is decoded as standard tracefs fields or as EventHeader.
-        pub event_data: Vec<u8>,
-        /// Byte offset from the start of `event_data` to the first non-common
-        /// tracefs field. This is the beginning of the producer-defined payload
-        /// region for EventHeader decoding.
-        pub user_data_offset: usize,
-        /// Tracefs field metadata for the tracepoint. These fields come from
-        /// the tracefs `format` file, not from the sample payload itself.
-        pub fields: std::sync::Arc<[TracefsField]>,
-    }
-
-    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct SessionDrainStats {
-        pub received_samples: u64,
-        pub dropped_no_subscription: u64,
-        pub lost_samples: u64,
-        pub dropped_pending_overflow: u64,
-    }
+    use super::{RawUsereventsRecord, SessionDrainStats};
 
     #[derive(Debug)]
     pub(crate) enum SessionInitError {
@@ -242,44 +243,7 @@ mod imp {
     use std::io;
 
     use super::super::{DrainConfig, SessionConfig, SubscriptionConfig};
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum TracefsFieldLocation {
-        Static,
-        StaticString,
-        DynRelative,
-        DynAbsolute,
-        StaticLenPrefixArray,
-        StaticUtf16String,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) struct TracefsField {
-        pub name: String,
-        pub type_name: String,
-        pub location: TracefsFieldLocation,
-        pub offset: usize,
-        pub size: usize,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) struct RawUsereventsRecord {
-        pub subscription_index: usize,
-        pub timestamp_unix_nano: u64,
-        pub process_id: Option<u32>,
-        pub thread_id: Option<u32>,
-        pub event_data: Vec<u8>,
-        pub user_data_offset: usize,
-        pub fields: std::sync::Arc<[TracefsField]>,
-    }
-
-    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct SessionDrainStats {
-        pub received_samples: u64,
-        pub dropped_no_subscription: u64,
-        pub lost_samples: u64,
-        pub dropped_pending_overflow: u64,
-    }
+    use super::{RawUsereventsRecord, SessionDrainStats};
 
     #[derive(Debug)]
     pub(crate) enum SessionInitError {
@@ -331,7 +295,4 @@ mod imp {
     }
 }
 
-pub(super) use imp::{
-    RawUsereventsRecord, SessionDrainStats, SessionInitError, TracefsField, TracefsFieldLocation,
-    UsereventsSession,
-};
+pub(super) use imp::{SessionInitError, UsereventsSession};

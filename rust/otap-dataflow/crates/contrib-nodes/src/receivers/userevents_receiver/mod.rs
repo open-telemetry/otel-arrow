@@ -684,9 +684,11 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                     }
 
                     drained = async {
-                        let session = session
-                            .as_mut()
-                            .expect("userevents session branch is gated by is_some()");
+                        let Some(session) = session.as_mut() else {
+                            return Err(std::io::Error::other(
+                                "userevents session branch selected without an active session",
+                            ));
+                        };
                         session.drain_ready(&drain_cfg, &mut drained_records).await
                     }, if session.is_some() => {
                         // TODO: Reopen the session for recoverable mid-stream
