@@ -1,11 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::str::FromStr;
-
-use crate::ExpressionError;
-
-// representations for stringified value types
+// representations for stringified value types:
 const VALUE_TYPE_AS_STR_ARRAY: &str = "Array";
 const VALUE_TYPE_AS_STR_BOOLEAN: &str = "Boolean";
 const VALUE_TYPE_AS_STR_DATETIME: &str = "DateTime";

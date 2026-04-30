@@ -132,14 +132,12 @@ impl ScalarUDFImpl for IsTypeFunc {
 
 fn is_logically_type(source: &DataType, expected: &DataType) -> bool {
     if source == expected {
-        return true;
+        true
+    } else if let DataType::Dictionary(_, v) = source {
+        v.as_ref() == expected
+    } else {
+        false
     }
-
-    if let DataType::Dictionary(_, v) = source {
-        return v.as_ref() == expected;
-    }
-
-    return false;
 }
 
 #[cfg(test)]
@@ -288,7 +286,7 @@ mod tests {
         // Dictionary with Float64 values should match
         let dict = ScalarValue::Dictionary(
             Box::new(DataType::Int32),
-            Box::new(ScalarValue::Float64(Some(3.14))),
+            Box::new(ScalarValue::Float64(Some(5.14))),
         );
         let v = invoke_scalar(ExprLogicalType::Float64, ColumnarValue::Scalar(dict)).unwrap();
         assert!(v);
@@ -715,7 +713,7 @@ mod tests {
     fn test_any_int_with_dict_float64_rejects() {
         let dict = ScalarValue::Dictionary(
             Box::new(DataType::Int32),
-            Box::new(ScalarValue::Float64(Some(3.14))),
+            Box::new(ScalarValue::Float64(Some(5.14))),
         );
         let v = invoke_scalar(ExprLogicalType::AnyInt, ColumnarValue::Scalar(dict)).unwrap();
         assert!(!v, "Dictionary with Float64 values is not an integer");

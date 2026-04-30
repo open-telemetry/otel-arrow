@@ -2165,11 +2165,10 @@ mod test {
     use super::*;
 
     use arrow::array::{
-        BinaryArray, DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder,
-        RecordBatch, StringArray, UInt8Array, UInt16Array,
+        DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder, RecordBatch,
+        StringArray, UInt8Array, UInt16Array,
     };
     use arrow::buffer::MutableBuffer;
-    use arrow::compute::kernels::cmp::gt;
     use arrow::datatypes::{DataType, Field, Schema};
 
     /// Test helper to build an IdBitmap from a slice of u32 values.
