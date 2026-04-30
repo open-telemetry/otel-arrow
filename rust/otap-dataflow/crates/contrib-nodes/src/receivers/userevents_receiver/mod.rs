@@ -783,29 +783,182 @@ const fn default_overflow_mode() -> OverflowMode {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_integration_tests {
     use super::*;
+    use std::io;
+    use std::time::Duration;
 
-    #[test]
-    #[ignore = "requires a Linux runner with a pre-registered user_events tracepoint"]
-    fn session_open_smoke_test_for_pre_registered_tracepoint() {
-        let tracepoint = std::env::var("OTAP_DF_USEREVENTS_TEST_TRACEPOINT").expect(
-            "set OTAP_DF_USEREVENTS_TEST_TRACEPOINT to a pre-registered user_events tracepoint",
-        );
+    use eventheader_dynamic::{EventBuilder, FieldFormat, Level, Provider};
+    use tokio::time;
 
-        let config = SessionConfig {
+    const RUN_USEREVENTS_E2E_ENV: &str = "OTAP_DF_RUN_USEREVENTS_E2E";
+
+    fn skip_user_events_e2e(reason: impl std::fmt::Display) {
+        eprintln!("skipping user_events e2e smoke test: {reason}");
+    }
+
+    fn test_session_config() -> SessionConfig {
+        SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
             max_pending_events: default_max_pending_events(),
             max_pending_bytes: default_max_pending_bytes(),
             late_registration: LateRegistrationConfig::default(),
-        };
+        }
+    }
+
+    fn test_drain_config() -> DrainConfig {
+        DrainConfig {
+            max_records_per_turn: default_max_records_per_turn(),
+            max_bytes_per_turn: default_max_bytes_per_turn(),
+            max_drain_ns: default_max_drain_ns(),
+        }
+    }
+
+    fn open_session_or_skip(tracepoint: &str, format: FormatConfig) -> Option<UsereventsSession> {
         let subscriptions = vec![SubscriptionConfig {
-            tracepoint,
-            format: FormatConfig::Tracefs,
+            tracepoint: tracepoint.to_owned(),
+            format,
         }];
 
-        let session = UsereventsSession::open(&subscriptions, &config, 0)
-            .expect("open a perf session for the registered tracepoint");
-        assert_eq!(session.subscription_count(), 1);
+        match UsereventsSession::open(&subscriptions, &test_session_config(), 0) {
+            Ok(session) => Some(session),
+            Err(SessionInitError::MissingTracepoint(tracepoint)) => {
+                skip_user_events_e2e(format!("tracepoint `{tracepoint}` was not registered"));
+                None
+            }
+            Err(SessionInitError::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::PermissionDenied
+                        | io::ErrorKind::Unsupported
+                        | io::ErrorKind::Other
+                ) =>
+            {
+                skip_user_events_e2e(error);
+                None
+            }
+            Err(error) => panic!("failed to open user_events receiver session: {error}"),
+        }
+    }
+
+    async fn write_eventheader_sample(event_set: &eventheader_dynamic::EventSet) -> bool {
+        for _ in 0..20 {
+            if event_set.enabled() {
+                break;
+            }
+            time::sleep(Duration::from_millis(10)).await;
+        }
+
+        if !event_set.enabled() {
+            skip_user_events_e2e(
+                "tracepoint did not become enabled after opening receiver session",
+            );
+            return false;
+        }
+
+        let write_result = EventBuilder::new()
+            .reset("CiSmoke", 0)
+            .add_str("ci_message", b"hello-from-ci", FieldFormat::Default, 0)
+            .add_value("ci_answer", 42u32, FieldFormat::UnsignedInt, 0)
+            .write(event_set, None, None);
+        if write_result != 0 {
+            skip_user_events_e2e(format!("EventHeader write returned errno {write_result}"));
+            return false;
+        }
+
+        true
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn user_events_linux_e2e_smoke_when_available() {
+        if std::env::var_os(RUN_USEREVENTS_E2E_ENV).is_none() {
+            skip_user_events_e2e(format!(
+                "set {RUN_USEREVENTS_E2E_ENV}=1 to probe kernel user_events support"
+            ));
+            return;
+        }
+
+        let provider_name = format!("otap_df_ci_{}", std::process::id());
+        let tracepoint = format!("user_events:{provider_name}_L4K1");
+        let mut provider = Provider::new(&provider_name, &Provider::new_options());
+        let event_set = provider.register_set(Level::Informational, 1);
+        if event_set.errno() != 0 {
+            skip_user_events_e2e(format!(
+                "EventHeader registration returned errno {}",
+                event_set.errno()
+            ));
+            return;
+        }
+
+        let mut tracefs_session = match open_session_or_skip(&tracepoint, FormatConfig::Tracefs) {
+            Some(session) => session,
+            None => return,
+        };
+        assert_eq!(tracefs_session.subscription_count(), 1);
+        if !write_eventheader_sample(&event_set).await {
+            return;
+        }
+
+        let mut tracefs_records = Vec::new();
+        let drain_config = test_drain_config();
+        let tracefs_stats = time::timeout(
+            Duration::from_secs(2),
+            tracefs_session.drain_ready(&drain_config, &mut tracefs_records),
+        )
+        .await
+        .expect("timed out draining tracefs sample")
+        .expect("drain tracefs sample");
+        assert_eq!(tracefs_stats.dropped_no_subscription, 0);
+        assert!(
+            !tracefs_records.is_empty(),
+            "tracefs session should collect at least one sample"
+        );
+
+        let mut eventheader_session =
+            match open_session_or_skip(&tracepoint, FormatConfig::EventHeader) {
+                Some(session) => session,
+                None => return,
+            };
+        assert_eq!(eventheader_session.subscription_count(), 1);
+        if !write_eventheader_sample(&event_set).await {
+            return;
+        }
+
+        let mut eventheader_records = Vec::new();
+        let drain_config = test_drain_config();
+        let eventheader_stats = time::timeout(
+            Duration::from_secs(2),
+            eventheader_session.drain_ready(&drain_config, &mut eventheader_records),
+        )
+        .await
+        .expect("timed out draining EventHeader sample")
+        .expect("drain EventHeader sample");
+        assert_eq!(eventheader_stats.dropped_no_subscription, 0);
+
+        let decoded = eventheader_records
+            .into_iter()
+            .map(|record| {
+                super::decoder::DecodedUsereventsRecord::from_raw(
+                    &tracepoint,
+                    record,
+                    &FormatConfig::EventHeader,
+                )
+            })
+            .find(|record| {
+                record.attributes.iter().any(|(key, value)| {
+                    key.as_ref() == "ci_message"
+                        && matches!(
+                            value,
+                            super::decoder::DecodedAttrValue::Str(value)
+                                if value == "hello-from-ci"
+                        )
+                })
+            });
+
+        assert!(
+            decoded.is_some(),
+            "EventHeader session should decode the emitted ci_message field"
+        );
     }
 }
 
