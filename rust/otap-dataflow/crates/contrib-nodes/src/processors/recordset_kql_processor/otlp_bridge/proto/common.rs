@@ -4,7 +4,7 @@ use data_engine_recordset::*;
 
 use data_engine_expressions::*;
 
-use crate::serializer::ProtobufField;
+use crate::processors::recordset_kql_processor::otlp_bridge::serializer::ProtobufField;
 
 #[derive(Debug, Clone)]
 pub struct InstrumentationScope {

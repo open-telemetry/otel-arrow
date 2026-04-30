@@ -4,7 +4,7 @@
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 
-use crate::*;
+use crate::processors::recordset_kql_processor::otlp_bridge::*;
 
 pub(crate) struct OtlpAttachedRecords<'a> {
     resource: Option<&'a (dyn MapValue + 'static)>,

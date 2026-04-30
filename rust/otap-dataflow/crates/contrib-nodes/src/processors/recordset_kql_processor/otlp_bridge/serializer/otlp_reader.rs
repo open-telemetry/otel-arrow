@@ -7,7 +7,9 @@ use chrono::{TimeZone, Utc};
 use data_engine_expressions::AsValue;
 use data_engine_recordset::*;
 
-use crate::{serializer::protobuf_reader::ProtobufReader, *};
+use crate::processors::recordset_kql_processor::otlp_bridge::{
+    serializer::protobuf_reader::ProtobufReader, *,
+};
 
 pub fn read_export_logs_service_request(
     protobuf_data: &[u8],

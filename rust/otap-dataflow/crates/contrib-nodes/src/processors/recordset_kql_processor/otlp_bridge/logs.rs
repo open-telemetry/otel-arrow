@@ -6,7 +6,9 @@ use std::{collections::HashMap, mem};
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 
-use crate::{attached_records::OtlpAttachedRecords, *};
+use crate::processors::recordset_kql_processor::otlp_bridge::{
+    attached_records::OtlpAttachedRecords, *,
+};
 
 impl RecordSet<LogRecord> for ExportLogsServiceRequest {
     fn drain<F>(&mut self, action: &mut F)

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use data_engine_recordset::*;
 
-use crate::{proto::common::AnyValue, serializer::ProtobufField};
+use crate::processors::recordset_kql_processor::otlp_bridge::{
+    proto::common::AnyValue, serializer::ProtobufField,
+};
 
 #[derive(Debug, Clone)]
 pub struct Resource {

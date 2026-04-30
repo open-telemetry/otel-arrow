@@ -7,7 +7,7 @@ use data_engine_expressions::*;
 use data_engine_kql_parser::*;
 use data_engine_recordset::*;
 
-use crate::*;
+use crate::processors::recordset_kql_processor::otlp_bridge::*;
 
 const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OTLP_BUFFER_INITIAL_CAPACITY: usize = 1024 * 64;

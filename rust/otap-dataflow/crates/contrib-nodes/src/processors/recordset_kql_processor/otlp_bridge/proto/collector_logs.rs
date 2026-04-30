@@ -1,4 +1,4 @@
-use crate::*;
+use crate::processors::recordset_kql_processor::otlp_bridge::*;
 
 #[derive(Debug)]
 pub struct ExportLogsServiceRequest {

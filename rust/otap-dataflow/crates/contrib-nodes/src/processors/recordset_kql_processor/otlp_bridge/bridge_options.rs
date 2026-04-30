@@ -7,7 +7,7 @@ use data_engine_expressions::PipelineExpression;
 use data_engine_kql_parser::*;
 use data_engine_recordset::{RecordSetEngineDiagnostic, RecordSetEngineRecord, format_diagnostics};
 
-use crate::LogRecord;
+use crate::processors::recordset_kql_processor::otlp_bridge::LogRecord;
 
 #[derive(Debug, Clone)]
 pub struct BridgeOptions {

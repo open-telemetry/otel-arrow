@@ -3,7 +3,7 @@
 
 use thiserror::Error;
 
-use crate::SerializerError;
+use crate::processors::recordset_kql_processor::otlp_bridge::SerializerError;
 
 #[derive(Error, Debug)]
 pub enum BridgeError {

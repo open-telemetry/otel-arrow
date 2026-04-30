@@ -3,7 +3,7 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use crate::{serializer::*, *};
+use crate::processors::recordset_kql_processor::otlp_bridge::{serializer::*, *};
 
 const RESERVATION_SIZE_IN_BYTES: usize = 4;
 
@@ -214,7 +214,7 @@ impl ProtobufWriter {
 
 #[cfg(test)]
 mod tests {
-    use crate::serializer::protobuf_reader::ProtobufReader;
+    use crate::processors::recordset_kql_processor::otlp_bridge::serializer::protobuf_reader::ProtobufReader;
 
     use super::*;
 

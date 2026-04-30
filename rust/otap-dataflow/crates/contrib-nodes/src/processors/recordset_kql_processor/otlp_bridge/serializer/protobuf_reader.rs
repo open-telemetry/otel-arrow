@@ -3,7 +3,7 @@
 
 use bytes::Buf;
 
-use crate::{serializer::*, *};
+use crate::processors::recordset_kql_processor::otlp_bridge::{serializer::*, *};
 
 pub struct ProtobufReader<'a> {
     data: &'a [u8],

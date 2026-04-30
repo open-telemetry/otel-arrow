@@ -5,7 +5,7 @@ use std::str::Utf8Error;
 
 use thiserror::Error;
 
-use crate::serializer::ProtobufWireType;
+use crate::processors::recordset_kql_processor::otlp_bridge::serializer::ProtobufWireType;
 
 #[derive(Error, Debug)]
 pub enum SerializerError {

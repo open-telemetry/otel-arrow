@@ -3,7 +3,9 @@
 
 use data_engine_expressions::*;
 
-use crate::{serializer::protobuf_writer::ProtobufWriter, *};
+use crate::processors::recordset_kql_processor::otlp_bridge::{
+    serializer::protobuf_writer::ProtobufWriter, *,
+};
 
 pub fn write_export_logs_service_request(
     export_logs_service_request: &ExportLogsServiceRequest,
@@ -282,7 +284,7 @@ mod tests {
     use prost::Message;
     use regex::Regex;
 
-    use crate::serializer::ProtobufField;
+    use crate::processors::recordset_kql_processor::otlp_bridge::serializer::ProtobufField;
 
     use super::*;
 
