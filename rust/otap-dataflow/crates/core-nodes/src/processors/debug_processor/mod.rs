@@ -608,7 +608,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));
@@ -956,7 +956,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(!reader.contains("Received 1 resource metrics"));
                 assert!(!reader.contains("Received 1 metrics"));
                 assert!(!reader.contains("Received 1 data points"));
@@ -1015,7 +1015,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));
@@ -1074,7 +1074,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(!reader.contains("Received 1 resource metrics"));
                 assert!(!reader.contains("Received 1 metrics"));
                 assert!(!reader.contains("Received 1 data points"));
@@ -1099,7 +1099,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));
@@ -1128,7 +1128,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));

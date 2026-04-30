@@ -149,11 +149,7 @@ impl<'buf, B: BoundedBuf + std::io::Write> DirectFieldVisitor<'buf, B> {
 
     /// Encode an i64 attribute into a buffer.
     #[inline]
-    fn encode_int_attribute_to(
-        buf: &mut B,
-        key: &str,
-        value: i64,
-    ) -> EncodeResult {
+    fn encode_int_attribute_to(buf: &mut B, key: &str, value: i64) -> EncodeResult {
         buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
             buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
@@ -165,11 +161,7 @@ impl<'buf, B: BoundedBuf + std::io::Write> DirectFieldVisitor<'buf, B> {
 
     /// Encode a bool attribute into a buffer.
     #[inline]
-    fn encode_bool_attribute_to(
-        buf: &mut B,
-        key: &str,
-        value: bool,
-    ) -> EncodeResult {
+    fn encode_bool_attribute_to(buf: &mut B, key: &str, value: bool) -> EncodeResult {
         buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
             buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
@@ -181,11 +173,7 @@ impl<'buf, B: BoundedBuf + std::io::Write> DirectFieldVisitor<'buf, B> {
 
     /// Encode a double attribute into a buffer.
     #[inline]
-    fn encode_double_attribute_to(
-        buf: &mut B,
-        key: &str,
-        value: f64,
-    ) -> EncodeResult {
+    fn encode_double_attribute_to(buf: &mut B, key: &str, value: f64) -> EncodeResult {
         buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
             buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
@@ -862,8 +850,8 @@ mod tests {
     #[test]
     fn record_str_halves_remaining_budget_across_attributes() {
         use crate::self_tracing::encoder::DirectFieldVisitor;
-        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
         use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
+        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
         use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
         use prost::Message;
         use tracing::field::Visit;

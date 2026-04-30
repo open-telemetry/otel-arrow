@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::otlp::common::BoundedBuf;
 use crate::arrays::{
     NullableArrayAccessor, get_f64_array_opt, get_timestamp_nanosecond_array_opt, get_u16_array,
     get_u32_array_opt, get_u64_array_opt,
@@ -9,6 +8,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
+use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
 use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
 use crate::proto::consts::field_num::metrics::{

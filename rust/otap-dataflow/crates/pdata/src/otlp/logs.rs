@@ -6,7 +6,6 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Fields};
 
-use crate::otlp::common::BoundedBuf;
 use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
     StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
@@ -15,6 +14,7 @@ use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::ProtoBytesEncoder;
 use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
+use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
     SortedBatchCursor, proto_encode_instrumentation_scope, proto_encode_resource,

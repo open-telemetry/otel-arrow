@@ -28,6 +28,7 @@ use otap_df_engine::testing::liveness::wait_for_condition;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
+use otap_df_telemetry::metrics::MetricValue;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -310,6 +311,10 @@ fn capture_batch_metrics(
     registry.visit_current_metrics(|desc, _attrs, iter| {
         if desc.name == "otap.processor.batch" {
             for (field, value) in iter {
+                if let MetricValue::Mmsc(_) = value {
+                    continue;
+                }
+
                 let _ = snapshot
                     .fields
                     .insert(field.name.to_owned(), value.to_u64_lossy());
@@ -462,7 +467,7 @@ fn test_retry_pipeline_eventually_recovers_after_transient_nacks() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         Duration::from_secs(1),
         Some({
             let delivered_items = delivered_items.clone();

@@ -3,11 +3,11 @@
 
 use arrow::array::Array;
 
-use crate::otlp::common::BoundedBuf;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
+use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
     proto_encode_instrumentation_scope, proto_encode_resource,

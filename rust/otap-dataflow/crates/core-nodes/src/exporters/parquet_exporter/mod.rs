@@ -436,7 +436,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 /// This calculates the period at which we instruct the [`WriterManager`] to flush any writers
 /// older than the threshold.
 fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Duration {
-    // try to choose a period that is relatively close the the configured threshold.
+    // try to choose a period that is relatively close the configured threshold.
     // this avoids the check happening long after the file writer is beyond the threshold.
     let period = configured_threshold / 60;
 

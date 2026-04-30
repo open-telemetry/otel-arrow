@@ -697,11 +697,7 @@ pub trait BoundedBuf {
     /// callers cap how many bytes a single nested encoding may consume,
     /// without touching the underlying buffer's outer limit.
     #[inline]
-    fn with_max_remaining<R>(
-        &mut self,
-        max_remaining: usize,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R
+    fn with_max_remaining<R>(&mut self, max_remaining: usize, f: impl FnOnce(&mut Self) -> R) -> R
     where
         Self: Sized,
     {
@@ -1993,7 +1989,11 @@ mod test {
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
         let r = buf.encode_string_truncating(1, &long);
         assert_eq!(r, Err(Dropped));
-        assert_eq!(buf.as_ref(), snapshot.as_slice(), "no partial bytes on hard fail");
+        assert_eq!(
+            buf.as_ref(),
+            snapshot.as_slice(),
+            "no partial bytes on hard fail"
+        );
     }
 
     #[test]
@@ -2016,7 +2016,10 @@ mod test {
             Some(crate::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s,
             other => panic!("unexpected AnyValue variant: {:?}", other),
         };
-        assert!(s.ends_with("[...]"), "decoded value should end with truncation suffix");
+        assert!(
+            s.ends_with("[...]"),
+            "decoded value should end with truncation suffix"
+        );
         assert!(s.starts_with("YY"));
     }
 
@@ -2024,14 +2027,16 @@ mod test {
     fn truncate_at_utf8_boundary_does_not_panic() {
         use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
 
-        // A string of 4-byte UTF-8 chars (😀) where truncation lands mid-char.
-        let s: String = std::iter::repeat('😀').take(20).collect();
+        // A string of 4-byte UTF-8 chars where truncation lands mid-char.
+        let s: String = std::iter::repeat_n('\u{1F600}', 2).collect();
         let mut buf = StackProtoBuffer::<24>::with_inline();
-        let r = buf.encode_string_truncating(1, &s);
-        assert!(matches!(r, Ok(true) | Err(_)));
-        // If anything was written, it must be valid UTF-8 between the length
-        // prefix and the [...] suffix (no byte-boundary panic during encoding).
-        // Just exercising the path is the test.
+        assert_eq!(8, s.len());
+        for i in [1, 2, 3, 5, 6, 7] {
+            let r = buf.encode_string_truncating(i, &s);
+            assert!(matches!(r, Err(_)));
+        }
+        let r = buf.encode_string_truncating(4, &s);
+        assert!(matches!(r, Ok(true)));
     }
 
     #[test]
