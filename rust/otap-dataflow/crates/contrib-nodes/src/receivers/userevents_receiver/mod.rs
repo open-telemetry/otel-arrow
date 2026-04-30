@@ -781,8 +781,10 @@ const fn default_overflow_mode() -> OverflowMode {
 }
 
 #[cfg(all(test, target_os = "linux"))]
+#[allow(unsafe_code)]
 mod linux_integration_tests {
     use super::*;
+    use std::ffi::CString;
     use std::io;
     use std::time::Duration;
 
@@ -841,6 +843,37 @@ mod linux_integration_tests {
         }
     }
 
+    async fn write_tracefs_sample(tracepoint_state: &tracepoint::TracepointState) -> bool {
+        for _ in 0..20 {
+            if tracepoint_state.enabled() {
+                break;
+            }
+            time::sleep(Duration::from_millis(10)).await;
+        }
+
+        if !tracepoint_state.enabled() {
+            skip_user_events_e2e(
+                "tracefs tracepoint did not become enabled after opening receiver session",
+            );
+            return false;
+        }
+
+        let ci_answer = 42u32;
+        let ci_message = *b"hello-from-ci\0";
+        let mut data = [
+            tracepoint::EventDataDescriptor::zero(),
+            tracepoint::EventDataDescriptor::from_value(&ci_answer),
+            tracepoint::EventDataDescriptor::from_bytes(&ci_message),
+        ];
+        let write_result = tracepoint_state.write(&mut data);
+        if write_result != 0 {
+            skip_user_events_e2e(format!("tracefs write returned errno {write_result}"));
+            return false;
+        }
+
+        true
+    }
+
     async fn write_eventheader_sample(event_set: &eventheader_dynamic::EventSet) -> bool {
         for _ in 0..20 {
             if event_set.enabled() {
@@ -878,24 +911,29 @@ mod linux_integration_tests {
             return;
         }
 
-        let provider_name = format!("otap_df_ci_{}", std::process::id());
-        let tracepoint = format!("user_events:{provider_name}_L4K1");
-        let mut provider = Provider::new(&provider_name, &Provider::new_options());
-        let event_set = provider.register_set(Level::Informational, 1);
-        if event_set.errno() != 0 {
+        let tracefs_event_name = format!("otap_df_tracefs_ci_{}", std::process::id());
+        let tracefs_tracepoint = format!("user_events:{tracefs_event_name}");
+        let tracefs_definition = CString::new(format!(
+            "{tracefs_event_name} u32 ci_answer; char ci_message[14]"
+        ))
+        .expect("tracefs definition should not contain interior NUL bytes");
+        let tracefs_state = Box::pin(tracepoint::TracepointState::new(0));
+        let tracefs_register_errno =
+            unsafe { tracefs_state.as_ref().register(&tracefs_definition) };
+        if tracefs_register_errno != 0 {
             skip_user_events_e2e(format!(
-                "EventHeader registration returned errno {}",
-                event_set.errno()
+                "tracefs registration returned errno {tracefs_register_errno}"
             ));
             return;
         }
 
-        let mut tracefs_session = match open_session_or_skip(&tracepoint, FormatConfig::Tracefs) {
-            Some(session) => session,
-            None => return,
-        };
+        let mut tracefs_session =
+            match open_session_or_skip(&tracefs_tracepoint, FormatConfig::Tracefs) {
+                Some(session) => session,
+                None => return,
+            };
         assert_eq!(tracefs_session.subscription_count(), 1);
-        if !write_eventheader_sample(&event_set).await {
+        if !write_tracefs_sample(&tracefs_state).await {
             return;
         }
 
@@ -909,9 +947,72 @@ mod linux_integration_tests {
         .expect("timed out draining tracefs sample")
         .expect("drain tracefs sample");
         assert_eq!(tracefs_stats.dropped_no_subscription, 0);
+
+        let decoded_tracefs = tracefs_records
+            .into_iter()
+            .map(|record| {
+                DecodedUsereventsRecord::from_raw(
+                    &tracefs_tracepoint,
+                    record,
+                    &FormatConfig::Tracefs,
+                )
+            })
+            .find(|record| {
+                let has_answer = record.attributes.iter().any(|(key, value)| {
+                    key.as_ref() == "ci_answer"
+                        && matches!(value, decoder::DecodedAttrValue::Int(42))
+                });
+                let has_message = record.attributes.iter().any(|(key, value)| {
+                    key.as_ref() == "ci_message"
+                        && matches!(
+                            value,
+                            decoder::DecodedAttrValue::Str(value) if value == "hello-from-ci"
+                        )
+                });
+                has_answer && has_message
+            });
+
         assert!(
-            !tracefs_records.is_empty(),
-            "tracefs session should collect at least one sample"
+            decoded_tracefs.is_some(),
+            "tracefs session should decode the emitted ci_answer and ci_message fields"
+        );
+
+        let provider_name = format!("otap_df_ci_{}", std::process::id());
+        let tracepoint = format!("user_events:{provider_name}_L4K1");
+        let mut provider = Provider::new(&provider_name, &Provider::new_options());
+        let event_set = provider.register_set(Level::Informational, 1);
+        if event_set.errno() != 0 {
+            skip_user_events_e2e(format!(
+                "EventHeader registration returned errno {}",
+                event_set.errno()
+            ));
+            return;
+        }
+
+        let mut eventheader_tracefs_session =
+            match open_session_or_skip(&tracepoint, FormatConfig::Tracefs) {
+                Some(session) => session,
+                None => return,
+            };
+        assert_eq!(eventheader_tracefs_session.subscription_count(), 1);
+        if !write_eventheader_sample(&event_set).await {
+            return;
+        }
+
+        let mut eventheader_tracefs_records = Vec::new();
+        let drain_config = test_drain_config();
+        let eventheader_tracefs_stats = time::timeout(
+            Duration::from_secs(2),
+            eventheader_tracefs_session
+                .drain_ready(&drain_config, &mut eventheader_tracefs_records),
+        )
+        .await
+        .expect("timed out draining EventHeader tracefs sample")
+        .expect("drain EventHeader tracefs sample");
+        assert_eq!(eventheader_tracefs_stats.dropped_no_subscription, 0);
+        assert!(
+            !eventheader_tracefs_records.is_empty(),
+            "tracefs session should collect at least one EventHeader sample"
         );
 
         let mut eventheader_session =
