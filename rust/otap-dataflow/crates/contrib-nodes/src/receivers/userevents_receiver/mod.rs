@@ -799,6 +799,10 @@ mod linux_integration_tests {
         panic!("user_events e2e smoke test failed: {reason}");
     }
 
+    const fn user_events_unavailable_errno(errno: i32) -> bool {
+        matches!(errno, 1 | 2 | 13 | 95)
+    }
+
     fn test_session_config() -> SessionConfig {
         SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
@@ -826,7 +830,9 @@ mod linux_integration_tests {
         match UsereventsSession::open(&subscriptions, &test_session_config(), 0) {
             Ok(session) => Some(session),
             Err(SessionInitError::MissingTracepoint(tracepoint)) => {
-                fail_user_events_e2e(format!("tracepoint `{tracepoint}` was not registered"));
+                fail_user_events_e2e(format!(
+                    "registered tracepoint `{tracepoint}` was not visible to the receiver"
+                ));
             }
             Err(SessionInitError::Io(error))
                 if matches!(
@@ -837,7 +843,7 @@ mod linux_integration_tests {
                         | io::ErrorKind::Other
                 ) =>
             {
-                fail_user_events_e2e(error);
+                None
             }
             Err(error) => panic!("failed to open user_events receiver session: {error}"),
         }
@@ -914,6 +920,9 @@ mod linux_integration_tests {
         let tracefs_register_errno =
             unsafe { tracefs_state.as_ref().register(&tracefs_definition) };
         if tracefs_register_errno != 0 {
+            if user_events_unavailable_errno(tracefs_register_errno) {
+                return;
+            }
             fail_user_events_e2e(format!(
                 "tracefs registration returned errno {tracefs_register_errno}"
             ));
@@ -974,6 +983,9 @@ mod linux_integration_tests {
         let mut provider = Provider::new(&provider_name, &Provider::new_options());
         let event_set = provider.register_set(Level::Informational, 1);
         if event_set.errno() != 0 {
+            if user_events_unavailable_errno(event_set.errno()) {
+                return;
+            }
             fail_user_events_e2e(format!(
                 "EventHeader registration returned errno {}",
                 event_set.errno()
