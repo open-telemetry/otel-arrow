@@ -42,10 +42,10 @@ mod tests {
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
 
     #[test]
-    fn validation_no_processor() {
+    fn validation_logs_otlp_to_otlp() {
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/no-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")
                     .expect("failed to read in pipeline yaml"),
             )
             .add_generator(
@@ -65,7 +65,7 @@ mod tests {
                     .core_range(2, 2),
             )
             .run()
-            .expect("validation scenario failed");
+            .expect("logs otlp-to-otlp validation failed");
     }
 
     #[test]
@@ -1045,6 +1045,347 @@ mod tests {
             .expect("validation scenario failed");
     }
 
+    /// Validates metrics pass-through with an OTLP receiver and OTLP exporter.
+    /// The generator sends OTLP metrics into the SUV pipeline which forwards
+    /// them unchanged via an OTLP gRPC exporter. The capture receives OTLP and
+    /// asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_metrics_otlp_to_otlp() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::metrics()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("metrics otlp-to-otlp validation failed");
+    }
+
+    /// Validates metrics pass-through with an OTLP receiver and OTAP exporter.
+    /// The generator sends OTLP metrics into the SUV pipeline which converts
+    /// and forwards them via an OTAP (Arrow) exporter. The capture receives
+    /// OTAP and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_metrics_otlp_to_otap() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otlp-otap.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::metrics()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("metrics otlp-to-otap validation failed");
+    }
+
+    /// Validates metrics pass-through with an OTAP receiver and OTLP exporter.
+    /// The generator sends OTAP (Arrow) metrics into the SUV pipeline which
+    /// converts and forwards them via an OTLP gRPC exporter. The capture
+    /// receives OTLP and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_metrics_otap_to_otlp() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otap-otlp.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::metrics()
+                    .fixed_count(500)
+                    .otap_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("metrics otap-to-otlp validation failed");
+    }
+
+    /// Validates metrics pass-through with an OTAP receiver and OTAP exporter.
+    /// The generator sends OTAP (Arrow) metrics into the SUV pipeline which
+    /// forwards them unchanged via an OTAP exporter. The capture receives OTAP
+    /// and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_metrics_otap_to_otap() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otap-otap.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::metrics()
+                    .fixed_count(500)
+                    .otap_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("metrics otap-to-otap validation failed");
+    }
+
+    /// Validates logs pass-through with an OTLP receiver and OTAP exporter.
+    /// The generator sends OTLP logs into the SUV pipeline which converts
+    /// and forwards them via an OTAP (Arrow) exporter. The capture receives
+    /// OTAP and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_logs_otlp_to_otap() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otlp-otap.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("logs otlp-to-otap validation failed");
+    }
+
+    /// Validates logs pass-through with an OTAP receiver and OTLP exporter.
+    /// The generator sends OTAP (Arrow) logs into the SUV pipeline which
+    /// converts and forwards them via an OTLP gRPC exporter. The capture
+    /// receives OTLP and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_logs_otap_to_otlp() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otap-otlp.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otap_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("logs otap-to-otlp validation failed");
+    }
+
+    /// Validates logs pass-through with an OTAP receiver and OTAP exporter.
+    /// The generator sends OTAP (Arrow) logs into the SUV pipeline which
+    /// forwards them unchanged via an OTAP exporter. The capture receives OTAP
+    /// and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_logs_otap_to_otap() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otap-otap.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::logs()
+                    .fixed_count(500)
+                    .otap_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("logs otap-to-otap validation failed");
+    }
+
+    /// Validates traces pass-through with an OTLP receiver and OTLP exporter.
+    /// The generator sends OTLP traces into the SUV pipeline which forwards
+    /// them unchanged via an OTLP gRPC exporter. The capture receives OTLP and
+    /// asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_traces_otlp_to_otlp() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::traces()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("traces otlp-to-otlp validation failed");
+    }
+
+    /// Validates traces pass-through with an OTLP receiver and OTAP exporter.
+    /// The generator sends OTLP traces into the SUV pipeline which converts
+    /// and forwards them via an OTAP (Arrow) exporter. The capture receives
+    /// OTAP and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_traces_otlp_to_otap() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otlp-otap.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::traces()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("traces otlp-to-otap validation failed");
+    }
+
+    /// Validates traces pass-through with an OTAP receiver and OTLP exporter.
+    /// The generator sends OTAP (Arrow) traces into the SUV pipeline which
+    /// converts and forwards them via an OTLP gRPC exporter. The capture
+    /// receives OTLP and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_traces_otap_to_otlp() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otap-otlp.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::traces()
+                    .fixed_count(500)
+                    .otap_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("traces otap-to-otlp validation failed");
+    }
+
+    /// Validates traces pass-through with an OTAP receiver and OTAP exporter.
+    /// The generator sends OTAP (Arrow) traces into the SUV pipeline which
+    /// forwards them unchanged via an OTAP exporter. The capture receives OTAP
+    /// and asserts semantic equivalence with the control stream.
+    #[test]
+    fn validation_traces_otap_to_otap() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otap-otap.yaml")
+                    .expect("failed to read in pipeline yaml"),
+            )
+            .add_generator(
+                "traffic_gen",
+                Generator::traces()
+                    .fixed_count(500)
+                    .otap_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            )
+            .run()
+            .expect("traces otap-to-otap validation failed");
+    }
+
     /// End-to-end validation: transport headers injected by the fake data
     /// generator survive the full pipeline chain (generator → SUV → capture)
     /// and can be asserted via transport header validation instructions.
@@ -1060,7 +1401,7 @@ mod tests {
 
         Scenario::new()
             .pipeline(
-                Pipeline::from_file("./validation_pipelines/no-processor.yaml")
+                Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")
                     .expect("failed to read in pipeline yaml")
                     .with_transport_headers_policy_yaml(
                         r#"
