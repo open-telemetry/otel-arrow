@@ -2057,7 +2057,7 @@ mod test {
             Err(e) => {
                 let err_msg = e.to_string();
                 assert!(
-                    err_msg.contains("cannot assign expression of type ScalarInt to type String"),
+                    err_msg.contains("cannot assign expression of type AnyInt to type String"),
                     "unexpected error message: {err_msg:?}"
                 )
             }
