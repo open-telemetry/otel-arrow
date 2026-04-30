@@ -20,10 +20,10 @@ pub(super) struct MicrosoftCommonSchemaProcessorMetrics {
     #[metric(unit = "{item}")]
     pub records_skipped_not_common_schema: Counter<u64>,
     /// Number of log batches that had at least one promoted record.
-    #[metric(unit = "{item}")]
+    #[metric(unit = "{batch}")]
     pub batches_promoted: Counter<u64>,
     /// Number of Arrow log batches forwarded without OTLP conversion because no
     /// `__csver__` attribute was present.
-    #[metric(unit = "{item}")]
+    #[metric(unit = "{batch}")]
     pub arrow_batches_skipped_no_csver: Counter<u64>,
 }

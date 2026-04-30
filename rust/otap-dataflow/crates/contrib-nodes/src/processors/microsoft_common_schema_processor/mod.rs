@@ -398,7 +398,9 @@ fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
             }
             "PartA.ext_dt_traceFlags" => {
                 if let Some(flags) = attr.value.as_ref().and_then(any_int) {
-                    log.flags = u32::try_from(flags).unwrap_or(u32::MAX);
+                    if let Ok(flags) = u32::try_from(flags) {
+                        log.flags = flags;
+                    }
                 }
             }
             "PartA.ext_cloud_role" => {
@@ -426,11 +428,13 @@ fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
             }
             "PartB.severityNumber" => {
                 if let Some(number) = attr.value.as_ref().and_then(any_int) {
-                    if let Ok(number) = i32::try_from(number) {
-                        if number > 0 {
-                            log.severity_number = number.clamp(1, 24);
-                        }
-                    }
+                    log.severity_number = if number <= 0 {
+                        0
+                    } else if number > 24 {
+                        24
+                    } else {
+                        number as i32
+                    };
                 }
             }
             "PartB.severityText" => {
@@ -504,6 +508,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 mod tests {
     use super::*;
     use otap_df_engine::node::NodeId;
+    use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
 
     fn attr<'a>(log: &'a LogRecord, key: &str) -> Option<&'a AnyValue> {
@@ -817,6 +822,7 @@ mod tests {
     #[test]
     fn non_positive_severity_preserves_unspecified() {
         let mut zero = LogRecord {
+            severity_number: 17,
             attributes: vec![
                 KeyValue::new("__csver__", AnyValue::new_int(0x400)),
                 KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
@@ -825,6 +831,7 @@ mod tests {
             ..Default::default()
         };
         let mut negative = LogRecord {
+            severity_number: 17,
             attributes: vec![
                 KeyValue::new("__csver__", AnyValue::new_int(0x400)),
                 KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
@@ -837,6 +844,51 @@ mod tests {
         assert!(promote_microsoft_common_schema_log(&mut negative));
         assert_eq!(zero.severity_number, 0);
         assert_eq!(negative.severity_number, 0);
+    }
+
+    #[test]
+    fn oversized_severity_number_clamps_to_otlp_range() {
+        let mut log = LogRecord {
+            attributes: vec![
+                KeyValue::new("__csver__", AnyValue::new_int(0x400)),
+                KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
+                KeyValue::new("PartB.severityNumber", AnyValue::new_int(i64::MAX)),
+            ],
+            ..Default::default()
+        };
+
+        assert!(promote_microsoft_common_schema_log(&mut log));
+        assert_eq!(log.severity_number, 24);
+    }
+
+    #[test]
+    fn invalid_trace_flags_preserve_existing_flags() {
+        let mut negative = LogRecord {
+            flags: 1,
+            attributes: vec![
+                KeyValue::new("__csver__", AnyValue::new_int(0x400)),
+                KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
+                KeyValue::new("PartA.ext_dt_traceFlags", AnyValue::new_int(-1)),
+            ],
+            ..Default::default()
+        };
+        let mut overflow = LogRecord {
+            flags: 1,
+            attributes: vec![
+                KeyValue::new("__csver__", AnyValue::new_int(0x400)),
+                KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
+                KeyValue::new(
+                    "PartA.ext_dt_traceFlags",
+                    AnyValue::new_int(i64::from(u32::MAX) + 1),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        assert!(promote_microsoft_common_schema_log(&mut negative));
+        assert!(promote_microsoft_common_schema_log(&mut overflow));
+        assert_eq!(negative.flags, 1);
+        assert_eq!(overflow.flags, 1);
     }
 
     #[test]
@@ -925,6 +977,19 @@ mod tests {
         assert!(!result.arrow_skipped_no_csver);
         assert_eq!(result.stats.records_seen, 1);
         assert_eq!(result.stats.records_promoted, 0);
+        assert!(matches!(result.payload, OtapPayload::OtapArrowRecords(_)));
+    }
+
+    #[test]
+    fn arrow_payload_without_log_attrs_skips_conversion() {
+        let payload: OtapPayload = OtapArrowRecords::from(Logs::default()).into();
+
+        let result = promote_microsoft_common_schema_payload(payload, test_processor_id())
+            .expect("payload promotion");
+
+        assert!(!result.promoted);
+        assert!(result.arrow_skipped_no_csver);
+        assert_eq!(result.stats, PromotionStats::default());
         assert!(matches!(result.payload, OtapPayload::OtapArrowRecords(_)));
     }
 
