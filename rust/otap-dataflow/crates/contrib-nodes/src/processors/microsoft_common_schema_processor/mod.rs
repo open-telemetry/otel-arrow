@@ -595,6 +595,47 @@ mod tests {
     }
 
     #[test]
+    fn promotes_trace_logging_dynamic_guide_shape_for_logs() {
+        let mut log = LogRecord {
+            attributes: vec![
+                KeyValue::new("__csver__", AnyValue::new_int(0x400)),
+                KeyValue::new("PartA.iKey", AnyValue::new_string("AIM-abcd-1234")),
+                KeyValue::new("PartA.ext_net_provider", AnyValue::new_string("AT&T")),
+                KeyValue::new("PartA.ext_net_cost", AnyValue::new_string("Metered")),
+                KeyValue::new("PartA.ext_net_type", AnyValue::new_string("WWAN")),
+                KeyValue::new("PartB._typeName", AnyValue::new_string("Log")),
+                KeyValue::new("PartB.body", AnyValue::new_string("guide body")),
+                KeyValue::new("PartC.result", AnyValue::new_int(127)),
+                KeyValue::new("PartC.duration", AnyValue::new_int(5316)),
+            ],
+            ..Default::default()
+        };
+
+        assert!(promote_microsoft_common_schema_log(&mut log));
+        assert_eq!(log.body.as_ref().and_then(any_str), Some("guide body"));
+        assert!(find_attr_value(&log.attributes, "__csver__").is_none());
+        assert!(find_attr_value(&log.attributes, "PartB._typeName").is_none());
+        assert_eq!(
+            attr(&log, "PartA.iKey").and_then(any_str),
+            Some("AIM-abcd-1234")
+        );
+        assert_eq!(
+            attr(&log, "PartA.ext_net_provider").and_then(any_str),
+            Some("AT&T")
+        );
+        assert_eq!(
+            attr(&log, "PartA.ext_net_cost").and_then(any_str),
+            Some("Metered")
+        );
+        assert_eq!(
+            attr(&log, "PartA.ext_net_type").and_then(any_str),
+            Some("WWAN")
+        );
+        assert_eq!(attr(&log, "result").and_then(any_int), Some(127));
+        assert_eq!(attr(&log, "duration").and_then(any_int), Some(5316));
+    }
+
+    #[test]
     fn preserves_unknown_part_a_and_part_b_fields() {
         let mut log = LogRecord {
             attributes: vec![
