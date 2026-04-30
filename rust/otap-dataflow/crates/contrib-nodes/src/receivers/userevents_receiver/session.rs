@@ -208,7 +208,11 @@ mod imp {
 
             loop {
                 let stats = self.drain_once_impl(config, out)?;
-                if !out.is_empty() || stats.lost_samples > 0 || stats.dropped_pending_overflow > 0 {
+                if !out.is_empty()
+                    || stats.lost_samples > 0
+                    || stats.dropped_pending_overflow > 0
+                    || stats.dropped_no_subscription > 0
+                {
                     return Ok(stats);
                 }
 

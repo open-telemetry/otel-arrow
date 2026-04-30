@@ -793,9 +793,7 @@ mod linux_integration_tests {
 
     const RUN_USEREVENTS_E2E_ENV: &str = "OTAP_DF_RUN_USEREVENTS_E2E";
 
-    fn skip_user_events_e2e(reason: impl std::fmt::Display) {
-        eprintln!("skipping user_events e2e smoke test: {reason}");
-    }
+    fn skip_user_events_e2e(_reason: impl std::fmt::Display) {}
 
     fn test_session_config() -> SessionConfig {
         SessionConfig {
