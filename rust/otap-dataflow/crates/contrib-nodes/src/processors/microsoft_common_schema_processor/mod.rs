@@ -255,7 +255,7 @@ fn promote_microsoft_common_schema_payload(
         });
     }
 
-    let mut out = BytesMut::new();
+    let mut out = BytesMut::with_capacity(bytes.len());
     logs.encode(&mut out)
         .map_err(|e| processor_error(processor, format!("failed to encode OTLP logs: {e}")))?;
     Ok(PayloadPromotion {
