@@ -17,6 +17,7 @@ use crate::proto::opentelemetry::metrics::v1::{
 };
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData};
 use crate::testing::equiv::assert_equivalent;
+use crate::{ConversionOptions, TryIntoWithOptions};
 use prost::Message as ProstMessage;
 
 /// Transcode a protocol message object to OTAP records.
@@ -65,7 +66,9 @@ pub fn otlp_bytes_to_message(msg: OtlpProtoBytes) -> OtlpProtoMessage {
 #[must_use]
 pub fn otap_to_otlp(otap: &OtapArrowRecords) -> OtlpProtoMessage {
     let pdata: OtapPayload = otap.clone().into();
-    let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");
+    let otlp_bytes: OtlpProtoBytes = pdata
+        .try_into_with_options(ConversionOptions::default())
+        .expect("convert to OTLP bytes");
     match otlp_bytes {
         OtlpProtoBytes::ExportLogsRequest(bytes) => {
             LogsData::decode(bytes.as_ref()).map(OtlpProtoMessage::Logs)
@@ -94,7 +97,9 @@ pub fn encode_logs(logs: &LogsData) -> OtapArrowRecords {
 #[must_use]
 pub fn decode_logs(otap: OtapArrowRecords) -> LogsData {
     let pdata: OtapPayload = otap.into();
-    let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");
+    let otlp_bytes: OtlpProtoBytes = pdata
+        .try_into_with_options(ConversionOptions::default())
+        .expect("convert to OTLP bytes");
     match otlp_bytes {
         OtlpProtoBytes::ExportLogsRequest(bytes) => {
             LogsData::decode(bytes.as_ref()).expect("decode should succeed")
@@ -145,7 +150,9 @@ pub fn encode_traces(traces: &TracesData) -> OtapArrowRecords {
 #[must_use]
 pub fn decode_traces(otap: OtapArrowRecords) -> TracesData {
     let pdata: OtapPayload = otap.into();
-    let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");
+    let otlp_bytes: OtlpProtoBytes = pdata
+        .try_into_with_options(ConversionOptions::default())
+        .expect("convert to OTLP bytes");
     match otlp_bytes {
         OtlpProtoBytes::ExportTracesRequest(bytes) => {
             TracesData::decode(bytes.as_ref()).expect("decode should succeed")
@@ -199,7 +206,9 @@ pub fn encode_metrics(metrics: &MetricsData) -> OtapArrowRecords {
 #[must_use]
 pub fn decode_metrics(otap: OtapArrowRecords) -> MetricsData {
     let pdata: OtapPayload = otap.into();
-    let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");
+    let otlp_bytes: OtlpProtoBytes = pdata
+        .try_into_with_options(ConversionOptions::default())
+        .expect("convert to OTLP bytes");
     match otlp_bytes {
         OtlpProtoBytes::ExportMetricsRequest(bytes) => {
             MetricsData::decode(bytes.as_ref()).expect("decode should succeed")

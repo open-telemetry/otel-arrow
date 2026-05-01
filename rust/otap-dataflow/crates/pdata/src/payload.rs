@@ -93,8 +93,9 @@ use crate::proto::OtlpProtoMessage;
 use crate::views::otlp::bytes::logs::RawLogsData;
 use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
+use crate::{TryFromWithOptions, TryIntoWithOptions};
 use bytes::BytesMut;
-use otap_df_config::{SignalFormat, SignalType};
+use otap_df_config::{ConversionOptions, SignalFormat, SignalType};
 use prost::{EncodeError, Message};
 
 /// Container for the various representations of the telemetry data
@@ -362,21 +363,27 @@ impl TryFrom<OtapPayload> for OtapArrowRecords {
     }
 }
 
-impl TryFrom<OtapPayload> for OtlpProtoBytes {
+impl TryFromWithOptions<OtapPayload> for OtlpProtoBytes {
     type Error = Error;
 
-    fn try_from(value: OtapPayload) -> Result<Self, Self::Error> {
+    fn try_from_with_options(
+        value: OtapPayload,
+        opts: ConversionOptions,
+    ) -> Result<Self, Self::Error> {
         match value {
-            OtapPayload::OtapArrowRecords(value) => value.try_into(),
+            OtapPayload::OtapArrowRecords(value) => value.try_into_with_options(opts),
             OtapPayload::OtlpBytes(value) => Ok(value),
         }
     }
 }
 
-impl TryFrom<OtapArrowRecords> for OtlpProtoBytes {
+impl TryFromWithOptions<OtapArrowRecords> for OtlpProtoBytes {
     type Error = Error;
 
-    fn try_from(mut value: OtapArrowRecords) -> Result<Self, Self::Error> {
+    fn try_from_with_options(
+        mut value: OtapArrowRecords,
+        _opts: ConversionOptions,
+    ) -> Result<Self, Self::Error> {
         match value {
             OtapArrowRecords::Logs(_) => {
                 // TODO it'd be nice to expose a better API where we can make it easier to pass the encoder
