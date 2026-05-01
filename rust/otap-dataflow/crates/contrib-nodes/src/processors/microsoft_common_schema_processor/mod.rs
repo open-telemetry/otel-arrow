@@ -16,17 +16,19 @@
 //! reusable cross-batch transform that can read attributes by `parent_id`, set
 //! root log columns such as body, event name, severity, trace/span IDs, flags,
 //! and timestamp, then rebuild `LogAttrs` with promoted fields removed and
-//! remaining fields preserved. Existing attribute/transform processors cannot
-//! express that today: they operate on attribute batches with rename/delete and
-//! literal insert/upsert operations, but they do not move per-log attribute
-//! values into root log columns or parse Common Schema values into typed log
-//! fields. Until that Arrow-native promotion path exists, Arrow-native
-//! pipelines pay an Arrow-to-OTLP conversion here.
+//! remaining fields preserved. The query-engine crate is a promising path for
+//! an Arrow-native implementation because it already supports some of these
+//! transformations, such as setting root log fields from attributes and
+//! dropping promoted attributes. Remaining gaps include Common Schema-specific
+//! parsing and validation such as decoding hex trace/span IDs, checking byte
+//! lengths, and parsing datetimes. Until that Arrow-native promotion path
+//! exists, Arrow-native pipelines pay an Arrow-to-OTLP conversion here.
 
 mod metrics;
 
 use std::sync::Arc;
 
+use arrow::array::types::ArrowDictionaryKeyType;
 use arrow::array::{Array, DictionaryArray, RecordBatch, StringArray};
 use arrow::datatypes::{UInt8Type, UInt16Type};
 use async_trait::async_trait;
@@ -305,35 +307,45 @@ fn record_batch_has_attr_key(attrs: &RecordBatch, target: &str) -> bool {
         .as_any()
         .downcast_ref::<DictionaryArray<UInt8Type>>()
     {
-        let Some(values) = keys.values().as_any().downcast_ref::<StringArray>() else {
-            return false;
-        };
-        return (0..keys.len()).any(|index| {
-            if !keys.is_valid(index) {
-                return false;
-            }
-            let value_index = keys.keys().value(index) as usize;
-            values.is_valid(value_index) && values.value(value_index) == target
-        });
+        return dictionary_attr_key_contains(keys, target);
     }
 
     if let Some(keys) = key_col
         .as_any()
         .downcast_ref::<DictionaryArray<UInt16Type>>()
     {
-        let Some(values) = keys.values().as_any().downcast_ref::<StringArray>() else {
-            return false;
-        };
-        return (0..keys.len()).any(|index| {
-            if !keys.is_valid(index) {
-                return false;
-            }
-            let value_index = keys.keys().value(index) as usize;
-            values.is_valid(value_index) && values.value(value_index) == target
-        });
+        return dictionary_attr_key_contains(keys, target);
     }
 
     false
+}
+
+fn dictionary_attr_key_contains<K: ArrowDictionaryKeyType>(
+    keys: &DictionaryArray<K>,
+    target: &str,
+) -> bool {
+    let Some(values) = keys.values().as_any().downcast_ref::<StringArray>() else {
+        return false;
+    };
+
+    let mut matching_value_indices = vec![false; values.len()];
+    let mut target_in_dictionary = false;
+    for value_index in 0..values.len() {
+        if values.is_valid(value_index) && values.value(value_index) == target {
+            matching_value_indices[value_index] = true;
+            target_in_dictionary = true;
+        }
+    }
+
+    target_in_dictionary
+        && (0..keys.len()).any(|index| {
+            keys.key(index).is_some_and(|value_index| {
+                matching_value_indices
+                    .get(value_index)
+                    .copied()
+                    .unwrap_or(false)
+            })
+        })
 }
 
 fn promote_microsoft_common_schema_log(log: &mut LogRecord) -> bool {
@@ -996,6 +1008,7 @@ mod tests {
     #[test]
     fn record_batch_key_probe_finds_plain_and_dictionary_keys() {
         use arrow::array::ArrayRef;
+        use arrow::array::UInt8Array;
         use arrow::datatypes::DataType;
         use arrow::datatypes::Field;
         use arrow::datatypes::Schema;
@@ -1023,5 +1036,23 @@ mod tests {
         )
         .expect("dictionary key batch");
         assert!(record_batch_has_attr_key(&dictionary, "__csver__"));
+
+        let values = Arc::new(StringArray::from(vec!["other", "__csver__"])) as ArrayRef;
+        let orphaned_target =
+            DictionaryArray::<UInt8Type>::try_new(UInt8Array::from(vec![Some(0), Some(0)]), values)
+                .expect("orphaned target dictionary");
+        let orphaned_target_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ATTRIBUTE_KEY,
+                orphaned_target.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(orphaned_target) as ArrayRef],
+        )
+        .expect("orphaned target key batch");
+        assert!(!record_batch_has_attr_key(
+            &orphaned_target_batch,
+            "__csver__"
+        ));
     }
 }
