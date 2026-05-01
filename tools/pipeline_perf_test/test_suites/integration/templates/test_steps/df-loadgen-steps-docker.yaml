@@ -123,6 +123,9 @@ steps:
               headers:
                 "Content-Type": "application/json"
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+              raise_for_status: false
+              on_error:
+                continue: true
     action:
       no_op: {}
   # Stop the df-engine and wait for it to drain in-flight data to backend.
@@ -136,6 +139,9 @@ steps:
               headers:
                 "Content-Type": "application/json"
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+              raise_for_status: false
+              on_error:
+                continue: true
     action:
       no_op: {}
   # Stop the backend-service (ensures any internal processing completes).
@@ -149,6 +155,9 @@ steps:
               headers:
                 "Content-Type": "application/json"
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+              raise_for_status: false
+              on_error:
+                continue: true
     action:
       no_op: {}
   # Brief wait to ensure final metrics are visible before scraping.
