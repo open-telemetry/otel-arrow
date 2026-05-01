@@ -51,6 +51,10 @@ use std::{
     sync::OnceLock,
 };
 
+// TODO: remove `dead_code` once the capability system is wired into the
+// pipeline build.
+#[allow(dead_code)]
+pub mod capability;
 #[doc(hidden)]
 pub mod clock;
 pub mod error;
@@ -221,6 +225,7 @@ impl<PData> NamedFactory for ExporterFactory<PData> {
 ///
 /// Extension factories are NOT generic over PData — extensions never process
 /// pipeline data. This makes them fully decoupled from the data-plane type.
+#[derive(Clone)]
 pub struct ExtensionFactory {
     /// The name of the extension.
     pub name: &'static str,
@@ -228,6 +233,13 @@ pub struct ExtensionFactory {
     pub description: &'static str,
     /// URL to the extension's documentation.
     pub documentation_url: &'static str,
+    /// The capabilities this extension provides.
+    ///
+    /// `Some(caps)` for active or passive extensions (caps lists are
+    /// non-empty by macro construction). `None` marks a Background
+    /// extension — engine-driven event loop with no capabilities
+    /// exposed to nodes; `register_into` skips capability registration.
+    pub capabilities: Option<capability::ExtensionCapabilities>,
     /// A function that creates a new extension instance.
     pub create: fn(
         pipeline: PipelineContext,
@@ -237,18 +249,6 @@ pub struct ExtensionFactory {
     ) -> Result<ExtensionBundle, otap_df_config::error::Error>,
     /// Validates the node-specific config statically, without creating the component.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
-}
-
-impl Clone for ExtensionFactory {
-    fn clone(&self) -> Self {
-        ExtensionFactory {
-            name: self.name,
-            description: self.description,
-            documentation_url: self.documentation_url,
-            create: self.create,
-            validate_config: self.validate_config,
-        }
-    }
 }
 
 impl NamedFactory for ExtensionFactory {
@@ -2395,6 +2395,7 @@ mod test {
             name: "urn:test:example",
             description: "test extension",
             documentation_url: "",
+            capabilities: None,
             create: dummy_create,
             validate_config: dummy_validate,
         };
@@ -2440,6 +2441,7 @@ mod test {
             name: "urn:test:example",
             description: "test",
             documentation_url: "",
+            capabilities: None,
             create: dummy_create,
             validate_config: dummy_validate,
         };
