@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777613850905,
+  "lastUpdate": 1777660662670,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "lalit_fin@yahoo.com",
-            "name": "Lalit Kumar Bhasin",
-            "username": "lalitb"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "81938f7e9894d52ecfb9499d3a5189e6f73cb99e",
-          "message": "Add resource_attributes support to traffic generator (#2265)\n\n### Summary\n  \nThe traffic generator's static data source produces hardcoded resource\nattributes with no way to customize them. This makes it impossible to\nload-test content-based routing pipelines (e.g. `content_router` routing\nby `tenant.id`) using the built-in generator.\n\nThis adds an optional `resource_attributes` field to the traffic\ngenerator config. It accepts three forms:\n\n  **Single map** (all batches carry the same attributes):\n  ```yaml\n  resource_attributes:\n    tenant.id: prod\n    service.namespace: frontend\n```\n\n  **List of maps** (equal round-robin rotation per batch):\n```yaml\n  resource_attributes:\n    - {tenant.id: prod, service.namespace: frontend}\n    - {tenant.id: ppe, service.namespace: backend}\n```\n\n **Weighted list** (proportional batch split):\n``` yaml\nresource_attributes:\n    - attrs: {tenant.id: prod, service.namespace: frontend}\n      weight: 3\n    - attrs: {tenant.id: ppe, service.namespace: backend}\n      weight: 1\n```\n\n  The weighted form produces a 75%/25% batch split, simulating realistic skewed  multi-tenant traffic on a single connection. All three forms are backward-compatible - existing configs are unaffected (defaults to empty).\n\n ### Implementation\n\n  Rotation uses a precomputed index table built once at startup - [0, 0, 0, 1] for the 3:1 example above. The hot path is a single modulo lookup:\n\n  slot  = rotation[batch_rotation_index % rotation.len()]\n  attrs = &entries[slot].attrs\n\n  `batch_rotation_index` is a dedicated counter incremented once per emitted batch, fully independent of `signal_count`. Rotation advances exactly once per OTLP message regardless of batch size.\n\n \n ### Limitations\n\n  - `resource_attributes` only applies to `data_source: static`\n  - With `generation_strategy: pre_generated`, only the first attribute set is used - rotation requires fresh (or templates)\n  - Rotation order is naive ([0, 0, 0, 1] for 3:1), not smooth interleaved; smooth weighted round-robin is left as a follow-up\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Laurent Quérel <laurent.querel@gmail.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
-          "timestamp": "2026-03-13T07:26:18Z",
-          "tree_id": "6f905ed711cba305c26504eb7d1ffaa91db59442",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/81938f7e9894d52ecfb9499d3a5189e6f73cb99e"
-        },
-        "date": 1773389457856,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.9390100836753845,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.54031384624834,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 97.04545926636744,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 56.40625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 57.78515625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 466177.1078703406,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 470554.5580156306,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002054,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10921631.555179441,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10863133.623543423,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 177289.22975114422,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cithomas@microsoft.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ce3582596886edf41cb83c87829be8cd8d15fcce",
+          "message": "fix(perf-test): add missing /api/v1 prefix to idle-state template endpoints (#2798)\n\nThe idle-state-template.yaml.j2 was using /telemetry/metrics instead of\n/api/v1/telemetry/metrics for both the Prometheus scraping endpoint and\nthe ready-check URL. This caused 404 errors during idle state\nbenchmarks.\n\nAll other test configs already had the correct /api/v1 prefix.\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes #NNN\n\n## How are these changes tested?\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->",
+          "timestamp": "2026-05-01T16:38:12Z",
+          "tree_id": "a86e34dbb8f8829478ea49a921a5480b991c9701",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ce3582596886edf41cb83c87829be8cd8d15fcce"
+        },
+        "date": 1777660662196,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.7062146663665771,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.717974139325335,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.146508254898935,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 16.654557291666666,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 17.84765625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 6041.235512124102,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6083.899604723849,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00362,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 212600.57802859842,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 175627.8204025501,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
