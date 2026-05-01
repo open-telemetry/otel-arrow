@@ -607,6 +607,12 @@ impl<PData> ControlSenders<PData> {
             .collect()
     }
 
+    /// Returns all registered node ids.
+    #[must_use]
+    pub fn node_ids(&self) -> Vec<usize> {
+        self.senders.keys().copied().collect()
+    }
+
     /// Returns the registered non-receiver ids.
     #[must_use]
     pub fn non_receiver_ids(&self) -> Vec<usize> {

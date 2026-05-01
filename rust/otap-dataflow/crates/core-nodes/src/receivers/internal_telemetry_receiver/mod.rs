@@ -113,11 +113,6 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         let log_tap = internal.log_tap;
         let mut scope_cache = ScopeToBytesMap::new(internal.registry);
 
-        // Start periodic telemetry collection
-        let _ = effect_handler
-            .start_periodic_telemetry(std::time::Duration::from_secs(1))
-            .await?;
-
         loop {
             tokio::select! {
                 biased;

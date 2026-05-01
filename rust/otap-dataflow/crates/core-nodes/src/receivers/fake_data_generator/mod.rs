@@ -522,10 +522,6 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
 
         let transport_headers = build_transport_headers(self.config.transport_headers());
 
-        let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         let run_len = producer.run_len();
 
         // We consume one tick here because it's always immediately ready and would
