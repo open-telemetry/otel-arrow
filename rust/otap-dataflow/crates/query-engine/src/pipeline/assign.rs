@@ -1741,7 +1741,6 @@ mod test {
     };
     use data_engine_kql_parser::{KqlParser, Parser};
     use data_engine_ottl_parser::OttlParser;
-    // use data_engine_ottl_parser::{}
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
