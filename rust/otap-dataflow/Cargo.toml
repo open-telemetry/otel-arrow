@@ -63,6 +63,7 @@ otap-df-telemetry = { path = "crates/telemetry" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 data_engine_expressions = { path = "../experimental/query_engine/expressions" }
 data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
+data_engine_ottl_parser = { path = "../experimental/query_engine/ottl-parser" }
 data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
 
 ahash = "0.8.11"

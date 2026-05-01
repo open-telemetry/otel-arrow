@@ -1740,6 +1740,8 @@ mod test {
         datatypes::DataType,
     };
     use data_engine_kql_parser::{KqlParser, Parser};
+    use data_engine_ottl_parser::OttlParser;
+    // use data_engine_ottl_parser::{}
     use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
@@ -1790,6 +1792,21 @@ mod test {
     #[tokio::test]
     async fn test_insert_root_column_from_scalar_kql_parser() {
         test_insert_root_column_from_scalar::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_root_column_from_scalar_ottl_parser() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let query = "set(severity_text, \"ERROR\")";
+        let result = exec_logs_pipeline::<OttlParser>(query, logs_data).await;
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+        assert_eq!(logs_records.len(), 2);
+        for logs_record in logs_records {
+            assert_eq!(logs_record.severity_text, "ERROR");
+        }
     }
 
     async fn test_set_multiple_root_columns<P: Parser>() {
