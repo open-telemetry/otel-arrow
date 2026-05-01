@@ -13,7 +13,7 @@ jobs:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
           egress-policy: audit
 
@@ -109,63 +109,63 @@ jobs:
 
       - name: Upload syslog results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: syslog-nightly-results
           path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
 
       - name: Upload syslog TCP results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: syslog-tcp-nightly-results
           path: tools/pipeline_perf_test/results/nightly_syslog_tcp/gh-actions-benchmark/*.json
 
       - name: Upload standard load batch size results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: standardload-batch-size-nightly-results
           path: tools/pipeline_perf_test/results/nightly_100klrps_batch_sizes/gh-actions-benchmark/*.json
 
       - name: Upload backpressure results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backpressure-nightly-results
           path: tools/pipeline_perf_test/results/nightly_backpressure/gh-actions-benchmark/*.json
 
       - name: Upload filter results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: filter-nightly-results
           path: tools/pipeline_perf_test/results/nightly_filter/gh-actions-benchmark/*.json
 
       - name: Upload batch processor results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: batch-processor-nightly-results
           path: tools/pipeline_perf_test/results/nightly_batch_processor/gh-actions-benchmark/*.json
 
       - name: Upload otelcol filter results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: filter-otelcol-results
           path: tools/pipeline_perf_test/results/otelcol_filter/gh-actions-benchmark/*.json
 
       - name: Upload saturation results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: saturation-nightly-results
           path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
 
       - name: Upload scaling efficiency metrics
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scaling-efficiency-nightly-results
           path: tools/pipeline_perf_test/results/scaling-efficiency.json
