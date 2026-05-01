@@ -10,13 +10,19 @@
 //! |---|---|
 //! | `file:/path/to/config.yaml` | Read config from a local file |
 //! | `env:MY_VAR` | Read config from an environment variable |
+//! | `yaml:key::value` | Inline YAML with `::` as nested-key separator |
+//! | `http://host/path` | Fetch config via unauthenticated HTTP GET (30s per-request timeout, retries with exponential backoff) |
 //! | `/path/to/config.yaml` | Bare path, treated as `file:` |
 //! | `./relative/config.yaml` | Relative path, treated as `file:` |
 //!
 //! When no `--config` is provided, a default path in the current directory is tried.
+//!
+//! `https:`, authentication (Bearer token, mTLS), and multi-config merge are
+//! deferred to a future phase.
 
 use crate::error::Error;
 use std::path::Path;
+use std::time::Duration;
 
 /// Fallback config path tried when `--config` is omitted.
 const DEFAULT_CONFIG_PATH: &str = "config.yaml";
@@ -104,6 +110,191 @@ impl ConfigProvider for EnvConfigProvider {
     }
 }
 
+/// Reads configuration from an inline YAML string on the CLI.
+///
+/// Follows the OTel Collector `yaml:` convention: `::` is a path separator
+/// that expands into nested YAML, and the segment after the final `::` is a
+/// trailing YAML fragment (typically `key: value`). With no `::` the content
+/// is passed through as literal YAML.
+///
+/// # Examples
+///
+/// | URI | Resolved YAML |
+/// |---|---|
+/// | `yaml:version: otel_dataflow/v1` | `version: otel_dataflow/v1` |
+/// | `yaml:exporters::debug::verbosity: detailed` | `exporters:\n  debug:\n    verbosity: detailed` |
+/// | `yaml:engine::{}` | `engine:\n  {}` |
+pub struct YamlConfigProvider;
+
+impl YamlConfigProvider {
+    /// Expand `key1::key2::...::trailing` into indented nested YAML. If the
+    /// input contains no `::`, returns it unchanged.
+    fn expand_key_path(body: &str) -> String {
+        let Some((path_part, trailing)) = body.rsplit_once("::") else {
+            return body.to_string();
+        };
+        let segments: Vec<&str> = path_part.split("::").collect();
+        let mut out = String::new();
+        for (depth, seg) in segments.iter().enumerate() {
+            for _ in 0..(depth * 2) {
+                out.push(' ');
+            }
+            out.push_str(seg);
+            out.push_str(":\n");
+        }
+        for _ in 0..(segments.len() * 2) {
+            out.push(' ');
+        }
+        out.push_str(trailing);
+        out
+    }
+}
+
+impl ConfigProvider for YamlConfigProvider {
+    fn scheme(&self) -> &str {
+        "yaml"
+    }
+
+    fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error> {
+        let body = uri.strip_prefix("yaml:").unwrap_or(uri);
+        Ok(ResolvedConfig {
+            source: uri.to_string(),
+            content: Self::expand_key_path(body),
+            format: ConfigFormat::Yaml,
+        })
+    }
+}
+
+/// Reads configuration from an unauthenticated HTTP GET.
+///
+/// The response body is treated as YAML unless the `Content-Type` header is
+/// `application/json`. A 30-second per-request timeout is applied and standard
+/// HTTP redirects are followed by the underlying client. `https:`,
+/// authentication, and custom timeouts are deferred to a future phase.
+///
+/// On a network error or a non-2xx status (404, 5xx, etc.) the provider retries
+/// with exponential backoff starting at 500ms and capped at 60s per sleep. The
+/// default maximum attempt count is [`u64::MAX`] so startup blocks until the
+/// remote config server becomes available; use [`Self::with_max_attempts`] to
+/// bound this.
+pub struct HttpConfigProvider {
+    client: reqwest::blocking::Client,
+    max_attempts: u64,
+}
+
+impl HttpConfigProvider {
+    /// Start delay for exponential backoff between retries.
+    const BASE_BACKOFF: Duration = Duration::from_millis(500);
+    /// Upper bound on the sleep between retries regardless of attempt count.
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+    /// Build a provider that retries failed fetches indefinitely with
+    /// exponential backoff (default: [`u64::MAX`] attempts).
+    ///
+    /// Returns [`Error::ConfigHttpClientBuildFailed`] if the underlying
+    /// HTTP client cannot be constructed (for example when no rustls
+    /// crypto provider has been installed).
+    pub fn new() -> Result<Self, Error> {
+        Self::with_max_attempts(u64::MAX)
+    }
+
+    /// Build a provider with an explicit cap on retry attempts. `max_attempts`
+    /// counts the first try as an attempt, so `1` disables retries entirely.
+    ///
+    /// See [`Self::new`] for the set of errors this can return.
+    pub fn with_max_attempts(max_attempts: u64) -> Result<Self, Error> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| Error::ConfigHttpClientBuildFailed {
+                details: e.to_string(),
+            })?;
+        Ok(Self {
+            client,
+            max_attempts,
+        })
+    }
+
+    fn try_fetch(&self, uri: &str) -> Result<ResolvedConfig, Error> {
+        let response = self
+            .client
+            .get(uri)
+            .send()
+            .map_err(|e| Error::ConfigHttpRequestFailed {
+                uri: uri.to_string(),
+                details: e.to_string(),
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::ConfigHttpRequestFailed {
+                uri: uri.to_string(),
+                details: format!("unexpected HTTP status {status}"),
+            });
+        }
+
+        let format = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .filter(|ct| ct.starts_with("application/json"))
+            .map_or(ConfigFormat::Yaml, |_| ConfigFormat::Json);
+
+        let content = response
+            .text()
+            .map_err(|e| Error::ConfigHttpRequestFailed {
+                uri: uri.to_string(),
+                details: format!("read body: {e}"),
+            })?;
+
+        Ok(ResolvedConfig {
+            source: uri.to_string(),
+            content,
+            format,
+        })
+    }
+
+    /// Sleep duration before the next attempt, doubling until capped.
+    fn backoff_for(attempt: u64) -> Duration {
+        let shift = attempt.min(20) as u32;
+        let multiplier = 1u32 << shift;
+        Self::BASE_BACKOFF
+            .checked_mul(multiplier)
+            .unwrap_or(Self::MAX_BACKOFF)
+            .min(Self::MAX_BACKOFF)
+    }
+}
+
+impl ConfigProvider for HttpConfigProvider {
+    fn scheme(&self) -> &str {
+        "http"
+    }
+
+    fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error> {
+        if self.max_attempts == 0 {
+            return Err(Error::ConfigHttpRequestFailed {
+                uri: uri.to_string(),
+                details: "max_attempts is 0".to_string(),
+            });
+        }
+
+        let mut last_err: Option<Error> = None;
+        for attempt in 0..self.max_attempts {
+            match self.try_fetch(uri) {
+                Ok(resolved) => return Ok(resolved),
+                Err(e) => {
+                    last_err = Some(e);
+                    // Don't sleep after the final attempt.
+                    if attempt + 1 < self.max_attempts {
+                        std::thread::sleep(Self::backoff_for(attempt));
+                    }
+                }
+            }
+        }
+        Err(last_err.expect("loop ran at least once so last_err is set"))
+    }
+}
+
 /// Dispatches config resolution to the appropriate [`ConfigProvider`] based on URI scheme.
 pub struct ConfigResolver {
     providers: Vec<Box<dyn ConfigProvider>>,
@@ -147,13 +338,18 @@ impl ConfigResolver {
     }
 }
 
-/// Returns a [`ConfigResolver`] with the default `file:` and `env:` providers.
-#[must_use]
-pub fn default_resolver() -> ConfigResolver {
-    ConfigResolver::new(vec![
+/// Returns a [`ConfigResolver`] with the default providers: `file:`, `env:`,
+/// `yaml:`, and `http:`.
+///
+/// Can fail if the HTTP client used by the `http:` provider cannot be
+/// constructed (see [`HttpConfigProvider::new`]).
+pub fn default_resolver() -> Result<ConfigResolver, Error> {
+    Ok(ConfigResolver::new(vec![
         Box::new(FileConfigProvider),
         Box::new(EnvConfigProvider),
-    ])
+        Box::new(YamlConfigProvider),
+        Box::new(HttpConfigProvider::new()?),
+    ]))
 }
 
 /// Top-level entry point for resolving a config URI to content.
@@ -162,7 +358,7 @@ pub fn default_resolver() -> ConfigResolver {
 ///   Bare paths (no scheme, starts with `/` or `.`) are treated as `file:`.
 /// - `None`: try `DEFAULT_CONFIG_PATH` in the current working directory.
 pub fn resolve_config(uri: Option<&str>) -> Result<ResolvedConfig, Error> {
-    let resolver = default_resolver();
+    let resolver = default_resolver()?;
 
     match uri {
         Some(u) => resolver.resolve(u),
@@ -221,6 +417,16 @@ mod tests {
     use super::*;
     use std::env;
     use std::io::Write;
+    use std::sync::Once;
+
+    /// Install a rustls crypto provider so reqwest can build a blocking client.
+    /// Production code installs this at process startup; tests do it lazily.
+    static CRYPTO_INIT: Once = Once::new();
+    fn ensure_crypto_provider() {
+        CRYPTO_INIT.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
 
     #[test]
     fn file_provider_reads_temp_file() {
@@ -298,10 +504,11 @@ mod tests {
 
     #[test]
     fn bare_path_treated_as_file() {
+        ensure_crypto_provider();
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
         write!(tmp, "bare: path").expect("write temp file");
 
-        let resolver = default_resolver();
+        let resolver = default_resolver().expect("default resolver should build");
         let resolved = resolver
             .resolve(&tmp.path().display().to_string())
             .expect("bare path should resolve as file");
@@ -310,7 +517,8 @@ mod tests {
 
     #[test]
     fn unknown_scheme_returns_error() {
-        let resolver = default_resolver();
+        ensure_crypto_provider();
+        let resolver = default_resolver().expect("default resolver should build");
         let result = resolver.resolve("ftp://example.com/config.yaml");
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -376,6 +584,7 @@ groups:
     fn parse_scheme_cases() {
         assert_eq!(parse_scheme("file:/etc/config.yaml"), Some("file"));
         assert_eq!(parse_scheme("env:MY_VAR"), Some("env"));
+        assert_eq!(parse_scheme("yaml:foo::bar"), Some("yaml"));
         assert_eq!(parse_scheme("/absolute/path.yaml"), None);
         assert_eq!(parse_scheme("./relative/path.yaml"), None);
         assert_eq!(parse_scheme("config.yaml"), None);
@@ -385,5 +594,259 @@ groups:
         // even on Unix where Path::is_absolute() would return false for them.
         assert_eq!(parse_scheme("C:\\config.yaml"), None);
         assert_eq!(parse_scheme("D:/config.yaml"), None);
+    }
+
+    #[test]
+    fn yaml_provider_literal_content() {
+        let provider = YamlConfigProvider;
+        let resolved = provider
+            .resolve("yaml:version: otel_dataflow/v1")
+            .expect("literal yaml should resolve");
+        assert_eq!(resolved.content, "version: otel_dataflow/v1");
+        assert_eq!(resolved.format, ConfigFormat::Yaml);
+    }
+
+    #[test]
+    fn yaml_provider_single_key_path() {
+        let provider = YamlConfigProvider;
+        let resolved = provider
+            .resolve("yaml:version::otel_dataflow/v1")
+            .expect("single-level key path should resolve");
+        assert_eq!(resolved.content, "version:\n  otel_dataflow/v1");
+    }
+
+    #[test]
+    fn yaml_provider_nested_key_path() {
+        let provider = YamlConfigProvider;
+        let resolved = provider
+            .resolve("yaml:exporters::debug::verbosity: detailed")
+            .expect("nested key path should resolve");
+        assert_eq!(
+            resolved.content,
+            "exporters:\n  debug:\n    verbosity: detailed"
+        );
+    }
+
+    #[test]
+    fn yaml_provider_flow_value() {
+        let provider = YamlConfigProvider;
+        let resolved = provider
+            .resolve("yaml:engine::{}")
+            .expect("flow-style value should resolve");
+        assert_eq!(resolved.content, "engine:\n  {}");
+    }
+
+    #[test]
+    fn yaml_provider_parses_as_yaml() {
+        ensure_crypto_provider();
+        let resolver = default_resolver().expect("default resolver should build");
+        let resolved = resolver
+            .resolve("yaml:exporters::debug::verbosity: detailed")
+            .expect("should dispatch to yaml provider");
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&resolved.content).expect("expanded content should be valid YAML");
+        let verbosity = value
+            .get("exporters")
+            .and_then(|v| v.get("debug"))
+            .and_then(|v| v.get("verbosity"))
+            .and_then(|v| v.as_str());
+        assert_eq!(verbosity, Some("detailed"));
+    }
+
+    #[tokio::test]
+    async fn http_provider_fetches_yaml_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        ensure_crypto_provider();
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pipeline.yaml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/yaml")
+                    .set_body_string("version: otel_dataflow/v1\n"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let uri = format!("{}/pipeline.yaml", mock_server.uri());
+        // reqwest blocking must run off the tokio runtime. spawn_blocking keeps
+        // the async wiremock server alive while the sync client runs.
+        let resolved = tokio::task::spawn_blocking(move || {
+            HttpConfigProvider::new()
+                .expect("provider should build")
+                .resolve(&uri)
+                .expect("http provider should fetch body")
+        })
+        .await
+        .expect("spawn_blocking join");
+        assert_eq!(resolved.content, "version: otel_dataflow/v1\n");
+        assert_eq!(resolved.format, ConfigFormat::Yaml);
+    }
+
+    #[tokio::test]
+    async fn http_provider_detects_json_content_type() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        ensure_crypto_provider();
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pipeline.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(r#"{"version":"v1"}"#.as_bytes(), "application/json"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let uri = format!("{}/pipeline.json", mock_server.uri());
+        let resolved = tokio::task::spawn_blocking(move || {
+            HttpConfigProvider::new()
+                .expect("provider should build")
+                .resolve(&uri)
+                .expect("should detect json content type")
+        })
+        .await
+        .expect("spawn_blocking join");
+        assert_eq!(resolved.format, ConfigFormat::Json);
+    }
+
+    #[tokio::test]
+    async fn http_provider_errors_on_non_success_status() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        ensure_crypto_provider();
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/missing"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let uri = format!("{}/missing", mock_server.uri());
+        // `with_max_attempts(1)` disables retries; otherwise the default
+        // `u64::MAX` would keep the test running forever.
+        let result = tokio::task::spawn_blocking(move || {
+            HttpConfigProvider::with_max_attempts(1)
+                .expect("provider should build")
+                .resolve(&uri)
+        })
+        .await
+        .expect("spawn_blocking join");
+        match result {
+            Err(Error::ConfigHttpRequestFailed { details, .. }) => {
+                assert!(
+                    details.contains("404"),
+                    "details should mention status: {details}"
+                );
+            }
+            other => panic!("expected ConfigHttpRequestFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_provider_retries_on_transient_failure() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        ensure_crypto_provider();
+        let mock_server = MockServer::start().await;
+        // First two requests return 503, then fall through to the success mock.
+        Mock::given(method("GET"))
+            .and(path("/flaky"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/flaky"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(b"version: v1\n".to_vec(), "application/yaml"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let uri = format!("{}/flaky", mock_server.uri());
+        let resolved = tokio::task::spawn_blocking(move || {
+            HttpConfigProvider::with_max_attempts(4)
+                .expect("provider should build")
+                .resolve(&uri)
+                .expect("third attempt should succeed")
+        })
+        .await
+        .expect("spawn_blocking join");
+        assert_eq!(resolved.content, "version: v1\n");
+    }
+
+    #[test]
+    fn http_provider_backoff_grows_and_caps() {
+        assert_eq!(
+            HttpConfigProvider::backoff_for(0),
+            Duration::from_millis(500)
+        );
+        assert_eq!(HttpConfigProvider::backoff_for(1), Duration::from_secs(1));
+        assert_eq!(HttpConfigProvider::backoff_for(2), Duration::from_secs(2));
+        // Beyond ~7 attempts the 60s cap takes over.
+        assert_eq!(HttpConfigProvider::backoff_for(20), Duration::from_secs(60));
+        assert_eq!(
+            HttpConfigProvider::backoff_for(u64::MAX),
+            Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn http_provider_new_defaults_to_unbounded_attempts() {
+        ensure_crypto_provider();
+        let p = HttpConfigProvider::new().expect("provider should build");
+        assert_eq!(p.max_attempts, u64::MAX);
+        assert_eq!(p.scheme(), "http");
+    }
+
+    #[test]
+    fn http_provider_zero_attempts_returns_error() {
+        ensure_crypto_provider();
+        let p = HttpConfigProvider::with_max_attempts(0).expect("provider should build");
+        let result = p.resolve("http://127.0.0.1:1/never-called");
+        match result {
+            Err(Error::ConfigHttpRequestFailed { details, .. }) => {
+                assert!(
+                    details.contains("max_attempts is 0"),
+                    "details should explain the zero-attempts case: {details}"
+                );
+            }
+            other => panic!("expected ConfigHttpRequestFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_provider_surfaces_network_error() {
+        ensure_crypto_provider();
+        // Bind a listener to grab a free port, then drop it so the port is
+        // closed when the resolver tries to connect.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind free port");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+        let uri = format!("http://{addr}/nope");
+
+        let result = tokio::task::spawn_blocking(move || {
+            HttpConfigProvider::with_max_attempts(1)
+                .expect("provider should build")
+                .resolve(&uri)
+        })
+        .await
+        .expect("spawn_blocking join");
+        match result {
+            Err(Error::ConfigHttpRequestFailed { details, .. }) => {
+                assert!(
+                    !details.is_empty(),
+                    "details should surface the network error"
+                );
+            }
+            other => panic!("expected ConfigHttpRequestFailed, got {other:?}"),
+        }
     }
 }
