@@ -247,7 +247,12 @@ testcontainers = "0.27"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
 urlencoding = "2"
-geneva-uploader = "0.4.0"
+# Pinned to open-telemetry/opentelemetry-rust-contrib main on 2026-04-25.
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "00225194bab2658ee730ac0c4fe7942c28373848" }
+
+[patch."https://github.com/open-telemetry/otel-arrow"]
+otap-df-pdata = { path = "crates/pdata" }
+otap-df-pdata-views = { path = "crates/pdata-views" }
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
