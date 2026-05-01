@@ -494,6 +494,38 @@ pub enum Error {
     /// disconnected by topic policy.
     #[error("subscription closed")]
     SubscriptionClosed,
+
+    /// A capability binding was claimed more than once on the same node.
+    ///
+    /// `require_local` / `require_shared` / `optional_local` /
+    /// `optional_shared` are intended to be called **exactly once per
+    /// capability per node**, at node construction. The handle they
+    /// return should be stored and shared within the node as needed.
+    #[error("capability '{capability}' has already been claimed on this node")]
+    CapabilityAlreadyConsumed {
+        /// The capability name.
+        capability: String,
+    },
+
+    /// A node factory called `require_local` / `require_shared` for a
+    /// capability that the node's own configuration did not bind.
+    ///
+    /// This almost always indicates a node-code / node-declaration
+    /// mismatch: either the node's factory signals a required
+    /// capability the node template forgot to declare, or the user's
+    /// pipeline config is missing the binding entry for an optional
+    /// provider the node expects. The message surfaces both
+    /// interpretations.
+    #[error(
+        "required {execution_model} capability '{capability}' is not bound for this node; \
+         add it to the node's capability bindings or switch to optional_{execution_model}"
+    )]
+    CapabilityNotBound {
+        /// The capability name.
+        capability: String,
+        /// Execution model requested by the caller: `"local"` or `"shared"`.
+        execution_model: &'static str,
+    },
 }
 
 impl Error {
@@ -542,6 +574,8 @@ impl Error {
             Error::SubscribeBroadcastNotSupported => "SubscribeBroadcastNotSupported",
             Error::SubscribeSingleGroupViolation => "SubscribeSingleGroupViolation",
             Error::SubscriptionClosed => "SubscriptionClosed",
+            Error::CapabilityAlreadyConsumed { .. } => "CapabilityAlreadyConsumed",
+            Error::CapabilityNotBound { .. } => "CapabilityNotBound",
         }
         .to_owned()
     }
