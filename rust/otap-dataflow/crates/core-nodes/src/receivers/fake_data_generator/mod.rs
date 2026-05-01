@@ -32,7 +32,8 @@ use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::time::{Duration, Interval, interval};
+use std::time::Instant as StdInstant;
+use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 
 use self::producer::{GenerateError, TrafficProducer};
 
@@ -53,6 +54,8 @@ pub mod static_signal;
 /// The URN for the fake data generator receiver
 pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:receiver:traffic_generator";
 
+const NANOS_PER_SECOND: u128 = 1_000_000_000;
+
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {
     /// Configuration for the fake data generator
@@ -60,6 +63,24 @@ pub struct FakeGeneratorReceiver {
 
     /// Metrics for the fake data generator
     metrics: MetricSet<FakeSignalReceiverMetrics>,
+}
+
+fn smooth_batch_interval(run_len: usize) -> Option<Duration> {
+    if run_len == 0 {
+        return None;
+    }
+
+    let run_len = run_len as u128;
+    let nanos = NANOS_PER_SECOND.div_ceil(run_len);
+    u64::try_from(nanos).ok().map(Duration::from_nanos)
+}
+
+fn duration_nanos(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1e9
+}
+
+fn elapsed_nanos(start: StdInstant) -> f64 {
+    duration_nanos(start.elapsed())
 }
 
 /// Declares the fake data generator as a local receiver factory
@@ -117,6 +138,7 @@ impl FakeGeneratorReceiver {
         transport_headers: Option<TransportHeaders>,
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
+        let mut next_pdata: Option<OtapPdata> = None;
 
         loop {
             producer.record_production(run_produced);
@@ -125,6 +147,9 @@ impl FakeGeneratorReceiver {
             let Ok(Some(mut current_run)) = producer.next_run() else {
                 return wait_for_terminal(ctrl_msg_recv, handler, &mut self.metrics).await;
             };
+
+            self.metrics.smooth_runs_started.inc();
+            let mut run_completed = false;
 
             loop {
                 tokio::select! {
@@ -137,29 +162,83 @@ impl FakeGeneratorReceiver {
                     }
 
                     _ = run_ticker.tick() => {
-                        if current_run.len() > 0 {
+                        let remaining_batches = current_run.len() + usize::from(next_pdata.is_some());
+                        let remaining_items = current_run.remaining_signal_count()
+                            + next_pdata.as_ref().map_or(0, |pdata| pdata.num_items() as u64);
+                        if remaining_batches > 0 {
+                            self.metrics.smooth_runs_behind.inc();
+                            self.metrics
+                                .smooth_behind_remaining_batches
+                                .record(remaining_batches as f64);
+                            self.metrics
+                                .smooth_behind_remaining_items
+                                .record(remaining_items as f64);
                             otel_warn!(
                                 "Data generator is falling behind and didn't finish the current run. For highest
                                 possible throughput, use production_mode: open",
-                                remaining=current_run.len(),
+                                remaining=remaining_batches,
+                                remaining_items,
                             );
+                        } else if !run_completed {
+                            self.metrics.smooth_runs_completed.inc();
+                            run_completed = true;
                         }
+
+                        if next_pdata.is_some() {
+                            continue;
+                        }
+
                         break;
                     }
 
-                    _ = batch_ticker.tick() => {
+                    scheduled = batch_ticker.tick() => {
+                        let tick_lateness = tokio::time::Instant::now()
+                            .saturating_duration_since(scheduled);
+                        self.metrics
+                            .smooth_batch_tick_lateness_duration_ns
+                            .record(duration_nanos(tick_lateness));
 
-                        let Some(payload) = current_run.next() else {
-                            continue;
+                        let channel_result = match next_pdata.take() {
+                            Some(pdata) => {
+                                self.metrics.smooth_payload_send_retry.inc();
+                                let send_start = StdInstant::now();
+                                let result = self.export_pdata(handler, pdata)?;
+                                self.metrics
+                                    .smooth_payload_send_duration_ns
+                                    .record(elapsed_nanos(send_start));
+                                result
+                            }
+                            None => {
+                                let generate_start = StdInstant::now();
+                                let payload = current_run.next();
+
+                                let Some(payload) = payload else {
+                                    if !run_completed {
+                                        self.metrics.smooth_runs_completed.inc();
+                                        run_completed = true;
+                                    }
+                                    continue;
+                                };
+                                self.metrics
+                                    .smooth_payload_generate_duration_ns
+                                    .record(elapsed_nanos(generate_start));
+
+                                let send_start = StdInstant::now();
+                                let result = self.handle_payload(handler, payload, &transport_headers)?;
+                                self.metrics
+                                    .smooth_payload_send_duration_ns
+                                    .record(elapsed_nanos(send_start));
+                                result
+                            }
                         };
 
-                        let channel_result = self.handle_payload(handler, payload, &transport_headers)?;
                         match channel_result {
                             Ok(count) => {
                                 run_produced += count;
                             }
-                            Err(e) => {
-                                otel_warn!("Failed to push in smooth mode, skipping tick", err=?e);
+                            Err(pdata) => {
+                                self.metrics.smooth_payload_send_full.inc();
+                                next_pdata = Some(pdata);
                             }
                         }
                     }
@@ -448,18 +527,22 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             .await?;
 
         let run_len = producer.run_len();
-        let batch_duration_millis = 1000u64.div_euclid(run_len as u64);
 
         // We consume one tick here because it's always immediately ready and would
         // make us think we're lagging;
         let mut run_ticker = interval(Duration::from_secs(1));
+        run_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         _ = run_ticker.tick().await;
 
         match self.config.get_traffic_config().production_mode {
             config::ProductionMode::Smooth => {
-                if batch_duration_millis > 0 {
-                    let batch_ticker =
-                        interval(Duration::from_millis(1000u64.div_euclid(run_len as u64)));
+                if let Some(batch_duration) = smooth_batch_interval(run_len) {
+                    self.metrics.smooth_run_batches.set(run_len as u64);
+                    self.metrics
+                        .smooth_batch_interval_ns
+                        .set(batch_duration.as_nanos() as u64);
+                    let mut batch_ticker = interval(batch_duration);
+                    batch_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
                     self.run_smooth(
                         ctrl_msg_recv,
                         &effect_handler,
@@ -470,7 +553,9 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     )
                     .await
                 } else {
-                    otel_warn!("Falling back to Open production mode as batch interval is sub 1ms");
+                    otel_warn!(
+                        "Falling back to Open production mode because smooth batch interval is zero"
+                    );
                     self.run_open(
                         ctrl_msg_recv,
                         &effect_handler,
@@ -532,6 +617,21 @@ mod tests {
     const MESSAGE_PER_SECOND: usize = 3;
     const MAX_SIGNALS: u64 = 3;
     const MAX_BATCH: usize = 30;
+
+    #[test]
+    fn test_smooth_batch_interval_uses_sub_millisecond_precision() {
+        let interval = smooth_batch_interval(2000).expect("interval should exist");
+
+        assert_eq!(interval, Duration::from_micros(500));
+    }
+
+    #[test]
+    fn test_smooth_batch_interval_does_not_overdrive_run() {
+        let interval = smooth_batch_interval(88).expect("interval should exist");
+
+        assert!(interval * 88 >= Duration::from_secs(1));
+        assert!(interval * 87 < Duration::from_secs(1));
+    }
 
     /// Convert OtapPdata signal to OtlpProtoMessage for testing purposes.
     fn pdata_to_otlp_message(value: OtapPdata) -> OtlpProtoMessage {
@@ -1051,6 +1151,65 @@ mod tests {
                     ctx.send_control_msg(NodeControlMsg::DrainIngress {
                         deadline,
                         reason: "test drain".to_owned(),
+                    })
+                    .await
+                    .expect("Failed to send DrainIngress");
+                })
+            };
+
+        let drain_validation =
+            |_ctx: NotSendValidateContext<OtapPdata>| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async {})
+            };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(drain_scenario)
+            .run_validation(drain_validation);
+    }
+
+    /// Scenario: receiver-first shutdown reaches the pre-generated hot path
+    /// while it is sending many batches in one iteration.
+    /// Guarantees: the generated send loop yields often enough for the outer
+    /// control select to observe `DrainIngress` promptly instead of timing out
+    /// behind a long uncapped send burst.
+    #[test]
+    fn test_drain_ingress_exits_promptly_during_high_throughput_send_loop() {
+        let test_runtime = TestRuntime::new();
+
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(Some(1000), None, 1, 0, 0, 1);
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::PreGenerated);
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_hot_drain"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let drain_scenario =
+            move |ctx: TestContext<OtapPdata>| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async move {
+                    sleep(Duration::from_millis(200)).await;
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    ctx.send_control_msg(NodeControlMsg::DrainIngress {
+                        deadline,
+                        reason: "test hot drain".to_owned(),
                     })
                     .await
                     .expect("Failed to send DrainIngress");

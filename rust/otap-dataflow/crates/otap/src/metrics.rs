@@ -69,7 +69,7 @@ impl ExporterPDataMetrics {
         self.add_failed(st, 1);
     }
 
-    /// Add to the number of of pdata messages consumed.
+    /// Add to the number of pdata messages consumed.
     pub const fn add_consumed(&mut self, st: SignalType, count: u64) {
         if count == 0 {
             return;

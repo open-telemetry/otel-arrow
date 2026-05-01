@@ -263,6 +263,8 @@ impl TopicExporter {
         match queue_on_full {
             TopicQueueOnFullPolicy::Block => {
                 let published = Arc::new(data.clone_without_context());
+                // Preserve a cheap uncontended fast path: only retain a blocked
+                // publish when the topic runtime reports real backpressure.
                 if should_track_end_to_end {
                     let tracked_publisher = tracked_publisher
                         .expect("tracked publisher should exist when ack propagation is auto");
@@ -385,6 +387,10 @@ impl Exporter<OtapPdata> for TopicExporter {
         let mut pending_outcomes: FuturesUnordered<
             Pin<Box<dyn Future<Output = (u64, TrackedPublishOutcome)> + Send>>,
         > = FuturesUnordered::new();
+        // The exporter owns at most one blocked publish at a time. While that
+        // future is waiting inside the topic runtime, the inbox is switched to
+        // control-only reads so shutdown stays responsive and ownership of the
+        // blocked pdata remains unambiguous.
         let mut blocked_publish: Option<BlockedPublish> = None;
         let tracked_publisher = (ack_propagation_mode == TopicAckPropagationMode::Auto)
             .then(|| topic.tracked_publisher());

@@ -36,11 +36,8 @@ otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
 otap-df-engine.workspace = true
 otap-df-otap.workspace = true
-thiserror.workspace = true
-serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
-sysinfo.workspace = true
 dhat = { workspace = true, optional = true }
 cfg-if.workspace = true
 
@@ -92,6 +89,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
+clap_complete = "4.5.55"
 core_affinity = "0.8.3"
 criterion = "0.8.0"
 data-encoding = "2.9.0"
@@ -214,12 +212,12 @@ weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git",
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = "=4.6.1"
+zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-azure_core = {version = "0.34.0", default-features = false }
-azure_identity = {version = "0.34.0", default-features = false }
+azure_core = {version = "0.35.0", default-features = false }
+azure_identity = {version = "0.35.0", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).

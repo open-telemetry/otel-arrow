@@ -3,19 +3,19 @@
 
 //! Pipeline group endpoints.
 //!
-//! - GET `/api/v1/pipeline-groups/:id/pipelines` - list active pipelines and their status (ToDo)
-//! - POST `/api/v1/pipeline-groups/shutdown` - shutdown all pipelines in all groups
+//! - GET `/api/v1/groups/:id/pipelines` - list active pipelines and their status (ToDo)
+//! - POST `/api/v1/groups/shutdown` - shutdown all pipelines in all groups
 //!   - Query parameters:
 //!     - `wait` (bool, default: false) - if true, block until all pipelines have stopped
 //!     - `timeout_secs` (u64, default: 60) - maximum seconds to wait when `wait=true`
 //!
 //!   Example (fire-and-forget):
 //!   ```sh
-//!   curl -X POST http://localhost:8080/api/v1/pipeline-groups/shutdown
+//!   curl -X POST http://localhost:8080/api/v1/groups/shutdown
 //!   ```
 //!   Example (wait for graceful shutdown with 30s timeout):
 //!   ```sh
-//!   curl -X POST "http://localhost:8080/api/v1/pipeline-groups/shutdown?wait=true&timeout_secs=30"
+//!   curl -X POST "http://localhost:8080/api/v1/groups/shutdown?wait=true&timeout_secs=30"
 //!   ```
 //!
 //!   - 200 OK if `wait=true` and all pipelines stopped successfully
@@ -37,8 +37,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use otap_df_admin_types::{
+    groups::{ShutdownResponse, ShutdownStatus, Status as GroupsStatus},
     operations::OperationOptions,
-    pipeline_groups::{ShutdownResponse, ShutdownStatus, Status as PipelineGroupsStatus},
 };
 use otap_df_telemetry::otel_info;
 use std::time::{Duration, Instant};
@@ -47,16 +47,14 @@ use std::time::{Duration, Instant};
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         // Returns a summary of all pipelines and their statuses.
-        .route("/pipeline-groups/status", get(show_status))
+        .route("/groups/status", get(show_status))
         // Shutdown all pipelines in all groups.
-        .route("/pipeline-groups/shutdown", post(shutdown_all_pipelines))
+        .route("/groups/shutdown", post(shutdown_all_pipelines))
     // ToDo Global liveness and readiness probes.
 }
 
-pub async fn show_status(
-    State(state): State<AppState>,
-) -> Result<Json<PipelineGroupsStatus>, StatusCode> {
-    Ok(Json(PipelineGroupsStatus {
+pub async fn show_status(State(state): State<AppState>) -> Result<Json<GroupsStatus>, StatusCode> {
+    Ok(Json(GroupsStatus {
         generated_at: Utc::now().to_rfc3339(),
         pipelines: json_shape(&state.observed_state_store.snapshot()),
     }))
@@ -74,31 +72,13 @@ async fn shutdown_all_pipelines(
         timeout_secs = params.timeout_secs
     );
 
-    // Send shutdown message to all pipelines
-    let errors: Vec<_> = (*state.ctrl_msg_senders.lock().await)
-        .drain(..)
-        .filter_map(|sender| {
-            // Use the timeout from params for the shutdown deadline
-            let deadline = Instant::now() + Duration::from_secs(params.timeout_secs);
-            sender
-                .try_send_shutdown(
-                    deadline,
-                    "Shutdown requested via the `/api/v1/pipeline-groups/shutdown` endpoint."
-                        .to_owned(),
-                )
-                .err()
-        })
-        .map(|e| e.to_string())
-        .collect();
-
-    // If there were errors sending shutdown messages, return immediately
-    if !errors.is_empty() {
-        otel_info!("shutdown.failed", error_count = errors.len());
+    if let Err(err) = state.controller.shutdown_all(params.timeout_secs) {
+        otel_info!("shutdown.failed", error = ?err);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ShutdownResponse {
                 status: ShutdownStatus::Failed,
-                errors: Some(errors),
+                errors: Some(vec![format!("{err:?}")]),
                 duration_ms: Some(start_time.elapsed().as_millis() as u64),
             }),
         );
