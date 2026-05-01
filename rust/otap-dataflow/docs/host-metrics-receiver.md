@@ -433,7 +433,10 @@ The RAII guard is required so the lease is released on early return and during
 panic unwinding, not only on the normal shutdown path.
 
 The lease is a guardrail until an engine-scoped host observation extension
-exists. It is not a replacement for the one-core deployment rule.
+exists. It is not a replacement for the one-core deployment rule. It also
+protects against accidental runtime duplication, for example if live
+reconfiguration introduces a second host metrics receiver for the same host
+root.
 
 ## Projection And Semantic Conventions
 
