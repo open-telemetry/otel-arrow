@@ -48,7 +48,20 @@ pub struct Config {
 pub enum Query {
     KqlQuery(String),
     OplQuery(String),
-    // TODO - add section to allow transforms to be specified in OTTL
+    Ottl(OttlConfig),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct OttlConfig {
+    /// OTTL Statements for transforming logs
+    pub log_statements: Option<Vec<String>>,
+
+    /// OTTL Statements for transforming metrics
+    pub metric_statements: Option<Vec<String>>,
+
+    /// OTTL Statements for transforming traces
+    pub trace_statements: Option<Vec<String>>,
 }
 
 const fn default_inbound_request_limit() -> NonZeroUsize {
