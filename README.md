@@ -227,6 +227,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 - [Alex Boten](https://github.com/codeboten), Approver
 - [Lei Huang](https://github.com/v0y4g3r), Approver
+- [Lei, HUANG](https://github.com/v0y4g3r), Approver
 - [Moh Osman](https://github.com/moh-osman3), Approver
 
 ### Thanks to all of our contributors
