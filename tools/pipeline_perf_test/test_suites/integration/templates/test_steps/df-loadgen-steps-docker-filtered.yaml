@@ -118,6 +118,7 @@ steps:
         pre:
           - send_http_request:
               url: http://localhost:8085/api/v1/groups/shutdown?wait=false&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
               headers:
                 "Content-Type": "application/json"
               timeout: 10
@@ -145,6 +146,7 @@ steps:
         pre:
           - send_http_request:
               url: http://localhost:8086/api/v1/groups/shutdown?wait=false&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
               headers:
                 "Content-Type": "application/json"
               timeout: 10
@@ -172,6 +174,7 @@ steps:
         pre:
           - send_http_request:
               url: http://localhost:8087/api/v1/groups/shutdown?wait=false&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
               headers:
                 "Content-Type": "application/json"
               timeout: 10
