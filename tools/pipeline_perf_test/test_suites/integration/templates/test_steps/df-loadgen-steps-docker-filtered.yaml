@@ -129,7 +129,7 @@ steps:
                   status=$(curl -sf -o /dev/null -w "%{http_code}"
                     http://localhost:8085/api/v1/readyz 2>/dev/null || echo "000");
                   if [ "$status" = "503" ] || [ "$status" = "000" ]; then
-                    echo "Load generator pipelines stopped after ${i}s (status=${status})";
+                    echo "Load generator no longer ready after $((i * 5))s (status=${status})";
                     exit 0;
                   fi;
                   sleep 5;
@@ -156,7 +156,7 @@ steps:
                   status=$(curl -sf -o /dev/null -w "%{http_code}"
                     http://localhost:8086/api/v1/readyz 2>/dev/null || echo "000");
                   if [ "$status" = "503" ] || [ "$status" = "000" ]; then
-                    echo "Engine pipelines stopped after ${i}s (status=${status})";
+                    echo "Engine no longer ready after $((i * 5))s (status=${status})";
                     exit 0;
                   fi;
                   sleep 5;
@@ -180,8 +180,10 @@ steps:
           - run_command:
               command: >-
                 for i in $(seq 1 60); do
-                  if ! curl -sf http://localhost:8087/api/v1/telemetry/metrics?reset=false >/dev/null 2>&1; then
-                    echo "Backend shut down after ${i}s";
+                  status=$(curl -sf -o /dev/null -w "%{http_code}"
+                    http://localhost:8087/api/v1/readyz 2>/dev/null || echo "000");
+                  if [ "$status" = "503" ] || [ "$status" = "000" ]; then
+                    echo "Backend no longer ready after $((i * 5))s (status=${status})";
                     exit 0;
                   fi;
                   sleep 5;
