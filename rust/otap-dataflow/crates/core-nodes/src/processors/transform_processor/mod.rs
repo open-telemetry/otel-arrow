@@ -145,9 +145,7 @@ impl TransformProcessor {
                     signal_scope,
                 }]
             }
-
             Query::OplQuery(query) => {
-                // TODO cleanup from duplicated code above
                 let pipeline_expr = OplParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
@@ -162,9 +160,10 @@ impl TransformProcessor {
                 if let Some(log_statements) = &ottl_config.log_statements {
                     for statement in log_statements {
                         let pipeline_expr =
-                            OttlParser::parse_with_options(&statement, parser_options.clone())
+                            OttlParser::parse_with_options(statement, parser_options.clone())
                                 .map_err(map_parser_err)?
                                 .pipeline;
+
                         transforms.push(Transform {
                             pipeline: Pipeline::new_with_options(
                                 pipeline_expr,
@@ -174,8 +173,6 @@ impl TransformProcessor {
                         })
                     }
                 }
-
-                // TODO traces and metrics
 
                 transforms
             }
@@ -448,6 +445,16 @@ impl Processor<OtapPdata> for TransformProcessor {
                 let mut transformed = false;
                 let mut transform_error = None;
 
+                // Execute all transforms. We skip transforms where the batch's signal type is not
+                // selected by the signal scope, and lazily convert the pdata payload to OTAP
+                // if/when we find a transform to apply. If any transform error occurs, break early
+                // and set transform_error to `Some`.
+                //
+                // State at the end of this loop:
+                // - Either payload or `transform_error` will be `Some`
+                // - If we applied any transform then:
+                //   - `transformed` will be set to `true`
+                //   - if payload is `Some` then contained payload variant will be OtelArrowRecords
                 for transform in &mut self.transforms {
                     let should_process = match &transform.signal_scope {
                         SignalScope::All => true,
@@ -457,13 +464,18 @@ impl Processor<OtapPdata> for TransformProcessor {
                     };
 
                     if !should_process {
+                        // skip applying this transform as it does not select the signal type
                         continue;
                     }
+                    transformed = true;
 
-                    // TODO - fix all the unwrapping around payload below
-
-                    let mut otap_batch: OtapArrowRecords = payload.take().unwrap().try_into()?;
+                    // convert payload to OTAP & remove delta encoded IDs.
+                    // safety: we know payload will have been initialized to Some either, before
+                    // entering the loop, or during the previous iteration.
+                    let mut otap_batch: OtapArrowRecords =
+                        payload.take().expect("payload initialized").try_into()?;
                     otap_batch.decode_transport_optimized_ids()?;
+
                     let result = transform
                         .pipeline
                         .execute_with_state(otap_batch, &mut self.execution_state)
@@ -477,10 +489,10 @@ impl Processor<OtapPdata> for TransformProcessor {
                                 source_detail: e.to_string(),
                             }
                         });
-                    transformed = true;
 
                     match result {
                         Ok(next_result) => {
+                            // initialize payload for the next loop iteration
                             payload = Some(OtapPayload::OtapArrowRecords(next_result));
                         }
                         Err(e) => {
@@ -495,11 +507,15 @@ impl Processor<OtapPdata> for TransformProcessor {
                     let result = match transform_error {
                         Some(e) => Err(e),
                         None => {
-                            match payload.take().unwrap() {
+                            // safety: since error is `None`, we know payload must be `Some` based
+                            // on the logic in the loop above, so it is safe to expect here
+                            match payload.take().expect("payload option initialized") {
                                 OtapPayload::OtapArrowRecords(otap_batch) => Ok(otap_batch),
                                 _ => {
-                                    // TODO comment on why this is unrachable
-                                    unreachable!("")
+                                    // safety: if any transform applied then we'll have converted
+                                    // the payload the OTAP, so we know here that it must be this
+                                    // variant of OtapPayload
+                                    unreachable!("expected OTAP payload variant")
                                 }
                             }
                         }
@@ -507,8 +523,12 @@ impl Processor<OtapPdata> for TransformProcessor {
                     self.handle_exec_result(context, result, effect_handler)
                         .await?;
                 } else {
-                    // skipped handling this pdata
-                    let payload = payload.take().unwrap();
+                    // safety: payload is initialized to Some, and only modified if any transforms
+                    // are applied. In this location, we know no transforms were applied so we can
+                    // safely expect take here to return Some
+                    let payload = payload.take().expect("payload option initialized");
+
+                    // all transforms were skipped for this pdata, just forward the original payload
                     effect_handler
                         .send_message_with_source_node(OtapPdata::new(context, payload))
                         .await?;
