@@ -331,6 +331,14 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 .start(node_id, result.control_plane_metrics_flush_interval);
         }
 
+        // Sync the metrics shadow with the pre-registered timers so the
+        // `telemetry_timers.active` gauge reflects reality before the first
+        // scheduler tick instead of reporting 0 for one full reporting interval.
+        result.runtime_control_metrics.set_timer_counts(
+            result.tick_timers.timer_states.len(),
+            result.telemetry_timers.timer_states.len(),
+        );
+
         result
     }
 
