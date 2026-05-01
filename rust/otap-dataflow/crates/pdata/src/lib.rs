@@ -47,6 +47,11 @@ pub trait TryFromWithOptions<T>: Sized {
 
     /// Performs the conversion
     fn try_from_with_options(value: T, opts: ConversionOptions) -> Result<Self, Self::Error>;
+
+    /// Performs a default conversion
+    fn try_from_with_default(value: T) -> Result<Self, Self::Error> {
+        TryFromWithOptions::<T>::try_from_with_options(value, ConversionOptions::default())
+    }
 }
 
 /// Try to convert with options, including limits.
@@ -56,6 +61,11 @@ pub trait TryIntoWithOptions<T>: Sized {
 
     /// Performs the conversion
     fn try_into_with_options(self, opts: ConversionOptions) -> Result<T, Self::Error>;
+
+    /// Performs a default conversion
+    fn try_into_with_default(self) -> Result<T, Self::Error> {
+        self.try_into_with_options(ConversionOptions::default())
+    }
 }
 
 impl<T, U> TryIntoWithOptions<U> for T

@@ -191,7 +191,7 @@ mod test {
             serialize_any_values(vec![ObjAny::new(&source)].into_iter(), &mut serialized_val)
                 .unwrap();
 
-            let mut proto_buffer = ProtoBuffer::new();
+            let mut proto_buffer = ProtoBuffer::default();
             proto_encode_cbor_bytes(&serialized_val, &mut proto_buffer).unwrap();
             let result = AnyValue::decode(proto_buffer.as_ref()).unwrap();
             assert_eq!(
@@ -261,7 +261,7 @@ mod test {
             )
             .unwrap();
 
-            let mut proto_buffer = ProtoBuffer::new();
+            let mut proto_buffer = ProtoBuffer::default();
             proto_encode_cbor_bytes(&serialized_val, &mut proto_buffer).unwrap();
             let result = AnyValue::decode(proto_buffer.as_ref()).unwrap();
             assert_eq!(

@@ -352,13 +352,16 @@ impl From<OtlpProtoBytes> for OtapPayload {
     }
 }
 
-impl TryFrom<OtapPayload> for OtapArrowRecords {
+impl TryFromWithOptions<OtapPayload> for OtapArrowRecords {
     type Error = crate::encode::Error;
 
-    fn try_from(value: OtapPayload) -> Result<Self, Self::Error> {
+    fn try_from_with_options(
+        value: OtapPayload,
+        opts: ConversionOptions,
+    ) -> Result<Self, Self::Error> {
         match value {
             OtapPayload::OtapArrowRecords(value) => Ok(value),
-            OtapPayload::OtlpBytes(value) => value.try_into(),
+            OtapPayload::OtlpBytes(value) => value.try_into_with_options(opts),
         }
     }
 }
@@ -411,10 +414,13 @@ impl TryFromWithOptions<OtapArrowRecords> for OtlpProtoBytes {
     }
 }
 
-impl TryFrom<OtlpProtoBytes> for OtapArrowRecords {
+impl TryFromWithOptions<OtlpProtoBytes> for OtapArrowRecords {
     type Error = crate::encode::Error;
 
-    fn try_from(value: OtlpProtoBytes) -> Result<Self, Self::Error> {
+    fn try_from_with_options(
+        value: OtlpProtoBytes,
+        _opts: ConversionOptions,
+    ) -> Result<Self, Self::Error> {
         match value {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes.as_ref());
@@ -501,19 +507,19 @@ mod test {
         let pdata: OtapPayload = OtlpProtoBytes::ExportLogsRequest(otlp_bytes.into()).into();
 
         // test can go OtlpProtoBytes -> OtapBatch & back
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into_with_default().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
         let pdata: OtapPayload = otap_batch.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into_with_default().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
         let pdata: OtapPayload = otlp_bytes.into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into_with_default().unwrap();
         assert!(matches!(otlp_bytes, OtlpProtoBytes::ExportLogsRequest(_)));
         let pdata: OtapPayload = otlp_bytes.into();
 
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into_with_default().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
     }
 
@@ -527,11 +533,11 @@ mod test {
         let pdata: OtapPayload = OtlpProtoBytes::ExportLogsRequest(otlp_bytes.into()).into();
 
         // test can go OtlpProtoBytes (written by prost) -> OtapBatch & back (using prost)
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into_with_default().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Logs(_)));
         let pdata: OtapPayload = otap_batch.clone().into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into_with_default().unwrap();
         let bytes = match &otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => bytes.clone(),
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -543,7 +549,7 @@ mod test {
         // check that we can also re-decode the OTLP proto bytes that we encode directly
         // from OTAP, that we get the same result
         let pdata: OtapPayload = otlp_bytes.into();
-        let otap_batch2: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch2: OtapArrowRecords = pdata.try_into_with_default().unwrap();
         assert_eq!(otap_batch, otap_batch2);
     }
 
@@ -553,11 +559,11 @@ mod test {
         let pdata: OtapPayload = OtlpProtoBytes::ExportTracesRequest(otlp_bytes.into()).into();
 
         // test can go OtlpBytes (written by prost) -> OtapBatch & back (using prost)
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into_with_default().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Traces(_)));
         let pdata: OtapPayload = otap_batch.clone().into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into_with_default().unwrap();
         let bytes = match &otlp_bytes {
             OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.clone(),
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -569,7 +575,7 @@ mod test {
         // check that we can also re-decode the OTLP proto bytes that we encode directly
         // from OTAP, that we get the same result
         let pdata: OtapPayload = otlp_bytes.into();
-        let otap_batch2: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch2: OtapArrowRecords = pdata.try_into_with_default().unwrap();
         assert_eq!(otap_batch, otap_batch2);
     }
 
@@ -579,11 +585,11 @@ mod test {
         let pdata: OtapPayload = OtlpProtoBytes::ExportMetricsRequest(otlp_bytes.into()).into();
 
         // test can go OtlpBytes (written by prost) to OTAP & back (using prost)
-        let otap_batch: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch: OtapArrowRecords = pdata.try_into_with_default().unwrap();
         assert!(matches!(otap_batch, OtapArrowRecords::Metrics(_)));
         let pdata: OtapPayload = otap_batch.clone().into();
 
-        let otlp_bytes: OtlpProtoBytes = pdata.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = pdata.try_into_with_default().unwrap();
         let bytes = match &otlp_bytes {
             OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes.clone(),
             _ => panic!("unexpected otlp bytes pdata variant"),
@@ -595,7 +601,7 @@ mod test {
         // check that we can also re-decode the OTLP proto bytes that we encode directly
         // from OTAP, that we get the same result
         let pdata: OtapPayload = otlp_bytes.into();
-        let otap_batch2: OtapArrowRecords = pdata.try_into().unwrap();
+        let otap_batch2: OtapArrowRecords = pdata.try_into_with_default().unwrap();
         assert_eq!(otap_batch, otap_batch2);
     }
 

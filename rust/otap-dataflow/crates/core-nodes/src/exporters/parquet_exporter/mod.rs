@@ -54,6 +54,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use std::io::ErrorKind;
@@ -297,7 +298,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     }
 
                     let mut otap_batch: OtapArrowRecords =
-                        payload.try_into().inspect_err(|_| {
+                        payload.try_into_with_default().inspect_err(|_| {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics.inc_failed(signal_type);
                             }
@@ -482,6 +483,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
     use otap_df_pdata::schema::consts;
+    use otap_df_pdata::{TryFromWithOptions, TryIntoWithOptions};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
@@ -577,7 +579,7 @@ mod test {
                         })
                     }
                     let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3).payload();
-                    let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
+                    let mut otap_batch = OtapArrowRecords::try_from_with_default(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
                     let old_column = attrs_batch.remove_column(
@@ -653,7 +655,7 @@ mod test {
                             value: Some(AnyValue::new_string("terry")),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     let batch2: OtapArrowRecords =
@@ -662,7 +664,7 @@ mod test {
                             value: Some(AnyValue::new_int(418)),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     // double check that these contain schemas that are not the same ...

@@ -4026,7 +4026,7 @@ mod test {
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
         // check the serialized values are what is expected
-        let mut proto_buf = ProtoBuffer::new();
+        let mut proto_buf = ProtoBuffer::default();
         proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
         let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
 
@@ -4270,7 +4270,7 @@ mod test {
         assert_eq!(logs_attrs, &expected_attrs);
 
         // check the serialized values are what is expected
-        let mut proto_buf = ProtoBuffer::new();
+        let mut proto_buf = ProtoBuffer::default();
         proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
         let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(
