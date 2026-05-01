@@ -34,7 +34,6 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Processor-local wakeup requirements declared by a processor implementation.
 ///
@@ -547,16 +546,9 @@ impl<PData> ProcessorWrapper<PData> {
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
 
-                // Start periodic telemetry collection
-                let telemetry_cancel_handle = effect_handler
-                    .start_periodic_telemetry(Duration::from_secs(1))
-                    .await?;
-
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
-                // Cancel periodic collection
-                _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
                 processor
                     .process(
@@ -581,16 +573,9 @@ impl<PData> ProcessorWrapper<PData> {
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics);
 
-                // Start periodic telemetry collection
-                let telemetry_cancel_handle = effect_handler
-                    .start_periodic_telemetry(Duration::from_secs(1))
-                    .await?;
-
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
                     processor.process(msg, &mut effect_handler).await?;
                 }
-                // Cancel periodic collection
-                _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
                 processor
                     .process(

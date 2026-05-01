@@ -47,7 +47,6 @@ use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::time::Duration;
 
 /// The URN for the OTAP Perf exporter
 pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";
@@ -142,11 +141,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
             message = "Starting Perf Exporter"
         );
 
-        // Start telemetry collection tick as a dedicated control message.
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
-            .await?;
-
         // Loop until a Shutdown event is received.
         loop {
             let msg = msg_chan.recv().await?;
@@ -160,7 +154,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    _ = timer_cancel_handle.cancel().await;
                     return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(mut pdata) => {

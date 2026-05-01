@@ -295,7 +295,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
     ) -> Self {
-        Self {
+        let mut result = Self {
             runtime_control_metrics: RuntimeControlMetricsState::new(
                 &pipeline_context,
                 metrics_reporter.clone(),
@@ -319,7 +319,19 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             node_metric_handles,
             telemetry: telemetry_policy,
             pending_sends: VecDeque::new(),
+        };
+
+        // Register telemetry timers for all nodes centrally, using the
+        // configured reporting interval. This replaces per-node
+        // start_periodic_telemetry calls and ensures a single, consistent
+        // collection cadence across all nodes.
+        for node_id in result.control_senders.node_ids() {
+            result
+                .telemetry_timers
+                .start(node_id, result.control_plane_metrics_flush_interval);
         }
+
+        result
     }
 
     /// Runs the runtime-control manager event loop.
@@ -1247,7 +1259,7 @@ mod tests {
     use tokio::task::LocalSet;
     use tokio::time::timeout;
 
-    const TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+    const TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_secs(3600);
 
     fn empty_node_metric_handles() -> Rc<RefCell<Vec<Option<NodeMetricHandles>>>> {
         Rc::new(RefCell::new(Vec::new()))
@@ -2043,8 +2055,8 @@ mod tests {
 
         let telemetry_count = manager.test_telemetry_count();
         assert_eq!(
-            telemetry_count, 0,
-            "Telemetry timer queue should be empty initially"
+            telemetry_count, 3,
+            "Telemetry timers should be pre-registered for all 3 nodes"
         );
 
         assert_eq!(

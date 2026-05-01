@@ -349,10 +349,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
             })?;
 
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         // start a grpc client and connect to the server
         let mut arrow_metrics_client = ArrowMetricsServiceClient::new(channel.clone());
         let mut arrow_logs_client = ArrowLogsServiceClient::new(channel.clone());
@@ -451,7 +447,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         await_stream_handles(logs_handles).await;
                         await_stream_handles(metrics_handles).await;
                         await_stream_handles(traces_handles).await;
-                        _ = timer_cancel_handle.cancel().await;
                         self.export_latency_window
                             .report_into(&mut self.async_metrics);
                         return Ok(TerminalState::new(

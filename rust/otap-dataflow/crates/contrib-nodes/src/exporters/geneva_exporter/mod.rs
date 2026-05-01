@@ -724,12 +724,6 @@ impl Exporter<OtapPdata> for GenevaExporter {
             message = "Geneva exporter starting"
         );
 
-        // Start periodic telemetry collection so CollectTelemetry messages
-        // are delivered to this exporter's message channel.
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         // Message loop
         loop {
             match msg_chan.recv().await? {
@@ -739,7 +733,6 @@ impl Exporter<OtapPdata> for GenevaExporter {
                         message = "Geneva exporter shutting down"
                     );
 
-                    _ = timer_cancel_handle.cancel().await;
                     return Ok(TerminalState::new(
                         deadline,
                         [self.pdata_metrics.snapshot(), self.metrics.snapshot()],
