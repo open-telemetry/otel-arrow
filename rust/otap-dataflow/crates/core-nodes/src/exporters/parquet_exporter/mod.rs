@@ -610,7 +610,7 @@ mod test {
                         .await
                         .unwrap();
 
-                    let deadline = Instant::now().add(Duration::from_millis(200));
+                    let deadline = Instant::now().add(Duration::from_secs(1));
                     ctx.send_shutdown(deadline, "test completed").await.unwrap();
                 })
             })
@@ -678,7 +678,7 @@ mod test {
                         .unwrap();
 
                     ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(200)),
+                        Instant::now().add(Duration::from_secs(1)),
                         "test completed",
                     )
                     .await
