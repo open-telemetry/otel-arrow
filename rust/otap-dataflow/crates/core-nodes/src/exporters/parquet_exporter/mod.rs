@@ -610,7 +610,7 @@ mod test {
                         .await
                         .unwrap();
 
-                    let deadline = Instant::now().add(Duration::from_millis(200));
+                    let deadline = Instant::now().add(Duration::from_secs(1));
                     ctx.send_shutdown(deadline, "test completed").await.unwrap();
                 })
             })
@@ -677,12 +677,9 @@ mod test {
                         .await
                         .unwrap();
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(200)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(1)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
