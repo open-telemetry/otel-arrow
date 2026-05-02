@@ -24,6 +24,7 @@ use otap_df_engine::{
     message::Message,
     process_duration::ComputeDuration,
 };
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 
 /// URN identifier for the processor
@@ -129,7 +130,7 @@ impl RecordsetKqlProcessor {
 
         // Extract context and payload, convert to OTLP bytes
         let (ctx, payload) = data.into_parts();
-        let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
+        let otlp_bytes: OtlpProtoBytes = payload.try_into_with_default()?;
 
         // Process based on signal type (timed).
         let result = effect_handler.timed(&self.compute_duration, || match otlp_bytes {
@@ -389,7 +390,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),

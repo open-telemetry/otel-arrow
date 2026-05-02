@@ -61,6 +61,9 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::OtapPayload;
+use otap_df_pdata::TryFromWithOptions;
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
@@ -508,7 +511,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                         // Metrics/Traces Arrow views not yet available - convert to OTLP
                         // TODO: Implement OtapMetricsView/OtapTracesView to avoid clone + conversion
                         SignalType::Metrics | SignalType::Traces => {
-                            match OtlpProtoBytes::try_from(arrow_records.clone()) {
+                            match OtlpProtoBytes::try_from_with_default(arrow_records.clone()) {
                                 Ok(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
                                     let data = RawMetricsData::new(bytes.as_ref());
                                     self.validate_metrics(&data, &allowed_values)
@@ -914,7 +917,9 @@ mod tests {
     fn create_arrow_logs_with_resource(attrs: Vec<KeyValue>) -> OtapArrowRecords {
         let logs_bytes = create_logs_request_with_resource(attrs);
         let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(logs_bytes);
-        otlp_bytes.try_into().expect("Failed to convert to Arrow")
+        otlp_bytes
+            .try_into_with_default()
+            .expect("Failed to convert to Arrow")
     }
 
     #[test]
