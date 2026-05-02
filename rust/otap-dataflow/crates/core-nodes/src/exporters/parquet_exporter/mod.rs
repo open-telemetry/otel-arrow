@@ -677,12 +677,9 @@ mod test {
                         .await
                         .unwrap();
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_secs(1)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(1)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
