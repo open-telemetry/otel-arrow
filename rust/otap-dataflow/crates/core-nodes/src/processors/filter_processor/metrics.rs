@@ -12,6 +12,9 @@ pub struct FilterPdataMetrics {
     /// Number of log signals consumed
     #[metric(unit = "{log}")]
     pub log_signals_consumed: Counter<u64>,
+    /// Number of metric signals consumed
+    #[metric(unit = "{metric}")]
+    pub metric_signals_consumed: Counter<u64>,
     /// Number of span signals consumed
     #[metric(unit = "{span}")]
     pub span_signals_consumed: Counter<u64>,
@@ -19,6 +22,9 @@ pub struct FilterPdataMetrics {
     /// Number of log signals filtered
     #[metric(unit = "{log}")]
     pub log_signals_filtered: Counter<u64>,
+    /// Number of metric signals filtered
+    #[metric(unit = "{metric}")]
+    pub metric_signals_filtered: Counter<u64>,
     /// Number of span signals filtered
     #[metric(unit = "{span}")]
     pub span_signals_filtered: Counter<u64>,

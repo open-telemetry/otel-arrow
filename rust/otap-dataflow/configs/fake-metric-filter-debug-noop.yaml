@@ -1,0 +1,50 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              traffic_config:
+                max_signal_count: 1000
+                max_batch_size: 100
+                signals_per_second: 100
+                metric_weight: 100
+                trace_weight: 0
+                log_weight: 0
+          filter:
+            type: processor:filter
+            config:
+              metrics:
+                include:
+                  match_type: strict
+                  metric_names:
+                    - http.server.request.count
+                    - process.cpu.utilization
+          debug:
+            type: processor:debug
+            config:
+              verbosity: detailed
+              mode: signal
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: filter
+          - from: filter
+            to: debug
+          - from: debug
+            to: noop
