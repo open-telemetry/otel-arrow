@@ -595,6 +595,7 @@ mod tests {
         test_node,
     };
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
@@ -637,7 +638,7 @@ mod tests {
     fn pdata_to_otlp_message(value: OtapPdata) -> OtlpProtoMessage {
         let otlp_bytes: OtlpProtoBytes = value
             .payload()
-            .try_into()
+            .try_into_with_default()
             .expect("can convert signal to otlp bytes");
         match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {

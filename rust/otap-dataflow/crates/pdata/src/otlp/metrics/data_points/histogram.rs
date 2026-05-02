@@ -8,6 +8,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
+use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
 use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
 use crate::proto::consts::field_num::metrics::{
@@ -17,7 +18,6 @@ use crate::proto::consts::field_num::metrics::{
     HISTOGRAM_DP_TIME_UNIX_NANO,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
     Array, ArrayRef, Float64Array, ListArray, PrimitiveArray, RecordBatch,
@@ -153,40 +153,38 @@ pub(crate) fn proto_encode_histogram_data_point(
         if let Some(id) = hist_dp_arrays.id.value_at(index) {
             let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    HISTOGRAM_DP_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(HISTOGRAM_DP_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }
 
     if let Some(col) = hist_dp_arrays.start_time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(HISTOGRAM_DP_START_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(HISTOGRAM_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = hist_dp_arrays.time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(HISTOGRAM_DP_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(HISTOGRAM_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = hist_dp_arrays.histogram_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(HISTOGRAM_DP_COUNT, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(HISTOGRAM_DP_COUNT, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = hist_dp_arrays.histogram_sum {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(HISTOGRAM_DP_SUM, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(HISTOGRAM_DP_SUM, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
@@ -201,16 +199,16 @@ pub(crate) fn proto_encode_histogram_data_point(
             // https://protobuf.dev/programming-guides/encoding/#repeated
 
             // append tag & len
-            result_buf.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+            result_buf.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN)?;
             let num_values = values.len() - values.null_count();
-            result_buf.encode_varint(8 * num_values as u64); // 8 bytes per value
+            result_buf.encode_varint(8 * num_values as u64)?; // 8 bytes per value
 
             // write values
             values
                 .iter()
                 .flatten()
                 .map(u64::to_le_bytes)
-                .for_each(|bytes| result_buf.extend_from_slice(&bytes));
+                .try_for_each(|bytes| result_buf.extend_from_slice(&bytes))?;
         }
     }
 
@@ -225,16 +223,16 @@ pub(crate) fn proto_encode_histogram_data_point(
             // https://protobuf.dev/programming-guides/encoding/#repeated
 
             // append tag & len
-            result_buf.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+            result_buf.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN)?;
             let num_values = values.len() - values.null_count();
-            result_buf.encode_varint(8 * num_values as u64); // 8 bytes per value
+            result_buf.encode_varint(8 * num_values as u64)?; // 8 bytes per value
 
             // write values
             values
                 .iter()
                 .flatten()
                 .map(f64::to_le_bytes)
-                .for_each(|bytes| result_buf.extend_from_slice(&bytes));
+                .try_for_each(|bytes| result_buf.extend_from_slice(&bytes))?;
         }
     }
 
@@ -243,39 +241,37 @@ pub(crate) fn proto_encode_histogram_data_point(
             let exemplar_index_iter =
                 ChildIndexIter::new(id, &exemplar_arrays.parent_id, exemplar_cursor);
             for exemplar_index in exemplar_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    HISTOGRAM_DP_EXEMPLARS,
+                result_buf.encode_len_delimited(HISTOGRAM_DP_EXEMPLARS, |result_buf| {
                     proto_encode_exemplar(
                         exemplar_index,
                         exemplar_arrays,
                         exemplar_attr_arrays,
                         exemplar_attrs_cursor,
-                        result_buf
-                    )?,
-                    result_buf
-                );
+                        result_buf,
+                    )
+                })?;
             }
         }
     }
 
     if let Some(col) = hist_dp_arrays.flags {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(HISTOGRAM_DP_FLAGS, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf.encode_field_tag(HISTOGRAM_DP_FLAGS, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
     }
 
     if let Some(col) = hist_dp_arrays.histogram_min {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(HISTOGRAM_DP_MIN, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(HISTOGRAM_DP_MIN, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = hist_dp_arrays.histogram_max {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(HISTOGRAM_DP_MAX, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(HISTOGRAM_DP_MAX, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 

@@ -8,13 +8,13 @@ use num_enum::TryFromPrimitive;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
 use crate::error::{Error, Result};
 use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;
+use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
 use crate::proto::consts::field_num::common::{
     ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE,
     ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 
 /// Common methods for Key-Value list and Array values.
@@ -85,7 +85,7 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     if let Some(key) = attr_arrays.attr_key.str_at(index) {
-        result_buf.encode_string(KEY_VALUE_KEY, key);
+        result_buf.encode_string(KEY_VALUE_KEY, key)?;
     }
 
     if let Some(value_type) = attr_arrays.anyval_arrays.attr_type.value_at(index) {
@@ -93,11 +93,9 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
             // TODO try to compute the length of the value here. This would probably be
             // straight forward for most types for all cases except map/slice, and even then
             // we could maybe guess order of magnitude by looking at the CBOR representation
-            proto_encode_len_delimited_unknown_size!(
-                KEY_VALUE_VALUE,
-                encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(KEY_VALUE_VALUE, |result_buf| {
+                encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf)
+            })?;
         }
     }
 
@@ -117,15 +115,15 @@ pub(crate) fn encode_any_value(
                 .as_ref()
                 .and_then(|col| col.str_at(index))
                 .unwrap_or_default();
-            result_buf.encode_string(ANY_VALUE_STRING_VALUE, val);
+            result_buf.encode_string(ANY_VALUE_STRING_VALUE, val)?;
         }
         AttributeValueType::Bool => {
             // TODO handle case when bool column is missing we correct the default value handling
             // https://github.com/open-telemetry/otel-arrow/issues/1449
             if let Some(attr_bool) = &attr_arrays.attr_bool {
                 if let Some(val) = attr_bool.value_at(index) {
-                    result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
-                    result_buf.encode_varint(val as u64)
+                    result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
+                    result_buf.encode_varint(val as u64)?;
                 }
             }
         }
@@ -135,8 +133,8 @@ pub(crate) fn encode_any_value(
                 .as_ref()
                 .and_then(|col| col.value_at(index))
                 .unwrap_or_default();
-            result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
         AttributeValueType::Double => {
             let val = attr_arrays
@@ -144,8 +142,8 @@ pub(crate) fn encode_any_value(
                 .as_ref()
                 .and_then(|col| col.value_at(index))
                 .unwrap_or_default();
-            result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
         AttributeValueType::Bytes => {
             let val = attr_arrays
@@ -153,7 +151,7 @@ pub(crate) fn encode_any_value(
                 .as_ref()
                 .and_then(|col| col.slice_at(index))
                 .unwrap_or_default();
-            result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, val);
+            result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, val)?;
         }
         AttributeValueType::Map | AttributeValueType::Slice => {
             if let Some(ser_bytes) = &attr_arrays.attr_ser {
@@ -185,7 +183,7 @@ mod test {
     use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue};
 
     #[test]
-    fn test_default_anyvalue_encoded_when_column_missing() {
+    fn test_default_anyvalue_encoded_when_column_missing() -> Result<()> {
         // append a bunch of "default" values
         let mut rb_builder = AnyValuesRecordsBuilder::new();
         rb_builder.append_str(b"");
@@ -226,11 +224,12 @@ mod test {
         for i in 0..rb.num_rows() {
             if let Some(value_type) = any_val_arrays.attr_type.value_at(i) {
                 if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-                    proto_encode_len_delimited_unknown_size!(
-                        1, // the values field in ArrayValue message
-                        encode_any_value(&any_val_arrays, i, value_type, &mut protobuf).unwrap(),
-                        &mut protobuf
-                    );
+                    protobuf
+                        .encode_len_delimited(
+                            1, // the values field in ArrayValue message
+                            |protobuf| encode_any_value(&any_val_arrays, i, value_type, protobuf),
+                        )
+                        .unwrap();
                 }
             }
         }
@@ -244,5 +243,7 @@ mod test {
         ];
 
         assert_eq!(results, expected);
+
+        Ok(())
     }
 }

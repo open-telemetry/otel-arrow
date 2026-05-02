@@ -730,6 +730,7 @@ mod test {
     use otap_df_engine::testing::node::test_node;
     use otap_df_pdata::OtapArrowRecords;
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -1217,7 +1218,7 @@ mod test {
                         match pdata.signal_type() {
                             SignalType::Logs => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -1226,7 +1227,7 @@ mod test {
                             }
                             SignalType::Metrics => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -1235,7 +1236,7 @@ mod test {
                             }
                             SignalType::Traces => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -1878,7 +1879,7 @@ mod test {
                         match pdata.signal_type() {
                             SignalType::Logs => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -1887,7 +1888,7 @@ mod test {
                             }
                             SignalType::Metrics => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -1896,7 +1897,7 @@ mod test {
                             }
                             SignalType::Traces => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -1998,7 +1999,8 @@ mod test {
                     // ensure we got back all the signals we expected, from the correct servers.
 
                     let mut pdata = logs_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = LogsData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -2006,7 +2008,8 @@ mod test {
                     );
 
                     let mut pdata = metrics_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = MetricsData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -2014,7 +2017,8 @@ mod test {
                     );
 
                     let mut pdata = traces_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = TracesData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -2088,8 +2092,10 @@ mod test {
                     server_cancellation_token.cancel();
 
                     // assert the pdata sent was the pdata received
-                    let pdata: OtlpProtoBytes =
-                        pdatas_received[0].take_payload().try_into().unwrap();
+                    let pdata: OtlpProtoBytes = pdatas_received[0]
+                        .take_payload()
+                        .try_into_with_default()
+                        .unwrap();
                     let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],
