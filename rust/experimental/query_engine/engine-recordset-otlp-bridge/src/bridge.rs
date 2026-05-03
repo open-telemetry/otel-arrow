@@ -113,13 +113,13 @@ impl BridgeResponse {
     }
 }
 
-pub fn parse_kql_query_into_pipeline(
+pub fn parse_kql_logs_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<BridgePipeline, Vec<ParserError>> {
     let mut options = options.unwrap_or_default();
 
-    let parser_options = build_parser_options(&mut options).map_err(|e| vec![e])?;
+    let parser_options = build_parser_options_for_logs_query(&mut options).map_err(|e| vec![e])?;
     let attributes_schema = match parser_options
         .get_source_map_schema()
         .and_then(|s| s.get_schema_for_key("Attributes"))
@@ -135,11 +135,11 @@ pub fn parse_kql_query_into_pipeline(
     })
 }
 
-pub fn register_pipeline_for_kql_query(
+pub fn register_pipeline_for_kql_logs_query(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<usize, Vec<ParserError>> {
-    let pipeline = parse_kql_query_into_pipeline(query, options)?;
+    let pipeline = parse_kql_logs_query_into_pipeline(query, options)?;
 
     let mut expressions = EXPRESSIONS.write().unwrap();
     expressions.push(pipeline);
@@ -424,7 +424,9 @@ fn push_value(
     }
 }
 
-fn build_parser_options(options: &mut BridgeOptions) -> Result<ParserOptions, ParserError> {
+fn build_parser_options_for_logs_query(
+    options: &mut BridgeOptions,
+) -> Result<ParserOptions, ParserError> {
     let mut parser_options = ParserOptions::new().with_attached_data_names(&[
         "resource",
         "instrumentation_scope",
@@ -675,7 +677,7 @@ mod tests {
 
         {
             // Include everything
-            let pipeline_id = register_pipeline_for_kql_query("s | where true", None).unwrap();
+            let pipeline_id = register_pipeline_for_kql_logs_query("s | where true", None).unwrap();
 
             let (included, _) =
                 process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
@@ -694,7 +696,8 @@ mod tests {
 
         {
             // Drop everything
-            let pipeline_id = register_pipeline_for_kql_query("s | where false", None).unwrap();
+            let pipeline_id =
+                register_pipeline_for_kql_logs_query("s | where false", None).unwrap();
 
             let (_, dropped) =
                 process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
@@ -713,7 +716,7 @@ mod tests {
 
         {
             // Drop everything but turn off include dropped records
-            let pipeline_id = register_pipeline_for_kql_query(
+            let pipeline_id = register_pipeline_for_kql_logs_query(
                 "s | where false",
                 Some(BridgeOptions::new().set_include_dropped_records(false)),
             )
@@ -738,7 +741,7 @@ mod tests {
             ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
         );
 
-        let pipeline = parse_kql_query_into_pipeline("source | where false", None).unwrap();
+        let pipeline = parse_kql_logs_query_into_pipeline("source | where false", None).unwrap();
 
         let response = process_export_logs_service_request_using_pipeline(
             &pipeline,
@@ -762,7 +765,7 @@ mod tests {
             ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
         );
 
-        let pipeline = parse_kql_query_into_pipeline("source | where true", None).unwrap();
+        let pipeline = parse_kql_logs_query_into_pipeline("source | where true", None).unwrap();
 
         let response = process_export_logs_service_request_using_pipeline(
             &pipeline,
@@ -787,7 +790,7 @@ mod tests {
         );
 
         let pipeline =
-            parse_kql_query_into_pipeline("source | summarize Count = count()", None).unwrap();
+            parse_kql_logs_query_into_pipeline("source | summarize Count = count()", None).unwrap();
 
         let response = process_export_logs_service_request_using_pipeline(
             &pipeline,
@@ -815,7 +818,7 @@ mod tests {
             ),
         );
 
-        let pipeline = parse_kql_query_into_pipeline(
+        let pipeline = parse_kql_logs_query_into_pipeline(
             "source | summarize Count = count() by severityText",
             None,
         )
@@ -896,7 +899,7 @@ mod tests {
         );
 
         let pipeline =
-            parse_kql_query_into_pipeline("source | summarize Count = count() by severityText | extend body = 'hello world', attr1 = 'goodbye world'", None).unwrap();
+            parse_kql_logs_query_into_pipeline("source | summarize Count = count() by severityText | extend body = 'hello world', attr1 = 'goodbye world'", None).unwrap();
 
         let mut response = process_export_logs_service_request_using_pipeline(
             &pipeline,
@@ -997,7 +1000,7 @@ mod tests {
         let run_test_success = |query: &str| {
             println!("Testing: {query}");
 
-            parse_kql_query_into_pipeline(
+            parse_kql_logs_query_into_pipeline(
                 query,
                 Some(
                     BridgeOptions::new().with_attributes_schema(
@@ -1013,7 +1016,7 @@ mod tests {
         let run_test_failure = |query: &str| {
             println!("Testing: {query}");
 
-            parse_kql_query_into_pipeline(
+            parse_kql_logs_query_into_pipeline(
                 query,
                 Some(
                     BridgeOptions::new().with_attributes_schema(
@@ -1070,7 +1073,7 @@ mod tests {
             )),
         );
 
-        let pipeline = parse_kql_query_into_pipeline(
+        let pipeline = parse_kql_logs_query_into_pipeline(
             "source | where gettype(TimeGenerated) == 'datetime'",
             Some(
                 BridgeOptions::new().with_attributes_schema(
@@ -1100,7 +1103,7 @@ mod tests {
     #[test]
     fn test_parse_kql_query_into_pipeline_with_attributes_schema_and_allow_undefined_keys() {
         let run_test_success = |query: &str| {
-            parse_kql_query_into_pipeline(
+            parse_kql_logs_query_into_pipeline(
                 query,
                 Some(
                     BridgeOptions::new().with_attributes_schema(
@@ -1123,7 +1126,7 @@ mod tests {
 
     #[test]
     fn test_parse_kql_query_into_pipeline_with_attributes_schema_error() {
-        let e = parse_kql_query_into_pipeline(
+        let e = parse_kql_logs_query_into_pipeline(
             "",
             Some(BridgeOptions::new().with_attributes_schema(
                 ParserMapSchema::new().with_key_definition("body", ParserMapKeySchema::Map(None)),
@@ -1138,7 +1141,7 @@ mod tests {
     #[test]
     fn test_parse_kql_query_with_field_aliases() {
         let run_test = |query: &str| {
-            parse_kql_query_into_pipeline(query, None).unwrap();
+            parse_kql_logs_query_into_pipeline(query, None).unwrap();
         };
 
         // Test canonical names
@@ -1167,7 +1170,7 @@ mod tests {
     fn test_attributes_schema_removes_top_level_aliases() {
         // Test that when user provides an attributes schema with aliases
         // of top-level fields, they get removed properly
-        let result = parse_kql_query_into_pipeline(
+        let result = parse_kql_logs_query_into_pipeline(
             "source | extend SeverityText = 'Debug'",
             Some(
                 BridgeOptions::new().with_attributes_schema(
@@ -1183,7 +1186,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Test with canonical name (snake_case) too
-        let result = parse_kql_query_into_pipeline(
+        let result = parse_kql_logs_query_into_pipeline(
             "source | extend severity_text = 'Debug'",
             Some(
                 BridgeOptions::new().with_attributes_schema(
@@ -1212,7 +1215,7 @@ mod tests {
             ))
         };
 
-        let pipeline_canonical = parse_kql_query_into_pipeline(
+        let pipeline_canonical = parse_kql_logs_query_into_pipeline(
             "source | where severity_text == 'Info' and severity_number == 9",
             None,
         )
@@ -1224,7 +1227,7 @@ mod tests {
         )
         .unwrap();
 
-        let pipeline_with_aliases = parse_kql_query_into_pipeline(
+        let pipeline_with_aliases = parse_kql_logs_query_into_pipeline(
             "source | where SeverityText == 'Info' and SeverityNumber == 9",
             None,
         )

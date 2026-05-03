@@ -250,6 +250,19 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     deadline,
                     reason: _,
                 }) => {
+                    // If the deadline has already passed, return immediately.
+                    // `Delay::new(Duration::ZERO)` is not guaranteed to resolve
+                    // on the first poll on all platforms (Windows timer
+                    // granularity is ~15 ms), so an explicit check avoids a
+                    // race between the timeout and the flush future.
+                    if deadline.checked_duration_since(Instant::now()).is_none() {
+                        let _ = telemetry_cancel_handle.cancel().await;
+                        return Err(Error::IoError {
+                            node: exporter_id.clone(),
+                            error: std::io::Error::from(ErrorKind::TimedOut),
+                        });
+                    }
+
                     let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
@@ -422,7 +435,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 /// This calculates the period at which we instruct the [`WriterManager`] to flush any writers
 /// older than the threshold.
 fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Duration {
-    // try to choose a period that is relatively close the the configured threshold.
+    // try to choose a period that is relatively close the configured threshold.
     // this avoids the check happening long after the file writer is beyond the threshold.
     let period = configured_threshold / 60;
 
@@ -503,10 +516,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "windows",
-        ignore = "Skipping on Windows due to timing flakiness"
-    )]
     fn test_adaptive_schema_dict_upgrade_write() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -895,19 +904,15 @@ mod test {
             });
     }
 
-    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
-    #[cfg_attr(
-        any(target_os = "windows", target_os = "macos"),
-        ignore = "Skipping on Windows and macOS due to flakiness"
-    )]
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let base_dir_url = base_dir.replace('\\', "/");
         let exporter = ParquetExporter::new(config::Config {
             storage: object_store::StorageType::File {
-                base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+                base_uri: format!("testdelayed:///{base_dir_url}?delay=500ms"),
             },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
@@ -1030,10 +1035,10 @@ mod test {
                 );
             }
 
-            // shutdown faster than it could possibly flush
+            // Make timeout deterministic: deadline is already due when shutdown is handled.
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Instant::now().add(Duration::from_secs(1)),
+                    deadline: Instant::now(),
                     reason: "shutting down".into(),
                 })
                 .await;

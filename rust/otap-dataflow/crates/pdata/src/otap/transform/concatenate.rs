@@ -161,7 +161,7 @@ fn concatenate_with_def<const N: usize>(
     Ok(result)
 }
 
-/// Convert the columns from one schema to another. The arguments deal in in
+/// Convert the columns from one schema to another. The arguments deal in
 /// fields and columns rather than schemas and record batches so that this
 /// code can work with either struct arrays or record batches.
 fn convert(

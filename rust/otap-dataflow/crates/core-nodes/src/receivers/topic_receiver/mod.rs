@@ -255,6 +255,13 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         );
         let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
+        // These represent two different handoff stages:
+        // - `pending_forward` is one permitted topic delivery that is still trying
+        //   to enter the downstream pipeline and therefore must not be
+        //   committed yet.
+        // - `pending_tracked_message_ids` are deliveries that were already
+        //   forwarded and committed locally, but whose downstream Ack/Nack has
+        //   not been bridged back to the topic runtime yet.
         let mut pending_tracked_message_ids = HashSet::new();
         let mut pending_forward: Option<PendingForward> = None;
 
@@ -659,6 +666,12 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 let send_started_at = Instant::now();
                                 match effect_handler.try_send_message_with_source_node(pdata) {
                                     Ok(()) => {
+                                        // Commit the topic delivery permit only after the
+                                        // downstream pipeline accepts the
+                                        // message. That keeps drain precise:
+                                        // an unadmitted message can still be
+                                        // aborted locally instead of turning
+                                        // into tracked in-flight work.
                                         delivery.commit();
                                         if let Some(message_id) = tracked_message_id {
                                             _ = pending_tracked_message_ids.insert(message_id);

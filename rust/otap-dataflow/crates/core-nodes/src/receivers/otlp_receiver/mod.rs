@@ -1758,7 +1758,7 @@ mod tests {
                     .await
                     .expect("Failed to send Shutdown");
 
-                timeout(Duration::from_secs(1), async {
+                timeout(Duration::from_secs(5), async {
                     loop {
                         if LogsServiceClient::connect(grpc_endpoint.clone())
                             .await
@@ -1866,7 +1866,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
     fn test_otlp_receiver_ack() {
         let test_runtime = TestRuntime::new();

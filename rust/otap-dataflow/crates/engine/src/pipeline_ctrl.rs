@@ -1332,6 +1332,7 @@ mod tests {
                 pipeline_group_id,
                 pipeline_id,
                 core_id,
+                deployment_generation: 0,
             },
             pipeline_context,
             pipeline_rx,
@@ -1813,6 +1814,7 @@ mod tests {
                     pipeline_group_id: pipeline_group_id.clone(),
                     pipeline_id: pipeline_id.clone(),
                     core_id,
+                    deployment_generation: 0,
                 };
                 let controller_context = ControllerContext::new(metrics_system.registry());
                 let pipeline_context_params = PipelineContextParams {
@@ -3175,6 +3177,7 @@ mod tests {
                 pipeline_group_id,
                 pipeline_id,
                 core_id: 0,
+                deployment_generation: 0,
             },
             pipeline_context.clone(),
             pipeline_rx,
@@ -3416,6 +3419,7 @@ mod tests {
                 pipeline_group_id,
                 pipeline_id,
                 core_id: 0,
+                deployment_generation: 0,
             },
             pipeline_context,
             pipeline_rx,
@@ -3493,6 +3497,7 @@ mod tests {
                 pipeline_group_id,
                 pipeline_id,
                 core_id: 0,
+                deployment_generation: 0,
             },
             pipeline_context,
             pipeline_rx,

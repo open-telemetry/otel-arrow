@@ -153,7 +153,7 @@ impl Serialize for PipelineKey {
 }
 
 /// Unique key for identifying a pipeline running on a specific core.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
 pub struct DeployedPipelineKey {
     /// The unique ID of the pipeline group the pipeline belongs to.
     pub pipeline_group_id: PipelineGroupId,
@@ -163,4 +163,11 @@ pub struct DeployedPipelineKey {
 
     /// The CPU core ID the pipeline is pinned to.
     pub core_id: CoreId,
+
+    /// Monotonic deployment generation for this logical pipeline.
+    ///
+    /// Generation `0` is the initial startup deployment. Higher generations are
+    /// created by live reconfiguration rollouts.
+    #[serde(default)]
+    pub deployment_generation: u64,
 }

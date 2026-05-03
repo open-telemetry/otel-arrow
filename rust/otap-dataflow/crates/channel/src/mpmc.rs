@@ -280,7 +280,6 @@ impl<T> Sender<T> {
     }
 
     /// Attempts to send a value to the channel (async method).
-    #[allow(dead_code)]
     pub async fn send_async(&self, value: T) -> Result<(), SendError<T>> {
         // Fast path: avoid creating/polling a future when there is capacity.
         match self.send(value) {
@@ -298,7 +297,6 @@ impl<T> Sender<T> {
     }
 
     /// Closes the channel, preventing further sends.
-    #[allow(dead_code)]
     pub fn close(&self) {
         let mut state = self.channel.state.borrow_mut();
         state.is_closed = true;
@@ -339,7 +337,6 @@ impl<T> Receiver<T> {
     }
 
     /// Attempts to receive a value from the channel (async method).
-    #[allow(dead_code)]
     pub async fn recv(&self) -> Result<T, RecvError> {
         RecvFuture { receiver: self }.await
     }
@@ -349,6 +346,14 @@ impl<T> Receiver<T> {
     pub fn is_empty(&self) -> bool {
         let state = self.channel.state.borrow();
         state.buffer.is_empty()
+    }
+
+    /// Checks whether the channel has been closed and will accept no further
+    /// sends.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        let state = self.channel.state.borrow();
+        state.is_closed
     }
 }
 

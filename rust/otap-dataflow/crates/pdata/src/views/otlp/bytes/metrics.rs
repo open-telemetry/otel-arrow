@@ -855,7 +855,7 @@ pub struct RawSummaryDataPoint<'a> {
     byte_parser: ProtoBytesParser<'a, SummaryDataPointFieldRanges>,
 }
 
-/// Known field ranges for for fields in `SummaryDataPoint` message
+/// Known field ranges for fields in `SummaryDataPoint` message
 #[derive(Default)]
 pub struct SummaryDataPointFieldRanges {
     start_time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
