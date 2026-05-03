@@ -21,8 +21,10 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_telemetry::metrics::MetricSetSnapshot;
+use otap_df_telemetry::instrument::{Counter, Mmsc};
+use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::{otel_info, otel_warn};
+use otap_df_telemetry_macros::metric_set;
 use prost::Message as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -31,7 +33,7 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant as StdInstant};
 use tokio::time::{Instant, sleep_until};
 
 mod procfs;
@@ -40,6 +42,36 @@ use procfs::{HostSnapshot, ProcfsConfig, ProcfsFamilies, ProcfsSource};
 
 /// The URN for the host metrics receiver.
 pub const HOST_METRICS_RECEIVER_URN: &str = "urn:otel:receiver:host_metrics";
+
+/// Telemetry metrics for the host metrics receiver.
+#[metric_set(name = "host_metrics.receiver.metrics")]
+#[derive(Debug, Default, Clone)]
+pub struct HostMetricsReceiverMetrics {
+    /// Number of scrape ticks started.
+    #[metric(unit = "{scrape}")]
+    pub scrapes_started: Counter<u64>,
+    /// Number of scrape ticks that built and sent a metrics batch.
+    #[metric(unit = "{scrape}")]
+    pub scrapes_completed: Counter<u64>,
+    /// Number of fatal scrape failures.
+    #[metric(unit = "{scrape}")]
+    pub scrapes_failed: Counter<u64>,
+    /// Number of due metric families processed.
+    #[metric(unit = "{family}")]
+    pub families_scraped: Counter<u64>,
+    /// Wall-clock scrape duration.
+    #[metric(unit = "ns")]
+    pub scrape_duration_ns: Mmsc,
+    /// Delay between scheduled and actual scrape start.
+    #[metric(unit = "ns")]
+    pub scrape_lag_ns: Mmsc,
+    /// Number of batches sent downstream.
+    #[metric(unit = "{batch}")]
+    pub batches_sent: Counter<u64>,
+    /// Number of downstream send failures.
+    #[metric(unit = "{error}")]
+    pub send_failures: Counter<u64>,
+}
 
 fn default_collection_interval() -> Duration {
     Duration::from_secs(10)
@@ -421,6 +453,7 @@ fn glob_matches(pattern: &[u8], value: &[u8]) -> bool {
 pub struct HostMetricsReceiver {
     config: RuntimeConfig,
     _lease: HostMetricsLease,
+    metrics: Option<MetricSet<HostMetricsReceiverMetrics>>,
 }
 
 #[allow(unsafe_code)]
@@ -437,8 +470,10 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 error: "host-wide collection must run in a one-core source pipeline; use receiver:host_metrics -> exporter:topic and fan out downstream".to_owned(),
             });
         }
+        let mut receiver = HostMetricsReceiver::from_config(&node_config.config)?;
+        receiver.metrics = Some(pipeline.register_metrics::<HostMetricsReceiverMetrics>());
         Ok(ReceiverWrapper::local(
-            HostMetricsReceiver::from_config(&node_config.config)?,
+            receiver,
             node,
             node_config,
             receiver_config,
@@ -464,6 +499,7 @@ impl HostMetricsReceiver {
         Ok(Self {
             config,
             _lease: lease,
+            metrics: None,
         })
     }
 
@@ -560,6 +596,35 @@ fn validate_family_interval(
         });
     }
     Ok(())
+}
+
+fn duration_nanos(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1e9
+}
+
+fn elapsed_nanos(start: StdInstant) -> f64 {
+    duration_nanos(start.elapsed())
+}
+
+fn terminal_state(
+    deadline: StdInstant,
+    metrics: &Option<MetricSet<HostMetricsReceiverMetrics>>,
+) -> TerminalState {
+    if let Some(metrics) = metrics {
+        TerminalState::new(deadline, [metrics.snapshot()])
+    } else {
+        TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, [])
+    }
+}
+
+fn due_family_count(due: ProcfsFamilies) -> u64 {
+    u64::from(due.cpu)
+        + u64::from(due.memory)
+        + u64::from(due.paging)
+        + u64::from(due.system)
+        + u64::from(due.disk)
+        + u64::from(due.network)
+        + u64::from(due.processes)
 }
 
 impl TryFrom<Config> for RuntimeConfig {
@@ -833,21 +898,26 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        let HostMetricsReceiver {
+            config,
+            _lease,
+            mut metrics,
+        } = *self;
         let mut source = ProcfsSource::new(
-            Some(self.config.root_path.as_path()),
+            Some(config.root_path.as_path()),
             ProcfsConfig {
-                cpu: self.config.families.cpu.enabled,
-                memory: self.config.families.memory.enabled,
-                paging: self.config.families.paging.enabled,
-                system: self.config.families.system.enabled,
-                disk: self.config.families.disk.enabled,
-                network: self.config.families.network.enabled,
-                processes: self.config.families.processes.enabled,
-                disk_include: self.config.families.disk.include.clone(),
-                disk_exclude: self.config.families.disk.exclude.clone(),
-                network_include: self.config.families.network.include.clone(),
-                network_exclude: self.config.families.network.exclude.clone(),
-                validation: self.config.validation,
+                cpu: config.families.cpu.enabled,
+                memory: config.families.memory.enabled,
+                paging: config.families.paging.enabled,
+                system: config.families.system.enabled,
+                disk: config.families.disk.enabled,
+                network: config.families.network.enabled,
+                processes: config.families.processes.enabled,
+                disk_include: config.families.disk.include.clone(),
+                disk_exclude: config.families.disk.exclude.clone(),
+                network_include: config.families.network.include.clone(),
+                network_exclude: config.families.network.exclude.clone(),
+                validation: config.validation,
             },
         )
         .map_err(|err| Error::ReceiverError {
@@ -856,7 +926,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
             error: format!("failed to validate host metrics procfs sources: {err}"),
             source_detail: String::new(),
         })?;
-        let mut scheduler = FamilyScheduler::new(&self.config, Instant::now());
+        let mut scheduler = FamilyScheduler::new(&config, Instant::now());
 
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
@@ -872,11 +942,11 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.drain_ingress");
                             effect_handler.notify_receiver_drained().await?;
-                            return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                            return Ok(terminal_state(deadline, &metrics));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.shutdown");
-                            return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                            return Ok(terminal_state(deadline, &metrics));
                         }
                         Err(e) => return Err(Error::ChannelRecvError(e)),
                         _ => {}
@@ -884,32 +954,67 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 }
 
                 _ = sleep_until(scheduler.next_due()) => {
-                    let due = scheduler.mark_due(Instant::now());
+                    let scheduled_due = scheduler.next_due();
+                    let now = Instant::now();
+                    let due = scheduler.mark_due(now);
+                    let scrape_start = StdInstant::now();
+                    if let Some(metrics) = metrics.as_mut() {
+                        metrics.scrapes_started.add(1);
+                        metrics.families_scraped.add(due_family_count(due));
+                        metrics.scrape_lag_ns.record(duration_nanos(now.saturating_duration_since(scheduled_due)));
+                    }
                     match source.scrape_due(due) {
                         Ok(snapshot) => {
-                            let pdata = encode_snapshot(snapshot).map_err(|err| Error::ReceiverError {
-                                receiver: effect_handler.receiver_id(),
-                                kind: ReceiverErrorKind::Other,
-                                error: format!("failed to encode host metrics: {err}"),
-                                source_detail: String::new(),
-                            })?;
-                            if let Err(err) = effect_handler.try_send_message_with_source_node(pdata) {
-                                match err {
-                                    TypedError::ChannelSendError(_) => {
-                                        otel_warn!("host metrics dropped due to downstream backpressure");
+                            let pdata = match encode_snapshot(snapshot) {
+                                Ok(pdata) => pdata,
+                                Err(err) => {
+                                    if let Some(metrics) = metrics.as_mut() {
+                                        metrics.scrapes_failed.add(1);
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                                     }
-                                    other => {
-                                        return Err(Error::ReceiverError {
-                                            receiver: effect_handler.receiver_id(),
-                                            kind: ReceiverErrorKind::Other,
-                                            error: format!("failed to send host metrics: {other}"),
-                                            source_detail: String::new(),
-                                        });
+                                    return Err(Error::ReceiverError {
+                                        receiver: effect_handler.receiver_id(),
+                                        kind: ReceiverErrorKind::Other,
+                                        error: format!("failed to encode host metrics: {err}"),
+                                        source_detail: String::new(),
+                                    });
+                                }
+                            };
+                            match effect_handler.try_send_message_with_source_node(pdata) {
+                                Ok(()) => {
+                                    if let Some(metrics) = metrics.as_mut() {
+                                        metrics.batches_sent.add(1);
+                                        metrics.scrapes_completed.add(1);
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                                     }
+                                }
+                                Err(TypedError::ChannelSendError(_)) => {
+                                    if let Some(metrics) = metrics.as_mut() {
+                                        metrics.send_failures.add(1);
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
+                                    }
+                                    otel_warn!("host metrics dropped due to downstream backpressure");
+                                }
+                                Err(other) => {
+                                    if let Some(metrics) = metrics.as_mut() {
+                                        metrics.send_failures.add(1);
+                                        metrics.scrapes_failed.add(1);
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
+                                    }
+                                    return Err(Error::ReceiverError {
+                                        receiver: effect_handler.receiver_id(),
+                                        kind: ReceiverErrorKind::Other,
+                                        error: format!("failed to send host metrics: {other}"),
+                                        source_detail: String::new(),
+                                    });
                                 }
                             }
                         }
                         Err(err) => {
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.scrapes_failed.add(1);
+                                metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
+                            }
                             return Err(Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
                                 kind: ReceiverErrorKind::Other,
