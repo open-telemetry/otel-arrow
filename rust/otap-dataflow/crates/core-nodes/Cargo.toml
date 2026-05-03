@@ -38,6 +38,7 @@ futures.workspace = true
 futures-timer.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
+nix = { workspace = true, features = ["feature"] }
 object_store = {workspace = true, features = ["fs"]}
 parquet.workspace = true
 prost.workspace = true

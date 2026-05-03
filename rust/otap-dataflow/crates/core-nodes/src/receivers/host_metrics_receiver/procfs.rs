@@ -1634,9 +1634,12 @@ fn millis_to_seconds(ms: u64) -> f64 {
 }
 
 fn clock_ticks_per_second() -> f64 {
-    // Linux exposes CPU counters in USER_HZ. 100 is the common Linux value and
-    // keeps this receiver dependency-light until a platform helper is added.
-    100.0
+    nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
+        .ok()
+        .flatten()
+        .filter(|ticks| *ticks > 0)
+        .map(|ticks| ticks as f64)
+        .unwrap_or(100.0)
 }
 
 fn now_unix_nano() -> u64 {
@@ -1891,6 +1894,11 @@ mod tests {
         assert_eq!(cpu.user, 9.0);
         assert_eq!(cpu.nice, 4.6);
         assert_eq!(cpu.interrupt, 0.5);
+    }
+
+    #[test]
+    fn clock_ticks_per_second_uses_positive_system_value() {
+        assert!(clock_ticks_per_second() > 0.0);
     }
 
     #[test]
