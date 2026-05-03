@@ -250,6 +250,8 @@ pub struct MemoryFamilyConfig {
     pub limit: bool,
     /// Enable Linux shared memory metric.
     pub shared: bool,
+    /// Enable Linux hugepage metrics.
+    pub hugepages: bool,
 }
 
 impl Default for MemoryFamilyConfig {
@@ -259,6 +261,7 @@ impl Default for MemoryFamilyConfig {
             interval: None,
             limit: false,
             shared: false,
+            hugepages: false,
         }
     }
 }
@@ -478,6 +481,7 @@ struct RuntimeConfig {
     cpu_utilization: bool,
     memory_limit: bool,
     memory_shared: bool,
+    memory_hugepages: bool,
     families: RuntimeFamilies,
 }
 
@@ -893,6 +897,7 @@ impl TryFrom<Config> for RuntimeConfig {
             cpu_utilization: config.families.cpu.utilization,
             memory_limit: config.families.memory.limit,
             memory_shared: config.families.memory.shared,
+            memory_hugepages: config.families.memory.hugepages,
             families: RuntimeFamilies {
                 cpu: RuntimeFamily::new_cpu(&config.families.cpu, config.collection_interval),
                 memory: RuntimeFamily::new_memory(
@@ -1190,6 +1195,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 cpu_utilization: config.cpu_utilization,
                 memory_limit: config.memory_limit,
                 memory_shared: config.memory_shared,
+                memory_hugepages: config.memory_hugepages,
                 disk_limit: config.families.disk.limit,
                 filesystem_include_virtual: config.families.filesystem.include_virtual_filesystems,
                 filesystem_limit: config.families.filesystem.limit,
@@ -1474,7 +1480,8 @@ mod tests {
             "families": {
                 "memory": {
                     "limit": true,
-                    "shared": true
+                    "shared": true,
+                    "hugepages": true
                 }
             }
         }))
@@ -1482,6 +1489,7 @@ mod tests {
 
         assert!(config.families.memory.limit);
         assert!(config.families.memory.shared);
+        assert!(config.families.memory.hugepages);
         validate_config(&config).expect("valid config");
     }
 

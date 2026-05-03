@@ -60,6 +60,8 @@ pub struct ProcfsConfig {
     pub memory_limit: bool,
     /// Emit Linux shared memory metric.
     pub memory_shared: bool,
+    /// Emit Linux hugepage metrics.
+    pub memory_hugepages: bool,
     /// Derived disk limit from sysfs block device size.
     pub disk_limit: bool,
     /// Include virtual filesystems.
@@ -318,6 +320,7 @@ impl ProcfsSource {
             counter_starts,
             memory_limit: self.config.memory_limit,
             memory_shared: self.config.memory_shared,
+            memory_hugepages: self.config.memory_hugepages,
             cpu: stat.cpu,
             cpu_utilization,
             cpuinfo,
@@ -584,6 +587,7 @@ pub struct HostSnapshot {
     counter_starts: CounterStarts,
     memory_limit: bool,
     memory_shared: bool,
+    memory_hugepages: bool,
     cpu: Option<CpuTimes>,
     cpu_utilization: Option<CpuTimes>,
     cpuinfo: CpuInfo,
@@ -751,6 +755,9 @@ impl HostSnapshot {
                     now,
                     memory.shared,
                 );
+            }
+            if self.memory_hugepages {
+                push_hugepage_metrics(&mut metrics, start, now, &memory.hugepages);
             }
         }
 
@@ -1402,6 +1409,16 @@ struct MemoryStats {
     shared: u64,
     slab_reclaimable: u64,
     slab_unreclaimable: u64,
+    hugepages: HugepageStats,
+}
+
+#[derive(Copy, Clone, Default)]
+struct HugepageStats {
+    total: u64,
+    free: u64,
+    reserved: u64,
+    surplus: u64,
+    page_size_bytes: u64,
 }
 
 #[derive(Copy, Clone, Default)]
@@ -1636,13 +1653,15 @@ fn parse_meminfo(input: &str) -> Option<MemoryStats> {
     let mut shared = 0;
     let mut slab_reclaimable = 0;
     let mut slab_unreclaimable = 0;
+    let mut hugepages = HugepageStats::default();
 
     for line in input.lines() {
         let mut fields = line.split_whitespace();
         let Some(key) = fields.next() else {
             continue;
         };
-        let value = fields.next().map(parse_u64).unwrap_or_default() * BYTES_PER_KIB;
+        let raw_value = fields.next().map(parse_u64).unwrap_or_default();
+        let value = raw_value * BYTES_PER_KIB;
         match key.trim_end_matches(':') {
             "MemTotal" => total = value,
             "MemFree" => free = value,
@@ -1652,6 +1671,11 @@ fn parse_meminfo(input: &str) -> Option<MemoryStats> {
             "Shmem" => shared = value,
             "SReclaimable" => slab_reclaimable = value,
             "SUnreclaim" => slab_unreclaimable = value,
+            "HugePages_Total" => hugepages.total = raw_value,
+            "HugePages_Free" => hugepages.free = raw_value,
+            "HugePages_Rsvd" => hugepages.reserved = raw_value,
+            "HugePages_Surp" => hugepages.surplus = raw_value,
+            "Hugepagesize" => hugepages.page_size_bytes = value,
             _ => {}
         }
     }
@@ -1671,6 +1695,7 @@ fn parse_meminfo(input: &str) -> Option<MemoryStats> {
         shared,
         slab_reclaimable,
         slab_unreclaimable,
+        hugepages,
     })
 }
 
@@ -2170,6 +2195,65 @@ fn push_cpu_frequency(metrics: &mut Vec<Metric>, now: u64, frequencies_hz: &[f64
             data_points: points,
         })),
     });
+}
+
+fn push_hugepage_metrics(
+    metrics: &mut Vec<Metric>,
+    start: u64,
+    now: u64,
+    hugepages: &HugepageStats,
+) {
+    push_updown_single_u64(
+        metrics,
+        "system.memory.linux.hugepages.limit",
+        "{page}",
+        start,
+        now,
+        hugepages.total,
+    );
+    push_updown_single_u64(
+        metrics,
+        "system.memory.linux.hugepages.page_size",
+        "By",
+        start,
+        now,
+        hugepages.page_size_bytes,
+    );
+    push_updown_single_u64(
+        metrics,
+        "system.memory.linux.hugepages.reserved",
+        "{page}",
+        start,
+        now,
+        hugepages.reserved,
+    );
+    push_updown_single_u64(
+        metrics,
+        "system.memory.linux.hugepages.surplus",
+        "{page}",
+        start,
+        now,
+        hugepages.surplus,
+    );
+    let used = hugepages.total.saturating_sub(hugepages.free);
+    push_updown_u64(
+        metrics,
+        "system.memory.linux.hugepages.usage",
+        "{page}",
+        start,
+        now,
+        &[("used", used), ("free", hugepages.free)],
+        "system.memory.linux.hugepages.state",
+    );
+    push_gauge_ratio(
+        metrics,
+        "system.memory.linux.hugepages.utilization",
+        "1",
+        now,
+        hugepages.total,
+        &[("used", used), ("free", hugepages.free)],
+        "system.memory.linux.hugepages.state",
+    );
 }
 
 fn push_gauge_ratio(
@@ -2702,6 +2786,7 @@ mod tests {
             counter_starts: CounterStarts::default(),
             memory_limit: true,
             memory_shared: true,
+            memory_hugepages: true,
             cpu: Some(CpuTimes {
                 user: 1.0,
                 nice: 2.0,
@@ -2735,6 +2820,13 @@ mod tests {
                 shared: 7,
                 slab_reclaimable: 3,
                 slab_unreclaimable: 2,
+                hugepages: HugepageStats {
+                    total: 10,
+                    free: 4,
+                    reserved: 2,
+                    surplus: 1,
+                    page_size_bytes: 2 * BYTES_PER_KIB,
+                },
             }),
             uptime_seconds: Some(42.0),
             paging: Some(PagingStats {
@@ -2824,6 +2916,48 @@ mod tests {
         assert_metric_shape(metrics, "system.memory.linux.slab.usage", "By", Some(false));
         assert_metric_shape(metrics, "system.memory.limit", "By", Some(false));
         assert_metric_shape(metrics, "system.memory.linux.shared", "By", Some(false));
+        assert_metric_shape(
+            metrics,
+            "system.memory.linux.hugepages.limit",
+            "{page}",
+            Some(false),
+        );
+        assert_metric_shape(
+            metrics,
+            "system.memory.linux.hugepages.page_size",
+            "By",
+            Some(false),
+        );
+        assert_metric_shape(
+            metrics,
+            "system.memory.linux.hugepages.reserved",
+            "{page}",
+            Some(false),
+        );
+        assert_metric_shape(
+            metrics,
+            "system.memory.linux.hugepages.surplus",
+            "{page}",
+            Some(false),
+        );
+        assert_metric_shape(
+            metrics,
+            "system.memory.linux.hugepages.usage",
+            "{page}",
+            Some(false),
+        );
+        assert_first_point_attr(
+            metrics,
+            "system.memory.linux.hugepages.usage",
+            "system.memory.linux.hugepages.state",
+            "used",
+        );
+        assert_metric_shape(
+            metrics,
+            "system.memory.linux.hugepages.utilization",
+            "1",
+            None,
+        );
         assert_metric_shape(metrics, "system.uptime", "s", None);
         assert_metric_shape(metrics, "system.paging.faults", "{fault}", Some(true));
         assert_first_point_attr(
@@ -2965,6 +3099,7 @@ mod tests {
                 cpu_utilization: false,
                 memory_limit: false,
                 memory_shared: false,
+                memory_hugepages: false,
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
@@ -3013,6 +3148,7 @@ mod tests {
                 cpu_utilization: false,
                 memory_limit: false,
                 memory_shared: false,
+                memory_hugepages: false,
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
@@ -3068,6 +3204,7 @@ mod tests {
                 cpu_utilization: false,
                 memory_limit: false,
                 memory_shared: false,
+                memory_hugepages: false,
                 disk_limit: true,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
@@ -3124,6 +3261,7 @@ mod tests {
                 cpu_utilization: false,
                 memory_limit: false,
                 memory_shared: false,
+                memory_hugepages: false,
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: true,
@@ -3230,6 +3368,26 @@ mod tests {
         let memory =
             parse_meminfo("MemTotal: 1000 kB\nMemFree: 100 kB\nShmem: 12 kB\n").expect("memory");
         assert_eq!(memory.shared, 12 * BYTES_PER_KIB);
+    }
+
+    #[test]
+    fn meminfo_parser_reads_hugepage_stats() {
+        let memory = parse_meminfo(
+            "MemTotal: 1000 kB\n\
+             MemFree: 100 kB\n\
+             HugePages_Total: 8\n\
+             HugePages_Free: 3\n\
+             HugePages_Rsvd: 2\n\
+             HugePages_Surp: 1\n\
+             Hugepagesize: 2048 kB\n",
+        )
+        .expect("memory");
+
+        assert_eq!(memory.hugepages.total, 8);
+        assert_eq!(memory.hugepages.free, 3);
+        assert_eq!(memory.hugepages.reserved, 2);
+        assert_eq!(memory.hugepages.surplus, 1);
+        assert_eq!(memory.hugepages.page_size_bytes, 2048 * BYTES_PER_KIB);
     }
 
     #[test]
