@@ -68,7 +68,7 @@ pub(crate) struct EffectHandlerCore<PData> {
 
 impl<PData> EffectHandlerCore<PData> {
     /// Creates a new EffectHandlerCore with node_id and a metrics reporter.
-    pub(crate) const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub(crate) fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         Self {
             node_id,
             runtime_ctrl_msg_sender: None,

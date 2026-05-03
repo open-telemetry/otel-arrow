@@ -12,6 +12,13 @@
 //! recorded into separate instruments so operators can distinguish
 //! compute time from error-path time.
 //!
+//! This API complements, but is not required for, the engine's automatic
+//! per-message stopwatch. [`ComputeDuration::timed`] provides the
+//! success/failed outcome split for `processor.compute.{success,failed}.duration`,
+//! while the engine's `Instant`-marker timing on the EffectHandler captures
+//! total wall-clock compute between sends for stopwatches without processor
+//! cooperation.
+//!
 //! The closure-based API structurally prevents timing from spanning
 //! `.await` points.
 
@@ -60,11 +67,15 @@ impl ComputeDuration {
         }
     }
 
-    /// Time a synchronous, fallible closure if interests includes
-    /// `PROCESS_DURATION`, otherwise just call `f` directly.
+    /// Time a synchronous, fallible closure for the process-duration outcome
+    /// split if interests includes `PROCESS_DURATION`, otherwise just call
+    /// `f` directly.
     ///
     /// The elapsed time is recorded into the `success` or `failed`
-    /// accumulator based on the closure's `Result` outcome.
+    /// accumulator based on the closure's `Result` outcome. This feeds only
+    /// the `processor.compute.{success,failed}.duration` metric; stopwatch
+    /// participation is handled separately by the engine's `Instant`-marker
+    /// timing on the EffectHandler.
     ///
     /// The closure-based API structurally prevents the timer from
     /// being held across `.await` — the closure is `FnOnce`, not

@@ -266,6 +266,28 @@ pub struct TelemetryPolicy {
     /// shared control-plane telemetry.
     #[serde(default = "default_metric_level_basic")]
     pub runtime_metrics: MetricLevel,
+    /// Distributed stopwatches that sum per-message compute duration across
+    /// a range of processor nodes.
+    #[serde(default)]
+    pub stopwatches: Vec<StopwatchConfig>,
+}
+
+/// Configuration for a distributed stopwatch that measures the aggregate
+/// per-message compute duration across a contiguous range of processor nodes.
+///
+/// The engine accumulates per-message wall-clock time inside each
+/// processor's `process()` (between successive sends) for nodes between
+/// `start_node` and `stop_node` (inclusive) on the forward path, and
+/// records the sum into a dedicated stopwatch metric entity.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StopwatchConfig {
+    /// User-facing name for this stopwatch, used as a metric attribute.
+    pub name: String,
+    /// Processor node name where the stopwatch range begins (inclusive).
+    pub start_node: String,
+    /// Processor node name where the stopwatch range ends (inclusive).
+    pub stop_node: String,
 }
 
 impl Default for TelemetryPolicy {
@@ -274,6 +296,7 @@ impl Default for TelemetryPolicy {
             pipeline_metrics: true,
             tokio_metrics: true,
             runtime_metrics: MetricLevel::Basic,
+            stopwatches: Vec::new(),
         }
     }
 }
