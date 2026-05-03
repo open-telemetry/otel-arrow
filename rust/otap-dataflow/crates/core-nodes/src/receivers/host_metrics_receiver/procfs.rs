@@ -24,6 +24,7 @@ const NANOS_PER_SEC: u64 = 1_000_000_000;
 const BYTES_PER_KIB: u64 = 1024;
 const DISKSTAT_SECTOR_BYTES: u64 = 512;
 const FILESYSTEM_STAT_TIMEOUT: Duration = Duration::from_millis(100);
+const COUNTER_KEY_SEPARATOR: char = '\x1f';
 
 /// Procfs-backed source for host metrics.
 pub struct ProcfsSource {
@@ -122,7 +123,7 @@ impl ProcfsSource {
             buf: String::with_capacity(16 * 1024),
             clk_tck: clock_ticks_per_second(),
             previous_cpu: None,
-            filesystem_worker: FilesystemStatWorker::new(),
+            filesystem_worker: FilesystemStatWorker::new()?,
             counter_tracker: CounterTracker::default(),
         };
         source.apply_startup_validation()?;
@@ -1315,7 +1316,7 @@ impl CounterTracker {
 fn counter_key(metric: &'static str, series: &str) -> String {
     let mut key = String::with_capacity(metric.len() + 1 + series.len());
     key.push_str(metric);
-    key.push('|');
+    key.push(COUNTER_KEY_SEPARATOR);
     key.push_str(series);
     key
 }
@@ -1323,16 +1324,16 @@ fn counter_key(metric: &'static str, series: &str) -> String {
 fn counter_key_joined(metric: &'static str, first: &str, second: &'static str) -> String {
     let mut key = String::with_capacity(metric.len() + 2 + first.len() + second.len());
     key.push_str(metric);
-    key.push('|');
+    key.push(COUNTER_KEY_SEPARATOR);
     key.push_str(first);
-    key.push('|');
+    key.push(COUNTER_KEY_SEPARATOR);
     key.push_str(second);
     key
 }
 
 fn counter_key_matches(key: &str, metric: &'static str, series: &str) -> bool {
     key.strip_prefix(metric)
-        .and_then(|rest| rest.strip_prefix('|'))
+        .and_then(|rest| rest.strip_prefix(COUNTER_KEY_SEPARATOR))
         == Some(series)
 }
 
@@ -1344,13 +1345,13 @@ fn counter_key_matches_joined(
 ) -> bool {
     let Some(series) = key
         .strip_prefix(metric)
-        .and_then(|rest| rest.strip_prefix('|'))
+        .and_then(|rest| rest.strip_prefix(COUNTER_KEY_SEPARATOR))
     else {
         return false;
     };
     series
         .strip_prefix(first)
-        .and_then(|rest| rest.strip_prefix('|'))
+        .and_then(|rest| rest.strip_prefix(COUNTER_KEY_SEPARATOR))
         == Some(second)
 }
 
@@ -1482,17 +1483,18 @@ struct FilesystemStat {
 }
 
 impl FilesystemStatWorker {
-    fn new() -> Self {
+    fn new() -> io::Result<Self> {
         let (tx, rx) = mpsc::sync_channel::<FilesystemStatRequest>(1);
-        let _ = std::thread::Builder::new()
+        let _handle = std::thread::Builder::new()
             .name("host-metrics-statvfs".to_owned())
             .spawn(move || {
                 while let Ok(request) = rx.recv() {
                     let result = statvfs_bytes(&request.path);
                     let _ = request.response.send(result);
                 }
-            });
-        Self { tx }
+            })
+            .map_err(io::Error::other)?;
+        Ok(Self { tx })
     }
 
     fn statvfs(&self, path: PathBuf, timeout: Duration) -> io::Result<FilesystemStat> {
@@ -1937,7 +1939,7 @@ fn unescape_mountinfo(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut escaped = None;
     for idx in 0..bytes.len() {
-        if bytes[idx] == b'\\' && idx + 3 < bytes.len() {
+        if bytes[idx] == b'\\' && idx + 4 <= bytes.len() {
             escaped = Some(idx);
             break;
         }
@@ -1946,22 +1948,22 @@ fn unescape_mountinfo(input: &str) -> String {
         return input.to_owned();
     };
 
-    let mut output = String::with_capacity(input.len());
-    output.push_str(&input[..first_escape]);
+    let mut output = Vec::with_capacity(input.len());
+    output.extend_from_slice(&bytes[..first_escape]);
     let mut idx = first_escape;
     while idx < bytes.len() {
-        if bytes[idx] == b'\\' && idx + 3 < bytes.len() {
+        if bytes[idx] == b'\\' && idx + 4 <= bytes.len() {
             let octal = &input[idx + 1..idx + 4];
             if let Ok(value) = u8::from_str_radix(octal, 8) {
-                output.push(value as char);
+                output.push(value);
                 idx += 4;
                 continue;
             }
         }
-        output.push(bytes[idx] as char);
+        output.push(bytes[idx]);
         idx += 1;
     }
-    output
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 fn parse_netdev(
@@ -3095,6 +3097,20 @@ mod tests {
     }
 
     #[test]
+    fn counter_keys_do_not_collide_with_pipe_in_series_values() {
+        let metric = "system.disk.io";
+        let device = "read|write";
+        let joined = counter_key_joined(metric, device, "read");
+        assert!(!counter_key_matches_joined(
+            &joined,
+            metric,
+            "read",
+            "write|read"
+        ));
+        assert!(counter_key_matches_joined(&joined, metric, device, "read"));
+    }
+
+    #[test]
     fn scrape_due_emits_successful_families_after_partial_read_error() {
         let root = tempfile::tempdir().expect("tempdir");
         let proc = root.path().join("proc");
@@ -3495,6 +3511,20 @@ mod tests {
     }
 
     #[test]
+    fn mountinfo_parser_preserves_utf8_while_unescaping_paths() {
+        let mounts = parse_mountinfo(
+            "36 25 8:1 / /mnt/caf\u{00e9}\\040disk rw,relatime - ext4 /dev/disk\\040\u{00e9} rw\n",
+            false,
+            false,
+            FilesystemFilters::default(),
+        );
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].device, "/dev/disk \u{00e9}");
+        assert_eq!(mounts[0].mountpoint, "/mnt/caf\u{00e9} disk");
+    }
+
+    #[test]
     fn mountinfo_parser_applies_filesystem_filters() {
         let include_mounts = CompiledFilter::compile(
             crate::receivers::host_metrics_receiver::MatchType::Glob,
@@ -3609,7 +3639,7 @@ mod tests {
             .unwrap_or_else(|_| VirtualDirectoryPath::GitRepo {
                 url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
                 sub_folder: Some("model".to_owned()),
-                refspec: None,
+                refspec: Some("v1.41.0".to_owned()),
             });
 
         let registry_repo =

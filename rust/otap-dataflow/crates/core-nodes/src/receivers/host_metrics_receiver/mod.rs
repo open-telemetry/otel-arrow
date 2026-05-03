@@ -1062,12 +1062,12 @@ impl FamilyScheduler {
         Self { entries }
     }
 
-    fn next_due(&self) -> Instant {
+    fn next_due(&self, now: Instant) -> Instant {
         self.entries
             .iter()
             .map(|entry| entry.next_due)
             .min()
-            .expect("scheduler has at least one enabled family")
+            .unwrap_or(now)
     }
 
     fn mark_due(&mut self, now: Instant) -> ProcfsFamilies {
@@ -1253,8 +1253,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     }
                 }
 
-                _ = sleep_until(scheduler.next_due()) => {
-                    let scheduled_due = scheduler.next_due();
+                _ = sleep_until(scheduler.next_due(Instant::now())) => {
+                    let scheduled_due = scheduler.next_due(Instant::now());
                     let now = Instant::now();
                     let due = scheduler.mark_due(now);
                     let scrape_start = StdInstant::now();
@@ -1640,7 +1640,7 @@ mod tests {
         let now = Instant::now();
         let mut scheduler = FamilyScheduler::new(&config, now);
 
-        assert_eq!(scheduler.next_due(), now + Duration::from_secs(1));
+        assert_eq!(scheduler.next_due(now), now + Duration::from_secs(1));
         assert_eq!(
             scheduler.mark_due(now),
             ProcfsFamilies::default(),
