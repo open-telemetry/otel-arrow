@@ -160,7 +160,7 @@ fn bench_otap_logs_view(c: &mut Criterion) {
                 b.iter(|| {
                     // 1. Convert OTAP -> OTLP bytes
                     let mut logs_encoder = LogsProtoBytesEncoder::new();
-                    let mut buffer = ProtoBuffer::new();
+                    let mut buffer = ProtoBuffer::default();
                     let mut input_clone = input.clone();
                     logs_encoder
                         .encode(&mut input_clone, &mut buffer)

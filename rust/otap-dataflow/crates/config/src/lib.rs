@@ -19,6 +19,7 @@ use std::hash::Hash;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
+pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
 pub mod env_substitution;
@@ -49,6 +50,8 @@ pub use topic::{
 };
 /// Validation helpers for node configuration.
 pub mod validation;
+
+pub use conversion::ConversionOptions;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

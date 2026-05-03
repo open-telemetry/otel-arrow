@@ -179,7 +179,7 @@ mod tests {
 
     fn otap_logs_to_otlp(mut logs_otap_batch: OtapArrowRecords) -> ExportLogsServiceRequest {
         let mut logs_encoder = LogsProtoBytesEncoder::new();
-        let mut buffer = ProtoBuffer::new();
+        let mut buffer = ProtoBuffer::default();
         logs_encoder
             .encode(&mut logs_otap_batch, &mut buffer)
             .unwrap();
