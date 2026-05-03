@@ -45,6 +45,10 @@ fn default_collection_interval() -> Duration {
     Duration::from_secs(10)
 }
 
+fn default_root_path() -> PathBuf {
+    PathBuf::from("/")
+}
+
 /// Configuration for the host metrics receiver.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -57,9 +61,13 @@ pub struct Config {
     #[serde(default, with = "humantime_serde")]
     pub initial_delay: Duration,
 
-    /// Optional host root path. In Kubernetes this is commonly `/host`.
+    /// Optional legacy host root path. Prefer `host_view.root_path`.
     #[serde(default)]
     pub root_path: Option<PathBuf>,
+
+    /// Host filesystem view.
+    #[serde(default)]
+    pub host_view: HostViewConfig,
 
     /// Metric family configuration.
     #[serde(default)]
@@ -72,9 +80,43 @@ impl Default for Config {
             collection_interval: default_collection_interval(),
             initial_delay: Duration::ZERO,
             root_path: None,
+            host_view: HostViewConfig::default(),
             families: FamiliesConfig::default(),
         }
     }
+}
+
+/// Host filesystem view configuration.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HostViewConfig {
+    /// Root path for the observed host filesystem.
+    #[serde(default = "default_root_path")]
+    pub root_path: PathBuf,
+    /// Startup validation mode.
+    pub validation: HostViewValidationMode,
+}
+
+impl Default for HostViewConfig {
+    fn default() -> Self {
+        Self {
+            root_path: default_root_path(),
+            validation: HostViewValidationMode::FailSelected,
+        }
+    }
+}
+
+/// Host view startup validation mode.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostViewValidationMode {
+    /// Fail startup if selected sources are unavailable.
+    #[default]
+    FailSelected,
+    /// Start and disable unavailable selected sources.
+    WarnSelected,
+    /// Skip startup validation.
+    None,
 }
 
 /// Metric family configuration.
@@ -258,7 +300,8 @@ pub enum MatchType {
 
 #[derive(Clone)]
 struct RuntimeConfig {
-    root_path: Option<PathBuf>,
+    root_path: PathBuf,
+    validation: HostViewValidationMode,
     initial_delay: Duration,
     families: RuntimeFamilies,
 }
@@ -415,7 +458,7 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 impl HostMetricsReceiver {
     /// Creates a new host metrics receiver.
     pub fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
-        let root_path = normalized_root_path(config.root_path.as_deref())?;
+        let root_path = normalized_root_path(Some(effective_root_path(&config)?))?;
         let lease = HostMetricsLease::acquire(root_path)?;
         let config = RuntimeConfig::try_from(config)?;
         Ok(Self {
@@ -487,8 +530,23 @@ fn validate_config(config: &Config) -> Result<(), otap_df_config::error::Error> 
         config.families.processes.enabled,
         config.families.processes.interval,
     )?;
-    let _ = normalized_root_path(config.root_path.as_deref())?;
+    let _ = normalized_root_path(Some(effective_root_path(config)?))?;
     Ok(())
+}
+
+fn effective_root_path(config: &Config) -> Result<&Path, otap_df_config::error::Error> {
+    if let Some(root_path) = config.root_path.as_deref() {
+        let host_view_root = config.host_view.root_path.as_path();
+        if host_view_root != Path::new("/") && root_path != host_view_root {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "root_path and host_view.root_path cannot both be set to different values"
+                    .to_owned(),
+            });
+        }
+        Ok(root_path)
+    } else {
+        Ok(config.host_view.root_path.as_path())
+    }
 }
 
 fn validate_family_interval(
@@ -509,6 +567,7 @@ impl TryFrom<Config> for RuntimeConfig {
 
     fn try_from(config: Config) -> Result<Self, Self::Error> {
         validate_config(&config)?;
+        let root_path = normalized_root_path(Some(effective_root_path(&config)?))?;
         let disk_include = config
             .families
             .disk
@@ -539,7 +598,8 @@ impl TryFrom<Config> for RuntimeConfig {
             .flatten();
 
         Ok(Self {
-            root_path: config.root_path,
+            root_path,
+            validation: config.host_view.validation,
             initial_delay: config.initial_delay,
             families: RuntimeFamilies {
                 cpu: RuntimeFamily::new(&config.families.cpu, config.collection_interval),
@@ -774,7 +834,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let mut source = ProcfsSource::new(
-            self.config.root_path.as_deref(),
+            Some(self.config.root_path.as_path()),
             ProcfsConfig {
                 cpu: self.config.families.cpu.enabled,
                 memory: self.config.families.memory.enabled,
@@ -787,6 +847,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 disk_exclude: self.config.families.disk.exclude.clone(),
                 network_include: self.config.families.network.include.clone(),
                 network_exclude: self.config.families.network.exclude.clone(),
+                validation: self.config.validation,
             },
         )
         .map_err(|err| Error::ReceiverError {
@@ -967,6 +1028,38 @@ mod tests {
             validate_config(&config),
             Err(otap_df_config::error::Error::InvalidUserConfig { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_conflicting_root_paths() {
+        let config = Config {
+            root_path: Some(PathBuf::from("/host")),
+            host_view: HostViewConfig {
+                root_path: PathBuf::from("/container"),
+                ..HostViewConfig::default()
+            },
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            validate_config(&config),
+            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+        ));
+    }
+
+    #[test]
+    fn accepts_host_view_validation_modes() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "host_view": {
+                "validation": "warn_selected"
+            }
+        }))
+        .expect("valid host view config");
+
+        assert_eq!(
+            config.host_view.validation,
+            HostViewValidationMode::WarnSelected
+        );
     }
 
     #[test]

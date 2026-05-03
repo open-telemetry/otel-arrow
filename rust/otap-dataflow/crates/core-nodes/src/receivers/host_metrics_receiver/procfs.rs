@@ -3,7 +3,7 @@
 
 //! Linux procfs-backed host metric source.
 
-use crate::receivers::host_metrics_receiver::CompiledFilter;
+use crate::receivers::host_metrics_receiver::{CompiledFilter, HostViewValidationMode};
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use otap_df_pdata::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value,
@@ -55,6 +55,8 @@ pub struct ProcfsConfig {
     pub network_include: Option<CompiledFilter>,
     /// Network exclude filter.
     pub network_exclude: Option<CompiledFilter>,
+    /// Startup validation mode.
+    pub validation: HostViewValidationMode,
 }
 
 /// Families due for one scrape.
@@ -79,18 +81,27 @@ pub struct ProcfsFamilies {
 impl ProcfsSource {
     /// Creates a procfs source rooted at `/` or at a host root bind mount.
     pub fn new(root_path: Option<&Path>, config: ProcfsConfig) -> io::Result<Self> {
-        let source = Self {
+        let mut source = Self {
             paths: ProcfsPaths::new(root_path),
             config,
             buf: String::with_capacity(16 * 1024),
             clk_tck: clock_ticks_per_second(),
         };
-        source.validate_selected_paths()?;
+        source.apply_startup_validation()?;
         Ok(source)
     }
 
     /// Collects one host snapshot for the due family set.
     pub fn scrape_due(&mut self, due: ProcfsFamilies) -> io::Result<HostSnapshot> {
+        let due = ProcfsFamilies {
+            cpu: due.cpu && self.config.cpu,
+            memory: due.memory && self.config.memory,
+            paging: due.paging && self.config.paging,
+            system: due.system && self.config.system,
+            disk: due.disk && self.config.disk,
+            network: due.network && self.config.network,
+            processes: due.processes && self.config.processes,
+        };
         let now_unix_nano = now_unix_nano();
         let clk_tck = self.clk_tck;
         let needs_stat = due.cpu || due.system || due.processes;
@@ -172,6 +183,17 @@ impl ProcfsSource {
         })
     }
 
+    fn apply_startup_validation(&mut self) -> io::Result<()> {
+        match self.config.validation {
+            HostViewValidationMode::None => Ok(()),
+            HostViewValidationMode::FailSelected => self.validate_selected_paths(),
+            HostViewValidationMode::WarnSelected => {
+                self.disable_unavailable_sources();
+                Ok(())
+            }
+        }
+    }
+
     fn validate_selected_paths(&self) -> io::Result<()> {
         if self.config.cpu || self.config.system || self.config.processes {
             let _ = File::open(self.paths.path(PathKind::Stat))?;
@@ -196,6 +218,40 @@ impl ProcfsSource {
             let _ = File::open(self.paths.path(PathKind::NetDev))?;
         }
         Ok(())
+    }
+
+    fn disable_unavailable_sources(&mut self) {
+        if (self.config.cpu || self.config.system || self.config.processes)
+            && !self.source_available(PathKind::Stat)
+        {
+            self.config.cpu = false;
+            self.config.system = false;
+            self.config.processes = false;
+        }
+        if self.config.cpu && !self.source_available(PathKind::Cpuinfo) {
+            self.config.cpu = false;
+        }
+        if self.config.memory && !self.source_available(PathKind::Meminfo) {
+            self.config.memory = false;
+        }
+        if self.config.system && !self.source_available(PathKind::Uptime) {
+            self.config.system = false;
+        }
+        if self.config.paging
+            && (!self.source_available(PathKind::Vmstat) || !self.source_available(PathKind::Swaps))
+        {
+            self.config.paging = false;
+        }
+        if self.config.disk && !self.source_available(PathKind::Diskstats) {
+            self.config.disk = false;
+        }
+        if self.config.network && !self.source_available(PathKind::NetDev) {
+            self.config.network = false;
+        }
+    }
+
+    fn source_available(&self, kind: PathKind) -> bool {
+        File::open(self.paths.path(kind)).is_ok()
     }
 
     fn read_path(&mut self, kind: PathKind) -> io::Result<&str> {
