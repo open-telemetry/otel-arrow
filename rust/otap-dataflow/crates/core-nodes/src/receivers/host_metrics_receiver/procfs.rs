@@ -511,19 +511,21 @@ impl HostSnapshot {
         }
 
         if self.cpuinfo.logical_count != 0 {
-            push_gauge_single_u64(
+            push_updown_single_u64(
                 &mut metrics,
                 "system.cpu.logical.count",
                 "{cpu}",
+                start,
                 now,
                 self.cpuinfo.logical_count,
             );
         }
         if self.cpuinfo.physical_count != 0 {
-            push_gauge_single_u64(
+            push_updown_single_u64(
                 &mut metrics,
                 "system.cpu.physical.count",
                 "{cpu}",
+                start,
                 now,
                 self.cpuinfo.physical_count,
             );
@@ -531,10 +533,11 @@ impl HostSnapshot {
         push_cpu_frequency(&mut metrics, now, &self.cpuinfo.frequencies_hz);
 
         if let Some(memory) = self.memory {
-            push_gauge_u64(
+            push_updown_u64(
                 &mut metrics,
                 "system.memory.usage",
                 "By",
+                start,
                 now,
                 &[
                     ("used", memory.used),
@@ -558,17 +561,19 @@ impl HostSnapshot {
                 ],
                 "system.memory.state",
             );
-            push_gauge_single_u64(
+            push_updown_single_u64(
                 &mut metrics,
                 "system.memory.linux.available",
                 "By",
+                start,
                 now,
                 memory.available,
             );
-            push_gauge_u64(
+            push_updown_u64(
                 &mut metrics,
                 "system.memory.linux.slab.usage",
                 "By",
+                start,
                 now,
                 &[
                     ("reclaimable", memory.slab_reclaimable),
@@ -607,10 +612,11 @@ impl HostSnapshot {
         }
 
         for swap in self.swaps {
-            push_gauge_u64_with_device(
+            push_updown_u64_with_device(
                 &mut metrics,
                 "system.paging.usage",
                 "By",
+                start,
                 now,
                 &swap.name,
                 &[("used", swap.used), ("free", swap.free)],
@@ -629,10 +635,11 @@ impl HostSnapshot {
         }
 
         if let Some(processes) = self.processes {
-            push_gauge_u64(
+            push_updown_u64(
                 &mut metrics,
                 "system.process.count",
                 "{process}",
+                start,
                 now,
                 &[
                     ("running", processes.running),
@@ -1281,10 +1288,11 @@ fn push_gauge_f64_by_attr(
     });
 }
 
-fn push_gauge_u64(
+fn push_updown_u64(
     metrics: &mut Vec<Metric>,
     name: &'static str,
     unit: &'static str,
+    start: u64,
     now: u64,
     values: &[(&'static str, u64)],
     attr_name: &'static str,
@@ -1293,26 +1301,19 @@ fn push_gauge_u64(
     for (state, value) in values {
         points.push(number_point_i64(
             vec![kv_str(attr_name, state)],
-            0,
+            start,
             now,
             saturating_i64(*value),
         ));
     }
-    metrics.push(Metric {
-        name: name.to_owned(),
-        description: String::new(),
-        unit: unit.to_owned(),
-        metadata: Vec::new(),
-        data: Some(metric::Data::Gauge(Gauge {
-            data_points: points,
-        })),
-    });
+    push_updown_metric(metrics, name, unit, points);
 }
 
-fn push_gauge_u64_with_device(
+fn push_updown_u64_with_device(
     metrics: &mut Vec<Metric>,
     name: &'static str,
     unit: &'static str,
+    start: u64,
     now: u64,
     device: &str,
     values: &[(&'static str, u64)],
@@ -1322,38 +1323,33 @@ fn push_gauge_u64_with_device(
     for (state, value) in values {
         points.push(number_point_i64(
             vec![kv_str("system.device", device), kv_str(attr_name, state)],
-            0,
+            start,
             now,
             saturating_i64(*value),
         ));
     }
-    metrics.push(Metric {
-        name: name.to_owned(),
-        description: String::new(),
-        unit: unit.to_owned(),
-        metadata: Vec::new(),
-        data: Some(metric::Data::Gauge(Gauge {
-            data_points: points,
-        })),
-    });
+    push_updown_metric(metrics, name, unit, points);
 }
 
-fn push_gauge_single_u64(
+fn push_updown_single_u64(
     metrics: &mut Vec<Metric>,
     name: &'static str,
     unit: &'static str,
+    start: u64,
     now: u64,
     value: u64,
 ) {
-    metrics.push(Metric {
-        name: name.to_owned(),
-        description: String::new(),
-        unit: unit.to_owned(),
-        metadata: Vec::new(),
-        data: Some(metric::Data::Gauge(Gauge {
-            data_points: vec![number_point_i64(Vec::new(), 0, now, saturating_i64(value))],
-        })),
-    });
+    push_updown_metric(
+        metrics,
+        name,
+        unit,
+        vec![number_point_i64(
+            Vec::new(),
+            start,
+            now,
+            saturating_i64(value),
+        )],
+    );
 }
 
 fn push_cpu_frequency(metrics: &mut Vec<Metric>, now: u64, frequencies_hz: &[f64]) {
@@ -1654,6 +1650,25 @@ fn push_sum_metric(
     unit: &'static str,
     points: Vec<NumberDataPoint>,
 ) {
+    push_sum_metric_with_monotonic(metrics, name, unit, points, true);
+}
+
+fn push_updown_metric(
+    metrics: &mut Vec<Metric>,
+    name: &'static str,
+    unit: &'static str,
+    points: Vec<NumberDataPoint>,
+) {
+    push_sum_metric_with_monotonic(metrics, name, unit, points, false);
+}
+
+fn push_sum_metric_with_monotonic(
+    metrics: &mut Vec<Metric>,
+    name: &'static str,
+    unit: &'static str,
+    points: Vec<NumberDataPoint>,
+    is_monotonic: bool,
+) {
     metrics.push(Metric {
         name: name.to_owned(),
         description: String::new(),
@@ -1662,7 +1677,7 @@ fn push_sum_metric(
         data: Some(metric::Data::Sum(Sum {
             data_points: points,
             aggregation_temporality: AggregationTemporality::Cumulative.into(),
-            is_monotonic: true,
+            is_monotonic,
         })),
     });
 }
@@ -1839,67 +1854,82 @@ mod tests {
         assert_has_attr(&resource.attributes, "host.arch", "amd64");
 
         let metrics = &resource_metrics.scope_metrics[0].metrics;
-        assert_metric_shape(metrics, "system.cpu.time", "s", true);
+        assert_metric_shape(metrics, "system.cpu.time", "s", Some(true));
         assert_first_point_attr(metrics, "system.cpu.time", "cpu.mode", "user");
-        assert_metric_shape(metrics, "system.cpu.utilization", "1", false);
+        assert_metric_shape(metrics, "system.cpu.utilization", "1", None);
         assert_first_point_attr(metrics, "system.cpu.utilization", "cpu.mode", "user");
-        assert_metric_shape(metrics, "system.cpu.logical.count", "{cpu}", false);
-        assert_metric_shape(metrics, "system.cpu.physical.count", "{cpu}", false);
-        assert_metric_shape(metrics, "system.cpu.frequency", "Hz", false);
+        assert_metric_shape(metrics, "system.cpu.logical.count", "{cpu}", Some(false));
+        assert_metric_shape(metrics, "system.cpu.physical.count", "{cpu}", Some(false));
+        assert_metric_shape(metrics, "system.cpu.frequency", "Hz", None);
         assert_first_point_attr(metrics, "system.cpu.frequency", "cpu.logical_number", "0");
-        assert_metric_shape(metrics, "system.memory.usage", "By", false);
+        assert_metric_shape(metrics, "system.memory.usage", "By", Some(false));
         assert_first_point_attr(
             metrics,
             "system.memory.usage",
             "system.memory.state",
             "used",
         );
-        assert_metric_shape(metrics, "system.memory.utilization", "1", false);
-        assert_metric_shape(metrics, "system.memory.linux.available", "By", false);
-        assert_metric_shape(metrics, "system.memory.linux.slab.usage", "By", false);
-        assert_metric_shape(metrics, "system.uptime", "s", false);
-        assert_metric_shape(metrics, "system.paging.faults", "{fault}", true);
+        assert_metric_shape(metrics, "system.memory.utilization", "1", None);
+        assert_metric_shape(metrics, "system.memory.linux.available", "By", Some(false));
+        assert_metric_shape(metrics, "system.memory.linux.slab.usage", "By", Some(false));
+        assert_metric_shape(metrics, "system.uptime", "s", None);
+        assert_metric_shape(metrics, "system.paging.faults", "{fault}", Some(true));
         assert_first_point_attr(
             metrics,
             "system.paging.faults",
             "system.paging.fault.type",
             "minor",
         );
-        assert_metric_shape(metrics, "system.paging.operations", "{operation}", true);
-        assert_metric_shape(metrics, "system.paging.usage", "By", false);
+        assert_metric_shape(
+            metrics,
+            "system.paging.operations",
+            "{operation}",
+            Some(true),
+        );
+        assert_metric_shape(metrics, "system.paging.usage", "By", Some(false));
         assert_first_point_attr(metrics, "system.paging.usage", "system.device", "/dev/swap");
-        assert_metric_shape(metrics, "system.paging.utilization", "1", false);
-        assert_metric_shape(metrics, "system.process.count", "{process}", false);
-        assert_metric_shape(metrics, "system.process.created", "{process}", true);
-        assert_metric_shape(metrics, "system.disk.io", "By", true);
+        assert_metric_shape(metrics, "system.paging.utilization", "1", None);
+        assert_metric_shape(metrics, "system.process.count", "{process}", Some(false));
+        assert_metric_shape(metrics, "system.process.created", "{process}", Some(true));
+        assert_metric_shape(metrics, "system.disk.io", "By", Some(true));
         assert_first_point_attr(metrics, "system.disk.io", "disk.io.direction", "read");
-        assert_metric_shape(metrics, "system.disk.operations", "{operation}", true);
-        assert_metric_shape(metrics, "system.disk.io_time", "s", true);
+        assert_metric_shape(metrics, "system.disk.operations", "{operation}", Some(true));
+        assert_metric_shape(metrics, "system.disk.io_time", "s", Some(true));
         assert_first_point_attr(metrics, "system.disk.io_time", "system.device", "sda");
-        assert_metric_shape(metrics, "system.disk.operation_time", "s", true);
-        assert_metric_shape(metrics, "system.disk.merged", "{operation}", true);
-        assert_metric_shape(metrics, "system.network.io", "By", true);
+        assert_metric_shape(metrics, "system.disk.operation_time", "s", Some(true));
+        assert_metric_shape(metrics, "system.disk.merged", "{operation}", Some(true));
+        assert_metric_shape(metrics, "system.network.io", "By", Some(true));
         assert_first_point_attr(
             metrics,
             "system.network.io",
             "network.interface.name",
             "eth0",
         );
-        assert_metric_shape(metrics, "system.network.packet.count", "{packet}", true);
+        assert_metric_shape(
+            metrics,
+            "system.network.packet.count",
+            "{packet}",
+            Some(true),
+        );
         assert_first_point_attr(
             metrics,
             "system.network.packet.count",
             "system.device",
             "eth0",
         );
-        assert_metric_shape(metrics, "system.network.packet.dropped", "{packet}", true);
+        assert_metric_shape(
+            metrics,
+            "system.network.packet.dropped",
+            "{packet}",
+            Some(true),
+        );
         assert_first_point_attr(
             metrics,
             "system.network.packet.dropped",
             "network.interface.name",
             "eth0",
         );
-        assert_metric_shape(metrics, "system.network.errors", "{error}", true);
+        assert_metric_shape(metrics, "system.network.errors", "{error}", Some(true));
     }
 
     #[test]
@@ -2157,18 +2187,19 @@ mod tests {
         metrics: &[Metric],
         name: &'static str,
         unit: &'static str,
-        is_sum: bool,
+        monotonic_sum: Option<bool>,
     ) {
         let metric = metric_by_name(metrics, name);
         assert_eq!(metric.unit, unit);
         match metric.data.as_ref().expect("metric data") {
             metric::Data::Sum(sum) => {
-                assert!(is_sum, "{name} should be a gauge");
+                let expected_monotonic =
+                    monotonic_sum.unwrap_or_else(|| panic!("{name} should be a gauge"));
                 assert_eq!(
                     sum.aggregation_temporality,
                     AggregationTemporality::Cumulative as i32
                 );
-                assert!(sum.is_monotonic);
+                assert_eq!(sum.is_monotonic, expected_monotonic);
                 assert!(
                     sum.data_points
                         .iter()
@@ -2176,7 +2207,7 @@ mod tests {
                 );
             }
             metric::Data::Gauge(gauge) => {
-                assert!(!is_sum, "{name} should be a cumulative sum");
+                assert!(monotonic_sum.is_none(), "{name} should be a cumulative sum");
                 assert!(
                     gauge
                         .data_points
