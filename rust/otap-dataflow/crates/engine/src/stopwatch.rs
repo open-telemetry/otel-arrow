@@ -1,14 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Distributed stopwatch that sums synchronous compute duration across a
+//! Distributed stopwatch that sums per-message compute duration across a
 //! contiguous range of processor nodes.
 //!
 //! Stopwatches are declared in the pipeline telemetry policy YAML and
-//! managed entirely by the engine.  On the forward path, each processor's
-//! `timed()` elapsed is accumulated onto the PData's `stopwatch_compute_ns`
-//! field.  The stop node takes the total and records it into the stopwatch
-//! metric entity.
+//! managed entirely by the engine. On the forward path, each processor's
+//! per-message compute time is measured by the EffectHandler's
+//! `Instant`-based send marker (advanced by `take_elapsed_since_send_marker_ns`
+//! at each `send_message` call) and accumulated onto the PData's
+//! `stopwatch_compute_ns` field. The stop node takes the total and records it
+//! into the stopwatch metric entity.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -23,10 +25,15 @@ use crate::context::PipelineContext;
 use otap_df_config::policy::TelemetryPolicy;
 
 /// Metric set for a single stopwatch.
+///
+/// Future extension: this set could also record signal-item counts
+/// at the start and stop nodes — `stopwatch.items.consumed` (Mmsc,
+/// observed at the start node from `OtapPdata::num_items()`) and
+/// `stopwatch.items.produced` (observed at the stop node).
 #[metric_set(name = "stopwatch")]
 #[derive(Debug, Default, Clone)]
 pub struct StopwatchMetrics {
-    /// Sum of per-node synchronous compute durations (nanoseconds)
+    /// Sum of per-node compute durations (nanoseconds)
     /// for messages traversing the stopwatch range.
     #[metric(name = "stopwatch.compute.duration", unit = "ns")]
     pub compute_duration: Mmsc,
@@ -56,9 +63,9 @@ pub type StopwatchId = usize;
 /// Per-pipeline stopwatch state.
 ///
 /// Holds the start/stop node lookup tables used during processor wiring.
-/// Metric sets are cloned to the local processor `EffectHandler` at build
-/// time; reporting happens from the processor's own telemetry path, not
-/// from this state.
+/// Metric sets are cloned to the processor `EffectHandler` (local or
+/// shared) at build time; reporting happens from the processor's own
+/// telemetry path, not from this state.
 pub(crate) struct StopwatchState {
     /// Metric sets indexed by internal stopwatch index.
     /// Cloned to processors at build time; not reported from here.
@@ -73,11 +80,13 @@ pub(crate) struct StopwatchState {
 /// Build stopwatch state from the telemetry policy configuration.
 ///
 /// Resolves stopwatch start/stop node names to node indices, validates
-/// that endpoints are processor nodes and ranges don't overlap, registers
-/// metric entities, and builds the lookup tables used for processor wiring.
+/// that endpoints are processor nodes (local or shared; receivers and
+/// exporters are rejected) and ranges don't overlap, registers metric
+/// entities, and builds the lookup tables used for processor wiring.
 ///
-/// Stopwatches require the per-node `PROCESS_DURATION` interest to measure
-/// elapsed time. If `node_interests` does not include `PROCESS_DURATION`
+/// Stopwatches require the per-node `PROCESS_DURATION` interest to be
+/// enabled in metric reporting (so the per-message timing path runs).
+/// If `node_interests` does not include `PROCESS_DURATION`
 /// (e.g. `runtime_metrics: basic` or `none`), all configured stopwatches
 /// are skipped with a single warning so users see a clear signal rather
 /// than silent zero-duration metrics.
@@ -124,9 +133,8 @@ pub(crate) fn build_stopwatch_state(
             continue;
         };
 
-        // Stopwatches only work on local processors (they own the Cell<Mmsc>
-        // accumulator).  Warn and skip if either endpoint is a receiver or
-        // exporter.
+        // Stopwatch endpoints must be processors. Local and shared processors
+        // are accepted; receivers and exporters are rejected.
         if !processor_indices.contains(&start_idx) || !processor_indices.contains(&stop_idx) {
             otap_df_telemetry::otel_warn!(
                 "stopwatch.config.non_processor",
@@ -179,6 +187,16 @@ pub(crate) fn build_stopwatch_state(
         stop_nodes,
         start_nodes,
     }
+}
+
+/// Saturating cast of `u128` nanoseconds to `u64`.
+///
+/// Used by EffectHandlers when computing elapsed durations between
+/// `Instant`s for stopwatch accumulation.
+#[inline]
+#[must_use]
+pub fn nanos_u64(ns: u128) -> u64 {
+    ns.min(u128::from(u64::MAX)) as u64
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -289,6 +307,8 @@ mod tests {
     #[test]
     fn valid_stopwatch_is_registered() {
         let (ctx, _) = test_pipeline_ctx();
+        // Shared processors are accepted because the caller in runtime_pipeline
+        // includes them in `processor_indices`; this validator is kind-agnostic.
         let (names, procs) = test_maps(&["a", "b", "c"], &[]);
         let policy = policy_with(vec![sw("sw1", "a", "c")]);
 

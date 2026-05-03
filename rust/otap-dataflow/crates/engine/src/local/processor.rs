@@ -45,7 +45,7 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
 use crate::processor::ProcessorRuntimeRequirements;
-use crate::stopwatch::StopwatchMetrics;
+use crate::stopwatch::{StopwatchMetrics, nanos_u64};
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
@@ -55,6 +55,7 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
@@ -127,16 +128,19 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<Sender<PData>>,
-    /// Accumulated synchronous compute duration (nanoseconds) for the
-    /// current PData message.  Reset to 0 before each `process()` call
-    /// and added to when the processor calls `timed()`.
-    /// Only populated when `stopwatches_active` is true.
-    per_message_compute_ns: Cell<u64>,
+    /// Marker for the most recent timing point on the current message's
+    /// path through `process()`. Armed by `begin_process_timing` before
+    /// each PData `process()` call and advanced by
+    /// `take_elapsed_since_send_marker_ns` on each send. Stays `None`
+    /// when stopwatches are inactive on this pipeline; otherwise stays
+    /// `Some(_)` once armed (each `take_elapsed_...` rewrites it to
+    /// "now", and the next PData's `begin_process_timing` overwrites it).
+    last_send_marker: Rc<Cell<Option<Instant>>>,
     /// Whether this node is a stopwatch start node.
     stopwatch_is_start: bool,
     /// Whether any stopwatch is configured in this pipeline.
-    /// When false, `timed()` uses the lighter path that doesn't track
-    /// per-message elapsed, and `reset_per_message_compute_ns` is a no-op.
+    /// When false, `begin_process_timing` and
+    /// `take_elapsed_since_send_marker_ns` are no-ops.
     stopwatches_active: bool,
     /// Metric set for the stopwatch where this node is the stop node.
     /// `None` when this node is not a stopwatch stop node.
@@ -162,7 +166,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            per_message_compute_ns: Cell::new(0),
+            last_send_marker: Rc::new(Cell::new(None)),
             stopwatch_is_start: false,
             stopwatches_active: false,
             stopwatch_stop_metric: None,
@@ -206,22 +210,36 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the accumulated per-message synchronous compute duration
-    /// in nanoseconds for the current PData message.
-    #[must_use]
-    pub fn per_message_compute_ns(&self) -> u64 {
-        self.per_message_compute_ns.get()
+    /// Begin per-message stopwatch timing for the upcoming `process()` call.
+    ///
+    /// Sets the send-marker to "now" so that the first
+    /// [`take_elapsed_since_send_marker_ns`] call (typically from the send
+    /// hook) measures elapsed time from the start of `process()`.
+    /// No-op when no stopwatches are configured.
+    pub(crate) fn begin_process_timing(&self) {
+        if self.stopwatches_active {
+            self.last_send_marker.set(Some(Instant::now()));
+        }
     }
 
-    /// Reset the per-message compute accumulator to zero.
-    ///
-    /// Called at the start of each PData message processing cycle so that
-    /// `timed()` calls within a single `process()` invocation accumulate
-    /// fresh values.  No-op when no stopwatches are configured.
-    pub(crate) fn reset_per_message_compute_ns(&self) {
-        if self.stopwatches_active {
-            self.per_message_compute_ns.set(0);
-        }
+    /// Returns nanoseconds elapsed since the send-marker was last set or
+    /// advanced, then advances the marker to "now". Returns 0 when no
+    /// marker is active (e.g. stopwatches disabled, or
+    /// `begin_process_timing` was not called for this message).
+    #[must_use]
+    pub fn take_elapsed_since_send_marker_ns(&self) -> u64 {
+        let Some(prev) = self.last_send_marker.get() else {
+            return 0;
+        };
+        let now = Instant::now();
+        self.last_send_marker.set(Some(now));
+        nanos_u64(now.duration_since(prev).as_nanos())
+    }
+
+    /// Returns whether any stopwatch is configured in this pipeline.
+    #[must_use]
+    pub fn stopwatches_active(&self) -> bool {
+        self.stopwatches_active
     }
 
     /// Sets stopwatch start/stop roles for this node.
@@ -277,9 +295,11 @@ impl<PData> EffectHandler<PData> {
     /// is enabled.
     ///
     /// Delegates to [`ComputeDuration::timed`] with this handler's
-    /// precomputed interests.  When stopwatches are active in this
-    /// pipeline, the elapsed nanoseconds are also accumulated into
-    /// `per_message_compute_ns` for the stopwatch send path.
+    /// precomputed interests. Stopwatch participation is automatic via
+    /// the engine's `Instant`-marker timing in `process()` and does not
+    /// require `timed()`. This method exists solely to provide the
+    /// success/failed outcome split for the
+    /// `processor.compute.{success,failed}.duration` metric.
     ///
     /// The closure-based API structurally prevents timing from
     /// spanning `.await` points.
@@ -289,16 +309,7 @@ impl<PData> EffectHandler<PData> {
         cd: &ComputeDuration,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
-        if self.stopwatches_active {
-            let (result, elapsed_ns) = cd.timed_with_elapsed(self.core.node_interests(), f);
-            if elapsed_ns > 0 {
-                self.per_message_compute_ns
-                    .set(self.per_message_compute_ns.get().saturating_add(elapsed_ns));
-            }
-            result
-        } else {
-            cd.timed(self.core.node_interests(), f)
-        }
+        cd.timed(self.core.node_interests(), f)
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.
@@ -311,7 +322,11 @@ impl<PData> EffectHandler<PData> {
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent or [`Error::ProcessorError`]
     /// if the default port is not configured.
     #[inline]
-    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+    pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
+    where
+        PData: crate::processor::ProcessorSendHook,
+    {
+        data.before_processor_send(self);
         self.router.send_default(data).await
     }
 
@@ -326,7 +341,11 @@ impl<PData> EffectHandler<PData> {
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
     #[inline]
-    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+    pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
+    where
+        PData: crate::processor::ProcessorSendHook,
+    {
+        data.before_processor_send(self);
         self.router.try_send_default(data)
     }
 
@@ -337,10 +356,16 @@ impl<PData> EffectHandler<PData> {
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent, or
     /// [`Error::ProcessorError`] if the port does not exist.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    pub async fn send_message_to<P>(
+        &self,
+        port: P,
+        mut data: PData,
+    ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
+        PData: crate::processor::ProcessorSendHook,
     {
+        data.before_processor_send(self);
         self.router.send_to(port, data).await
     }
 
@@ -355,10 +380,12 @@ impl<PData> EffectHandler<PData> {
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
     #[inline]
-    pub fn try_send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
+        PData: crate::processor::ProcessorSendHook,
     {
+        data.before_processor_send(self);
         self.router.try_send_to(port, data)
     }
 
@@ -457,6 +484,25 @@ impl<PData> EffectHandler<PData> {
     // More methods will be added in the future as needed.
 }
 
+impl<PData> crate::processor::ProcessorHandler for EffectHandler<PData> {
+    #[inline]
+    fn is_stopwatch_start(&self) -> bool {
+        EffectHandler::is_stopwatch_start(self)
+    }
+    #[inline]
+    fn is_stopwatch_stop(&self) -> bool {
+        EffectHandler::is_stopwatch_stop(self)
+    }
+    #[inline]
+    fn take_elapsed_since_send_marker_ns(&self) -> u64 {
+        EffectHandler::take_elapsed_since_send_marker_ns(self)
+    }
+    #[inline]
+    fn record_stopwatch_stop(&self, total: u64) {
+        EffectHandler::record_stopwatch_stop(self, total);
+    }
+}
+
 #[async_trait(?Send)]
 impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for EffectHandler<PData> {
     async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
@@ -494,6 +540,8 @@ mod tests {
     fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
     }
+
+    impl crate::processor::ProcessorSendHook for u64 {}
 
     #[derive(Clone, Debug)]
     struct TestPData {
@@ -965,63 +1013,41 @@ mod tests {
         );
     }
 
-    /// When no stopwatches are configured (the default), `timed()` should
-    /// use the lightweight `ComputeDuration::timed()` path and NOT
-    /// accumulate into `per_message_compute_ns`.
+    /// When stopwatches are active, `begin_process_timing` arms the marker and
+    /// `take_elapsed_since_send_marker_ns` reports a non-zero delta after work.
     #[test]
-    fn timed_without_stopwatches_does_not_accumulate() {
-        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-
-        // Default: stopwatches_active = false.
-        assert!(!eh.stopwatches_active);
-
-        // Create a ComputeDuration and call timed().
-        let (ctx, _) = crate::testing::test_pipeline_ctx();
-        let cd = ComputeDuration::new(&ctx);
-
-        let result = eh.timed(&cd, || Ok::<_, &str>(42));
-        assert_eq!(result.unwrap(), 42);
-
-        // per_message_compute_ns must remain 0 — the stopwatch path was not taken.
-        assert_eq!(
-            eh.per_message_compute_ns(),
-            0,
-            "per_message_compute_ns should be 0 when stopwatches are inactive"
-        );
-
-        // reset is also a no-op.
-        eh.reset_per_message_compute_ns();
-        assert_eq!(eh.per_message_compute_ns(), 0);
-    }
-
-    /// When stopwatches are active, `timed()` should accumulate elapsed
-    /// nanoseconds into `per_message_compute_ns`.
-    #[test]
-    fn timed_with_stopwatches_accumulates() {
+    fn stopwatch_marker_accumulates_after_begin_process_timing() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_stopwatch_roles(false, None, true);
-        eh.core.set_node_interests(Interests::PROCESS_DURATION);
+        eh.set_stopwatch_roles(true, None, true);
         assert!(eh.stopwatches_active);
 
-        let (ctx, _) = crate::testing::test_pipeline_ctx();
-        let cd = ComputeDuration::new(&ctx);
+        eh.begin_process_timing();
 
-        // Call timed() multiple times; accumulated ns should be > 0.
-        for _ in 0..10 {
-            let _ = eh.timed(&cd, || Ok::<_, &str>(std::hint::black_box(42)));
+        // Burn a small amount of CPU so the elapsed delta is non-zero on every
+        // platform we test on.
+        let mut value = 0u64;
+        for i in 0..10_000 {
+            value = value.wrapping_add(std::hint::black_box(i));
         }
-        let ns = eh.per_message_compute_ns();
+        let _ = std::hint::black_box(value);
+
+        let ns = eh.take_elapsed_since_send_marker_ns();
         assert!(
             ns > 0,
-            "per_message_compute_ns should be non-zero when stopwatches are active, got {ns}"
+            "take_elapsed_since_send_marker_ns should be non-zero after begin_process_timing, got {ns}"
         );
+    }
 
-        // reset should clear it.
-        eh.reset_per_message_compute_ns();
-        assert_eq!(eh.per_message_compute_ns(), 0);
+    /// Without `begin_process_timing`, `take_elapsed_since_send_marker_ns`
+    /// returns 0 (no marker armed).
+    #[test]
+    fn stopwatch_marker_returns_zero_when_unarmed() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        eh.set_stopwatch_roles(true, None, true);
+        assert_eq!(eh.take_elapsed_since_send_marker_ns(), 0);
     }
 }

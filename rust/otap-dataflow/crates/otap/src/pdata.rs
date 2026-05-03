@@ -20,6 +20,7 @@ use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
+use otap_df_engine::processor::{ProcessorHandler, ProcessorSendHook};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
     MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
@@ -46,10 +47,12 @@ pub struct Context {
     transport_headers: Option<TransportHeaders>,
     /// Active stopwatch accumulator (nanoseconds).
     ///
-    /// `Some(ns + 1)` when a message is inside a stopwatch range (between
-    /// start and stop nodes). The +1 bias represents active-with-zero while
-    /// preserving `Option<NonZeroU64>` niche optimization.
-    /// At most one stopwatch can be active at a time (non-overlapping ranges).
+    /// `Some(ns)` when a message is inside a stopwatch range (between
+    /// start and stop nodes). Stored value equals the real accumulated
+    /// nanoseconds. `start_stopwatch` initializes to 1ns as an "active"
+    /// sentinel — duration measurements are required to be >0 ns, so the
+    /// 1ns sentinel is acceptable drift. At most one stopwatch can be
+    /// active at a time (non-overlapping ranges).
     stopwatch_compute_ns: Option<NonZeroU64>,
 }
 
@@ -360,13 +363,17 @@ impl StopwatchAccumulation for OtapPdata {
                  overlapping ranges are not supported — previous accumulator discarded"
             );
         }
+        // Use a 1ns active sentinel because stopwatch duration measurements
+        // are required to be greater than 0ns.
         self.context.stopwatch_compute_ns = Some(NonZeroU64::new(1).expect("1 is non-zero"));
     }
 
     fn add_stopwatch_compute(&mut self, ns: u64) {
         if let Some(acc) = &mut self.context.stopwatch_compute_ns {
+            // The 1ns initialization sentinel from start_stopwatch is included
+            // in the total.
             *acc = NonZeroU64::new(acc.get().saturating_add(ns))
-                .expect("biased stopwatch accumulator is non-zero");
+                .expect("stopwatch accumulator is non-zero");
         }
     }
 
@@ -374,7 +381,7 @@ impl StopwatchAccumulation for OtapPdata {
         self.context
             .stopwatch_compute_ns
             .take()
-            .map(|acc| acc.get() - 1)
+            .map(|acc| acc.get())
     }
 }
 
@@ -688,51 +695,30 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
-/// Trait abstracting the stopwatch-related methods available on all EffectHandler types.
-trait StopwatchHandler {
-    fn per_message_compute_ns(&self) -> u64;
-    fn is_stopwatch_start(&self) -> bool;
-    fn is_stopwatch_stop(&self) -> bool;
-    fn record_stopwatch_stop(&self, total: u64);
-}
-
-macro_rules! impl_stopwatch_handler {
-    ($handler:ty) => {
-        impl StopwatchHandler for $handler {
-            fn per_message_compute_ns(&self) -> u64 {
-                self.per_message_compute_ns()
-            }
-            fn is_stopwatch_start(&self) -> bool {
-                self.is_stopwatch_start()
-            }
-            fn is_stopwatch_stop(&self) -> bool {
-                self.is_stopwatch_stop()
-            }
-            fn record_stopwatch_stop(&self, total: u64) {
-                self.record_stopwatch_stop(total);
-            }
-        }
-    };
-}
-
-impl_stopwatch_handler!(otap_df_engine::local::processor::EffectHandler<OtapPdata>);
-
 /// Forward-path stopwatch accumulation for non-overlapping ranges.
-fn stopwatch_accumulate(handler: &impl StopwatchHandler, data: &mut OtapPdata) {
+/// Invoked by local and shared processor handlers (via `ProcessorSendHook`);
+/// receivers and exporters do not measure stopwatches.
+fn stopwatch_accumulate<H: ProcessorHandler>(handler: &H, data: &mut OtapPdata) {
     let is_start = handler.is_stopwatch_start();
     let is_stop = handler.is_stopwatch_stop();
     if !is_start && !is_stop && !data.has_active_stopwatch() {
         return;
     }
-    let compute_ns = handler.per_message_compute_ns();
+    let delta_ns = handler.take_elapsed_since_send_marker_ns();
     if is_start {
         data.start_stopwatch();
     }
-    data.add_stopwatch_compute(compute_ns);
+    data.add_stopwatch_compute(delta_ns);
     if is_stop {
         if let Some(total) = data.take_stopwatch_compute() {
             handler.record_stopwatch_stop(total);
         }
+    }
+}
+
+impl ProcessorSendHook for OtapPdata {
+    fn before_processor_send<H: ProcessorHandler>(&mut self, handler: &H) {
+        stopwatch_accumulate(handler, self);
     }
 }
 
@@ -743,15 +729,17 @@ fn stopwatch_accumulate(handler: &impl StopwatchHandler, data: &mut OtapPdata) {
 ///   $trait_name   – `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
 ///   $handler      – fully-qualified EffectHandler type
 ///   $id_method    – `processor_id` or `receiver_id`
-macro_rules! maybe_stopwatch_accumulate {
-    (stopwatch, $handler:expr, $data:expr) => {
-        stopwatch_accumulate($handler, $data);
+///   $hook         – `with_hook` (processors: invokes `before_processor_send`)
+///                   or `no_hook` (receivers: no per-send bookkeeping)
+macro_rules! maybe_processor_send_hook {
+    (with_hook, $handler:expr, $data:expr) => {
+        $data.before_processor_send($handler);
     };
-    (no_stopwatch, $handler:expr, $data:expr) => {};
+    (no_hook, $handler:expr, $data:expr) => {};
 }
 
 macro_rules! impl_message_source_ext {
-    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident, $stopwatch:ident) => {
+    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident, $hook:ident) => {
         #[$async_attr]
         impl $trait_name<OtapPdata> for $handler {
             async fn send_message_with_source_node(
@@ -759,7 +747,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                maybe_stopwatch_accumulate!($stopwatch, self, &mut data);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -768,7 +756,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                maybe_stopwatch_accumulate!($stopwatch, self, &mut data);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -781,7 +769,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                maybe_stopwatch_accumulate!($stopwatch, self, &mut data);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -794,7 +782,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                maybe_stopwatch_accumulate!($stopwatch, self, &mut data);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }
@@ -806,28 +794,28 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otap_df_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id,
-    stopwatch
+    with_hook
 );
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_stopwatch
+    no_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id,
-    no_stopwatch
+    with_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_stopwatch
+    no_hook
 );
 
 /* -------- ReceivedAtNode implementation -------- */
@@ -2109,7 +2097,7 @@ mod test {
         assert!(pdata.has_active_stopwatch());
         pdata.add_stopwatch_compute(100);
         pdata.add_stopwatch_compute(200);
-        assert_eq!(pdata.take_stopwatch_compute(), Some(300));
+        assert_eq!(pdata.take_stopwatch_compute(), Some(301));
 
         // Accumulator consumed.
         assert!(!pdata.has_active_stopwatch());
@@ -2135,13 +2123,13 @@ mod test {
 
         // Second stopwatch starts while first is still active — this is
         // the 1→3 + 2→4 overlap scenario.  The runtime warning fires
-        // and the accumulator is reset to 0.
+        // and the accumulator is reset to the 1ns active sentinel.
         pdata.start_stopwatch();
         assert!(pdata.has_active_stopwatch());
 
-        // Only the second stopwatch's compute should be present.
+        // Only the second stopwatch's compute plus its sentinel should be present.
         pdata.add_stopwatch_compute(50);
-        assert_eq!(pdata.take_stopwatch_compute(), Some(50));
+        assert_eq!(pdata.take_stopwatch_compute(), Some(51));
     }
 
     #[test]

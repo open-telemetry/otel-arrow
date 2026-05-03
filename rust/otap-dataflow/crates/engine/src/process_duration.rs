@@ -12,6 +12,13 @@
 //! recorded into separate instruments so operators can distinguish
 //! compute time from error-path time.
 //!
+//! This API complements, but is not required for, the engine's automatic
+//! per-message stopwatch. [`ComputeDuration::timed`] provides the
+//! success/failed outcome split for `processor.compute.{success,failed}.duration`,
+//! while the engine's `Instant`-marker timing on the EffectHandler captures
+//! total wall-clock compute between sends for stopwatches without processor
+//! cooperation.
+//!
 //! The closure-based API structurally prevents timing from spanning
 //! `.await` points.
 
@@ -60,11 +67,15 @@ impl ComputeDuration {
         }
     }
 
-    /// Time a synchronous, fallible closure if interests includes
-    /// `PROCESS_DURATION`, otherwise just call `f` directly.
+    /// Time a synchronous, fallible closure for the process-duration outcome
+    /// split if interests includes `PROCESS_DURATION`, otherwise just call
+    /// `f` directly.
     ///
     /// The elapsed time is recorded into the `success` or `failed`
-    /// accumulator based on the closure's `Result` outcome.
+    /// accumulator based on the closure's `Result` outcome. This feeds only
+    /// the `processor.compute.{success,failed}.duration` metric; stopwatch
+    /// participation is handled separately by the engine's `Instant`-marker
+    /// timing on the EffectHandler.
     ///
     /// The closure-based API structurally prevents the timer from
     /// being held across `.await` — the closure is `FnOnce`, not
@@ -91,39 +102,6 @@ impl ComputeDuration {
             result
         } else {
             f()
-        }
-    }
-
-    /// Time a synchronous, fallible closure and return the elapsed
-    /// nanoseconds alongside the result.
-    ///
-    /// Like [`timed`](Self::timed), but also returns the wall-clock
-    /// nanoseconds consumed by `f` (0 when timing is disabled).
-    /// Used by the stopwatch path to accumulate per-message compute
-    /// duration. Stopwatches are wired up only when the metric level
-    /// includes `PROCESS_DURATION` (validated at pipeline build time),
-    /// so the disabled branch here is unreachable in stopwatch use.
-    #[inline]
-    pub fn timed_with_elapsed<T, E>(
-        &self,
-        interests: Interests,
-        f: impl FnOnce() -> Result<T, E>,
-    ) -> (Result<T, E>, u64) {
-        if interests.contains(Interests::PROCESS_DURATION) {
-            let timer = Timer::start();
-            let result = f();
-            let elapsed = timer.elapsed_nanos();
-            let acc = if result.is_ok() {
-                &self.acc_success
-            } else {
-                &self.acc_failed
-            };
-            let mut val = acc.get();
-            val.record(elapsed);
-            acc.set(val);
-            (result, elapsed as u64)
-        } else {
-            (f(), 0)
         }
     }
 
@@ -178,41 +156,6 @@ mod tests {
 
         assert_eq!(cd.acc_success.get().get().count, 0);
         assert_eq!(cd.acc_failed.get().get().count, 0);
-    }
-
-    /// timed_with_elapsed() returns elapsed nanoseconds alongside the result.
-    #[test]
-    fn timed_with_elapsed_returns_nanos() {
-        let (ctx, _) = test_pipeline_ctx();
-        let cd = ComputeDuration::new(&ctx);
-        let active = Interests::PROCESS_DURATION;
-
-        // Accumulate multiple calls to ensure a non-zero total
-        // (individual calls may be sub-nanosecond).
-        let mut total_ns = 0u64;
-        for _ in 0..10 {
-            let (_, ns) = cd.timed_with_elapsed(active, || Ok::<_, &str>(std::hint::black_box(42)));
-            total_ns += ns;
-        }
-        assert!(
-            total_ns > 0,
-            "accumulated elapsed should be non-zero after 10 calls"
-        );
-
-        // Node-level accumulators should also be populated.
-        assert_eq!(cd.acc_success.get().get().count, 10);
-    }
-
-    /// timed_with_elapsed() returns zero elapsed when interests are disabled.
-    #[test]
-    fn timed_with_elapsed_zero_when_disabled() {
-        let (ctx, _) = test_pipeline_ctx();
-        let cd = ComputeDuration::new(&ctx);
-
-        let (_, elapsed) = cd.timed_with_elapsed(Interests::empty(), || Ok::<_, &str>(1));
-
-        assert_eq!(elapsed, 0);
-        assert_eq!(cd.acc_success.get().get().count, 0);
     }
 
     /// End-to-end: report() drains accumulators into the registry under

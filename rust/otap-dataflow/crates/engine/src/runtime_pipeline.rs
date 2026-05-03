@@ -223,18 +223,20 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             .map(|(nid, _)| (nid.name.to_string(), nid.index))
             .collect();
 
-        // Collect the set of local processor node indices for stopwatch validation.
-        let local_processor_indices: HashSet<usize> = processors
+        // Collect local and shared processor node indices for stopwatch validation.
+        let processor_indices: HashSet<usize> = processors
             .iter()
-            .filter(|p| !p.is_shared())
-            .map(|p| p.node_id().index)
+            .map(|p| match p {
+                ProcessorWrapper::Local { node_id, .. }
+                | ProcessorWrapper::Shared { node_id, .. } => node_id.index,
+            })
             .collect();
 
         // Build stopwatch state and per-node role assignments up front.
         let stopwatch_state = build_stopwatch_state(
             &telemetry_policy,
             &node_name_to_index,
-            &local_processor_indices,
+            &processor_indices,
             node_interests,
             &pipeline_context,
         );
