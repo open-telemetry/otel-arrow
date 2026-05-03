@@ -156,7 +156,7 @@ pub enum HostViewValidationMode {
 #[serde(default, deny_unknown_fields)]
 pub struct FamiliesConfig {
     /// CPU metrics.
-    pub cpu: FamilyConfig,
+    pub cpu: CpuFamilyConfig,
     /// Memory metrics.
     pub memory: FamilyConfig,
     /// Paging metrics.
@@ -180,6 +180,29 @@ impl FamiliesConfig {
             + usize::from(self.disk.enabled)
             + usize::from(self.network.enabled)
             + usize::from(self.processes.enabled)
+    }
+}
+
+/// CPU family config.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CpuFamilyConfig {
+    /// Enable CPU metrics.
+    pub enabled: bool,
+    /// Family collection interval. Defaults to top-level `collection_interval`.
+    #[serde(default, with = "humantime_serde::option")]
+    pub interval: Option<Duration>,
+    /// Emit per-logical-CPU time series. Not supported in v1.
+    pub per_cpu: bool,
+}
+
+impl Default for CpuFamilyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval: None,
+            per_cpu: false,
+        }
     }
 }
 
@@ -533,6 +556,11 @@ fn validate_config(config: &Config) -> Result<(), otap_df_config::error::Error> 
             error: "network include_connection_count is not supported in v1".to_owned(),
         });
     }
+    if config.families.cpu.per_cpu {
+        return Err(otap_df_config::error::Error::InvalidUserConfig {
+            error: "cpu per_cpu is not supported in v1".to_owned(),
+        });
+    }
     validate_family_interval(
         "cpu",
         config.families.cpu.enabled,
@@ -679,7 +707,7 @@ impl TryFrom<Config> for RuntimeConfig {
             validation: config.host_view.validation,
             initial_delay: config.initial_delay,
             families: RuntimeFamilies {
-                cpu: RuntimeFamily::new(&config.families.cpu, config.collection_interval),
+                cpu: RuntimeFamily::new_cpu(&config.families.cpu, config.collection_interval),
                 memory: RuntimeFamily::new(&config.families.memory, config.collection_interval),
                 paging: RuntimeFamily::new(&config.families.paging, config.collection_interval),
                 system: RuntimeFamily::new(&config.families.system, config.collection_interval),
@@ -718,6 +746,13 @@ impl TryFrom<Config> for RuntimeConfig {
 
 impl RuntimeFamily {
     fn new(config: &FamilyConfig, default_interval: Duration) -> Self {
+        Self {
+            enabled: config.enabled,
+            interval: config.interval.unwrap_or(default_interval),
+        }
+    }
+
+    fn new_cpu(config: &CpuFamilyConfig, default_interval: Duration) -> Self {
         Self {
             enabled: config.enabled,
             interval: config.interval.unwrap_or(default_interval),
@@ -1071,9 +1106,9 @@ mod tests {
     fn rejects_all_families_disabled() {
         let config = Config {
             families: FamiliesConfig {
-                cpu: FamilyConfig {
+                cpu: CpuFamilyConfig {
                     enabled: false,
-                    ..FamilyConfig::default()
+                    ..CpuFamilyConfig::default()
                 },
                 memory: FamilyConfig {
                     enabled: false,
@@ -1132,9 +1167,43 @@ mod tests {
     fn rejects_zero_enabled_family_interval() {
         let config = Config {
             families: FamiliesConfig {
-                cpu: FamilyConfig {
+                cpu: CpuFamilyConfig {
                     interval: Some(Duration::ZERO),
-                    ..FamilyConfig::default()
+                    ..CpuFamilyConfig::default()
+                },
+                ..FamiliesConfig::default()
+            },
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            validate_config(&config),
+            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+        ));
+    }
+
+    #[test]
+    fn accepts_disabled_cpu_per_cpu_flag() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "families": {
+                "cpu": {
+                    "per_cpu": false
+                }
+            }
+        }))
+        .expect("valid cpu config");
+
+        assert!(!config.families.cpu.per_cpu);
+        validate_config(&config).expect("valid config");
+    }
+
+    #[test]
+    fn rejects_v1_cpu_per_cpu() {
+        let config = Config {
+            families: FamiliesConfig {
+                cpu: CpuFamilyConfig {
+                    per_cpu: true,
+                    ..CpuFamilyConfig::default()
                 },
                 ..FamiliesConfig::default()
             },
@@ -1185,9 +1254,9 @@ mod tests {
             collection_interval: Duration::from_secs(10),
             initial_delay: Duration::from_secs(1),
             families: FamiliesConfig {
-                cpu: FamilyConfig {
+                cpu: CpuFamilyConfig {
                     interval: Some(Duration::from_secs(5)),
-                    ..FamilyConfig::default()
+                    ..CpuFamilyConfig::default()
                 },
                 ..FamiliesConfig::default()
             },
