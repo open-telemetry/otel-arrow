@@ -1217,6 +1217,20 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_lease_rejects_same_root_until_drop() {
+        let root = PathBuf::from("/tmp/otap-host-metrics-lease-test");
+        let lease = HostMetricsLease::acquire(root.clone()).expect("first lease");
+
+        assert!(matches!(
+            HostMetricsLease::acquire(root.clone()),
+            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+        ));
+
+        drop(lease);
+        let _lease = HostMetricsLease::acquire(root).expect("lease released on drop");
+    }
+
+    #[test]
     fn rejects_conflicting_root_paths() {
         let config = Config {
             root_path: Some(PathBuf::from("/host")),
