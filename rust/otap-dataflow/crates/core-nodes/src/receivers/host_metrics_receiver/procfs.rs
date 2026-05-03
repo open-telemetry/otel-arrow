@@ -92,7 +92,7 @@ impl ProcfsSource {
     }
 
     /// Collects one host snapshot for the due family set.
-    pub fn scrape_due(&mut self, due: ProcfsFamilies) -> io::Result<HostSnapshot> {
+    pub fn scrape_due(&mut self, due: ProcfsFamilies) -> io::Result<HostScrape> {
         let due = ProcfsFamilies {
             cpu: due.cpu && self.config.cpu,
             memory: due.memory && self.config.memory,
@@ -104,54 +104,98 @@ impl ProcfsSource {
         };
         let now_unix_nano = now_unix_nano();
         let clk_tck = self.clk_tck;
+        let mut partial_errors = 0;
+        let mut first_error = None;
         let needs_stat = due.cpu || due.system || due.processes;
-        let stat = if needs_stat {
-            let proc_stat = self.read_path(PathKind::Stat)?;
-            parse_stat(proc_stat, clk_tck)
-        } else {
-            StatSnapshot::default()
+        let stat = match needs_stat
+            .then(|| self.read_path(PathKind::Stat))
+            .transpose()
+        {
+            Ok(Some(proc_stat)) => parse_stat(proc_stat, clk_tck),
+            Ok(None) => StatSnapshot::default(),
+            Err(err) => {
+                record_partial_error(&mut partial_errors, &mut first_error, err);
+                StatSnapshot::default()
+            }
         };
 
-        let cpuinfo = if due.cpu {
-            let cpuinfo = self.read_path(PathKind::Cpuinfo)?;
-            parse_cpuinfo(cpuinfo)
-        } else {
-            CpuInfo::default()
+        let cpuinfo = match due
+            .cpu
+            .then(|| self.read_path(PathKind::Cpuinfo))
+            .transpose()
+        {
+            Ok(Some(cpuinfo)) => parse_cpuinfo(cpuinfo),
+            Ok(None) => CpuInfo::default(),
+            Err(err) => {
+                record_partial_error(&mut partial_errors, &mut first_error, err);
+                CpuInfo::default()
+            }
         };
 
-        let memory = if due.memory {
-            let meminfo = self.read_path(PathKind::Meminfo)?;
-            parse_meminfo(meminfo)
-        } else {
-            None
+        let memory = match due
+            .memory
+            .then(|| self.read_path(PathKind::Meminfo))
+            .transpose()
+        {
+            Ok(Some(meminfo)) => parse_meminfo(meminfo),
+            Ok(None) => None,
+            Err(err) => {
+                record_partial_error(&mut partial_errors, &mut first_error, err);
+                None
+            }
         };
 
-        let uptime_seconds = if due.system {
-            let uptime = self.read_path(PathKind::Uptime)?;
-            parse_uptime(uptime)
-        } else {
-            None
+        let uptime_seconds = match due
+            .system
+            .then(|| self.read_path(PathKind::Uptime))
+            .transpose()
+        {
+            Ok(Some(uptime)) => parse_uptime(uptime),
+            Ok(None) => None,
+            Err(err) => {
+                record_partial_error(&mut partial_errors, &mut first_error, err);
+                None
+            }
         };
 
-        let paging = if due.paging {
-            let vmstat = self.read_path(PathKind::Vmstat)?;
-            Some(parse_vmstat(vmstat))
-        } else {
-            None
+        let paging = match due
+            .paging
+            .then(|| self.read_path(PathKind::Vmstat))
+            .transpose()
+        {
+            Ok(Some(vmstat)) => Some(parse_vmstat(vmstat)),
+            Ok(None) => None,
+            Err(err) => {
+                record_partial_error(&mut partial_errors, &mut first_error, err);
+                None
+            }
         };
 
-        let swaps = if due.paging {
-            let swaps = self.read_path(PathKind::Swaps)?;
-            parse_swaps(swaps)
-        } else {
-            Vec::new()
+        let swaps = match due
+            .paging
+            .then(|| self.read_path(PathKind::Swaps))
+            .transpose()
+        {
+            Ok(Some(swaps)) => parse_swaps(swaps),
+            Ok(None) => Vec::new(),
+            Err(err) => {
+                record_partial_error(&mut partial_errors, &mut first_error, err);
+                Vec::new()
+            }
         };
 
         let disks = if due.disk {
             let disk_include = self.config.disk_include.clone();
             let disk_exclude = self.config.disk_exclude.clone();
-            let diskstats = self.read_path(PathKind::Diskstats)?;
-            parse_diskstats(diskstats, disk_include.as_ref(), disk_exclude.as_ref())
+            match self.read_path(PathKind::Diskstats) {
+                Ok(diskstats) => {
+                    parse_diskstats(diskstats, disk_include.as_ref(), disk_exclude.as_ref())
+                }
+                Err(err) => {
+                    record_partial_error(&mut partial_errors, &mut first_error, err);
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -159,15 +203,22 @@ impl ProcfsSource {
         let networks = if due.network {
             let network_include = self.config.network_include.clone();
             let network_exclude = self.config.network_exclude.clone();
-            let netdev = self.read_path(PathKind::NetDev)?;
-            parse_netdev(netdev, network_include.as_ref(), network_exclude.as_ref())
+            match self.read_path(PathKind::NetDev) {
+                Ok(netdev) => {
+                    parse_netdev(netdev, network_include.as_ref(), network_exclude.as_ref())
+                }
+                Err(err) => {
+                    record_partial_error(&mut partial_errors, &mut first_error, err);
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
 
         let resource = self.read_resource();
 
-        Ok(HostSnapshot {
+        let snapshot = HostSnapshot {
             now_unix_nano,
             start_time_unix_nano: stat.boot_time_unix_nano,
             cpu: stat.cpu,
@@ -180,6 +231,14 @@ impl ProcfsSource {
             disks,
             networks,
             resource,
+        };
+        if !snapshot.has_metrics() {
+            return Err(first_error
+                .unwrap_or_else(|| io::Error::other("host metrics scrape produced no metrics")));
+        }
+        Ok(HostScrape {
+            snapshot,
+            partial_errors,
         })
     }
 
@@ -350,6 +409,14 @@ enum PathKind {
     Hostname,
 }
 
+/// Result of one host metrics scrape.
+pub struct HostScrape {
+    /// Collected host snapshot.
+    pub snapshot: HostSnapshot,
+    /// Number of source read errors skipped because other families succeeded.
+    pub partial_errors: u64,
+}
+
 /// One host metrics snapshot.
 #[derive(Default)]
 pub struct HostSnapshot {
@@ -368,6 +435,20 @@ pub struct HostSnapshot {
 }
 
 impl HostSnapshot {
+    fn has_metrics(&self) -> bool {
+        self.cpu.is_some()
+            || self.cpuinfo.logical_count != 0
+            || self.cpuinfo.physical_count != 0
+            || !self.cpuinfo.frequencies_hz.is_empty()
+            || self.memory.is_some()
+            || self.uptime_seconds.is_some()
+            || self.paging.is_some()
+            || !self.swaps.is_empty()
+            || self.processes.is_some()
+            || !self.disks.is_empty()
+            || !self.networks.is_empty()
+    }
+
     /// Converts a snapshot into an OTLP metrics request.
     pub fn into_export_request(self) -> ExportMetricsServiceRequest {
         let mut metrics = Vec::with_capacity(64);
@@ -1084,6 +1165,17 @@ fn filter_allows(
         && !exclude.is_some_and(|filter| filter.matches(value))
 }
 
+fn record_partial_error(
+    partial_errors: &mut u64,
+    first_error: &mut Option<io::Error>,
+    err: io::Error,
+) {
+    *partial_errors = partial_errors.saturating_add(1);
+    if first_error.is_none() {
+        *first_error = Some(err);
+    }
+}
+
 fn push_gauge_f64(
     metrics: &mut Vec<Metric>,
     name: &'static str,
@@ -1707,6 +1799,80 @@ mod tests {
             "eth0",
         );
         assert_metric_shape(metrics, "system.network.errors", "{error}", true);
+    }
+
+    #[test]
+    fn scrape_due_emits_successful_families_after_partial_read_error() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let proc = root.path().join("proc");
+        std::fs::create_dir(&proc).expect("proc dir");
+        std::fs::write(
+            proc.join("meminfo"),
+            "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 200 kB\n",
+        )
+        .expect("meminfo");
+        let mut source = ProcfsSource::new(
+            Some(root.path()),
+            ProcfsConfig {
+                cpu: false,
+                memory: true,
+                paging: false,
+                system: false,
+                disk: true,
+                network: false,
+                processes: false,
+                disk_include: None,
+                disk_exclude: None,
+                network_include: None,
+                network_exclude: None,
+                validation: HostViewValidationMode::None,
+            },
+        )
+        .expect("source");
+
+        let scrape = source
+            .scrape_due(ProcfsFamilies {
+                memory: true,
+                disk: true,
+                ..ProcfsFamilies::default()
+            })
+            .expect("partial scrape");
+
+        assert_eq!(scrape.partial_errors, 1);
+        assert!(scrape.snapshot.memory.is_some());
+        assert!(scrape.snapshot.disks.is_empty());
+    }
+
+    #[test]
+    fn scrape_due_fails_when_all_due_families_fail() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut source = ProcfsSource::new(
+            Some(root.path()),
+            ProcfsConfig {
+                cpu: false,
+                memory: true,
+                paging: false,
+                system: false,
+                disk: false,
+                network: false,
+                processes: false,
+                disk_include: None,
+                disk_exclude: None,
+                network_include: None,
+                network_exclude: None,
+                validation: HostViewValidationMode::None,
+            },
+        )
+        .expect("source");
+
+        assert!(
+            source
+                .scrape_due(ProcfsFamilies {
+                    memory: true,
+                    ..ProcfsFamilies::default()
+                })
+                .is_err()
+        );
     }
 
     #[test]
