@@ -29,6 +29,7 @@ otap-df-pdata = { workspace = true, features = ["testing"] }
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
 data_engine_kql_parser = { workspace = true }
+data_engine_ottl_parser = { workspace = true }
 data_engine_parser_abstractions = { workspace = true }
 pretty_assertions = { workspace = true }
 prost = { workspace = true }

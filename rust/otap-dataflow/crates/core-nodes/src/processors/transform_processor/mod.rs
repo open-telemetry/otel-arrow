@@ -18,6 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use data_engine_expressions::{Expression, PipelineExpression};
 use data_engine_kql_parser::{KqlParser, Parser};
+use data_engine_ottl_parser::OttlParser;
 use linkme::distributed_slice;
 use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::{
@@ -65,12 +66,16 @@ pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
 
 /// Opentelemetry Processing Language Processor
 pub struct TransformProcessor {
-    pipeline: Pipeline,
     execution_state: ExecutionState,
-    signal_scope: SignalScope,
+    transforms: Vec<Transform>,
     contexts: Contexts,
     metrics: MetricSet<Metrics>,
     sanitize_results: bool,
+}
+
+struct Transform {
+    signal_scope: SignalScope,
+    pipeline: Pipeline,
 }
 
 /// Identifier for which signal types the transformation pipeline should be applied.
@@ -119,15 +124,59 @@ impl TransformProcessor {
         // TODO we should pass some context to the parser so we can determine if there are valid
         // identifiers when checking the config:
         // https://github.com/open-telemetry/otel-arrow/issues/1530
-        let parser_options = default_parser_options();
-        let pipeline_expr = match &config.query {
-            Query::KqlQuery(query) => KqlParser::parse_with_options(query, parser_options),
-            Query::OplQuery(query) => OplParser::parse_with_options(query, parser_options),
-        }
-        .map_err(|e| ConfigError::InvalidUserConfig {
+
+        let map_parser_err = |e| ConfigError::InvalidUserConfig {
             error: format!("Could not parse TransformProcessor query: {e:?}"),
-        })?
-        .pipeline;
+        };
+        let parser_options = default_parser_options();
+
+        let pipeline_options = PipelineOptions {
+            filter_attribute_keys_case_sensitive: config.filter_attribute_keys_case_sensitive,
+        };
+
+        let transforms = match &config.query {
+            Query::KqlQuery(query) => {
+                let pipeline_expr = KqlParser::parse_with_options(query, parser_options)
+                    .map_err(map_parser_err)?
+                    .pipeline;
+                let signal_scope = SignalScope::try_from(&pipeline_expr)?;
+                vec![Transform {
+                    pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
+                    signal_scope,
+                }]
+            }
+            Query::OplQuery(query) => {
+                let pipeline_expr = OplParser::parse_with_options(query, parser_options)
+                    .map_err(map_parser_err)?
+                    .pipeline;
+                let signal_scope = SignalScope::try_from(&pipeline_expr)?;
+                vec![Transform {
+                    pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
+                    signal_scope,
+                }]
+            }
+            Query::Ottl(ottl_config) => {
+                let mut transforms = Vec::new();
+                if let Some(log_statements) = &ottl_config.log_statements {
+                    for statement in log_statements {
+                        let pipeline_expr =
+                            OttlParser::parse_with_options(statement, parser_options.clone())
+                                .map_err(map_parser_err)?
+                                .pipeline;
+
+                        transforms.push(Transform {
+                            pipeline: Pipeline::new_with_options(
+                                pipeline_expr,
+                                pipeline_options.clone(),
+                            ),
+                            signal_scope: SignalScope::Signal(SignalType::Logs),
+                        })
+                    }
+                }
+
+                transforms
+            }
+        };
 
         // TODO: it would be nice if we could validate that the pipeline expr is supported by the
         // query engine here. Currently, validation happens lazily when the first batch is seen.
@@ -136,26 +185,13 @@ impl TransformProcessor {
         let mut execution_state = ExecutionState::new();
         execution_state.set_extension::<RouterExtType>(Box::new(RouterImpl::new()));
 
-        let pipeline_options = PipelineOptions {
-            filter_attribute_keys_case_sensitive: config.filter_attribute_keys_case_sensitive,
-        };
-
         Ok(Self {
-            signal_scope: SignalScope::try_from(&pipeline_expr)?,
-            pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
+            transforms,
             metrics: pipeline_ctx.register_metrics::<Metrics>(),
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             execution_state,
             sanitize_results: !config.skip_sanitize_result,
         })
-    }
-
-    /// determine if the transformation should be applied to this pdata, or if it should be skipped
-    fn should_process(&self, pdata: &OtapPayload) -> bool {
-        match self.signal_scope {
-            SignalScope::All => true,
-            SignalScope::Signal(signal_type) => signal_type == pdata.signal_type(),
-        }
     }
 
     /// sends any result batches that were produced by the pipeline to the appropriate output ports
@@ -404,19 +440,46 @@ impl Processor<OtapPdata> for TransformProcessor {
             },
             Message::PData(pdata) => {
                 let (context, payload) = pdata.into_parts();
-                if !self.should_process(&payload) {
-                    // skip handling this pdata
-                    effect_handler
-                        .send_message_with_source_node(OtapPdata::new(context, payload))
-                        .await?;
-                } else {
-                    let mut otap_batch: OtapArrowRecords = payload.try_into()?;
+                let pdata_signal_type = payload.signal_type();
+                let mut payload = Some(payload);
+                let mut transformed = false;
+                let mut transform_error = None;
+
+                // Execute all transforms. We skip transforms where the batch's signal type is not
+                // selected by the signal scope, and lazily convert the pdata payload to OTAP
+                // if/when we find a transform to apply. If any transform error occurs, break early
+                // and set transform_error to `Some`.
+                //
+                // State at the end of this loop:
+                // - Either payload or `transform_error` will be `Some`
+                // - If we applied any transform then:
+                //   - `transformed` will be set to `true`
+                //   - if payload is `Some` then contained payload variant will be OtelArrowRecords
+                for transform in &mut self.transforms {
+                    let should_process = match &transform.signal_scope {
+                        SignalScope::All => true,
+                        SignalScope::Signal(scope_signal_type) => {
+                            pdata_signal_type == *scope_signal_type
+                        }
+                    };
+
+                    if !should_process {
+                        // skip applying this transform as it does not select the signal type
+                        continue;
+                    }
+                    transformed = true;
+
+                    // convert payload to OTAP & remove delta encoded IDs.
+                    // safety: we know payload will have been initialized to Some either, before
+                    // entering the loop, or during the previous iteration.
+                    let mut otap_batch: OtapArrowRecords =
+                        payload.take().expect("payload initialized").try_into()?;
                     otap_batch.decode_transport_optimized_ids()?;
-                    let result = self
+
+                    let result = transform
                         .pipeline
                         .execute_with_state(otap_batch, &mut self.execution_state)
                         .await
-                        .inspect(|_| self.metrics.msgs_transformed.inc())
                         .map_err(|e| {
                             self.metrics.msgs_transform_failed.inc();
                             EngineError::ProcessorError {
@@ -427,9 +490,49 @@ impl Processor<OtapPdata> for TransformProcessor {
                             }
                         });
 
+                    match result {
+                        Ok(next_result) => {
+                            // initialize payload for the next loop iteration
+                            payload = Some(OtapPayload::OtapArrowRecords(next_result));
+                        }
+                        Err(e) => {
+                            transform_error = Some(e);
+                            break;
+                        }
+                    }
+                }
+
+                if transformed {
+                    self.metrics.msgs_transformed.inc();
+                    let result = match transform_error {
+                        Some(e) => Err(e),
+                        None => {
+                            // safety: since error is `None`, we know payload must be `Some` based
+                            // on the logic in the loop above, so it is safe to expect here
+                            match payload.take().expect("payload option initialized") {
+                                OtapPayload::OtapArrowRecords(otap_batch) => Ok(otap_batch),
+                                _ => {
+                                    // safety: if any transform applied then we'll have converted
+                                    // the payload the OTAP, so we know here that it must be this
+                                    // variant of OtapPayload
+                                    unreachable!("expected OTAP payload variant")
+                                }
+                            }
+                        }
+                    };
                     self.handle_exec_result(context, result, effect_handler)
                         .await?;
-                };
+                } else {
+                    // safety: payload is initialized to Some, and only modified if any transforms
+                    // are applied. In this location, we know no transforms were applied so we can
+                    // safely expect take here to return Some
+                    let payload = payload.take().expect("payload option initialized");
+
+                    // all transforms were skipped for this pdata, just forward the original payload
+                    effect_handler
+                        .send_message_with_source_node(OtapPdata::new(context, payload))
+                        .await?;
+                }
             }
         };
 
@@ -692,6 +795,76 @@ mod test {
                 assert_eq!(msgs_transformed, 1);
                 assert_eq!(msgs_transform_failed, 0)
             });
+    }
+
+    #[test]
+    fn test_simple_ottl_pipeline() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let processor = try_create_with_config(
+            json!({
+                "ottl": {
+                    "log_statements": [
+                        "set(severity_text, \"ERROR\")"
+                    ]
+                }
+            }),
+            &runtime,
+        )
+        .expect("created processor");
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = vec![
+                    LogRecord::build().severity_text("INFO").finish(),
+                    LogRecord::build().severity_text("ERROR").finish(),
+                ];
+
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                let pdata = OtapPdata::new_default(otap_batch.into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
+                let otap_batch = out.into_iter().next().unwrap();
+
+                let result = otap_to_otlp(&otap_batch);
+
+                match result {
+                    OtlpProtoMessage::Logs(logs_data) => {
+                        assert_eq!(logs_data.resource_logs.len(), 1);
+                        assert_eq!(logs_data.resource_logs[0].scope_logs.len(), 1);
+                        assert_eq!(
+                            logs_data.resource_logs[0].scope_logs[0].log_records.len(),
+                            2
+                        );
+                        for log_record in &logs_data.resource_logs[0].scope_logs[0].log_records {
+                            assert_eq!(log_record.severity_text, "ERROR")
+                        }
+                    }
+                    invalid => {
+                        panic!(
+                            "invalid signal type from output. Expected logs, received {invalid:?}"
+                        )
+                    }
+                }
+            })
+            .validate(|_ctx| async move {});
     }
 
     #[test]

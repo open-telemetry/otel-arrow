@@ -34,11 +34,12 @@ chrono.workspace = true
 hashbrown.workspace = true
 data_engine_expressions.workspace = true
 data_engine_kql_parser.workspace = true
+data_engine_ottl_parser.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
-object_store = {workspace = true, features = ["fs"]}
+object_store = { workspace = true, features = ["fs"] }
 parquet.workspace = true
 prost.workspace = true
 rand.workspace = true
@@ -66,7 +67,13 @@ weaver_resolver = { workspace = true, optional = true }
 weaver_semconv = { workspace = true, optional = true }
 
 [features]
-dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schema", "dep:weaver_resolver", "dep:weaver_semconv"]
+dev-tools = [
+    "dep:weaver_common",
+    "dep:weaver_forge",
+    "dep:weaver_resolved_schema",
+    "dep:weaver_resolver",
+    "dep:weaver_semconv",
+]
 bench = []
 
 [dev-dependencies]

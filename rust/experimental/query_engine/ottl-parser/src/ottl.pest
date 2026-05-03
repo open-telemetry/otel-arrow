@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // OTTL Grammar is heavily influenced by the following source:
 // https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md
 
@@ -30,6 +33,8 @@ string_literal = @{
     "\"" ~ double_quote_string_char* ~ "\""
 }
 
+ident = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+
 // Expressions
 boolean_expression = _{ true_literal | false_literal }
 
@@ -39,5 +44,24 @@ scalar_expression = {
     | integer_literal
     | string_literal
     | null_literal
+    | identifier_expression
     | ("(" ~ scalar_expression ~ ")")
+}
+
+identifier_expression = {
+    ident
+}
+
+argument_list = { scalar_expression? ~ ("," ~ scalar_expression)* }
+
+// Equivalent of "editor" from collector-contrib OTTL grammar:
+// https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/655cd21d43a239447aa423839412f7ff06d2e9e8/pkg/ottl/grammar.go#L194-L199
+editor_expression = { identifier_expression ~ "(" ~ argument_list ~ ")" }
+
+// Equivalent of parsedStatement from collector-contrib OTTL grammar:
+// https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/655cd21d43a239447aa423839412f7ff06d2e9e8/pkg/ottl/grammar.go#L15
+statement_expression = { editor_expression }
+
+program = {
+    SOI ~ statement_expression ~ EOI
 }
