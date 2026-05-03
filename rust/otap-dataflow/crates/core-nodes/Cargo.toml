@@ -42,6 +42,7 @@ object_store = {workspace = true, features = ["fs"]}
 parquet.workspace = true
 prost.workspace = true
 rand.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slotmap.workspace = true
