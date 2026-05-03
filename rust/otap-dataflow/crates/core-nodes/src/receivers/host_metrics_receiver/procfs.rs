@@ -2781,116 +2781,24 @@ fn saturating_i64(value: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "dev-tools")]
+    use std::collections::{BTreeMap, BTreeSet};
+    #[cfg(feature = "dev-tools")]
+    use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
+    #[cfg(feature = "dev-tools")]
+    use weaver_forge::registry::ResolvedRegistry;
+    #[cfg(feature = "dev-tools")]
+    use weaver_resolver::SchemaResolver;
+    #[cfg(feature = "dev-tools")]
+    use weaver_semconv::{
+        attribute::{BasicRequirementLevelSpec, RequirementLevel},
+        group::{GroupType, InstrumentSpec},
+        registry_repo::RegistryRepo,
+    };
 
     #[test]
     fn projection_uses_expected_metric_shapes() {
-        let request = HostSnapshot {
-            now_unix_nano: 2_000,
-            start_time_unix_nano: 1_000,
-            counter_starts: CounterStarts::default(),
-            memory_limit: true,
-            memory_shared: true,
-            memory_hugepages: true,
-            cpu: Some(CpuTimes {
-                user: 1.0,
-                nice: 2.0,
-                system: 3.0,
-                idle: 4.0,
-                wait: 5.0,
-                interrupt: 6.0,
-                steal: 7.0,
-            }),
-            cpu_utilization: Some(CpuTimes {
-                user: 0.1,
-                nice: 0.1,
-                system: 0.2,
-                idle: 0.3,
-                wait: 0.1,
-                interrupt: 0.1,
-                steal: 0.1,
-            }),
-            cpuinfo: CpuInfo {
-                logical_count: 2,
-                physical_count: 1,
-                frequencies_hz: vec![2_400_000_000.0],
-            },
-            memory: Some(MemoryStats {
-                total: 100,
-                used: 80,
-                free: 10,
-                available: 20,
-                cached: 5,
-                buffered: 5,
-                shared: 7,
-                slab_reclaimable: 3,
-                slab_unreclaimable: 2,
-                hugepages: HugepageStats {
-                    total: 10,
-                    free: 4,
-                    reserved: 2,
-                    surplus: 1,
-                    page_size_bytes: 2 * BYTES_PER_KIB,
-                },
-            }),
-            uptime_seconds: Some(42.0),
-            paging: Some(PagingStats {
-                minor_faults: 9,
-                major_faults: 1,
-                swap_in: 2,
-                swap_out: 3,
-            }),
-            swaps: vec![SwapStats {
-                name: "/dev/swap".to_owned(),
-                size: 100,
-                used: 25,
-                free: 75,
-            }],
-            processes: Some(ProcessStats {
-                running: 4,
-                blocked: 1,
-                created: 99,
-            }),
-            disks: vec![DiskStats {
-                name: "sda".to_owned(),
-                limit_bytes: Some(123),
-                read_bytes: 10,
-                write_bytes: 20,
-                read_ops: 1,
-                write_ops: 2,
-                read_merged: 3,
-                write_merged: 4,
-                read_time_seconds: 0.5,
-                write_time_seconds: 0.6,
-                io_time_seconds: 0.7,
-            }],
-            filesystems: vec![FilesystemStats {
-                device: "/dev/sda1".to_owned(),
-                mountpoint: "/".to_owned(),
-                fs_type: "ext4".to_owned(),
-                mode: "rw",
-                used: 60,
-                free: 30,
-                reserved: 10,
-                limit_bytes: Some(100),
-            }],
-            networks: vec![NetworkStats {
-                name: "eth0".to_owned(),
-                rx_bytes: 10,
-                tx_bytes: 20,
-                rx_packets: 1,
-                tx_packets: 2,
-                rx_errors: 3,
-                tx_errors: 4,
-                rx_dropped: 5,
-                tx_dropped: 6,
-            }],
-            resource: HostResource {
-                host_id: Some("host-id".to_owned()),
-                host_name: Some("host-name".to_owned()),
-                host_arch: Some("amd64"),
-            },
-        }
-        .into_export_request();
+        let request = projection_fixture_request();
 
         let resource_metrics = request.resource_metrics.first().expect("resource metrics");
         let resource = resource_metrics.resource.as_ref().expect("resource");
@@ -3037,6 +2945,37 @@ mod tests {
             "eth0",
         );
         assert_metric_shape(metrics, "system.network.errors", "{error}", Some(true));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    #[ignore = "dev-only semconv drift check; may access a local or remote semantic-conventions registry"]
+    fn emitted_phase1_metric_shapes_match_weaver_semconv() {
+        let registry = load_semconv_registry();
+        let semconv_shapes = semconv_system_metric_shapes(&registry);
+        let emitted_shapes = emitted_phase1_metric_shapes();
+
+        for (name, emitted) in emitted_shapes {
+            let semconv = semconv_shapes
+                .get(&name)
+                .unwrap_or_else(|| panic!("missing semconv metric {name}"));
+
+            assert_eq!(emitted.unit, semconv.unit, "unit mismatch for {name}");
+            assert_eq!(
+                emitted.monotonic, semconv.monotonic,
+                "instrument/temporality mismatch for {name}"
+            );
+
+            for attr in &semconv.attributes {
+                if is_intentional_semconv_attribute_gap(name.as_str(), attr.as_str()) {
+                    continue;
+                }
+                assert!(
+                    emitted.attributes.contains(attr),
+                    "missing semconv attribute {attr} on {name}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3567,6 +3506,252 @@ mod tests {
                 "amd64" | "arm32" | "arm64" | "ppc32" | "ppc64" | "x86"
             ));
         }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[derive(Debug)]
+    struct MetricShape {
+        unit: String,
+        monotonic: Option<bool>,
+        attributes: BTreeSet<String>,
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn load_semconv_registry() -> ResolvedRegistry {
+        let registry_path = std::env::var("OTAP_HOST_METRICS_SEMCONV_REGISTRY")
+            .map(|path| {
+                path.parse::<VirtualDirectoryPath>()
+                    .expect("valid OTAP_HOST_METRICS_SEMCONV_REGISTRY")
+            })
+            .unwrap_or_else(|_| VirtualDirectoryPath::GitRepo {
+                url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+                sub_folder: Some("model".to_owned()),
+                refspec: None,
+            });
+
+        let registry_repo =
+            RegistryRepo::try_new("main", &registry_path).expect("semantic convention registry");
+        let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {
+            WResult::Ok(registry) | WResult::OkWithNFEs(registry, _) => registry,
+            WResult::FatalErr(err) => panic!("failed to load semantic convention registry: {err}"),
+        };
+        let resolved_schema = match SchemaResolver::resolve(registry, true) {
+            WResult::Ok(schema) | WResult::OkWithNFEs(schema, _) => schema,
+            WResult::FatalErr(err) => {
+                panic!("failed to resolve semantic convention registry: {err}");
+            }
+        };
+
+        ResolvedRegistry::try_from_resolved_registry(
+            &resolved_schema.registry,
+            resolved_schema.catalog(),
+        )
+        .expect("resolved semantic convention registry")
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn semconv_system_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String, MetricShape> {
+        registry
+            .groups
+            .iter()
+            .filter(|group| group.r#type == GroupType::Metric)
+            .filter_map(|group| {
+                let name = group.metric_name.as_ref()?;
+                if !name.starts_with("system.") {
+                    return None;
+                }
+
+                let monotonic = match group.instrument.as_ref()? {
+                    InstrumentSpec::Counter => Some(true),
+                    InstrumentSpec::UpDownCounter => Some(false),
+                    InstrumentSpec::Gauge | InstrumentSpec::Histogram => None,
+                };
+                let attributes = group
+                    .attributes
+                    .iter()
+                    .filter(|attr| !is_opt_in_requirement(&attr.requirement_level))
+                    .map(|attr| attr.name.clone())
+                    .collect();
+
+                Some((
+                    name.clone(),
+                    MetricShape {
+                        unit: group.unit.clone().unwrap_or_default(),
+                        monotonic,
+                        attributes,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn is_opt_in_requirement(requirement_level: &RequirementLevel) -> bool {
+        matches!(
+            requirement_level,
+            RequirementLevel::Basic(BasicRequirementLevelSpec::OptIn)
+                | RequirementLevel::OptIn { .. }
+        )
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn emitted_phase1_metric_shapes() -> BTreeMap<String, MetricShape> {
+        let metrics = projection_fixture_metrics();
+        metrics
+            .iter()
+            .map(|metric| {
+                let (monotonic, points) = match metric.data.as_ref().expect("metric data") {
+                    metric::Data::Sum(sum) => (Some(sum.is_monotonic), &sum.data_points),
+                    metric::Data::Gauge(gauge) => (None, &gauge.data_points),
+                    _ => panic!("unsupported metric data for {}", metric.name),
+                };
+                let attributes = points
+                    .iter()
+                    .flat_map(|point| point.attributes.iter())
+                    .map(|attr| attr.key.clone())
+                    .collect();
+                (
+                    metric.name.clone(),
+                    MetricShape {
+                        unit: metric.unit.clone(),
+                        monotonic,
+                        attributes,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn is_intentional_semconv_attribute_gap(name: &str, attr: &str) -> bool {
+        matches!(
+            (name, attr),
+            ("system.paging.operations", "system.paging.fault.type")
+        )
+    }
+
+    fn projection_fixture_request() -> ExportMetricsServiceRequest {
+        HostSnapshot {
+            now_unix_nano: 2_000,
+            start_time_unix_nano: 1_000,
+            counter_starts: CounterStarts::default(),
+            memory_limit: true,
+            memory_shared: true,
+            memory_hugepages: true,
+            cpu: Some(CpuTimes {
+                user: 1.0,
+                nice: 2.0,
+                system: 3.0,
+                idle: 4.0,
+                wait: 5.0,
+                interrupt: 6.0,
+                steal: 7.0,
+            }),
+            cpu_utilization: Some(CpuTimes {
+                user: 0.1,
+                nice: 0.1,
+                system: 0.2,
+                idle: 0.3,
+                wait: 0.1,
+                interrupt: 0.1,
+                steal: 0.1,
+            }),
+            cpuinfo: CpuInfo {
+                logical_count: 2,
+                physical_count: 1,
+                frequencies_hz: vec![2_400_000_000.0],
+            },
+            memory: Some(MemoryStats {
+                total: 100,
+                used: 80,
+                free: 10,
+                available: 20,
+                cached: 5,
+                buffered: 5,
+                shared: 7,
+                slab_reclaimable: 3,
+                slab_unreclaimable: 2,
+                hugepages: HugepageStats {
+                    total: 10,
+                    free: 4,
+                    reserved: 2,
+                    surplus: 1,
+                    page_size_bytes: 2 * BYTES_PER_KIB,
+                },
+            }),
+            uptime_seconds: Some(42.0),
+            paging: Some(PagingStats {
+                minor_faults: 9,
+                major_faults: 1,
+                swap_in: 2,
+                swap_out: 3,
+            }),
+            swaps: vec![SwapStats {
+                name: "/dev/swap".to_owned(),
+                size: 100,
+                used: 25,
+                free: 75,
+            }],
+            processes: Some(ProcessStats {
+                running: 4,
+                blocked: 1,
+                created: 99,
+            }),
+            disks: vec![DiskStats {
+                name: "sda".to_owned(),
+                limit_bytes: Some(123),
+                read_bytes: 10,
+                write_bytes: 20,
+                read_ops: 1,
+                write_ops: 2,
+                read_merged: 3,
+                write_merged: 4,
+                read_time_seconds: 0.5,
+                write_time_seconds: 0.6,
+                io_time_seconds: 0.7,
+            }],
+            filesystems: vec![FilesystemStats {
+                device: "/dev/sda1".to_owned(),
+                mountpoint: "/".to_owned(),
+                fs_type: "ext4".to_owned(),
+                mode: "rw",
+                used: 60,
+                free: 30,
+                reserved: 10,
+                limit_bytes: Some(100),
+            }],
+            networks: vec![NetworkStats {
+                name: "eth0".to_owned(),
+                rx_bytes: 10,
+                tx_bytes: 20,
+                rx_packets: 1,
+                tx_packets: 2,
+                rx_errors: 3,
+                tx_errors: 4,
+                rx_dropped: 5,
+                tx_dropped: 6,
+            }],
+            resource: HostResource {
+                host_id: Some("host-id".to_owned()),
+                host_name: Some("host-name".to_owned()),
+                host_arch: Some("amd64"),
+            },
+        }
+        .into_export_request()
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn projection_fixture_metrics() -> Vec<Metric> {
+        projection_fixture_request()
+            .resource_metrics
+            .into_iter()
+            .next()
+            .expect("resource metrics")
+            .scope_metrics
+            .into_iter()
+            .next()
+            .expect("scope metrics")
+            .metrics
     }
 
     fn assert_metric_shape(
