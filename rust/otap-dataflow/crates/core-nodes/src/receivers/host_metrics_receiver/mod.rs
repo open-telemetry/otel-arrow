@@ -244,6 +244,8 @@ pub struct DiskFamilyConfig {
     /// Family collection interval. Defaults to top-level `collection_interval`.
     #[serde(default, with = "humantime_serde::option")]
     pub interval: Option<Duration>,
+    /// Enable disk limit metrics.
+    pub limit: bool,
     /// Device include filter.
     pub include: Option<DeviceFilterConfig>,
     /// Device exclude filter.
@@ -255,6 +257,7 @@ impl Default for DiskFamilyConfig {
         Self {
             enabled: true,
             interval: None,
+            limit: false,
             include: None,
             exclude: None,
         }
@@ -387,6 +390,7 @@ struct RuntimeFamily {
 struct RuntimeDiskFamily {
     enabled: bool,
     interval: Duration,
+    limit: bool,
     include: Option<CompiledFilter>,
     exclude: Option<CompiledFilter>,
 }
@@ -724,6 +728,7 @@ impl TryFrom<Config> for RuntimeConfig {
                         .disk
                         .interval
                         .unwrap_or(config.collection_interval),
+                    limit: config.families.disk.limit,
                     include: disk_include,
                     exclude: disk_exclude,
                 },
@@ -967,6 +972,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 network: config.families.network.enabled,
                 processes: config.families.processes.enabled,
                 cpu_utilization: config.cpu_utilization,
+                disk_limit: config.families.disk.limit,
                 disk_include: config.families.disk.include.clone(),
                 disk_exclude: config.families.disk.exclude.clone(),
                 network_include: config.families.network.include.clone(),
@@ -1221,6 +1227,21 @@ mod tests {
         .expect("valid cpu config");
 
         assert!(config.families.cpu.utilization);
+        validate_config(&config).expect("valid config");
+    }
+
+    #[test]
+    fn accepts_disk_limit_opt_in() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "families": {
+                "disk": {
+                    "limit": true
+                }
+            }
+        }))
+        .expect("valid disk config");
+
+        assert!(config.families.disk.limit);
         validate_config(&config).expect("valid config");
     }
 

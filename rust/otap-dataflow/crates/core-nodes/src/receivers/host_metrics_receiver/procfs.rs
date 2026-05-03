@@ -50,6 +50,8 @@ pub struct ProcfsConfig {
     pub processes: bool,
     /// Derived aggregate CPU utilization.
     pub cpu_utilization: bool,
+    /// Derived disk limit from sysfs block device size.
+    pub disk_limit: bool,
     /// Disk include filter.
     pub disk_include: Option<CompiledFilter>,
     /// Disk exclude filter.
@@ -203,7 +205,14 @@ impl ProcfsSource {
             let disk_exclude = self.config.disk_exclude.clone();
             match self.read_path(PathKind::Diskstats) {
                 Ok(diskstats) => {
-                    parse_diskstats(diskstats, disk_include.as_ref(), disk_exclude.as_ref())
+                    let mut disks =
+                        parse_diskstats(diskstats, disk_include.as_ref(), disk_exclude.as_ref());
+                    if self.config.disk_limit {
+                        for disk in &mut disks {
+                            disk.limit_bytes = self.read_disk_limit_bytes(&disk.name).ok();
+                        }
+                    }
+                    disks
                 }
                 Err(err) => {
                     record_partial_error(&mut partial_errors, &mut first_error, err);
@@ -335,6 +344,14 @@ impl ProcfsSource {
         Ok(self.buf.as_str())
     }
 
+    fn read_disk_limit_bytes(&mut self, disk_name: &str) -> io::Result<u64> {
+        self.buf.clear();
+        let mut file = File::open(self.paths.sys_block.join(disk_name).join("size"))?;
+        let _ = file.read_to_string(&mut self.buf)?;
+        let sectors = parse_u64(self.buf.trim());
+        Ok(sectors.saturating_mul(DISKSTAT_SECTOR_BYTES))
+    }
+
     fn read_resource(&mut self) -> HostResource {
         HostResource {
             host_id: self
@@ -363,6 +380,7 @@ struct ProcfsPaths {
     vmstat: PathBuf,
     swaps: PathBuf,
     diskstats: PathBuf,
+    sys_block: PathBuf,
     net_dev: PathBuf,
     machine_id: PathBuf,
     dbus_machine_id: PathBuf,
@@ -381,6 +399,7 @@ impl ProcfsPaths {
             vmstat: root.join("proc/vmstat"),
             swaps: root.join("proc/swaps"),
             diskstats: root.join("proc/diskstats"),
+            sys_block: root.join("sys/block"),
             machine_id: root.join("etc/machine-id"),
             dbus_machine_id: root.join("var/lib/dbus/machine-id"),
             hostname: root.join("proc/sys/kernel/hostname"),
@@ -658,6 +677,17 @@ impl HostSnapshot {
         }
 
         for disk in self.disks {
+            if let Some(limit_bytes) = disk.limit_bytes {
+                push_updown_single_u64_with_device(
+                    &mut metrics,
+                    "system.disk.limit",
+                    "By",
+                    start,
+                    now,
+                    &disk.name,
+                    limit_bytes,
+                );
+            }
             push_disk_sum(
                 &mut metrics,
                 "system.disk.io",
@@ -866,6 +896,7 @@ struct ProcessStats {
 #[derive(Default)]
 struct DiskStats {
     name: String,
+    limit_bytes: Option<u64>,
     read_bytes: u64,
     write_bytes: u64,
     read_ops: u64,
@@ -1150,6 +1181,7 @@ fn parse_diskstats(
         };
         disks.push(DiskStats {
             name: name.to_owned(),
+            limit_bytes: None,
             read_ops: parse_u64(read_ops),
             read_bytes: parse_u64(read_sectors).saturating_mul(DISKSTAT_SECTOR_BYTES),
             write_ops: parse_u64(write_ops),
@@ -1345,6 +1377,28 @@ fn push_updown_single_u64(
         unit,
         vec![number_point_i64(
             Vec::new(),
+            start,
+            now,
+            saturating_i64(value),
+        )],
+    );
+}
+
+fn push_updown_single_u64_with_device(
+    metrics: &mut Vec<Metric>,
+    name: &'static str,
+    unit: &'static str,
+    start: u64,
+    now: u64,
+    device: &str,
+    value: u64,
+) {
+    push_updown_metric(
+        metrics,
+        name,
+        unit,
+        vec![number_point_i64(
+            vec![kv_str("system.device", device)],
             start,
             now,
             saturating_i64(value),
@@ -1817,6 +1871,7 @@ mod tests {
             }),
             disks: vec![DiskStats {
                 name: "sda".to_owned(),
+                limit_bytes: Some(123),
                 read_bytes: 10,
                 write_bytes: 20,
                 read_ops: 1,
@@ -1898,6 +1953,8 @@ mod tests {
         assert_first_point_attr(metrics, "system.disk.io_time", "system.device", "sda");
         assert_metric_shape(metrics, "system.disk.operation_time", "s", Some(true));
         assert_metric_shape(metrics, "system.disk.merged", "{operation}", Some(true));
+        assert_metric_shape(metrics, "system.disk.limit", "By", Some(false));
+        assert_first_point_attr(metrics, "system.disk.limit", "system.device", "sda");
         assert_metric_shape(metrics, "system.network.io", "By", Some(true));
         assert_first_point_attr(
             metrics,
@@ -1953,6 +2010,7 @@ mod tests {
                 network: false,
                 processes: false,
                 cpu_utilization: false,
+                disk_limit: false,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -1989,6 +2047,7 @@ mod tests {
                 network: false,
                 processes: false,
                 cpu_utilization: false,
+                disk_limit: false,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -2005,6 +2064,54 @@ mod tests {
                     ..ProcfsFamilies::default()
                 })
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let proc = root.path().join("proc");
+        let sys_sda = root.path().join("sys/block/sda");
+        std::fs::create_dir(&proc).expect("proc dir");
+        std::fs::create_dir_all(&sys_sda).expect("sys block dir");
+        std::fs::write(
+            proc.join("diskstats"),
+            "8 0 sda 1 0 2 3 4 0 5 6 0 0 0 0 0 0 0 0\n",
+        )
+        .expect("diskstats");
+        std::fs::write(sys_sda.join("size"), "4096\n").expect("disk size");
+        let mut source = ProcfsSource::new(
+            Some(root.path()),
+            ProcfsConfig {
+                cpu: false,
+                memory: false,
+                paging: false,
+                system: false,
+                disk: true,
+                network: false,
+                processes: false,
+                cpu_utilization: false,
+                disk_limit: true,
+                disk_include: None,
+                disk_exclude: None,
+                network_include: None,
+                network_exclude: None,
+                validation: HostViewValidationMode::None,
+            },
+        )
+        .expect("source");
+
+        let scrape = source
+            .scrape_due(ProcfsFamilies {
+                disk: true,
+                ..ProcfsFamilies::default()
+            })
+            .expect("disk scrape");
+
+        assert_eq!(scrape.snapshot.disks.len(), 1);
+        assert_eq!(
+            scrape.snapshot.disks[0].limit_bytes,
+            Some(4096 * DISKSTAT_SECTOR_BYTES)
         );
     }
 
