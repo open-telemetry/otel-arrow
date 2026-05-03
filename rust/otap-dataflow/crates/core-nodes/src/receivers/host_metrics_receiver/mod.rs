@@ -1084,8 +1084,14 @@ impl FamilyScheduler {
                     ScheduledFamilyKind::Network => due.network = true,
                     ScheduledFamilyKind::Processes => due.processes = true,
                 }
-                while entry.next_due <= now {
-                    entry.next_due += entry.interval;
+                let elapsed = now.duration_since(entry.next_due);
+                let missed_ticks = elapsed.as_nanos() / entry.interval.as_nanos() + 1;
+                let advance = entry
+                    .interval
+                    .saturating_mul(u32::try_from(missed_ticks).unwrap_or(u32::MAX));
+                entry.next_due += advance;
+                if entry.next_due <= now {
+                    entry.next_due = now + entry.interval;
                 }
             }
         }

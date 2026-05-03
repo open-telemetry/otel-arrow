@@ -717,14 +717,16 @@ impl HostSnapshot {
                 ],
                 "system.memory.state",
             );
-            push_updown_single_u64(
-                &mut metrics,
-                "system.memory.linux.available",
-                "By",
-                start,
-                now,
-                memory.available,
-            );
+            if memory.has_available {
+                push_updown_single_u64(
+                    &mut metrics,
+                    "system.memory.linux.available",
+                    "By",
+                    start,
+                    now,
+                    memory.available,
+                );
+            }
             push_updown_u64(
                 &mut metrics,
                 "system.memory.linux.slab.usage",
@@ -815,7 +817,7 @@ impl HostSnapshot {
                 now,
                 &[
                     ("running", processes.running),
-                    ("sleeping", processes.blocked),
+                    ("blocked", processes.blocked),
                 ],
                 "process.state",
             );
@@ -1398,6 +1400,7 @@ struct MemoryStats {
     used: u64,
     free: u64,
     available: u64,
+    has_available: bool,
     cached: u64,
     buffered: u64,
     shared: u64,
@@ -1680,6 +1683,7 @@ fn parse_meminfo(input: &str) -> Option<MemoryStats> {
     if total == 0 {
         return None;
     }
+    let has_available = available.is_some();
     let available =
         available.unwrap_or_else(|| free.saturating_add(buffers).saturating_add(cached));
     Some(MemoryStats {
@@ -1687,6 +1691,7 @@ fn parse_meminfo(input: &str) -> Option<MemoryStats> {
         used: total.saturating_sub(available),
         free,
         available,
+        has_available,
         cached,
         buffered: buffers,
         shared,
@@ -2183,7 +2188,10 @@ fn push_cpu_frequency(metrics: &mut Vec<Metric>, now: u64, frequencies_hz: &[f64
     let mut points = Vec::with_capacity(frequencies_hz.len());
     for (idx, frequency) in frequencies_hz.iter().enumerate() {
         points.push(number_point_i64(
-            vec![kv_str("cpu.logical_number", &idx.to_string())],
+            vec![kv_i64(
+                "cpu.logical_number",
+                i64::try_from(idx).unwrap_or(i64::MAX),
+            )],
             0,
             now,
             frequency_hz_i64(*frequency),
@@ -2787,6 +2795,15 @@ fn kv_str(key: &str, value: &str) -> KeyValue {
     }
 }
 
+fn kv_i64(key: &str, value: i64) -> KeyValue {
+    KeyValue {
+        key: key.to_owned(),
+        value: Some(AnyValue {
+            value: Some(any_value::Value::IntValue(value)),
+        }),
+    }
+}
+
 fn parse_u64(input: &str) -> u64 {
     input.parse().unwrap_or_default()
 }
@@ -2832,7 +2849,10 @@ mod tests {
     use weaver_resolver::SchemaResolver;
     #[cfg(feature = "dev-tools")]
     use weaver_semconv::{
-        attribute::{AttributeType, BasicRequirementLevelSpec, RequirementLevel, ValueSpec},
+        attribute::{
+            AttributeType, BasicRequirementLevelSpec, PrimitiveOrArrayTypeSpec, RequirementLevel,
+            ValueSpec,
+        },
         group::{GroupType, InstrumentSpec},
         registry_repo::RegistryRepo,
     };
@@ -2858,7 +2878,7 @@ mod tests {
         assert_metric_shape(metrics, "system.cpu.physical.count", "{cpu}", Some(false));
         assert_metric_shape(metrics, "system.cpu.frequency", "Hz", None);
         assert_first_point_int(metrics, "system.cpu.frequency", 2_400_000_000);
-        assert_first_point_attr(metrics, "system.cpu.frequency", "cpu.logical_number", "0");
+        assert_first_point_attr_int(metrics, "system.cpu.frequency", "cpu.logical_number", 0);
         assert_metric_shape(metrics, "system.memory.usage", "By", Some(false));
         assert_first_point_attr(
             metrics,
@@ -2943,6 +2963,7 @@ mod tests {
         assert_first_point_attr(metrics, "system.paging.usage", "system.device", "/dev/swap");
         assert_metric_shape(metrics, "system.paging.utilization", "1", None);
         assert_metric_shape(metrics, "system.process.count", "{process}", Some(false));
+        assert_sum_point_attr(metrics, "system.process.count", "process.state", "blocked");
         assert_metric_shape(metrics, "system.process.created", "{process}", Some(true));
         assert_metric_shape(metrics, "system.disk.io", "By", Some(true));
         assert_first_point_attr(metrics, "system.disk.io", "disk.io.direction", "read");
@@ -3036,11 +3057,23 @@ mod tests {
                     "unexpected semconv attribute {attr} on {name}"
                 );
             }
+            for (attr, emitted_kind) in &emitted.attribute_types {
+                let Some(semconv_kind) = semconv.attribute_types.get(attr) else {
+                    continue;
+                };
+                assert_eq!(
+                    emitted_kind, semconv_kind,
+                    "attribute value type mismatch for {attr} on {name}"
+                );
+            }
             for (attr, values) in &emitted.enum_values {
                 let Some(allowed_values) = semconv.enum_values.get(attr) else {
                     continue;
                 };
                 for value in values {
+                    if is_intentional_semconv_enum_value_gap(name.as_str(), attr.as_str(), value) {
+                        continue;
+                    }
                     assert!(
                         allowed_values.contains(value),
                         "unexpected enum value {attr}={value} on {name}"
@@ -3394,6 +3427,7 @@ mod tests {
         let memory =
             parse_meminfo("MemTotal: 1000 kB\nMemFree: 100 kB\nBuffers: 20 kB\nCached: 30 kB\n")
                 .expect("memory");
+        assert!(!memory.has_available);
         assert_eq!(memory.available, 150 * BYTES_PER_KIB);
         assert_eq!(memory.used, 850 * BYTES_PER_KIB);
     }
@@ -3618,6 +3652,7 @@ mod tests {
         monotonic: Option<bool>,
         attributes: BTreeSet<String>,
         all_attributes: BTreeSet<String>,
+        attribute_types: BTreeMap<String, AttributeValueKind>,
         enum_values: BTreeMap<String, BTreeSet<String>>,
         value_type: Option<MetricValueKind>,
     }
@@ -3627,6 +3662,15 @@ mod tests {
     enum MetricValueKind {
         Int,
         Double,
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum AttributeValueKind {
+        Int,
+        Double,
+        String,
+        Bool,
     }
 
     #[cfg(feature = "dev-tools")]
@@ -3704,6 +3748,13 @@ mod tests {
                         _ => None,
                     })
                     .collect();
+                let attribute_types = group
+                    .attributes
+                    .iter()
+                    .filter_map(|attr| {
+                        attribute_value_kind(&attr.r#type).map(|kind| (attr.name.clone(), kind))
+                    })
+                    .collect();
 
                 Some((
                     name.clone(),
@@ -3712,6 +3763,7 @@ mod tests {
                         monotonic,
                         attributes,
                         all_attributes,
+                        attribute_types,
                         enum_values,
                         value_type: semconv_metric_value_type(group.annotations.as_ref()),
                     },
@@ -3746,6 +3798,46 @@ mod tests {
     }
 
     #[cfg(feature = "dev-tools")]
+    fn attribute_value_kind(attribute_type: &AttributeType) -> Option<AttributeValueKind> {
+        match attribute_type {
+            AttributeType::PrimitiveOrArray(PrimitiveOrArrayTypeSpec::Int) => {
+                Some(AttributeValueKind::Int)
+            }
+            AttributeType::PrimitiveOrArray(PrimitiveOrArrayTypeSpec::Double) => {
+                Some(AttributeValueKind::Double)
+            }
+            AttributeType::PrimitiveOrArray(PrimitiveOrArrayTypeSpec::String) => {
+                Some(AttributeValueKind::String)
+            }
+            AttributeType::PrimitiveOrArray(PrimitiveOrArrayTypeSpec::Boolean) => {
+                Some(AttributeValueKind::Bool)
+            }
+            AttributeType::Enum { members } => {
+                members.first().map(|member| value_spec_kind(&member.value))
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn value_spec_kind(value: &ValueSpec) -> AttributeValueKind {
+        match value {
+            ValueSpec::Int(_) => AttributeValueKind::Int,
+            ValueSpec::Double(_) => AttributeValueKind::Double,
+            ValueSpec::String(_) => AttributeValueKind::String,
+            ValueSpec::Bool(_) => AttributeValueKind::Bool,
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn is_intentional_semconv_enum_value_gap(name: &str, attr: &str, value: &str) -> bool {
+        matches!(
+            (name, attr, value),
+            ("system.process.count", "process.state", "blocked")
+        )
+    }
+
+    #[cfg(feature = "dev-tools")]
     fn is_opt_in_requirement(requirement_level: &RequirementLevel) -> bool {
         matches!(
             requirement_level,
@@ -3771,12 +3863,22 @@ mod tests {
                     .map(|attr| attr.key.clone())
                     .collect();
                 let mut attribute_values: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+                let mut attribute_types: BTreeMap<String, AttributeValueKind> = BTreeMap::new();
                 for attr in points.iter().flat_map(|point| point.attributes.iter()) {
                     if let Some(value) = any_value_string(attr.value.as_ref()) {
                         let _ = attribute_values
                             .entry(attr.key.clone())
                             .or_default()
                             .insert(value);
+                    }
+                    if let Some(kind) = any_value_kind(attr.value.as_ref()) {
+                        let previous = attribute_types.insert(attr.key.clone(), kind);
+                        assert!(
+                            previous.is_none() || previous == Some(kind),
+                            "mixed attribute value types for {} on {}",
+                            attr.key,
+                            metric.name
+                        );
                     }
                 }
                 (
@@ -3786,6 +3888,7 @@ mod tests {
                         monotonic,
                         attributes,
                         all_attributes: BTreeSet::new(),
+                        attribute_types,
                         enum_values: attribute_values,
                         value_type: metric_value_type(points),
                     },
@@ -3820,6 +3923,17 @@ mod tests {
             any_value::Value::IntValue(value) => Some(value.to_string()),
             any_value::Value::DoubleValue(value) => Some(value.to_string()),
             any_value::Value::BoolValue(value) => Some(value.to_string()),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn any_value_kind(value: Option<&AnyValue>) -> Option<AttributeValueKind> {
+        match value?.value.as_ref()? {
+            any_value::Value::StringValue(_) => Some(AttributeValueKind::String),
+            any_value::Value::IntValue(_) => Some(AttributeValueKind::Int),
+            any_value::Value::DoubleValue(_) => Some(AttributeValueKind::Double),
+            any_value::Value::BoolValue(_) => Some(AttributeValueKind::Bool),
             _ => None,
         }
     }
@@ -3860,6 +3974,7 @@ mod tests {
                 used: 80,
                 free: 10,
                 available: 20,
+                has_available: true,
                 cached: 5,
                 buffered: 5,
                 shared: 7,
@@ -4032,6 +4147,31 @@ mod tests {
             point.value,
             Some(number_data_point::Value::AsInt(expected)),
             "{name} first point should be int"
+        );
+    }
+
+    fn assert_first_point_attr_int(
+        metrics: &[Metric],
+        name: &'static str,
+        key: &'static str,
+        expected: i64,
+    ) {
+        let metric = metric_by_name(metrics, name);
+        let point = match metric.data.as_ref().expect("metric data") {
+            metric::Data::Sum(sum) => sum.data_points.first(),
+            metric::Data::Gauge(gauge) => gauge.data_points.first(),
+            _ => None,
+        }
+        .expect("data point");
+        assert!(
+            point.attributes.iter().any(|attr| {
+                attr.key == key
+                    && matches!(
+                        attr.value.as_ref().and_then(|value| value.value.as_ref()),
+                        Some(any_value::Value::IntValue(actual)) if *actual == expected
+                    )
+            }),
+            "missing int attribute {key}={expected}"
         );
     }
 
