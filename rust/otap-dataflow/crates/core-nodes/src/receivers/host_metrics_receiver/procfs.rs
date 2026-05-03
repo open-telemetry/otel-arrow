@@ -55,6 +55,10 @@ pub struct ProcfsConfig {
     pub processes: bool,
     /// Derived aggregate CPU utilization.
     pub cpu_utilization: bool,
+    /// Emit memory limit metric.
+    pub memory_limit: bool,
+    /// Emit Linux shared memory metric.
+    pub memory_shared: bool,
     /// Derived disk limit from sysfs block device size.
     pub disk_limit: bool,
     /// Include virtual filesystems.
@@ -300,6 +304,8 @@ impl ProcfsSource {
         let snapshot = HostSnapshot {
             now_unix_nano,
             start_time_unix_nano: stat.boot_time_unix_nano,
+            memory_limit: self.config.memory_limit,
+            memory_shared: self.config.memory_shared,
             cpu: stat.cpu,
             cpu_utilization,
             cpuinfo,
@@ -563,6 +569,8 @@ pub struct HostScrape {
 pub struct HostSnapshot {
     now_unix_nano: u64,
     start_time_unix_nano: u64,
+    memory_limit: bool,
+    memory_shared: bool,
     cpu: Option<CpuTimes>,
     cpu_utilization: Option<CpuTimes>,
     cpuinfo: CpuInfo,
@@ -709,6 +717,26 @@ impl HostSnapshot {
                 ],
                 "system.memory.linux.slab.state",
             );
+            if self.memory_limit {
+                push_updown_single_u64(
+                    &mut metrics,
+                    "system.memory.limit",
+                    "By",
+                    start,
+                    now,
+                    memory.total,
+                );
+            }
+            if self.memory_shared {
+                push_updown_single_u64(
+                    &mut metrics,
+                    "system.memory.linux.shared",
+                    "By",
+                    start,
+                    now,
+                    memory.shared,
+                );
+            }
         }
 
         if let Some(uptime_seconds) = self.uptime_seconds {
@@ -983,6 +1011,7 @@ struct MemoryStats {
     available: u64,
     cached: u64,
     buffered: u64,
+    shared: u64,
     slab_reclaimable: u64,
     slab_unreclaimable: u64,
 }
@@ -1216,6 +1245,7 @@ fn parse_meminfo(input: &str) -> Option<MemoryStats> {
     let mut available = None;
     let mut buffers = 0;
     let mut cached = 0;
+    let mut shared = 0;
     let mut slab_reclaimable = 0;
     let mut slab_unreclaimable = 0;
 
@@ -1231,6 +1261,7 @@ fn parse_meminfo(input: &str) -> Option<MemoryStats> {
             "MemAvailable" => available = Some(value),
             "Buffers" => buffers = value,
             "Cached" => cached = value,
+            "Shmem" => shared = value,
             "SReclaimable" => slab_reclaimable = value,
             "SUnreclaim" => slab_unreclaimable = value,
             _ => {}
@@ -1249,6 +1280,7 @@ fn parse_meminfo(input: &str) -> Option<MemoryStats> {
         available,
         cached,
         buffered: buffers,
+        shared,
         slab_reclaimable,
         slab_unreclaimable,
     })
@@ -2264,6 +2296,8 @@ mod tests {
         let request = HostSnapshot {
             now_unix_nano: 2_000,
             start_time_unix_nano: 1_000,
+            memory_limit: true,
+            memory_shared: true,
             cpu: Some(CpuTimes {
                 user: 1.0,
                 nice: 2.0,
@@ -2294,6 +2328,7 @@ mod tests {
                 available: 20,
                 cached: 5,
                 buffered: 5,
+                shared: 7,
                 slab_reclaimable: 3,
                 slab_unreclaimable: 2,
             }),
@@ -2383,6 +2418,8 @@ mod tests {
         assert_metric_shape(metrics, "system.memory.utilization", "1", None);
         assert_metric_shape(metrics, "system.memory.linux.available", "By", Some(false));
         assert_metric_shape(metrics, "system.memory.linux.slab.usage", "By", Some(false));
+        assert_metric_shape(metrics, "system.memory.limit", "By", Some(false));
+        assert_metric_shape(metrics, "system.memory.linux.shared", "By", Some(false));
         assert_metric_shape(metrics, "system.uptime", "s", None);
         assert_metric_shape(metrics, "system.paging.faults", "{fault}", Some(true));
         assert_first_point_attr(
@@ -2476,6 +2513,8 @@ mod tests {
                 network: false,
                 processes: false,
                 cpu_utilization: false,
+                memory_limit: false,
+                memory_shared: false,
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
@@ -2522,6 +2561,8 @@ mod tests {
                 network: false,
                 processes: false,
                 cpu_utilization: false,
+                memory_limit: false,
+                memory_shared: false,
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
@@ -2575,6 +2616,8 @@ mod tests {
                 network: false,
                 processes: false,
                 cpu_utilization: false,
+                memory_limit: false,
+                memory_shared: false,
                 disk_limit: true,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
@@ -2629,6 +2672,8 @@ mod tests {
                 network: false,
                 processes: false,
                 cpu_utilization: false,
+                memory_limit: false,
+                memory_shared: false,
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: true,
@@ -2728,6 +2773,13 @@ mod tests {
                 .expect("memory");
         assert_eq!(memory.available, 150 * BYTES_PER_KIB);
         assert_eq!(memory.used, 850 * BYTES_PER_KIB);
+    }
+
+    #[test]
+    fn meminfo_parser_reads_shared_memory() {
+        let memory =
+            parse_meminfo("MemTotal: 1000 kB\nMemFree: 100 kB\nShmem: 12 kB\n").expect("memory");
+        assert_eq!(memory.shared, 12 * BYTES_PER_KIB);
     }
 
     #[test]

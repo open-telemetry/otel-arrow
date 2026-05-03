@@ -164,7 +164,7 @@ pub struct FamiliesConfig {
     /// CPU metrics.
     pub cpu: CpuFamilyConfig,
     /// Memory metrics.
-    pub memory: FamilyConfig,
+    pub memory: MemoryFamilyConfig,
     /// Paging metrics.
     pub paging: FamilyConfig,
     /// System metrics.
@@ -234,6 +234,32 @@ impl Default for FamilyConfig {
         Self {
             enabled: true,
             interval: None,
+        }
+    }
+}
+
+/// Memory family config.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MemoryFamilyConfig {
+    /// Enable memory metrics.
+    pub enabled: bool,
+    /// Family collection interval. Defaults to top-level `collection_interval`.
+    #[serde(default, with = "humantime_serde::option")]
+    pub interval: Option<Duration>,
+    /// Enable memory limit metrics.
+    pub limit: bool,
+    /// Enable Linux shared memory metric.
+    pub shared: bool,
+}
+
+impl Default for MemoryFamilyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval: None,
+            limit: false,
+            shared: false,
         }
     }
 }
@@ -451,6 +477,8 @@ struct RuntimeConfig {
     validation: HostViewValidationMode,
     initial_delay: Duration,
     cpu_utilization: bool,
+    memory_limit: bool,
+    memory_shared: bool,
     families: RuntimeFamilies,
 }
 
@@ -864,9 +892,14 @@ impl TryFrom<Config> for RuntimeConfig {
             validation: config.host_view.validation,
             initial_delay: config.initial_delay,
             cpu_utilization: config.families.cpu.utilization,
+            memory_limit: config.families.memory.limit,
+            memory_shared: config.families.memory.shared,
             families: RuntimeFamilies {
                 cpu: RuntimeFamily::new_cpu(&config.families.cpu, config.collection_interval),
-                memory: RuntimeFamily::new(&config.families.memory, config.collection_interval),
+                memory: RuntimeFamily::new_memory(
+                    &config.families.memory,
+                    config.collection_interval,
+                ),
                 paging: RuntimeFamily::new(&config.families.paging, config.collection_interval),
                 system: RuntimeFamily::new(&config.families.system, config.collection_interval),
                 disk: RuntimeDiskFamily {
@@ -931,6 +964,13 @@ impl RuntimeFamily {
     }
 
     fn new_cpu(config: &CpuFamilyConfig, default_interval: Duration) -> Self {
+        Self {
+            enabled: config.enabled,
+            interval: config.interval.unwrap_or(default_interval),
+        }
+    }
+
+    fn new_memory(config: &MemoryFamilyConfig, default_interval: Duration) -> Self {
         Self {
             enabled: config.enabled,
             interval: config.interval.unwrap_or(default_interval),
@@ -1149,6 +1189,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 network: config.families.network.enabled,
                 processes: config.families.processes.enabled,
                 cpu_utilization: config.cpu_utilization,
+                memory_limit: config.memory_limit,
+                memory_shared: config.memory_shared,
                 disk_limit: config.families.disk.limit,
                 filesystem_include_virtual: config.families.filesystem.include_virtual_filesystems,
                 filesystem_limit: config.families.filesystem.limit,
@@ -1321,9 +1363,9 @@ mod tests {
                     enabled: false,
                     ..CpuFamilyConfig::default()
                 },
-                memory: FamilyConfig {
+                memory: MemoryFamilyConfig {
                     enabled: false,
-                    ..FamilyConfig::default()
+                    ..MemoryFamilyConfig::default()
                 },
                 paging: FamilyConfig {
                     enabled: false,
@@ -1424,6 +1466,23 @@ mod tests {
         .expect("valid cpu config");
 
         assert!(config.families.cpu.utilization);
+        validate_config(&config).expect("valid config");
+    }
+
+    #[test]
+    fn accepts_memory_opt_ins() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "families": {
+                "memory": {
+                    "limit": true,
+                    "shared": true
+                }
+            }
+        }))
+        .expect("valid memory config");
+
+        assert!(config.families.memory.limit);
+        assert!(config.families.memory.shared);
         validate_config(&config).expect("valid config");
     }
 
