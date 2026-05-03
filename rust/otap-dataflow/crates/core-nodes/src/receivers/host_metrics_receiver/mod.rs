@@ -171,6 +171,8 @@ pub struct FamiliesConfig {
     pub system: FamilyConfig,
     /// Disk metrics.
     pub disk: DiskFamilyConfig,
+    /// Filesystem metrics.
+    pub filesystem: FilesystemFamilyConfig,
     /// Network metrics.
     pub network: NetworkFamilyConfig,
     /// Process summary metrics.
@@ -184,6 +186,7 @@ impl FamiliesConfig {
             + usize::from(self.paging.enabled)
             + usize::from(self.system.enabled)
             + usize::from(self.disk.enabled)
+            + usize::from(self.filesystem.enabled)
             + usize::from(self.network.enabled)
             + usize::from(self.processes.enabled)
     }
@@ -260,6 +263,32 @@ impl Default for DiskFamilyConfig {
             limit: false,
             include: None,
             exclude: None,
+        }
+    }
+}
+
+/// Filesystem family config.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilesystemFamilyConfig {
+    /// Enable filesystem metrics.
+    pub enabled: bool,
+    /// Family collection interval. Defaults to top-level `collection_interval`.
+    #[serde(default, with = "humantime_serde::option")]
+    pub interval: Option<Duration>,
+    /// Include virtual filesystems.
+    pub include_virtual_filesystems: bool,
+    /// Enable filesystem limit metrics.
+    pub limit: bool,
+}
+
+impl Default for FilesystemFamilyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval: None,
+            include_virtual_filesystems: false,
+            limit: false,
         }
     }
 }
@@ -376,6 +405,7 @@ struct RuntimeFamilies {
     paging: RuntimeFamily,
     system: RuntimeFamily,
     disk: RuntimeDiskFamily,
+    filesystem: RuntimeFilesystemFamily,
     network: RuntimeNetworkFamily,
     processes: RuntimeFamily,
 }
@@ -393,6 +423,14 @@ struct RuntimeDiskFamily {
     limit: bool,
     include: Option<CompiledFilter>,
     exclude: Option<CompiledFilter>,
+}
+
+#[derive(Clone)]
+struct RuntimeFilesystemFamily {
+    enabled: bool,
+    interval: Duration,
+    include_virtual_filesystems: bool,
+    limit: bool,
 }
 
 #[derive(Clone)]
@@ -596,6 +634,11 @@ fn validate_config(config: &Config) -> Result<(), otap_df_config::error::Error> 
         config.families.disk.interval,
     )?;
     validate_family_interval(
+        "filesystem",
+        config.families.filesystem.enabled,
+        config.families.filesystem.interval,
+    )?;
+    validate_family_interval(
         "network",
         config.families.network.enabled,
         config.families.network.interval,
@@ -732,6 +775,19 @@ impl TryFrom<Config> for RuntimeConfig {
                     include: disk_include,
                     exclude: disk_exclude,
                 },
+                filesystem: RuntimeFilesystemFamily {
+                    enabled: config.families.filesystem.enabled,
+                    interval: config
+                        .families
+                        .filesystem
+                        .interval
+                        .unwrap_or(config.collection_interval),
+                    include_virtual_filesystems: config
+                        .families
+                        .filesystem
+                        .include_virtual_filesystems,
+                    limit: config.families.filesystem.limit,
+                },
                 network: RuntimeNetworkFamily {
                     enabled: config.families.network.enabled,
                     interval: config
@@ -778,6 +834,7 @@ enum ScheduledFamilyKind {
     Paging,
     System,
     Disk,
+    Filesystem,
     Network,
     Processes,
 }
@@ -795,7 +852,7 @@ struct FamilyScheduler {
 impl FamilyScheduler {
     fn new(config: &RuntimeConfig, now: Instant) -> Self {
         let first_due = now + config.initial_delay;
-        let mut entries = Vec::with_capacity(7);
+        let mut entries = Vec::with_capacity(8);
         push_scheduled(
             &mut entries,
             ScheduledFamilyKind::Cpu,
@@ -824,6 +881,13 @@ impl FamilyScheduler {
             entries.push(ScheduledFamily {
                 kind: ScheduledFamilyKind::Disk,
                 interval: config.families.disk.interval,
+                next_due: first_due,
+            });
+        }
+        if config.families.filesystem.enabled {
+            entries.push(ScheduledFamily {
+                kind: ScheduledFamilyKind::Filesystem,
+                interval: config.families.filesystem.interval,
                 next_due: first_due,
             });
         }
@@ -861,6 +925,7 @@ impl FamilyScheduler {
                     ScheduledFamilyKind::Paging => due.paging = true,
                     ScheduledFamilyKind::System => due.system = true,
                     ScheduledFamilyKind::Disk => due.disk = true,
+                    ScheduledFamilyKind::Filesystem => due.filesystem = true,
                     ScheduledFamilyKind::Network => due.network = true,
                     ScheduledFamilyKind::Processes => due.processes = true,
                 }
@@ -969,10 +1034,13 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 paging: config.families.paging.enabled,
                 system: config.families.system.enabled,
                 disk: config.families.disk.enabled,
+                filesystem: config.families.filesystem.enabled,
                 network: config.families.network.enabled,
                 processes: config.families.processes.enabled,
                 cpu_utilization: config.cpu_utilization,
                 disk_limit: config.families.disk.limit,
+                filesystem_include_virtual: config.families.filesystem.include_virtual_filesystems,
+                filesystem_limit: config.families.filesystem.limit,
                 disk_include: config.families.disk.include.clone(),
                 disk_exclude: config.families.disk.exclude.clone(),
                 network_include: config.families.network.include.clone(),
@@ -1144,6 +1212,10 @@ mod tests {
                     enabled: false,
                     ..DiskFamilyConfig::default()
                 },
+                filesystem: FilesystemFamilyConfig {
+                    enabled: false,
+                    ..FilesystemFamilyConfig::default()
+                },
                 network: NetworkFamilyConfig {
                     enabled: false,
                     ..NetworkFamilyConfig::default()
@@ -1246,6 +1318,28 @@ mod tests {
     }
 
     #[test]
+    fn accepts_filesystem_options() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "families": {
+                "filesystem": {
+                    "interval": "5m",
+                    "include_virtual_filesystems": true,
+                    "limit": true
+                }
+            }
+        }))
+        .expect("valid filesystem config");
+
+        assert_eq!(
+            config.families.filesystem.interval,
+            Some(Duration::from_secs(300))
+        );
+        assert!(config.families.filesystem.include_virtual_filesystems);
+        assert!(config.families.filesystem.limit);
+        validate_config(&config).expect("valid config");
+    }
+
+    #[test]
     fn rejects_v1_cpu_per_cpu() {
         let config = Config {
             families: FamiliesConfig {
@@ -1339,11 +1433,13 @@ mod tests {
         assert!(first_due.cpu);
         assert!(first_due.memory);
         assert!(first_due.disk);
+        assert!(first_due.filesystem);
 
         let second_due = scheduler.mark_due(now + Duration::from_secs(6));
         assert!(second_due.cpu);
         assert!(!second_due.memory);
         assert!(!second_due.disk);
+        assert!(!second_due.filesystem);
     }
 
     #[test]

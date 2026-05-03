@@ -17,11 +17,13 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 const BYTES_PER_KIB: u64 = 1024;
 const DISKSTAT_SECTOR_BYTES: u64 = 512;
+const FILESYSTEM_STAT_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Procfs-backed source for host metrics.
 pub struct ProcfsSource {
@@ -30,6 +32,7 @@ pub struct ProcfsSource {
     buf: String,
     clk_tck: f64,
     previous_cpu: Option<CpuTimes>,
+    filesystem_worker: FilesystemStatWorker,
 }
 
 /// Procfs collection config.
@@ -44,6 +47,8 @@ pub struct ProcfsConfig {
     pub system: bool,
     /// Disk metrics.
     pub disk: bool,
+    /// Filesystem metrics.
+    pub filesystem: bool,
     /// Network metrics.
     pub network: bool,
     /// Process summary metrics.
@@ -52,6 +57,10 @@ pub struct ProcfsConfig {
     pub cpu_utilization: bool,
     /// Derived disk limit from sysfs block device size.
     pub disk_limit: bool,
+    /// Include virtual filesystems.
+    pub filesystem_include_virtual: bool,
+    /// Emit filesystem limit metric.
+    pub filesystem_limit: bool,
     /// Disk include filter.
     pub disk_include: Option<CompiledFilter>,
     /// Disk exclude filter.
@@ -77,6 +86,8 @@ pub struct ProcfsFamilies {
     pub system: bool,
     /// Disk metrics.
     pub disk: bool,
+    /// Filesystem metrics.
+    pub filesystem: bool,
     /// Network metrics.
     pub network: bool,
     /// Process summary metrics.
@@ -92,6 +103,7 @@ impl ProcfsSource {
             buf: String::with_capacity(16 * 1024),
             clk_tck: clock_ticks_per_second(),
             previous_cpu: None,
+            filesystem_worker: FilesystemStatWorker::new(),
         };
         source.apply_startup_validation()?;
         Ok(source)
@@ -105,6 +117,7 @@ impl ProcfsSource {
             paging: due.paging && self.config.paging,
             system: due.system && self.config.system,
             disk: due.disk && self.config.disk,
+            filesystem: due.filesystem && self.config.filesystem,
             network: due.network && self.config.network,
             processes: due.processes && self.config.processes,
         };
@@ -239,6 +252,23 @@ impl ProcfsSource {
             Vec::new()
         };
 
+        let filesystems = if due.filesystem {
+            let include_virtual = self.config.filesystem_include_virtual;
+            let emit_limit = self.config.filesystem_limit;
+            match self.read_path(PathKind::Mountinfo) {
+                Ok(mountinfo) => {
+                    let mounts = parse_mountinfo(mountinfo, include_virtual, emit_limit);
+                    self.read_filesystems(mounts)
+                }
+                Err(err) => {
+                    record_partial_error(&mut partial_errors, &mut first_error, err);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
         let resource = self.read_resource();
 
         let snapshot = HostSnapshot {
@@ -253,6 +283,7 @@ impl ProcfsSource {
             swaps,
             processes: due.processes.then_some(stat.processes),
             disks,
+            filesystems,
             networks,
             resource,
         };
@@ -297,6 +328,9 @@ impl ProcfsSource {
         if self.config.disk {
             let _ = File::open(self.paths.path(PathKind::Diskstats))?;
         }
+        if self.config.filesystem {
+            let _ = File::open(self.paths.path(PathKind::Mountinfo))?;
+        }
         if self.config.network {
             let _ = File::open(self.paths.path(PathKind::NetDev))?;
         }
@@ -328,6 +362,9 @@ impl ProcfsSource {
         if self.config.disk && !self.source_available(PathKind::Diskstats) {
             self.config.disk = false;
         }
+        if self.config.filesystem && !self.source_available(PathKind::Mountinfo) {
+            self.config.filesystem = false;
+        }
         if self.config.network && !self.source_available(PathKind::NetDev) {
             self.config.network = false;
         }
@@ -352,6 +389,33 @@ impl ProcfsSource {
         Ok(sectors.saturating_mul(DISKSTAT_SECTOR_BYTES))
     }
 
+    fn read_filesystems(&mut self, mounts: Vec<FilesystemMount>) -> Vec<FilesystemStats> {
+        let mut filesystems = Vec::with_capacity(mounts.len());
+        for mount in mounts {
+            let path = self.paths.host_path(&mount.mountpoint);
+            let Ok(stat) = self
+                .filesystem_worker
+                .statvfs(path, FILESYSTEM_STAT_TIMEOUT)
+            else {
+                continue;
+            };
+            let free = stat.available_bytes;
+            let reserved = stat.free_bytes.saturating_sub(stat.available_bytes);
+            let used = stat.total_bytes.saturating_sub(stat.free_bytes);
+            filesystems.push(FilesystemStats {
+                device: mount.device,
+                mountpoint: mount.mountpoint,
+                fs_type: mount.fs_type,
+                mode: mount.mode,
+                used,
+                free,
+                reserved,
+                limit_bytes: mount.emit_limit.then_some(stat.total_bytes),
+            });
+        }
+        filesystems
+    }
+
     fn read_resource(&mut self) -> HostResource {
         HostResource {
             host_id: self
@@ -373,6 +437,7 @@ impl ProcfsSource {
 
 #[derive(Clone, Debug)]
 struct ProcfsPaths {
+    root: PathBuf,
     stat: PathBuf,
     cpuinfo: PathBuf,
     meminfo: PathBuf,
@@ -380,6 +445,7 @@ struct ProcfsPaths {
     vmstat: PathBuf,
     swaps: PathBuf,
     diskstats: PathBuf,
+    mountinfo: PathBuf,
     sys_block: PathBuf,
     net_dev: PathBuf,
     machine_id: PathBuf,
@@ -392,6 +458,7 @@ impl ProcfsPaths {
         let root = root_path.unwrap_or_else(|| Path::new("/"));
         let host_root = root_path.is_some_and(|path| path != Path::new("/"));
         Self {
+            root: root.to_path_buf(),
             stat: root.join("proc/stat"),
             cpuinfo: root.join("proc/cpuinfo"),
             meminfo: root.join("proc/meminfo"),
@@ -399,6 +466,11 @@ impl ProcfsPaths {
             vmstat: root.join("proc/vmstat"),
             swaps: root.join("proc/swaps"),
             diskstats: root.join("proc/diskstats"),
+            mountinfo: if host_root {
+                root.join("proc/1/mountinfo")
+            } else {
+                root.join("proc/self/mountinfo")
+            },
             sys_block: root.join("sys/block"),
             machine_id: root.join("etc/machine-id"),
             dbus_machine_id: root.join("var/lib/dbus/machine-id"),
@@ -420,11 +492,19 @@ impl ProcfsPaths {
             PathKind::Vmstat => &self.vmstat,
             PathKind::Swaps => &self.swaps,
             PathKind::Diskstats => &self.diskstats,
+            PathKind::Mountinfo => &self.mountinfo,
             PathKind::NetDev => &self.net_dev,
             PathKind::MachineId => &self.machine_id,
             PathKind::DbusMachineId => &self.dbus_machine_id,
             PathKind::Hostname => &self.hostname,
         }
+    }
+
+    fn host_path(&self, host_absolute_path: &str) -> PathBuf {
+        let relative = host_absolute_path
+            .strip_prefix('/')
+            .unwrap_or(host_absolute_path);
+        self.root.join(relative)
     }
 }
 
@@ -437,6 +517,7 @@ enum PathKind {
     Vmstat,
     Swaps,
     Diskstats,
+    Mountinfo,
     NetDev,
     MachineId,
     DbusMachineId,
@@ -465,6 +546,7 @@ pub struct HostSnapshot {
     swaps: Vec<SwapStats>,
     processes: Option<ProcessStats>,
     disks: Vec<DiskStats>,
+    filesystems: Vec<FilesystemStats>,
     networks: Vec<NetworkStats>,
     resource: HostResource,
 }
@@ -482,6 +564,7 @@ impl HostSnapshot {
             || !self.swaps.is_empty()
             || self.processes.is_some()
             || !self.disks.is_empty()
+            || !self.filesystems.is_empty()
             || !self.networks.is_empty()
     }
 
@@ -735,6 +818,14 @@ impl HostSnapshot {
             );
         }
 
+        for filesystem in self.filesystems {
+            push_filesystem_usage(&mut metrics, start, now, &filesystem);
+            push_filesystem_utilization(&mut metrics, now, &filesystem);
+            if let Some(limit_bytes) = filesystem.limit_bytes {
+                push_filesystem_limit(&mut metrics, start, now, &filesystem, limit_bytes);
+            }
+        }
+
         for network in self.networks {
             push_network_sum(
                 &mut metrics,
@@ -906,6 +997,67 @@ struct DiskStats {
     read_time_seconds: f64,
     write_time_seconds: f64,
     io_time_seconds: f64,
+}
+
+#[derive(Default)]
+struct FilesystemStats {
+    device: String,
+    mountpoint: String,
+    fs_type: String,
+    mode: &'static str,
+    used: u64,
+    free: u64,
+    reserved: u64,
+    limit_bytes: Option<u64>,
+}
+
+struct FilesystemStatWorker {
+    tx: mpsc::SyncSender<FilesystemStatRequest>,
+}
+
+struct FilesystemStatRequest {
+    path: PathBuf,
+    response: mpsc::Sender<io::Result<FilesystemStat>>,
+}
+
+struct FilesystemStat {
+    total_bytes: u64,
+    free_bytes: u64,
+    available_bytes: u64,
+}
+
+impl FilesystemStatWorker {
+    fn new() -> Self {
+        let (tx, rx) = mpsc::sync_channel::<FilesystemStatRequest>(1);
+        let _ = std::thread::Builder::new()
+            .name("host-metrics-statvfs".to_owned())
+            .spawn(move || {
+                while let Ok(request) = rx.recv() {
+                    let result = statvfs_bytes(&request.path);
+                    let _ = request.response.send(result);
+                }
+            });
+        Self { tx }
+    }
+
+    fn statvfs(&self, path: PathBuf, timeout: Duration) -> io::Result<FilesystemStat> {
+        let (response, rx) = mpsc::channel();
+        self.tx
+            .try_send(FilesystemStatRequest { path, response })
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "statvfs worker is busy"))?;
+        rx.recv_timeout(timeout)
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "statvfs timed out"))?
+    }
+}
+
+fn statvfs_bytes(path: &Path) -> io::Result<FilesystemStat> {
+    let stat = nix::sys::statvfs::statvfs(path).map_err(io::Error::other)?;
+    let block_size = stat.fragment_size();
+    Ok(FilesystemStat {
+        total_bytes: u64::from(stat.blocks()).saturating_mul(block_size),
+        free_bytes: u64::from(stat.blocks_free()).saturating_mul(block_size),
+        available_bytes: u64::from(stat.blocks_available()).saturating_mul(block_size),
+    })
 }
 
 #[derive(Default)]
@@ -1194,6 +1346,124 @@ fn parse_diskstats(
         });
     }
     disks
+}
+
+struct FilesystemMount {
+    device: String,
+    mountpoint: String,
+    fs_type: String,
+    mode: &'static str,
+    emit_limit: bool,
+}
+
+fn parse_mountinfo(
+    input: &str,
+    include_virtual_filesystems: bool,
+    emit_limit: bool,
+) -> Vec<FilesystemMount> {
+    let mut mounts = Vec::new();
+    for line in input.lines() {
+        let Some(separator) = line.find(" - ") else {
+            continue;
+        };
+        let mut pre_fields = line[..separator].split_whitespace();
+        let _mount_id = pre_fields.next();
+        let _parent_id = pre_fields.next();
+        let _major_minor = pre_fields.next();
+        let _root = pre_fields.next();
+        let Some(mountpoint) = pre_fields.next() else {
+            continue;
+        };
+        let Some(options) = pre_fields.next() else {
+            continue;
+        };
+
+        let mut post_fields = line[separator + 3..].split_whitespace();
+        let Some(fs_type) = post_fields.next() else {
+            continue;
+        };
+        let Some(device) = post_fields.next() else {
+            continue;
+        };
+        if !include_virtual_filesystems && is_skipped_filesystem_type(fs_type) {
+            continue;
+        }
+        mounts.push(FilesystemMount {
+            device: unescape_mountinfo(device),
+            mountpoint: unescape_mountinfo(mountpoint),
+            fs_type: fs_type.to_owned(),
+            mode: filesystem_mode(options),
+            emit_limit,
+        });
+    }
+    mounts
+}
+
+fn filesystem_mode(options: &str) -> &'static str {
+    if options.split(',').any(|option| option == "ro") {
+        "ro"
+    } else {
+        "rw"
+    }
+}
+
+fn is_skipped_filesystem_type(fs_type: &str) -> bool {
+    matches!(
+        fs_type,
+        "autofs"
+            | "bpf"
+            | "binfmt_misc"
+            | "cgroup"
+            | "cgroup2"
+            | "debugfs"
+            | "devtmpfs"
+            | "fusectl"
+            | "mqueue"
+            | "nsfs"
+            | "overlay"
+            | "proc"
+            | "pstore"
+            | "squashfs"
+            | "sysfs"
+            | "tmpfs"
+            | "tracefs"
+            | "nfs"
+            | "nfs4"
+            | "cifs"
+            | "smb3"
+            | "9p"
+    )
+}
+
+fn unescape_mountinfo(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut escaped = None;
+    for idx in 0..bytes.len() {
+        if bytes[idx] == b'\\' && idx + 3 < bytes.len() {
+            escaped = Some(idx);
+            break;
+        }
+    }
+    let Some(first_escape) = escaped else {
+        return input.to_owned();
+    };
+
+    let mut output = String::with_capacity(input.len());
+    output.push_str(&input[..first_escape]);
+    let mut idx = first_escape;
+    while idx < bytes.len() {
+        if bytes[idx] == b'\\' && idx + 3 < bytes.len() {
+            let octal = &input[idx + 1..idx + 4];
+            if let Ok(value) = u8::from_str_radix(octal, 8) {
+                output.push(value as char);
+                idx += 4;
+                continue;
+            }
+        }
+        output.push(bytes[idx] as char);
+        idx += 1;
+    }
+    output
 }
 
 fn parse_netdev(
@@ -1644,6 +1914,130 @@ fn disk_number_point(
     }
 }
 
+fn push_filesystem_usage(
+    metrics: &mut Vec<Metric>,
+    start: u64,
+    now: u64,
+    filesystem: &FilesystemStats,
+) {
+    let points = vec![
+        filesystem_number_point(
+            filesystem,
+            "used",
+            start,
+            now,
+            FilesystemValue::Integer(filesystem.used),
+        ),
+        filesystem_number_point(
+            filesystem,
+            "free",
+            start,
+            now,
+            FilesystemValue::Integer(filesystem.free),
+        ),
+        filesystem_number_point(
+            filesystem,
+            "reserved",
+            start,
+            now,
+            FilesystemValue::Integer(filesystem.reserved),
+        ),
+    ];
+    push_updown_metric(metrics, "system.filesystem.usage", "By", points);
+}
+
+fn push_filesystem_utilization(metrics: &mut Vec<Metric>, now: u64, filesystem: &FilesystemStats) {
+    let total = filesystem
+        .used
+        .saturating_add(filesystem.free)
+        .saturating_add(filesystem.reserved);
+    if total == 0 {
+        return;
+    }
+    let total = total as f64;
+    let points = vec![
+        filesystem_number_point(
+            filesystem,
+            "used",
+            0,
+            now,
+            FilesystemValue::Float(filesystem.used as f64 / total),
+        ),
+        filesystem_number_point(
+            filesystem,
+            "free",
+            0,
+            now,
+            FilesystemValue::Float(filesystem.free as f64 / total),
+        ),
+        filesystem_number_point(
+            filesystem,
+            "reserved",
+            0,
+            now,
+            FilesystemValue::Float(filesystem.reserved as f64 / total),
+        ),
+    ];
+    metrics.push(Metric {
+        name: "system.filesystem.utilization".to_owned(),
+        description: String::new(),
+        unit: "1".to_owned(),
+        metadata: Vec::new(),
+        data: Some(metric::Data::Gauge(Gauge {
+            data_points: points,
+        })),
+    });
+}
+
+fn push_filesystem_limit(
+    metrics: &mut Vec<Metric>,
+    start: u64,
+    now: u64,
+    filesystem: &FilesystemStats,
+    limit_bytes: u64,
+) {
+    push_updown_metric(
+        metrics,
+        "system.filesystem.limit",
+        "By",
+        vec![filesystem_number_point(
+            filesystem,
+            "limit",
+            start,
+            now,
+            FilesystemValue::Integer(limit_bytes),
+        )],
+    );
+}
+
+#[derive(Copy, Clone)]
+enum FilesystemValue {
+    Integer(u64),
+    Float(f64),
+}
+
+fn filesystem_number_point(
+    filesystem: &FilesystemStats,
+    state: &'static str,
+    start: u64,
+    now: u64,
+    value: FilesystemValue,
+) -> NumberDataPoint {
+    let attributes = vec![
+        kv_str("system.device", &filesystem.device),
+        kv_str("system.filesystem.state", state),
+        kv_str("system.filesystem.type", &filesystem.fs_type),
+        kv_str("system.filesystem.mode", filesystem.mode),
+        kv_str("system.filesystem.mountpoint", &filesystem.mountpoint),
+    ];
+    match value {
+        FilesystemValue::Integer(value) => {
+            number_point_i64(attributes, start, now, saturating_i64(value))
+        }
+        FilesystemValue::Float(value) => number_point_f64(attributes, start, now, value),
+    }
+}
+
 fn push_network_sum(
     metrics: &mut Vec<Metric>,
     name: &'static str,
@@ -1882,6 +2276,16 @@ mod tests {
                 write_time_seconds: 0.6,
                 io_time_seconds: 0.7,
             }],
+            filesystems: vec![FilesystemStats {
+                device: "/dev/sda1".to_owned(),
+                mountpoint: "/".to_owned(),
+                fs_type: "ext4".to_owned(),
+                mode: "rw",
+                used: 60,
+                free: 30,
+                reserved: 10,
+                limit_bytes: Some(100),
+            }],
             networks: vec![NetworkStats {
                 name: "eth0".to_owned(),
                 rx_bytes: 10,
@@ -1955,6 +2359,15 @@ mod tests {
         assert_metric_shape(metrics, "system.disk.merged", "{operation}", Some(true));
         assert_metric_shape(metrics, "system.disk.limit", "By", Some(false));
         assert_first_point_attr(metrics, "system.disk.limit", "system.device", "sda");
+        assert_metric_shape(metrics, "system.filesystem.usage", "By", Some(false));
+        assert_first_point_attr(
+            metrics,
+            "system.filesystem.usage",
+            "system.filesystem.state",
+            "used",
+        );
+        assert_metric_shape(metrics, "system.filesystem.utilization", "1", None);
+        assert_metric_shape(metrics, "system.filesystem.limit", "By", Some(false));
         assert_metric_shape(metrics, "system.network.io", "By", Some(true));
         assert_first_point_attr(
             metrics,
@@ -2007,10 +2420,13 @@ mod tests {
                 paging: false,
                 system: false,
                 disk: true,
+                filesystem: false,
                 network: false,
                 processes: false,
                 cpu_utilization: false,
                 disk_limit: false,
+                filesystem_include_virtual: false,
+                filesystem_limit: false,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -2044,10 +2460,13 @@ mod tests {
                 paging: false,
                 system: false,
                 disk: false,
+                filesystem: false,
                 network: false,
                 processes: false,
                 cpu_utilization: false,
                 disk_limit: false,
+                filesystem_include_virtual: false,
+                filesystem_limit: false,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -2088,10 +2507,13 @@ mod tests {
                 paging: false,
                 system: false,
                 disk: true,
+                filesystem: false,
                 network: false,
                 processes: false,
                 cpu_utilization: false,
                 disk_limit: true,
+                filesystem_include_virtual: false,
+                filesystem_limit: false,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -2113,6 +2535,54 @@ mod tests {
             scrape.snapshot.disks[0].limit_bytes,
             Some(4096 * DISKSTAT_SECTOR_BYTES)
         );
+    }
+
+    #[test]
+    fn scrape_due_reads_filesystem_usage_from_mountinfo() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let proc_one = root.path().join("proc/1");
+        std::fs::create_dir_all(&proc_one).expect("proc one dir");
+        std::fs::write(
+            proc_one.join("mountinfo"),
+            "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n",
+        )
+        .expect("mountinfo");
+        let mut source = ProcfsSource::new(
+            Some(root.path()),
+            ProcfsConfig {
+                cpu: false,
+                memory: false,
+                paging: false,
+                system: false,
+                disk: false,
+                filesystem: true,
+                network: false,
+                processes: false,
+                cpu_utilization: false,
+                disk_limit: false,
+                filesystem_include_virtual: false,
+                filesystem_limit: true,
+                disk_include: None,
+                disk_exclude: None,
+                network_include: None,
+                network_exclude: None,
+                validation: HostViewValidationMode::None,
+            },
+        )
+        .expect("source");
+
+        let scrape = source
+            .scrape_due(ProcfsFamilies {
+                filesystem: true,
+                ..ProcfsFamilies::default()
+            })
+            .expect("filesystem scrape");
+
+        assert_eq!(scrape.snapshot.filesystems.len(), 1);
+        assert_eq!(scrape.snapshot.filesystems[0].device, "/dev/sda1");
+        assert_eq!(scrape.snapshot.filesystems[0].mountpoint, "/");
+        assert_eq!(scrape.snapshot.filesystems[0].fs_type, "ext4");
+        assert!(scrape.snapshot.filesystems[0].limit_bytes.is_some());
     }
 
     #[test]
@@ -2236,6 +2706,35 @@ mod tests {
     }
 
     #[test]
+    fn mountinfo_parser_skips_virtual_filesystems_by_default() {
+        let mounts = parse_mountinfo(
+            "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n37 25 0:32 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n",
+            false,
+            true,
+        );
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].device, "/dev/sda1");
+        assert_eq!(mounts[0].mountpoint, "/");
+        assert_eq!(mounts[0].fs_type, "ext4");
+        assert_eq!(mounts[0].mode, "rw");
+        assert!(mounts[0].emit_limit);
+    }
+
+    #[test]
+    fn mountinfo_parser_unescapes_paths() {
+        let mounts = parse_mountinfo(
+            "36 25 8:1 / /mnt/data\\040disk rw,relatime - ext4 /dev/disk\\040one rw\n",
+            false,
+            false,
+        );
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].device, "/dev/disk one");
+        assert_eq!(mounts[0].mountpoint, "/mnt/data disk");
+    }
+
+    #[test]
     fn netdev_parser_reads_device_counters() {
         let interfaces = parse_netdev(
             "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n eth0: 10 2 0 0 0 0 0 0 30 4 0 0 0 0 0 0\n",
@@ -2272,12 +2771,14 @@ mod tests {
     fn root_path_uses_host_pid_one_netdev() {
         let paths = ProcfsPaths::new(Some(Path::new("/host")));
         assert_eq!(paths.net_dev, PathBuf::from("/host/proc/1/net/dev"));
+        assert_eq!(paths.mountinfo, PathBuf::from("/host/proc/1/mountinfo"));
     }
 
     #[test]
     fn root_slash_uses_current_proc_netdev() {
         let paths = ProcfsPaths::new(Some(Path::new("/")));
         assert_eq!(paths.net_dev, PathBuf::from("/proc/net/dev"));
+        assert_eq!(paths.mountinfo, PathBuf::from("/proc/self/mountinfo"));
     }
 
     #[test]
