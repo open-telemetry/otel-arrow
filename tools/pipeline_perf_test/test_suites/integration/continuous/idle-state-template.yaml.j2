@@ -29,6 +29,7 @@ components:
 {% endif %}
       prometheus:
         endpoint: http://localhost:{{port}}/api/v1/telemetry/metrics?format=prometheus&reset=false
+        interval: 5.0
 
 tests:
   - name: Idle State Baseline - {{core_label}}
@@ -42,7 +43,7 @@ tests:
           run:
             pre:
               - render_template:
-                  template_path: 'test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml'
+                  template_path: 'test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp-idle.yaml'
                   output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
                   variables:
                     backend_hostname: localhost

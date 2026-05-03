@@ -383,13 +383,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             .add_service(metrics_server)
             .add_service(traces_server);
 
-        // Start periodic telemetry collection
-        let mut telemetry_cancel_handle = Some(
-            effect_handler
-                .start_periodic_telemetry(Duration::from_secs(1))
-                .await?,
-        );
-
         let grpc_shutdown = CancellationToken::new();
         let server_task = {
             let grpc_shutdown = grpc_shutdown.clone();
@@ -440,9 +433,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 }
 
                 if server_task_done && states.is_empty() {
-                    if let Some(handle) = telemetry_cancel_handle.take() {
-                        _ = handle.cancel().await;
-                    }
                     effect_handler.notify_receiver_drained().await?;
                     self.flush_memory_pressure_metrics();
                     terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
@@ -480,9 +470,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             otap_df_telemetry::otel_info!("otap_receiver.shutdown");
                             grpc_shutdown.cancel();
                             states.force_shutdown(&reason);
-                            if let Some(handle) = telemetry_cancel_handle.take() {
-                                _ = handle.cancel().await;
-                            }
                             self.flush_memory_pressure_metrics();
                             terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
                             break;
@@ -501,9 +488,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             self.handle_nack_response(self.route_nack_response(&states, nack));
                         }
                         Err(e) => {
-                            if let Some(handle) = telemetry_cancel_handle.take() {
-                                _ = handle.cancel().await;
-                            }
                             return Err(Error::ChannelRecvError(e));
                         }
                         _ => {}
@@ -523,9 +507,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     }
 
                     if draining_deadline.is_none() {
-                        if let Some(handle) = telemetry_cancel_handle.take() {
-                            _ = handle.cancel().await;
-                        }
                         self.flush_memory_pressure_metrics();
                         terminal_state = TerminalState::new(
                             clock::now().add(Duration::from_secs(1)),
