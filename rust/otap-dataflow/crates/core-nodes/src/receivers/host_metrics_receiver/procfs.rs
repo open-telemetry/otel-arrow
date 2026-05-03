@@ -639,7 +639,7 @@ impl HostSnapshot {
                     ("nice", cpu.nice),
                     ("system", cpu.system),
                     ("idle", cpu.idle),
-                    ("wait", cpu.wait),
+                    ("iowait", cpu.wait),
                     ("interrupt", cpu.interrupt),
                     ("steal", cpu.steal),
                 ],
@@ -657,7 +657,7 @@ impl HostSnapshot {
                     ("nice", cpu.nice),
                     ("system", cpu.system),
                     ("idle", cpu.idle),
-                    ("wait", cpu.wait),
+                    ("iowait", cpu.wait),
                     ("interrupt", cpu.interrupt),
                     ("steal", cpu.steal),
                 ],
@@ -1061,7 +1061,7 @@ impl CounterTracker {
                     ("nice", cpu.nice),
                     ("system", cpu.system),
                     ("idle", cpu.idle),
-                    ("wait", cpu.wait),
+                    ("iowait", cpu.wait),
                     ("interrupt", cpu.interrupt),
                     ("steal", cpu.steal),
                 ],
@@ -2570,12 +2570,16 @@ fn push_filesystem_limit(
         metrics,
         "system.filesystem.limit",
         "By",
-        vec![filesystem_number_point(
-            filesystem,
-            "limit",
+        vec![number_point_i64(
+            vec![
+                kv_str("system.device", &filesystem.device),
+                kv_str("system.filesystem.type", &filesystem.fs_type),
+                kv_str("system.filesystem.mode", filesystem.mode),
+                kv_str("system.filesystem.mountpoint", &filesystem.mountpoint),
+            ],
             start,
             now,
-            FilesystemValue::Integer(limit_bytes),
+            saturating_i64(limit_bytes),
         )],
     );
 }
@@ -2898,6 +2902,7 @@ mod tests {
         let metrics = &resource_metrics.scope_metrics[0].metrics;
         assert_metric_shape(metrics, "system.cpu.time", "s", Some(true));
         assert_first_point_attr(metrics, "system.cpu.time", "cpu.mode", "user");
+        assert_sum_point_attr(metrics, "system.cpu.time", "cpu.mode", "iowait");
         assert_metric_shape(metrics, "system.cpu.utilization", "1", None);
         assert_first_point_attr(metrics, "system.cpu.utilization", "cpu.mode", "user");
         assert_metric_shape(metrics, "system.cpu.logical.count", "{cpu}", Some(false));
@@ -2995,6 +3000,11 @@ mod tests {
         );
         assert_metric_shape(metrics, "system.filesystem.utilization", "1", None);
         assert_metric_shape(metrics, "system.filesystem.limit", "By", Some(false));
+        assert_no_first_point_attr(
+            metrics,
+            "system.filesystem.limit",
+            "system.filesystem.state",
+        );
         assert_metric_shape(metrics, "system.network.io", "By", Some(true));
         assert_first_point_attr(
             metrics,
@@ -3611,6 +3621,38 @@ mod tests {
         assert_has_attr(&point.attributes, key, value);
     }
 
+    fn assert_sum_point_attr(
+        metrics: &[Metric],
+        name: &'static str,
+        key: &'static str,
+        value: &'static str,
+    ) {
+        let metric = metric_by_name(metrics, name);
+        let metric::Data::Sum(sum) = metric.data.as_ref().expect("metric data") else {
+            panic!("{name} should be a cumulative sum");
+        };
+        assert!(
+            sum.data_points
+                .iter()
+                .any(|point| has_attr(&point.attributes, key, value)),
+            "missing point attribute {key}={value}"
+        );
+    }
+
+    fn assert_no_first_point_attr(metrics: &[Metric], name: &'static str, key: &'static str) {
+        let metric = metric_by_name(metrics, name);
+        let point = match metric.data.as_ref().expect("metric data") {
+            metric::Data::Sum(sum) => sum.data_points.first(),
+            metric::Data::Gauge(gauge) => gauge.data_points.first(),
+            _ => None,
+        }
+        .expect("data point");
+        assert!(
+            !point.attributes.iter().any(|attr| attr.key == key),
+            "unexpected attribute {key}"
+        );
+    }
+
     fn assert_first_sum_point_start(metrics: &[Metric], name: &'static str, expected_start: u64) {
         let metric = metric_by_name(metrics, name);
         let metric::Data::Sum(sum) = metric.data.as_ref().expect("metric data") else {
@@ -3629,14 +3671,18 @@ mod tests {
 
     fn assert_has_attr(attributes: &[KeyValue], key: &'static str, value: &'static str) {
         assert!(
-            attributes.iter().any(|attr| {
-                attr.key == key
-                    && matches!(
-                        attr.value.as_ref().and_then(|value| value.value.as_ref()),
-                        Some(any_value::Value::StringValue(actual)) if actual == value
-                    )
-            }),
+            has_attr(attributes, key, value),
             "missing attribute {key}={value}"
         );
+    }
+
+    fn has_attr(attributes: &[KeyValue], key: &'static str, value: &'static str) -> bool {
+        attributes.iter().any(|attr| {
+            attr.key == key
+                && matches!(
+                    attr.value.as_ref().and_then(|value| value.value.as_ref()),
+                    Some(any_value::Value::StringValue(actual)) if actual == value
+                )
+        })
     }
 }
