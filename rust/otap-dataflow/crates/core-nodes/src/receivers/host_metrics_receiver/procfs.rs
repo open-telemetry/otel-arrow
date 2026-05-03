@@ -779,16 +779,7 @@ impl HostSnapshot {
                 ],
                 "system.paging.fault.type",
             );
-            push_sum_u64(
-                &mut metrics,
-                "system.paging.operations",
-                "{operation}",
-                start,
-                now,
-                counter_starts,
-                &[("in", paging.swap_in), ("out", paging.swap_out)],
-                "system.paging.direction",
-            );
+            push_paging_operations(&mut metrics, start, now, counter_starts, &paging);
         }
 
         for swap in self.swaps {
@@ -823,7 +814,7 @@ impl HostSnapshot {
                 now,
                 &[
                     ("running", processes.running),
-                    ("blocked", processes.blocked),
+                    ("sleeping", processes.blocked),
                 ],
                 "process.state",
             );
@@ -1084,8 +1075,10 @@ impl CounterTracker {
                 default_start,
                 now,
                 &[
-                    ("in", paging.swap_in as f64),
-                    ("out", paging.swap_out as f64),
+                    ("in|major", paging.swap_in as f64),
+                    ("out|major", paging.swap_out as f64),
+                    ("in|minor", paging.page_in as f64),
+                    ("out|minor", paging.page_out as f64),
                 ],
                 &mut starts,
             );
@@ -1425,6 +1418,8 @@ struct HugepageStats {
 struct PagingStats {
     minor_faults: u64,
     major_faults: u64,
+    page_in: u64,
+    page_out: u64,
     swap_in: u64,
     swap_out: u64,
 }
@@ -1706,6 +1701,8 @@ fn parse_uptime(input: &str) -> Option<f64> {
 fn parse_vmstat(input: &str) -> PagingStats {
     let mut total_faults = 0;
     let mut major_faults = 0;
+    let mut page_in = 0;
+    let mut page_out = 0;
     let mut swap_in = 0;
     let mut swap_out = 0;
 
@@ -1718,6 +1715,8 @@ fn parse_vmstat(input: &str) -> PagingStats {
         match key {
             "pgfault" => total_faults = value,
             "pgmajfault" => major_faults = value,
+            "pgpgin" => page_in = value,
+            "pgpgout" => page_out = value,
             "pswpin" => swap_in = value,
             "pswpout" => swap_out = value,
             _ => {}
@@ -1727,6 +1726,8 @@ fn parse_vmstat(input: &str) -> PagingStats {
     PagingStats {
         minor_faults: total_faults.saturating_sub(major_faults),
         major_faults,
+        page_in,
+        page_out,
         swap_in,
         swap_out,
     }
@@ -2179,11 +2180,11 @@ fn push_cpu_frequency(metrics: &mut Vec<Metric>, now: u64, frequencies_hz: &[f64
     }
     let mut points = Vec::with_capacity(frequencies_hz.len());
     for (idx, frequency) in frequencies_hz.iter().enumerate() {
-        points.push(number_point_f64(
+        points.push(number_point_i64(
             vec![kv_str("cpu.logical_number", &idx.to_string())],
             0,
             now,
-            *frequency,
+            frequency_hz_i64(*frequency),
         ));
     }
     metrics.push(Metric {
@@ -2195,6 +2196,44 @@ fn push_cpu_frequency(metrics: &mut Vec<Metric>, now: u64, frequencies_hz: &[f64
             data_points: points,
         })),
     });
+}
+
+fn frequency_hz_i64(value: f64) -> i64 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    if value >= i64::MAX as f64 {
+        return i64::MAX;
+    }
+    value.round() as i64
+}
+
+fn push_paging_operations(
+    metrics: &mut Vec<Metric>,
+    start: u64,
+    now: u64,
+    counter_starts: &CounterStarts,
+    paging: &PagingStats,
+) {
+    let values = [
+        ("in", "major", paging.swap_in),
+        ("out", "major", paging.swap_out),
+        ("in", "minor", paging.page_in),
+        ("out", "minor", paging.page_out),
+    ];
+    let mut points = Vec::with_capacity(values.len());
+    for (direction, fault_type, value) in values {
+        points.push(number_point_i64(
+            vec![
+                kv_str("system.paging.direction", direction),
+                kv_str("system.paging.fault.type", fault_type),
+            ],
+            counter_starts.get_joined("system.paging.operations", direction, fault_type, start),
+            now,
+            saturating_i64(value),
+        ));
+    }
+    push_sum_metric(metrics, "system.paging.operations", "{operation}", points);
 }
 
 fn push_hugepage_metrics(
@@ -2791,7 +2830,7 @@ mod tests {
     use weaver_resolver::SchemaResolver;
     #[cfg(feature = "dev-tools")]
     use weaver_semconv::{
-        attribute::{BasicRequirementLevelSpec, RequirementLevel},
+        attribute::{AttributeType, BasicRequirementLevelSpec, RequirementLevel, ValueSpec},
         group::{GroupType, InstrumentSpec},
         registry_repo::RegistryRepo,
     };
@@ -2816,6 +2855,7 @@ mod tests {
         assert_metric_shape(metrics, "system.cpu.logical.count", "{cpu}", Some(false));
         assert_metric_shape(metrics, "system.cpu.physical.count", "{cpu}", Some(false));
         assert_metric_shape(metrics, "system.cpu.frequency", "Hz", None);
+        assert_first_point_int(metrics, "system.cpu.frequency", 2_400_000_000);
         assert_first_point_attr(metrics, "system.cpu.frequency", "cpu.logical_number", "0");
         assert_metric_shape(metrics, "system.memory.usage", "By", Some(false));
         assert_first_point_attr(
@@ -2884,6 +2924,18 @@ mod tests {
             "system.paging.operations",
             "{operation}",
             Some(true),
+        );
+        assert_sum_point_attr(
+            metrics,
+            "system.paging.operations",
+            "system.paging.direction",
+            "in",
+        );
+        assert_sum_point_attr(
+            metrics,
+            "system.paging.operations",
+            "system.paging.fault.type",
+            "minor",
         );
         assert_metric_shape(metrics, "system.paging.usage", "By", Some(false));
         assert_first_point_attr(metrics, "system.paging.usage", "system.device", "/dev/swap");
@@ -2965,15 +3017,33 @@ mod tests {
                 emitted.monotonic, semconv.monotonic,
                 "instrument/temporality mismatch for {name}"
             );
+            assert_eq!(
+                emitted.value_type, semconv.value_type,
+                "metric value type mismatch for {name}"
+            );
 
             for attr in &semconv.attributes {
-                if is_intentional_semconv_attribute_gap(name.as_str(), attr.as_str()) {
-                    continue;
-                }
                 assert!(
                     emitted.attributes.contains(attr),
                     "missing semconv attribute {attr} on {name}"
                 );
+            }
+            for attr in &emitted.attributes {
+                assert!(
+                    semconv.all_attributes.contains(attr),
+                    "unexpected semconv attribute {attr} on {name}"
+                );
+            }
+            for (attr, values) in &emitted.enum_values {
+                let Some(allowed_values) = semconv.enum_values.get(attr) else {
+                    continue;
+                };
+                for value in values {
+                    assert!(
+                        allowed_values.contains(value),
+                        "unexpected enum value {attr}={value} on {name}"
+                    );
+                }
             }
         }
     }
@@ -3346,9 +3416,12 @@ mod tests {
 
     #[test]
     fn vmstat_parser_derives_minor_faults() {
-        let paging = parse_vmstat("pgfault 100\npgmajfault 7\npswpin 3\npswpout 4\n");
+        let paging =
+            parse_vmstat("pgfault 100\npgmajfault 7\npgpgin 5\npgpgout 6\npswpin 3\npswpout 4\n");
         assert_eq!(paging.minor_faults, 93);
         assert_eq!(paging.major_faults, 7);
+        assert_eq!(paging.page_in, 5);
+        assert_eq!(paging.page_out, 6);
         assert_eq!(paging.swap_in, 3);
         assert_eq!(paging.swap_out, 4);
     }
@@ -3514,6 +3587,16 @@ mod tests {
         unit: String,
         monotonic: Option<bool>,
         attributes: BTreeSet<String>,
+        all_attributes: BTreeSet<String>,
+        enum_values: BTreeMap<String, BTreeSet<String>>,
+        value_type: Option<MetricValueKind>,
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum MetricValueKind {
+        Int,
+        Double,
     }
 
     #[cfg(feature = "dev-tools")]
@@ -3572,6 +3655,25 @@ mod tests {
                     .filter(|attr| !is_opt_in_requirement(&attr.requirement_level))
                     .map(|attr| attr.name.clone())
                     .collect();
+                let all_attributes = group
+                    .attributes
+                    .iter()
+                    .map(|attr| attr.name.clone())
+                    .collect();
+                let enum_values = group
+                    .attributes
+                    .iter()
+                    .filter_map(|attr| match &attr.r#type {
+                        AttributeType::Enum { members } => Some((
+                            attr.name.clone(),
+                            members
+                                .iter()
+                                .map(|member| value_spec_string(&member.value))
+                                .collect(),
+                        )),
+                        _ => None,
+                    })
+                    .collect();
 
                 Some((
                     name.clone(),
@@ -3579,10 +3681,38 @@ mod tests {
                         unit: group.unit.clone().unwrap_or_default(),
                         monotonic,
                         attributes,
+                        all_attributes,
+                        enum_values,
+                        value_type: semconv_metric_value_type(group.annotations.as_ref()),
                     },
                 ))
             })
             .collect()
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn semconv_metric_value_type(
+        annotations: Option<&BTreeMap<String, weaver_semconv::YamlValue>>,
+    ) -> Option<MetricValueKind> {
+        let code_generation = annotations?.get("code_generation")?.0.as_mapping()?;
+        let value_type = code_generation.iter().find_map(|(key, value)| {
+            (key.as_str() == Some("metric_value_type")).then(|| value.as_str())?
+        })?;
+        match value_type {
+            "int" => Some(MetricValueKind::Int),
+            "double" => Some(MetricValueKind::Double),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn value_spec_string(value: &ValueSpec) -> String {
+        match value {
+            ValueSpec::Int(value) => value.to_string(),
+            ValueSpec::Double(value) => value.to_string(),
+            ValueSpec::String(value) => value.clone(),
+            ValueSpec::Bool(value) => value.to_string(),
+        }
     }
 
     #[cfg(feature = "dev-tools")]
@@ -3610,12 +3740,24 @@ mod tests {
                     .flat_map(|point| point.attributes.iter())
                     .map(|attr| attr.key.clone())
                     .collect();
+                let mut attribute_values: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+                for attr in points.iter().flat_map(|point| point.attributes.iter()) {
+                    if let Some(value) = any_value_string(attr.value.as_ref()) {
+                        let _ = attribute_values
+                            .entry(attr.key.clone())
+                            .or_default()
+                            .insert(value);
+                    }
+                }
                 (
                     metric.name.clone(),
                     MetricShape {
                         unit: metric.unit.clone(),
                         monotonic,
                         attributes,
+                        all_attributes: BTreeSet::new(),
+                        enum_values: attribute_values,
+                        value_type: metric_value_type(points),
                     },
                 )
             })
@@ -3623,11 +3765,33 @@ mod tests {
     }
 
     #[cfg(feature = "dev-tools")]
-    fn is_intentional_semconv_attribute_gap(name: &str, attr: &str) -> bool {
-        matches!(
-            (name, attr),
-            ("system.paging.operations", "system.paging.fault.type")
-        )
+    fn metric_value_type(points: &[NumberDataPoint]) -> Option<MetricValueKind> {
+        let mut value_type = None;
+        for point in points {
+            let point_value_type = match point.value {
+                Some(number_data_point::Value::AsInt(_)) => MetricValueKind::Int,
+                Some(number_data_point::Value::AsDouble(_)) => MetricValueKind::Double,
+                None => continue,
+            };
+            if value_type
+                .replace(point_value_type)
+                .is_some_and(|current| current != point_value_type)
+            {
+                panic!("mixed int/double data points");
+            }
+        }
+        value_type
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn any_value_string(value: Option<&AnyValue>) -> Option<String> {
+        match value?.value.as_ref()? {
+            any_value::Value::StringValue(value) => Some(value.clone()),
+            any_value::Value::IntValue(value) => Some(value.to_string()),
+            any_value::Value::DoubleValue(value) => Some(value.to_string()),
+            any_value::Value::BoolValue(value) => Some(value.to_string()),
+            _ => None,
+        }
     }
 
     fn projection_fixture_request() -> ExportMetricsServiceRequest {
@@ -3683,6 +3847,8 @@ mod tests {
             paging: Some(PagingStats {
                 minor_faults: 9,
                 major_faults: 1,
+                page_in: 4,
+                page_out: 5,
                 swap_in: 2,
                 swap_out: 3,
             }),
@@ -3821,6 +3987,21 @@ mod tests {
                 .iter()
                 .any(|point| has_attr(&point.attributes, key, value)),
             "missing point attribute {key}={value}"
+        );
+    }
+
+    fn assert_first_point_int(metrics: &[Metric], name: &'static str, expected: i64) {
+        let metric = metric_by_name(metrics, name);
+        let point = match metric.data.as_ref().expect("metric data") {
+            metric::Data::Sum(sum) => sum.data_points.first(),
+            metric::Data::Gauge(gauge) => gauge.data_points.first(),
+            _ => None,
+        }
+        .expect("data point");
+        assert_eq!(
+            point.value,
+            Some(number_data_point::Value::AsInt(expected)),
+            "{name} first point should be int"
         );
     }
 

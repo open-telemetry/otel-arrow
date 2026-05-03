@@ -1267,7 +1267,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         Ok(scrape) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.partial_errors.add(scrape.partial_errors);
-                                metrics.source_read_errors.add(scrape.partial_errors);
                             }
                             let pdata = match encode_snapshot(scrape.snapshot) {
                                 Ok(pdata) => pdata,
