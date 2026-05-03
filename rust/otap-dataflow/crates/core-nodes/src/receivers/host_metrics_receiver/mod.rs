@@ -311,17 +311,12 @@ impl Default for ProcessesFamilyConfig {
 }
 
 /// Process collection mode.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessMode {
     /// Aggregate host process summary.
+    #[default]
     Summary,
-}
-
-impl Default for ProcessMode {
-    fn default() -> Self {
-        Self::Summary
-    }
 }
 
 /// Disk device filter.
