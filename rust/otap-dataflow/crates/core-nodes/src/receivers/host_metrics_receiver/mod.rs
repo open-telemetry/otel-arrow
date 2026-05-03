@@ -59,6 +59,9 @@ pub struct HostMetricsReceiverMetrics {
     /// Number of source read errors skipped because other families succeeded.
     #[metric(unit = "{error}")]
     pub partial_errors: Counter<u64>,
+    /// Number of source read errors seen during scrapes.
+    #[metric(unit = "{error}")]
+    pub source_read_errors: Counter<u64>,
     /// Number of due metric families processed.
     #[metric(unit = "{family}")]
     pub families_scraped: Counter<u64>,
@@ -1017,6 +1020,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         Ok(scrape) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.partial_errors.add(scrape.partial_errors);
+                                metrics.source_read_errors.add(scrape.partial_errors);
                             }
                             let pdata = match encode_snapshot(scrape.snapshot) {
                                 Ok(pdata) => pdata,
@@ -1066,6 +1070,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         Err(err) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.scrapes_failed.add(1);
+                                metrics.source_read_errors.add(1);
                                 metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                             }
                             return Err(Error::ReceiverError {
