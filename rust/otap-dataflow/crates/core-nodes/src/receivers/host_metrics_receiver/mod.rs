@@ -4,7 +4,6 @@
 //! Host metrics receiver.
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
@@ -19,13 +18,13 @@ use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::encode::encode_metrics_otap_batch;
 use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
 use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
-use prost::Message as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1331,12 +1330,10 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
 
 fn encode_snapshot(snapshot: HostSnapshot) -> Result<OtapPdata, otap_df_pdata::encode::Error> {
     let request = snapshot.into_export_request();
-    let mut buf = Vec::with_capacity(request.encoded_len());
-    request
-        .encode(&mut buf)
-        .expect("encoding metrics request to Vec cannot fail");
-    let records: OtapArrowRecords =
-        OtlpProtoBytes::ExportMetricsRequest(Bytes::from(buf)).try_into()?;
+    let data = MetricsData {
+        resource_metrics: request.resource_metrics,
+    };
+    let records: OtapArrowRecords = encode_metrics_otap_batch(&data)?;
     Ok(OtapPdata::new(Context::default(), records.into()))
 }
 

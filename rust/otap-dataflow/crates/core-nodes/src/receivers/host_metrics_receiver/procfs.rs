@@ -13,7 +13,7 @@ use otap_df_pdata::proto::opentelemetry::metrics::v1::{
     metric, number_data_point,
 };
 use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -33,6 +33,7 @@ pub struct ProcfsSource {
     clk_tck: f64,
     previous_cpu: Option<CpuTimes>,
     filesystem_worker: FilesystemStatWorker,
+    counter_tracker: CounterTracker,
 }
 
 /// Procfs collection config.
@@ -120,6 +121,7 @@ impl ProcfsSource {
             clk_tck: clock_ticks_per_second(),
             previous_cpu: None,
             filesystem_worker: FilesystemStatWorker::new(),
+            counter_tracker: CounterTracker::default(),
         };
         source.apply_startup_validation()?;
         Ok(source)
@@ -300,10 +302,20 @@ impl ProcfsSource {
         };
 
         let resource = self.read_resource();
+        let counter_starts = self.counter_tracker.snapshot(
+            stat.boot_time_unix_nano,
+            now_unix_nano,
+            stat.cpu.as_ref(),
+            paging.as_ref(),
+            due.processes.then_some(stat.processes).as_ref(),
+            &disks,
+            &networks,
+        );
 
         let snapshot = HostSnapshot {
             now_unix_nano,
             start_time_unix_nano: stat.boot_time_unix_nano,
+            counter_starts,
             memory_limit: self.config.memory_limit,
             memory_shared: self.config.memory_shared,
             cpu: stat.cpu,
@@ -569,6 +581,7 @@ pub struct HostScrape {
 pub struct HostSnapshot {
     now_unix_nano: u64,
     start_time_unix_nano: u64,
+    counter_starts: CounterStarts,
     memory_limit: bool,
     memory_shared: bool,
     cpu: Option<CpuTimes>,
@@ -607,6 +620,7 @@ impl HostSnapshot {
         let mut metrics = Vec::with_capacity(64);
         let now = self.now_unix_nano;
         let start = self.start_time_unix_nano;
+        let counter_starts = &self.counter_starts;
 
         if let Some(cpu) = self.cpu {
             push_sum_f64(
@@ -615,6 +629,7 @@ impl HostSnapshot {
                 "s",
                 start,
                 now,
+                counter_starts,
                 &[
                     ("user", cpu.user),
                     ("nice", cpu.nice),
@@ -750,6 +765,7 @@ impl HostSnapshot {
                 "{fault}",
                 start,
                 now,
+                counter_starts,
                 &[
                     ("minor", paging.minor_faults),
                     ("major", paging.major_faults),
@@ -762,6 +778,7 @@ impl HostSnapshot {
                 "{operation}",
                 start,
                 now,
+                counter_starts,
                 &[("in", paging.swap_in), ("out", paging.swap_out)],
                 "system.paging.direction",
             );
@@ -809,6 +826,7 @@ impl HostSnapshot {
                 "{process}",
                 start,
                 now,
+                counter_starts,
                 processes.created,
             );
         }
@@ -831,6 +849,7 @@ impl HostSnapshot {
                 "By",
                 start,
                 now,
+                counter_starts,
                 &disk,
                 DiskProjection::Bytes,
             );
@@ -840,6 +859,7 @@ impl HostSnapshot {
                 "{operation}",
                 start,
                 now,
+                counter_starts,
                 &disk,
                 DiskProjection::Operations,
             );
@@ -849,6 +869,7 @@ impl HostSnapshot {
                 "s",
                 start,
                 now,
+                counter_starts,
                 &disk,
                 DiskProjection::IoTime,
             );
@@ -858,6 +879,7 @@ impl HostSnapshot {
                 "s",
                 start,
                 now,
+                counter_starts,
                 &disk,
                 DiskProjection::OperationTime,
             );
@@ -867,6 +889,7 @@ impl HostSnapshot {
                 "{operation}",
                 start,
                 now,
+                counter_starts,
                 &disk,
                 DiskProjection::Merged,
             );
@@ -887,6 +910,7 @@ impl HostSnapshot {
                 "By",
                 start,
                 now,
+                counter_starts,
                 &network,
                 NetworkProjection::Bytes,
             );
@@ -896,6 +920,7 @@ impl HostSnapshot {
                 "{packet}",
                 start,
                 now,
+                counter_starts,
                 &network,
                 NetworkProjection::Packets,
             );
@@ -905,6 +930,7 @@ impl HostSnapshot {
                 "{packet}",
                 start,
                 now,
+                counter_starts,
                 &network,
                 NetworkProjection::Dropped,
             );
@@ -914,6 +940,7 @@ impl HostSnapshot {
                 "{error}",
                 start,
                 now,
+                counter_starts,
                 &network,
                 NetworkProjection::Errors,
             );
@@ -964,6 +991,367 @@ impl HostResource {
         }
         attributes
     }
+}
+
+#[derive(Default)]
+struct CounterTracker {
+    states: HashMap<String, CounterState>,
+}
+
+struct CounterState {
+    previous: f64,
+    start_time_unix_nano: u64,
+}
+
+#[derive(Default)]
+struct CounterStarts {
+    entries: Vec<(String, u64)>,
+}
+
+impl CounterStarts {
+    fn get(&self, metric: &'static str, series: &str, default_start: u64) -> u64 {
+        self.entries
+            .iter()
+            .find_map(|(key, start)| counter_key_matches(key, metric, series).then_some(*start))
+            .unwrap_or(default_start)
+    }
+
+    fn get_joined(
+        &self,
+        metric: &'static str,
+        first: &str,
+        second: &'static str,
+        default_start: u64,
+    ) -> u64 {
+        self.entries
+            .iter()
+            .find_map(|(key, start)| {
+                counter_key_matches_joined(key, metric, first, second).then_some(*start)
+            })
+            .unwrap_or(default_start)
+    }
+}
+
+impl CounterTracker {
+    fn snapshot(
+        &mut self,
+        default_start: u64,
+        now: u64,
+        cpu: Option<&CpuTimes>,
+        paging: Option<&PagingStats>,
+        processes: Option<&ProcessStats>,
+        disks: &[DiskStats],
+        networks: &[NetworkStats],
+    ) -> CounterStarts {
+        let mut starts = CounterStarts::default();
+        if let Some(cpu) = cpu {
+            self.observe_all(
+                "system.cpu.time",
+                default_start,
+                now,
+                &[
+                    ("user", cpu.user),
+                    ("nice", cpu.nice),
+                    ("system", cpu.system),
+                    ("idle", cpu.idle),
+                    ("wait", cpu.wait),
+                    ("interrupt", cpu.interrupt),
+                    ("steal", cpu.steal),
+                ],
+                &mut starts,
+            );
+        }
+        if let Some(paging) = paging {
+            self.observe_all(
+                "system.paging.faults",
+                default_start,
+                now,
+                &[
+                    ("minor", paging.minor_faults as f64),
+                    ("major", paging.major_faults as f64),
+                ],
+                &mut starts,
+            );
+            self.observe_all(
+                "system.paging.operations",
+                default_start,
+                now,
+                &[
+                    ("in", paging.swap_in as f64),
+                    ("out", paging.swap_out as f64),
+                ],
+                &mut starts,
+            );
+        }
+        if let Some(processes) = processes {
+            self.observe(
+                "system.process.created",
+                "",
+                processes.created as f64,
+                default_start,
+                now,
+                &mut starts,
+            );
+        }
+        for disk in disks {
+            self.observe_disk_all(
+                "system.disk.io",
+                default_start,
+                now,
+                &disk.name,
+                &[
+                    ("read", disk.read_bytes as f64),
+                    ("write", disk.write_bytes as f64),
+                ],
+                &mut starts,
+            );
+            self.observe_disk_all(
+                "system.disk.operations",
+                default_start,
+                now,
+                &disk.name,
+                &[
+                    ("read", disk.read_ops as f64),
+                    ("write", disk.write_ops as f64),
+                ],
+                &mut starts,
+            );
+            self.observe(
+                "system.disk.io_time",
+                &disk.name,
+                disk.io_time_seconds,
+                default_start,
+                now,
+                &mut starts,
+            );
+            self.observe_disk_all(
+                "system.disk.operation_time",
+                default_start,
+                now,
+                &disk.name,
+                &[
+                    ("read", disk.read_time_seconds),
+                    ("write", disk.write_time_seconds),
+                ],
+                &mut starts,
+            );
+            self.observe_disk_all(
+                "system.disk.merged",
+                default_start,
+                now,
+                &disk.name,
+                &[
+                    ("read", disk.read_merged as f64),
+                    ("write", disk.write_merged as f64),
+                ],
+                &mut starts,
+            );
+        }
+        for network in networks {
+            self.observe_network(
+                "system.network.io",
+                default_start,
+                now,
+                network,
+                network.rx_bytes,
+                network.tx_bytes,
+                &mut starts,
+            );
+            self.observe_network(
+                "system.network.packet.count",
+                default_start,
+                now,
+                network,
+                network.rx_packets,
+                network.tx_packets,
+                &mut starts,
+            );
+            self.observe_network(
+                "system.network.packet.dropped",
+                default_start,
+                now,
+                network,
+                network.rx_dropped,
+                network.tx_dropped,
+                &mut starts,
+            );
+            self.observe_network(
+                "system.network.errors",
+                default_start,
+                now,
+                network,
+                network.rx_errors,
+                network.tx_errors,
+                &mut starts,
+            );
+        }
+        starts
+    }
+
+    fn observe_all(
+        &mut self,
+        metric: &'static str,
+        default_start: u64,
+        now: u64,
+        values: &[(&str, f64)],
+        starts: &mut CounterStarts,
+    ) {
+        for (series, value) in values {
+            self.observe(metric, series, *value, default_start, now, starts);
+        }
+    }
+
+    fn observe_disk_all(
+        &mut self,
+        metric: &'static str,
+        default_start: u64,
+        now: u64,
+        device: &str,
+        values: &[(&'static str, f64)],
+        starts: &mut CounterStarts,
+    ) {
+        for (direction, value) in values {
+            self.observe_joined(
+                metric,
+                device,
+                direction,
+                *value,
+                default_start,
+                now,
+                starts,
+            );
+        }
+    }
+
+    fn observe_network(
+        &mut self,
+        metric: &'static str,
+        default_start: u64,
+        now: u64,
+        network: &NetworkStats,
+        rx: u64,
+        tx: u64,
+        starts: &mut CounterStarts,
+    ) {
+        self.observe_joined(
+            metric,
+            &network.name,
+            "receive",
+            rx as f64,
+            default_start,
+            now,
+            starts,
+        );
+        self.observe_joined(
+            metric,
+            &network.name,
+            "transmit",
+            tx as f64,
+            default_start,
+            now,
+            starts,
+        );
+    }
+
+    fn observe(
+        &mut self,
+        metric: &'static str,
+        series: &str,
+        value: f64,
+        default_start: u64,
+        now: u64,
+        starts: &mut CounterStarts,
+    ) {
+        self.observe_key(
+            counter_key(metric, series),
+            value,
+            default_start,
+            now,
+            starts,
+        );
+    }
+
+    fn observe_joined(
+        &mut self,
+        metric: &'static str,
+        first: &str,
+        second: &'static str,
+        value: f64,
+        default_start: u64,
+        now: u64,
+        starts: &mut CounterStarts,
+    ) {
+        self.observe_key(
+            counter_key_joined(metric, first, second),
+            value,
+            default_start,
+            now,
+            starts,
+        );
+    }
+
+    fn observe_key(
+        &mut self,
+        key: String,
+        value: f64,
+        default_start: u64,
+        now: u64,
+        starts: &mut CounterStarts,
+    ) {
+        let state = self.states.entry(key.clone()).or_insert(CounterState {
+            previous: value,
+            start_time_unix_nano: default_start,
+        });
+        if state.start_time_unix_nano < default_start {
+            state.start_time_unix_nano = default_start;
+        } else if value < state.previous {
+            state.start_time_unix_nano = now;
+        }
+        state.previous = value;
+        starts.entries.push((key, state.start_time_unix_nano));
+    }
+}
+
+fn counter_key(metric: &'static str, series: &str) -> String {
+    let mut key = String::with_capacity(metric.len() + 1 + series.len());
+    key.push_str(metric);
+    key.push('|');
+    key.push_str(series);
+    key
+}
+
+fn counter_key_joined(metric: &'static str, first: &str, second: &'static str) -> String {
+    let mut key = String::with_capacity(metric.len() + 2 + first.len() + second.len());
+    key.push_str(metric);
+    key.push('|');
+    key.push_str(first);
+    key.push('|');
+    key.push_str(second);
+    key
+}
+
+fn counter_key_matches(key: &str, metric: &'static str, series: &str) -> bool {
+    key.strip_prefix(metric)
+        .and_then(|rest| rest.strip_prefix('|'))
+        == Some(series)
+}
+
+fn counter_key_matches_joined(
+    key: &str,
+    metric: &'static str,
+    first: &str,
+    second: &'static str,
+) -> bool {
+    let Some(series) = key
+        .strip_prefix(metric)
+        .and_then(|rest| rest.strip_prefix('|'))
+    else {
+        return false;
+    };
+    series
+        .strip_prefix(first)
+        .and_then(|rest| rest.strip_prefix('|'))
+        == Some(second)
 }
 
 fn host_arch() -> Option<&'static str> {
@@ -1857,6 +2245,7 @@ fn push_sum_f64(
     unit: &'static str,
     start: u64,
     now: u64,
+    counter_starts: &CounterStarts,
     values: &[(&'static str, f64)],
     attr_name: &'static str,
 ) {
@@ -1864,7 +2253,7 @@ fn push_sum_f64(
     for (state, value) in values {
         points.push(number_point_f64(
             vec![kv_str(attr_name, state)],
-            start,
+            counter_starts.get(name, state, start),
             now,
             *value,
         ));
@@ -1878,6 +2267,7 @@ fn push_sum_u64(
     unit: &'static str,
     start: u64,
     now: u64,
+    counter_starts: &CounterStarts,
     values: &[(&'static str, u64)],
     attr_name: &'static str,
 ) {
@@ -1885,7 +2275,7 @@ fn push_sum_u64(
     for (state, value) in values {
         points.push(number_point_i64(
             vec![kv_str(attr_name, state)],
-            start,
+            counter_starts.get(name, state, start),
             now,
             saturating_i64(*value),
         ));
@@ -1899,6 +2289,7 @@ fn push_sum_single_u64(
     unit: &'static str,
     start: u64,
     now: u64,
+    counter_starts: &CounterStarts,
     value: u64,
 ) {
     push_sum_metric(
@@ -1907,7 +2298,7 @@ fn push_sum_single_u64(
         unit,
         vec![number_point_i64(
             Vec::new(),
-            start,
+            counter_starts.get(name, "", start),
             now,
             saturating_i64(value),
         )],
@@ -1920,6 +2311,7 @@ fn push_disk_sum(
     unit: &'static str,
     start: u64,
     now: u64,
+    counter_starts: &CounterStarts,
     disk: &DiskStats,
     projection: DiskProjection,
 ) {
@@ -1930,7 +2322,7 @@ fn push_disk_sum(
             unit,
             vec![number_point_f64(
                 vec![kv_str("system.device", &disk.name)],
-                start,
+                counter_starts.get(name, &disk.name, start),
                 now,
                 disk.io_time_seconds,
             )],
@@ -1958,8 +2350,8 @@ fn push_disk_sum(
         DiskProjection::IoTime => unreachable!(),
     };
     let points = vec![
-        disk_number_point(&disk.name, "read", start, now, read),
-        disk_number_point(&disk.name, "write", start, now, write),
+        disk_number_point(&disk.name, "read", start, now, counter_starts, name, read),
+        disk_number_point(&disk.name, "write", start, now, counter_starts, name, write),
     ];
     push_sum_metric(metrics, name, unit, points);
 }
@@ -1984,6 +2376,8 @@ fn disk_number_point(
     direction: &'static str,
     start: u64,
     now: u64,
+    counter_starts: &CounterStarts,
+    metric: &'static str,
     value: DiskValue,
 ) -> NumberDataPoint {
     let attributes = vec![
@@ -1991,10 +2385,18 @@ fn disk_number_point(
         kv_str("disk.io.direction", direction),
     ];
     match value {
-        DiskValue::Integer(value) => {
-            number_point_i64(attributes, start, now, saturating_i64(value))
-        }
-        DiskValue::Float(value) => number_point_f64(attributes, start, now, value),
+        DiskValue::Integer(value) => number_point_i64(
+            attributes,
+            counter_starts.get_joined(metric, device, direction, start),
+            now,
+            saturating_i64(value),
+        ),
+        DiskValue::Float(value) => number_point_f64(
+            attributes,
+            counter_starts.get_joined(metric, device, direction, start),
+            now,
+            value,
+        ),
     }
 }
 
@@ -2128,6 +2530,7 @@ fn push_network_sum(
     unit: &'static str,
     start: u64,
     now: u64,
+    counter_starts: &CounterStarts,
     network: &NetworkStats,
     projection: NetworkProjection,
 ) {
@@ -2151,7 +2554,7 @@ fn push_network_sum(
                 kv_str(interface_attr, &network.name),
                 kv_str("network.io.direction", "receive"),
             ],
-            start,
+            counter_starts.get_joined(name, &network.name, "receive", start),
             now,
             saturating_i64(rx),
         ),
@@ -2160,7 +2563,7 @@ fn push_network_sum(
                 kv_str(interface_attr, &network.name),
                 kv_str("network.io.direction", "transmit"),
             ],
-            start,
+            counter_starts.get_joined(name, &network.name, "transmit", start),
             now,
             saturating_i64(tx),
         ),
@@ -2296,6 +2699,7 @@ mod tests {
         let request = HostSnapshot {
             now_unix_nano: 2_000,
             start_time_unix_nano: 1_000,
+            counter_starts: CounterStarts::default(),
             memory_limit: true,
             memory_shared: true,
             cpu: Some(CpuTimes {
@@ -2489,6 +2893,52 @@ mod tests {
             "eth0",
         );
         assert_metric_shape(metrics, "system.network.errors", "{error}", Some(true));
+    }
+
+    #[test]
+    fn projection_uses_counter_start_overrides_for_reset_series() {
+        let request = HostSnapshot {
+            now_unix_nano: 2_000,
+            start_time_unix_nano: 1_000,
+            counter_starts: CounterStarts {
+                entries: vec![(counter_key("system.process.created", ""), 1_500)],
+            },
+            processes: Some(ProcessStats {
+                created: 99,
+                ..ProcessStats::default()
+            }),
+            ..HostSnapshot::default()
+        }
+        .into_export_request();
+
+        let metrics = &request.resource_metrics[0].scope_metrics[0].metrics;
+        assert_first_sum_point_start(metrics, "system.process.created", 1_500);
+    }
+
+    #[test]
+    fn counter_tracker_rebaselines_reset_series_only() {
+        let mut tracker = CounterTracker::default();
+        let disks = vec![DiskStats {
+            name: "sda".to_owned(),
+            read_bytes: 100,
+            write_bytes: 200,
+            ..DiskStats::default()
+        }];
+        let starts = tracker.snapshot(10, 20, None, None, None, &disks, &[]);
+
+        assert_eq!(starts.get_joined("system.disk.io", "sda", "read", 10), 10);
+        assert_eq!(starts.get_joined("system.disk.io", "sda", "write", 10), 10);
+
+        let disks = vec![DiskStats {
+            name: "sda".to_owned(),
+            read_bytes: 50,
+            write_bytes: 250,
+            ..DiskStats::default()
+        }];
+        let starts = tracker.snapshot(10, 30, None, None, None, &disks, &[]);
+
+        assert_eq!(starts.get_joined("system.disk.io", "sda", "read", 10), 30);
+        assert_eq!(starts.get_joined("system.disk.io", "sda", "write", 10), 10);
     }
 
     #[test]
@@ -3001,6 +3451,15 @@ mod tests {
         }
         .expect("data point");
         assert_has_attr(&point.attributes, key, value);
+    }
+
+    fn assert_first_sum_point_start(metrics: &[Metric], name: &'static str, expected_start: u64) {
+        let metric = metric_by_name(metrics, name);
+        let metric::Data::Sum(sum) = metric.data.as_ref().expect("metric data") else {
+            panic!("{name} should be a cumulative sum");
+        };
+        let point = sum.data_points.first().expect("data point");
+        assert_eq!(point.start_time_unix_nano, expected_start);
     }
 
     fn metric_by_name<'a>(metrics: &'a [Metric], name: &'static str) -> &'a Metric {
