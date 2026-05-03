@@ -8,9 +8,7 @@
 
 use crate::Interests;
 use crate::config::ProcessorConfig;
-#[cfg(any(test, feature = "test-utils"))]
-use crate::control::NodeControlMsg;
-use crate::control::runtime_ctrl_msg_channel;
+use crate::control::{NodeControlMsg, runtime_ctrl_msg_channel};
 use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -25,7 +23,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::{JoinHandle, LocalSet};
 use tokio::time::sleep;
 
@@ -91,6 +89,40 @@ impl<PData> TestContext<PData> {
     /// Sleeps for the specified duration.
     pub async fn sleep(&self, duration: Duration) {
         sleep(duration).await;
+    }
+
+    /// Returns the next scheduled local-control deadline, if any.
+    #[must_use]
+    pub fn next_local_control_deadline(&self) -> Option<Instant> {
+        match &self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => effect_handler
+                .core
+                .local_scheduler
+                .as_ref()
+                .and_then(|scheduler| scheduler.next_expiry()),
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => effect_handler
+                .core
+                .local_scheduler
+                .as_ref()
+                .and_then(|scheduler| scheduler.next_expiry()),
+        }
+    }
+
+    /// Pops the next due local control message using the provided logical time.
+    #[must_use]
+    pub fn take_due_local_control(&mut self, now: Instant) -> Option<NodeControlMsg<PData>> {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => effect_handler
+                .core
+                .local_scheduler
+                .as_ref()
+                .and_then(|scheduler| scheduler.pop_due(now)),
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => effect_handler
+                .core
+                .local_scheduler
+                .as_ref()
+                .and_then(|scheduler| scheduler.pop_due(now)),
+        }
     }
 
     /// Sets whether outgoing messages need source node tagging on the effect handler.
@@ -247,6 +279,30 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let metrics_system = InternalTelemetrySystem::default();
         let config = ProcessorConfig::new("test_processor");
+        let (rt, local_tasks) = setup_test_runtime();
+
+        Self {
+            config,
+            rt,
+            local_tasks,
+            counter: CtrlMsgCounters::new(),
+            metrics_system,
+            _pd: PhantomData,
+        }
+    }
+
+    /// Creates a new test runtime with explicit channel capacities.
+    #[must_use]
+    pub fn with_channel_capacities(
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
+    ) -> Self {
+        let metrics_system = InternalTelemetrySystem::default();
+        let config = ProcessorConfig::with_channel_capacities(
+            "test_processor",
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
         let (rt, local_tasks) = setup_test_runtime();
 
         Self {

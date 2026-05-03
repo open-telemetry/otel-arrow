@@ -1,9 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Node-local wakeup scheduling for processor inboxes.
+//! Node-local delayed resume and wakeup scheduling for processor inboxes.
 
-use crate::control::{WakeupRevision, WakeupSlot};
+use crate::clock;
+use crate::control::{NodeControlMsg, WakeupRevision, WakeupSlot};
 use crate::entity_context::current_node_telemetry_handle;
 use crate::indexed_min_heap::IndexedMinHeap;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -11,6 +12,8 @@ use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::Notify;
@@ -90,7 +93,37 @@ pub(crate) struct NodeLocalWakeupSchedulerMetrics {
     capacity: Gauge<u64>,
 }
 
-/// Priority key for the wakeup heap.  Ordered by wall-clock time first,
+#[derive(Debug)]
+struct ScheduledResume<PData> {
+    when: Instant,
+    sequence: u64,
+    data: Box<PData>,
+}
+
+impl<PData> Ord for ScheduledResume<PData> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .when
+            .cmp(&self.when)
+            .then_with(|| other.sequence.cmp(&self.sequence))
+    }
+}
+
+impl<PData> PartialOrd for ScheduledResume<PData> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<PData> PartialEq for ScheduledResume<PData> {
+    fn eq(&self, other: &Self) -> bool {
+        self.when == other.when && self.sequence == other.sequence
+    }
+}
+
+impl<PData> Eq for ScheduledResume<PData> {}
+
+/// Priority key for the wakeup heap. Ordered by wall-clock time first,
 /// then by revision to break ties deterministically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WakeupPriority {
@@ -99,7 +132,7 @@ struct WakeupPriority {
 }
 
 impl Ord for WakeupPriority {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.when
             .cmp(&other.when)
             .then_with(|| self.revision.cmp(&other.revision))
@@ -107,36 +140,51 @@ impl Ord for WakeupPriority {
 }
 
 impl PartialOrd for WakeupPriority {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-struct NodeLocalScheduler {
+struct NodeLocalScheduler<PData> {
+    delayed_resume_capacity: usize,
     wakeup_capacity: usize,
+    next_sequence: u64,
     next_revision: WakeupRevision,
+    delayed_resumes: BinaryHeap<ScheduledResume<PData>>,
+    due_now: VecDeque<NodeControlMsg<PData>>,
     heap: IndexedMinHeap<WakeupSlot, WakeupPriority>,
     shutting_down: bool,
     metrics: Option<MetricSet<NodeLocalWakeupSchedulerMetrics>>,
 }
 
-impl NodeLocalScheduler {
+impl<PData> NodeLocalScheduler<PData> {
     #[cfg(test)]
-    fn new(wakeup_capacity: usize) -> Self {
-        Self::new_with_metrics(wakeup_capacity, None)
+    fn new(delayed_resume_capacity: usize, wakeup_capacity: usize) -> Self {
+        Self::new_with_metrics(delayed_resume_capacity, wakeup_capacity, None)
     }
 
     fn new_with_metrics(
+        delayed_resume_capacity: usize,
         wakeup_capacity: usize,
         metrics: Option<MetricSet<NodeLocalWakeupSchedulerMetrics>>,
     ) -> Self {
         Self {
+            delayed_resume_capacity,
             wakeup_capacity,
+            next_sequence: 0,
             next_revision: 0,
+            delayed_resumes: BinaryHeap::new(),
+            due_now: VecDeque::new(),
             heap: IndexedMinHeap::new(),
             shutting_down: false,
             metrics,
         }
+    }
+
+    fn next_sequence(&mut self) -> u64 {
+        let next = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        next
     }
 
     fn next_revision(&mut self) -> WakeupRevision {
@@ -152,11 +200,29 @@ impl NodeLocalScheduler {
         }
     }
 
+    fn requeue_later(&mut self, when: Instant, data: Box<PData>) -> Result<(), Box<PData>> {
+        if self.shutting_down || self.delayed_resumes.len() >= self.delayed_resume_capacity {
+            return Err(data);
+        }
+
+        let sequence = self.next_sequence();
+        self.delayed_resumes.push(ScheduledResume {
+            when,
+            sequence,
+            data,
+        });
+        Ok(())
+    }
+
     fn set_wakeup(
         &mut self,
         slot: WakeupSlot,
         when: Instant,
     ) -> Result<WakeupSetOutcome, WakeupError> {
+        if self.wakeup_capacity == 0 {
+            return Err(WakeupError::Unsupported);
+        }
+
         if self.shutting_down {
             if let Some(metrics) = &mut self.metrics {
                 metrics.set_error_shutdown.inc();
@@ -211,16 +277,52 @@ impl NodeLocalScheduler {
     }
 
     fn next_expiry(&mut self) -> Option<Instant> {
+        if !self.due_now.is_empty() {
+            return Some(clock::now());
+        }
+
         #[cfg(debug_assertions)]
         self.heap.assert_consistent();
-        self.heap.peek().map(|(_, priority)| priority.when)
+
+        match (
+            self.delayed_resumes.peek().map(|resume| resume.when),
+            self.heap.peek().map(|(_, priority)| priority.when),
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
     }
 
-    fn pop_due(&mut self, now: Instant) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
+    fn pop_due(&mut self, now: Instant) -> Option<NodeControlMsg<PData>> {
+        if let Some(msg) = self.due_now.pop_front() {
+            return Some(msg);
+        }
+
         #[cfg(debug_assertions)]
         self.heap.assert_consistent();
 
-        let next_due = self.heap.peek().map(|(_, p)| p.when)?;
+        let next_resume = self.delayed_resumes.peek().map(|resume| resume.when);
+        let next_wakeup = self.heap.peek().map(|(_, priority)| priority.when);
+        let take_resume = match (next_resume, next_wakeup) {
+            (Some(resume_when), Some(wakeup_when)) => {
+                resume_when <= now && (wakeup_when > now || resume_when <= wakeup_when)
+            }
+            (Some(resume_when), None) => resume_when <= now,
+            (None, Some(_)) => false,
+            (None, None) => return None,
+        };
+
+        if take_resume {
+            let resume = self.delayed_resumes.pop().expect("resume must exist");
+            return Some(NodeControlMsg::DelayedData {
+                when: resume.when,
+                data: resume.data,
+            });
+        }
+
+        let next_due = self.heap.peek().map(|(_, priority)| priority.when)?;
         if next_due > now {
             return None;
         }
@@ -230,12 +332,16 @@ impl NodeLocalScheduler {
             metrics.pop_due.inc();
         }
         self.refresh_gauges();
-        Some((slot, priority.when, priority.revision))
+        Some(NodeControlMsg::Wakeup {
+            slot,
+            when: priority.when,
+            revision: priority.revision,
+        })
     }
 
     /// Pop the next scheduled wakeup regardless of whether it is due.
     ///
-    /// This is the unconditional counterpart of [`pop_due`](Self::pop_due) and
+    /// This is the unconditional wakeup-only counterpart of [`pop_due`](Self::pop_due) and
     /// exists for test/benchmark harnesses where the inbox loop is not running.
     #[cfg(any(test, feature = "test-utils"))]
     fn pop_next(&mut self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
@@ -250,11 +356,19 @@ impl NodeLocalScheduler {
         Some((slot, priority.when, priority.revision))
     }
 
-    fn begin_shutdown(&mut self) {
+    fn begin_shutdown(&mut self, now: Instant) {
         if self.shutting_down {
             return;
         }
         self.shutting_down = true;
+
+        while let Some(resume) = self.delayed_resumes.pop() {
+            self.due_now.push_back(NodeControlMsg::DelayedData {
+                when: now,
+                data: resume.data,
+            });
+        }
+
         let cleared = self.heap.len();
         if let Some(metrics) = &mut self.metrics {
             metrics.shutdown_cleared.add(cleared as u64);
@@ -264,7 +378,7 @@ impl NodeLocalScheduler {
     }
 
     fn is_drained(&self) -> bool {
-        self.heap.is_empty()
+        self.due_now.is_empty() && self.delayed_resumes.is_empty() && self.heap.is_empty()
     }
 
     fn report_metrics(
@@ -280,12 +394,12 @@ impl NodeLocalScheduler {
 }
 
 /// Shared handle used by the processor inbox and the processor effect handler.
-pub(crate) struct NodeLocalSchedulerHandle {
-    inner: Arc<Mutex<NodeLocalScheduler>>,
+pub(crate) struct NodeLocalSchedulerHandle<PData> {
+    inner: Arc<Mutex<NodeLocalScheduler<PData>>>,
     notify: Arc<Notify>,
 }
 
-impl Clone for NodeLocalSchedulerHandle {
+impl<PData> Clone for NodeLocalSchedulerHandle<PData> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -294,13 +408,14 @@ impl Clone for NodeLocalSchedulerHandle {
     }
 }
 
-impl NodeLocalSchedulerHandle {
-    pub(crate) fn new(wakeup_capacity: usize) -> Self {
+impl<PData> NodeLocalSchedulerHandle<PData> {
+    pub(crate) fn new(delayed_resume_capacity: usize, wakeup_capacity: usize) -> Self {
         let metrics = current_node_telemetry_handle()
             .map(|telemetry| telemetry.register_metric_set::<NodeLocalWakeupSchedulerMetrics>());
 
         Self {
             inner: Arc::new(Mutex::new(NodeLocalScheduler::new_with_metrics(
+                delayed_resume_capacity,
                 wakeup_capacity,
                 metrics,
             ))),
@@ -308,12 +423,20 @@ impl NodeLocalSchedulerHandle {
         }
     }
 
-    fn with_scheduler<R>(&self, f: impl FnOnce(&mut NodeLocalScheduler) -> R) -> R {
+    fn with_scheduler<R>(&self, f: impl FnOnce(&mut NodeLocalScheduler<PData>) -> R) -> R {
         let mut guard = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         f(&mut guard)
+    }
+
+    pub(crate) fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), Box<PData>> {
+        let result = self.with_scheduler(|scheduler| scheduler.requeue_later(when, data));
+        if result.is_ok() {
+            self.notify.notify_one();
+        }
+        result
     }
 
     pub(crate) fn set_wakeup(
@@ -341,21 +464,21 @@ impl NodeLocalSchedulerHandle {
         self.with_scheduler(NodeLocalScheduler::next_expiry)
     }
 
-    pub(crate) fn pop_due(&self, now: Instant) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
+    pub(crate) fn pop_due(&self, now: Instant) -> Option<NodeControlMsg<PData>> {
         self.with_scheduler(|scheduler| scheduler.pop_due(now))
     }
 
     /// Pop the next scheduled wakeup regardless of whether it is due.
     ///
-    /// This is the unconditional counterpart of [`pop_due`](Self::pop_due) and
+    /// This is the unconditional wakeup-only counterpart of [`pop_due`](Self::pop_due) and
     /// exists for test/benchmark harnesses where the inbox loop is not running.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn pop_next(&self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
         self.with_scheduler(|scheduler| scheduler.pop_next())
     }
 
-    pub(crate) fn begin_shutdown(&self) {
-        self.with_scheduler(NodeLocalScheduler::begin_shutdown);
+    pub(crate) fn begin_shutdown(&self, now: Instant) {
+        self.with_scheduler(|scheduler| scheduler.begin_shutdown(now));
         self.notify.notify_waiters();
     }
 
@@ -380,14 +503,121 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn assert_heap_bound(scheduler: &NodeLocalScheduler) {
+    fn assert_heap_bound<PData>(scheduler: &NodeLocalScheduler<PData>) {
         #[cfg(debug_assertions)]
         scheduler.heap.assert_consistent();
     }
 
+    fn expect_delayed(
+        msg: Option<NodeControlMsg<i32>>,
+        expected_when: Instant,
+        expected_data: i32,
+    ) {
+        match msg {
+            Some(NodeControlMsg::DelayedData { when, data }) => {
+                assert_eq!(when, expected_when);
+                assert_eq!(*data, expected_data);
+            }
+            _ => panic!("expected delayed data"),
+        }
+    }
+
+    fn expect_wakeup(
+        msg: Option<NodeControlMsg<i32>>,
+        expected_slot: WakeupSlot,
+        expected_when: Instant,
+        expected_revision: WakeupRevision,
+    ) {
+        match msg {
+            Some(NodeControlMsg::Wakeup {
+                slot,
+                when,
+                revision,
+            }) => {
+                assert_eq!(slot, expected_slot);
+                assert_eq!(when, expected_when);
+                assert_eq!(revision, expected_revision);
+            }
+            _ => panic!("expected wakeup"),
+        }
+    }
+
+    #[test]
+    fn requeue_later_emits_the_stored_payload() {
+        let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
+        let when = Instant::now() + Duration::from_secs(1);
+
+        assert_eq!(scheduler.requeue_later(when, Box::new(17)), Ok(()));
+        expect_delayed(scheduler.pop_due(when), when, 17);
+        assert_eq!(scheduler.next_expiry(), None);
+    }
+
+    #[test]
+    fn delayed_resumes_preserve_due_time_ordering() {
+        let mut scheduler = NodeLocalScheduler::new(4, 2);
+        let now = Instant::now();
+        let later = now + Duration::from_secs(3);
+        let sooner = now + Duration::from_secs(1);
+        let same_time_a = now + Duration::from_secs(2);
+        let same_time_b = same_time_a;
+
+        assert_eq!(scheduler.requeue_later(later, Box::new(3)), Ok(()));
+        assert_eq!(scheduler.requeue_later(same_time_a, Box::new(1)), Ok(()));
+        assert_eq!(scheduler.requeue_later(same_time_b, Box::new(2)), Ok(()));
+        assert_eq!(scheduler.requeue_later(sooner, Box::new(0)), Ok(()));
+
+        expect_delayed(scheduler.pop_due(sooner), sooner, 0);
+        expect_delayed(scheduler.pop_due(same_time_a), same_time_a, 1);
+        expect_delayed(scheduler.pop_due(same_time_b), same_time_b, 2);
+        expect_delayed(scheduler.pop_due(later), later, 3);
+    }
+
+    #[test]
+    fn delayed_resume_capacity_is_enforced() {
+        let mut scheduler = NodeLocalScheduler::new(1, 1);
+        let when = Instant::now() + Duration::from_secs(1);
+
+        assert_eq!(scheduler.requeue_later(when, Box::new(1)), Ok(()));
+        let rejected = scheduler
+            .requeue_later(when, Box::new(2))
+            .expect_err("capacity should reject");
+        assert_eq!(*rejected, 2);
+    }
+
+    #[test]
+    fn rejected_requeue_returns_the_original_payload() {
+        let mut scheduler = NodeLocalScheduler::new(2, 1);
+        let now = Instant::now();
+
+        scheduler.begin_shutdown(now);
+        let rejected = scheduler
+            .requeue_later(now + Duration::from_secs(1), Box::new(99))
+            .expect_err("shutdown should reject");
+        assert_eq!(*rejected, 99);
+    }
+
+    #[test]
+    fn shutdown_makes_pending_delayed_resumes_due_immediately() {
+        let mut scheduler = NodeLocalScheduler::new(4, 2);
+        let now = Instant::now();
+        let later = now + Duration::from_secs(30);
+
+        assert_eq!(scheduler.requeue_later(later, Box::new(11)), Ok(()));
+        assert_eq!(
+            scheduler.requeue_later(later + Duration::from_secs(1), Box::new(12)),
+            Ok(())
+        );
+
+        scheduler.begin_shutdown(now);
+
+        expect_delayed(scheduler.pop_due(now), now, 11);
+        expect_delayed(scheduler.pop_due(now), now, 12);
+        assert!(scheduler.pop_due(now).is_none());
+    }
+
     #[test]
     fn set_wakeup_schedules_a_wakeup() {
-        let mut scheduler = NodeLocalScheduler::new(2);
+        let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
         let now = Instant::now();
         let when = now + Duration::from_secs(1);
 
@@ -397,15 +627,15 @@ mod tests {
         );
         assert_heap_bound(&scheduler);
         assert_eq!(scheduler.next_expiry(), Some(when));
-        assert_eq!(scheduler.pop_due(now), None);
-        assert_eq!(scheduler.pop_due(when), Some((WakeupSlot(7), when, 0)));
+        assert!(scheduler.pop_due(now).is_none());
+        expect_wakeup(scheduler.pop_due(when), WakeupSlot(7), when, 0);
         assert_heap_bound(&scheduler);
         assert_eq!(scheduler.next_expiry(), None);
     }
 
     #[test]
     fn setting_same_slot_replaces_previous_due_time() {
-        let mut scheduler = NodeLocalScheduler::new(2);
+        let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
         let now = Instant::now();
         let later = now + Duration::from_secs(10);
         let sooner = now + Duration::from_secs(1);
@@ -421,14 +651,14 @@ mod tests {
         assert_heap_bound(&scheduler);
         assert_eq!(scheduler.heap.len(), 1);
         assert_eq!(scheduler.next_expiry(), Some(sooner));
-        assert_eq!(scheduler.pop_due(sooner), Some((WakeupSlot(3), sooner, 1)));
+        expect_wakeup(scheduler.pop_due(sooner), WakeupSlot(3), sooner, 1);
         assert_heap_bound(&scheduler);
-        assert_eq!(scheduler.pop_due(later), None);
+        assert!(scheduler.pop_due(later).is_none());
     }
 
     #[test]
     fn cancel_wakeup_removes_pending_wakeup() {
-        let mut scheduler = NodeLocalScheduler::new(2);
+        let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
         let when = Instant::now() + Duration::from_secs(1);
 
         assert_eq!(
@@ -440,7 +670,7 @@ mod tests {
         assert_heap_bound(&scheduler);
         assert!(!scheduler.cancel_wakeup(WakeupSlot(5)));
         assert_eq!(scheduler.next_expiry(), None);
-        assert_eq!(scheduler.pop_due(when), None);
+        assert!(scheduler.pop_due(when).is_none());
     }
 
     #[test]
@@ -448,7 +678,7 @@ mod tests {
         let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
         let metrics: MetricSet<NodeLocalWakeupSchedulerMetrics> =
             registry.register_metric_set(otap_df_telemetry::testing::EmptyAttributes());
-        let mut scheduler = NodeLocalScheduler::new_with_metrics(1, Some(metrics));
+        let mut scheduler = NodeLocalScheduler::<i32>::new_with_metrics(1, 1, Some(metrics));
         let now = Instant::now();
         let later = now + Duration::from_secs(1);
         let sooner = now + Duration::from_millis(10);
@@ -472,8 +702,8 @@ mod tests {
             scheduler.set_wakeup(WakeupSlot(0), later),
             Ok(WakeupSetOutcome::Inserted { revision: 2 })
         );
-        assert_eq!(scheduler.pop_due(now), None);
-        assert_eq!(scheduler.pop_due(later), Some((WakeupSlot(0), later, 2)));
+        assert!(scheduler.pop_due(now).is_none());
+        expect_wakeup(scheduler.pop_due(later), WakeupSlot(0), later, 2);
 
         let metrics = scheduler.metrics.as_ref().expect("metrics enabled");
         assert_eq!(metrics.set_inserted.get(), 2);
@@ -492,7 +722,7 @@ mod tests {
     /// consistency, and leaves the remaining wakeups due in the expected order.
     #[test]
     fn cancel_after_reschedule_removes_the_moved_entry() {
-        let mut scheduler = NodeLocalScheduler::new(4);
+        let mut scheduler = NodeLocalScheduler::<i32>::new(4, 4);
         let now = Instant::now();
         let first = now + Duration::from_secs(1);
         let second = now + Duration::from_secs(10);
@@ -522,21 +752,20 @@ mod tests {
         );
 
         assert!(scheduler.heap.contains_key(&WakeupSlot(3)));
-        // Verify that slot 1 (earliest deadline) should still be at the root.
         assert_eq!(scheduler.heap.peek().map(|(k, _)| *k), Some(WakeupSlot(1)));
 
         assert!(scheduler.cancel_wakeup(WakeupSlot(3)));
         assert_heap_bound(&scheduler);
-        assert_eq!(scheduler.pop_due(first), Some((WakeupSlot(1), first, 0)));
-        assert_eq!(scheduler.pop_due(moved), None);
-        assert_eq!(scheduler.pop_due(second), Some((WakeupSlot(2), second, 1)));
-        assert_eq!(scheduler.pop_due(fourth), Some((WakeupSlot(4), fourth, 3)));
+        expect_wakeup(scheduler.pop_due(first), WakeupSlot(1), first, 0);
+        assert!(scheduler.pop_due(moved).is_none());
+        expect_wakeup(scheduler.pop_due(second), WakeupSlot(2), second, 1);
+        expect_wakeup(scheduler.pop_due(fourth), WakeupSlot(4), fourth, 3);
         assert_eq!(scheduler.next_expiry(), None);
     }
 
     #[test]
-    fn capacity_is_enforced_on_distinct_live_slots() {
-        let mut scheduler = NodeLocalScheduler::new(1);
+    fn wakeup_capacity_is_enforced_on_distinct_live_slots() {
+        let mut scheduler = NodeLocalScheduler::<i32>::new(1, 1);
         let when = Instant::now() + Duration::from_secs(1);
 
         assert_eq!(
@@ -555,8 +784,19 @@ mod tests {
     }
 
     #[test]
+    fn wakeup_is_unsupported_when_capacity_is_zero() {
+        let mut scheduler = NodeLocalScheduler::<i32>::new(1, 0);
+        let when = Instant::now() + Duration::from_secs(1);
+
+        assert_eq!(
+            scheduler.set_wakeup(WakeupSlot(0), when),
+            Err(WakeupError::Unsupported)
+        );
+    }
+
+    #[test]
     fn repeated_reschedules_keep_single_heap_entry() {
-        let mut scheduler = NodeLocalScheduler::new(2);
+        let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
         let now = Instant::now();
         for offset in (1..=32).rev() {
             let when = now + Duration::from_secs(offset);
@@ -571,16 +811,13 @@ mod tests {
         }
 
         let expected = now + Duration::from_secs(1);
-        assert_eq!(
-            scheduler.pop_due(expected),
-            Some((WakeupSlot(9), expected, 31))
-        );
+        expect_wakeup(scheduler.pop_due(expected), WakeupSlot(9), expected, 31);
         assert_eq!(scheduler.next_expiry(), None);
     }
 
     #[test]
     fn equal_deadlines_follow_schedule_sequence() {
-        let mut scheduler = NodeLocalScheduler::new(4);
+        let mut scheduler = NodeLocalScheduler::<i32>::new(4, 4);
         let when = Instant::now() + Duration::from_secs(1);
 
         assert_eq!(
@@ -597,9 +834,9 @@ mod tests {
         );
         assert_heap_bound(&scheduler);
 
-        assert_eq!(scheduler.pop_due(when), Some((WakeupSlot(1), when, 0)));
-        assert_eq!(scheduler.pop_due(when), Some((WakeupSlot(2), when, 1)));
-        assert_eq!(scheduler.pop_due(when), Some((WakeupSlot(3), when, 2)));
+        expect_wakeup(scheduler.pop_due(when), WakeupSlot(1), when, 0);
+        expect_wakeup(scheduler.pop_due(when), WakeupSlot(2), when, 1);
+        expect_wakeup(scheduler.pop_due(when), WakeupSlot(3), when, 2);
         assert_heap_bound(&scheduler);
     }
 }
