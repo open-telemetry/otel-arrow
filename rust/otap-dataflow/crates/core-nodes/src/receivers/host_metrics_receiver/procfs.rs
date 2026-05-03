@@ -267,6 +267,7 @@ impl ProcfsSource {
                 .read_trimmed_optional(PathKind::MachineId)
                 .or_else(|| self.read_trimmed_optional(PathKind::DbusMachineId)),
             host_name: self.read_trimmed_optional(PathKind::Hostname),
+            host_arch: host_arch(),
         }
     }
 
@@ -647,6 +648,7 @@ impl HostSnapshot {
 struct HostResource {
     host_id: Option<String>,
     host_name: Option<String>,
+    host_arch: Option<&'static str>,
 }
 
 impl HostResource {
@@ -659,7 +661,22 @@ impl HostResource {
         if let Some(host_name) = self.host_name {
             attributes.push(kv_str("host.name", &host_name));
         }
+        if let Some(host_arch) = self.host_arch {
+            attributes.push(kv_str("host.arch", host_arch));
+        }
         attributes
+    }
+}
+
+fn host_arch() -> Option<&'static str> {
+    match std::env::consts::ARCH {
+        "aarch64" => Some("arm64"),
+        "arm" => Some("arm32"),
+        "powerpc" => Some("ppc32"),
+        "powerpc64" => Some("ppc64"),
+        "x86" => Some("x86"),
+        "x86_64" => Some("amd64"),
+        _ => None,
     }
 }
 
@@ -1666,5 +1683,15 @@ mod tests {
     fn root_slash_uses_current_proc_netdev() {
         let paths = ProcfsPaths::new(Some(Path::new("/")));
         assert_eq!(paths.net_dev, PathBuf::from("/proc/net/dev"));
+    }
+
+    #[test]
+    fn host_arch_uses_semconv_values() {
+        if let Some(arch) = host_arch() {
+            assert!(matches!(
+                arch,
+                "amd64" | "arm32" | "arm64" | "ppc32" | "ppc64" | "x86"
+            ));
+        }
     }
 }
