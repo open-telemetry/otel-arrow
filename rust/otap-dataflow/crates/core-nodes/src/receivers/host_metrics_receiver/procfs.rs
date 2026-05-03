@@ -65,6 +65,18 @@ pub struct ProcfsConfig {
     pub disk_include: Option<CompiledFilter>,
     /// Disk exclude filter.
     pub disk_exclude: Option<CompiledFilter>,
+    /// Filesystem device include filter.
+    pub filesystem_include_devices: Option<CompiledFilter>,
+    /// Filesystem device exclude filter.
+    pub filesystem_exclude_devices: Option<CompiledFilter>,
+    /// Filesystem type include filter.
+    pub filesystem_include_fs_types: Option<CompiledFilter>,
+    /// Filesystem type exclude filter.
+    pub filesystem_exclude_fs_types: Option<CompiledFilter>,
+    /// Filesystem mount point include filter.
+    pub filesystem_include_mount_points: Option<CompiledFilter>,
+    /// Filesystem mount point exclude filter.
+    pub filesystem_exclude_mount_points: Option<CompiledFilter>,
     /// Network include filter.
     pub network_include: Option<CompiledFilter>,
     /// Network exclude filter.
@@ -255,9 +267,23 @@ impl ProcfsSource {
         let filesystems = if due.filesystem {
             let include_virtual = self.config.filesystem_include_virtual;
             let emit_limit = self.config.filesystem_limit;
+            let include_devices = self.config.filesystem_include_devices.clone();
+            let exclude_devices = self.config.filesystem_exclude_devices.clone();
+            let include_fs_types = self.config.filesystem_include_fs_types.clone();
+            let exclude_fs_types = self.config.filesystem_exclude_fs_types.clone();
+            let include_mount_points = self.config.filesystem_include_mount_points.clone();
+            let exclude_mount_points = self.config.filesystem_exclude_mount_points.clone();
             match self.read_path(PathKind::Mountinfo) {
                 Ok(mountinfo) => {
-                    let mounts = parse_mountinfo(mountinfo, include_virtual, emit_limit);
+                    let filters = FilesystemFilters {
+                        include_devices: include_devices.as_ref(),
+                        exclude_devices: exclude_devices.as_ref(),
+                        include_fs_types: include_fs_types.as_ref(),
+                        exclude_fs_types: exclude_fs_types.as_ref(),
+                        include_mount_points: include_mount_points.as_ref(),
+                        exclude_mount_points: exclude_mount_points.as_ref(),
+                    };
+                    let mounts = parse_mountinfo(mountinfo, include_virtual, emit_limit, filters);
                     self.read_filesystems(mounts)
                 }
                 Err(err) => {
@@ -1356,10 +1382,21 @@ struct FilesystemMount {
     emit_limit: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+struct FilesystemFilters<'a> {
+    include_devices: Option<&'a CompiledFilter>,
+    exclude_devices: Option<&'a CompiledFilter>,
+    include_fs_types: Option<&'a CompiledFilter>,
+    exclude_fs_types: Option<&'a CompiledFilter>,
+    include_mount_points: Option<&'a CompiledFilter>,
+    exclude_mount_points: Option<&'a CompiledFilter>,
+}
+
 fn parse_mountinfo(
     input: &str,
     include_virtual_filesystems: bool,
     emit_limit: bool,
+    filters: FilesystemFilters<'_>,
 ) -> Vec<FilesystemMount> {
     let mut mounts = Vec::new();
     for line in input.lines() {
@@ -1388,9 +1425,24 @@ fn parse_mountinfo(
         if !include_virtual_filesystems && is_skipped_filesystem_type(fs_type) {
             continue;
         }
+        if !filter_allows(fs_type, filters.include_fs_types, filters.exclude_fs_types) {
+            continue;
+        }
+        let device = unescape_mountinfo(device);
+        if !filter_allows(&device, filters.include_devices, filters.exclude_devices) {
+            continue;
+        }
+        let mountpoint = unescape_mountinfo(mountpoint);
+        if !filter_allows(
+            &mountpoint,
+            filters.include_mount_points,
+            filters.exclude_mount_points,
+        ) {
+            continue;
+        }
         mounts.push(FilesystemMount {
-            device: unescape_mountinfo(device),
-            mountpoint: unescape_mountinfo(mountpoint),
+            device,
+            mountpoint,
             fs_type: fs_type.to_owned(),
             mode: filesystem_mode(options),
             emit_limit,
@@ -2427,6 +2479,12 @@ mod tests {
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
+                filesystem_include_devices: None,
+                filesystem_exclude_devices: None,
+                filesystem_include_fs_types: None,
+                filesystem_exclude_fs_types: None,
+                filesystem_include_mount_points: None,
+                filesystem_exclude_mount_points: None,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -2467,6 +2525,12 @@ mod tests {
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
+                filesystem_include_devices: None,
+                filesystem_exclude_devices: None,
+                filesystem_include_fs_types: None,
+                filesystem_exclude_fs_types: None,
+                filesystem_include_mount_points: None,
+                filesystem_exclude_mount_points: None,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -2514,6 +2578,12 @@ mod tests {
                 disk_limit: true,
                 filesystem_include_virtual: false,
                 filesystem_limit: false,
+                filesystem_include_devices: None,
+                filesystem_exclude_devices: None,
+                filesystem_include_fs_types: None,
+                filesystem_exclude_fs_types: None,
+                filesystem_include_mount_points: None,
+                filesystem_exclude_mount_points: None,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -2562,6 +2632,12 @@ mod tests {
                 disk_limit: false,
                 filesystem_include_virtual: false,
                 filesystem_limit: true,
+                filesystem_include_devices: None,
+                filesystem_exclude_devices: None,
+                filesystem_include_fs_types: None,
+                filesystem_exclude_fs_types: None,
+                filesystem_include_mount_points: None,
+                filesystem_exclude_mount_points: None,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -2711,6 +2787,7 @@ mod tests {
             "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n37 25 0:32 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n",
             false,
             true,
+            FilesystemFilters::default(),
         );
 
         assert_eq!(mounts.len(), 1);
@@ -2727,11 +2804,42 @@ mod tests {
             "36 25 8:1 / /mnt/data\\040disk rw,relatime - ext4 /dev/disk\\040one rw\n",
             false,
             false,
+            FilesystemFilters::default(),
         );
 
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].device, "/dev/disk one");
         assert_eq!(mounts[0].mountpoint, "/mnt/data disk");
+    }
+
+    #[test]
+    fn mountinfo_parser_applies_filesystem_filters() {
+        let include_mounts = CompiledFilter::compile(
+            crate::receivers::host_metrics_receiver::MatchType::Glob,
+            vec!["/data*".to_owned()],
+        )
+        .expect("valid")
+        .expect("filter");
+        let exclude_fs_types = CompiledFilter::compile(
+            crate::receivers::host_metrics_receiver::MatchType::Strict,
+            vec!["xfs".to_owned()],
+        )
+        .expect("valid")
+        .expect("filter");
+        let mounts = parse_mountinfo(
+            "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n37 25 8:2 / /data rw,relatime - ext4 /dev/sdb1 rw\n38 25 8:3 / /data2 rw,relatime - xfs /dev/sdc1 rw\n",
+            false,
+            false,
+            FilesystemFilters {
+                include_mount_points: Some(&include_mounts),
+                exclude_fs_types: Some(&exclude_fs_types),
+                ..FilesystemFilters::default()
+            },
+        );
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].device, "/dev/sdb1");
+        assert_eq!(mounts[0].mountpoint, "/data");
     }
 
     #[test]

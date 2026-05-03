@@ -280,6 +280,18 @@ pub struct FilesystemFamilyConfig {
     pub include_virtual_filesystems: bool,
     /// Enable filesystem limit metrics.
     pub limit: bool,
+    /// Device include filter.
+    pub include_devices: Option<DeviceFilterConfig>,
+    /// Device exclude filter.
+    pub exclude_devices: Option<DeviceFilterConfig>,
+    /// Filesystem type include filter.
+    pub include_fs_types: Option<FilesystemTypeFilterConfig>,
+    /// Filesystem type exclude filter.
+    pub exclude_fs_types: Option<FilesystemTypeFilterConfig>,
+    /// Mount point include filter.
+    pub include_mount_points: Option<MountPointFilterConfig>,
+    /// Mount point exclude filter.
+    pub exclude_mount_points: Option<MountPointFilterConfig>,
 }
 
 impl Default for FilesystemFamilyConfig {
@@ -289,6 +301,50 @@ impl Default for FilesystemFamilyConfig {
             interval: None,
             include_virtual_filesystems: false,
             limit: false,
+            include_devices: None,
+            exclude_devices: None,
+            include_fs_types: None,
+            exclude_fs_types: None,
+            include_mount_points: None,
+            exclude_mount_points: None,
+        }
+    }
+}
+
+/// Filesystem type filter config.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilesystemTypeFilterConfig {
+    /// Filesystem types.
+    pub fs_types: Vec<String>,
+    /// Match type.
+    pub match_type: MatchType,
+}
+
+impl Default for FilesystemTypeFilterConfig {
+    fn default() -> Self {
+        Self {
+            fs_types: Vec::new(),
+            match_type: MatchType::Strict,
+        }
+    }
+}
+
+/// Mount point filter config.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MountPointFilterConfig {
+    /// Mount points.
+    pub mount_points: Vec<String>,
+    /// Match type.
+    pub match_type: MatchType,
+}
+
+impl Default for MountPointFilterConfig {
+    fn default() -> Self {
+        Self {
+            mount_points: Vec::new(),
+            match_type: MatchType::Strict,
         }
     }
 }
@@ -431,6 +487,12 @@ struct RuntimeFilesystemFamily {
     interval: Duration,
     include_virtual_filesystems: bool,
     limit: bool,
+    include_devices: Option<CompiledFilter>,
+    exclude_devices: Option<CompiledFilter>,
+    include_fs_types: Option<CompiledFilter>,
+    exclude_fs_types: Option<CompiledFilter>,
+    include_mount_points: Option<CompiledFilter>,
+    exclude_mount_points: Option<CompiledFilter>,
 }
 
 #[derive(Clone)]
@@ -715,6 +777,7 @@ fn due_family_count(due: ProcfsFamilies) -> u64 {
         + u64::from(due.paging)
         + u64::from(due.system)
         + u64::from(due.disk)
+        + u64::from(due.filesystem)
         + u64::from(due.network)
         + u64::from(due.processes)
 }
@@ -737,6 +800,48 @@ impl TryFrom<Config> for RuntimeConfig {
             .disk
             .exclude
             .map(|filter| CompiledFilter::compile(filter.match_type, filter.devices))
+            .transpose()?
+            .flatten();
+        let filesystem_include_devices = config
+            .families
+            .filesystem
+            .include_devices
+            .map(|filter| CompiledFilter::compile(filter.match_type, filter.devices))
+            .transpose()?
+            .flatten();
+        let filesystem_exclude_devices = config
+            .families
+            .filesystem
+            .exclude_devices
+            .map(|filter| CompiledFilter::compile(filter.match_type, filter.devices))
+            .transpose()?
+            .flatten();
+        let filesystem_include_fs_types = config
+            .families
+            .filesystem
+            .include_fs_types
+            .map(|filter| CompiledFilter::compile(filter.match_type, filter.fs_types))
+            .transpose()?
+            .flatten();
+        let filesystem_exclude_fs_types = config
+            .families
+            .filesystem
+            .exclude_fs_types
+            .map(|filter| CompiledFilter::compile(filter.match_type, filter.fs_types))
+            .transpose()?
+            .flatten();
+        let filesystem_include_mount_points = config
+            .families
+            .filesystem
+            .include_mount_points
+            .map(|filter| CompiledFilter::compile(filter.match_type, filter.mount_points))
+            .transpose()?
+            .flatten();
+        let filesystem_exclude_mount_points = config
+            .families
+            .filesystem
+            .exclude_mount_points
+            .map(|filter| CompiledFilter::compile(filter.match_type, filter.mount_points))
             .transpose()?
             .flatten();
         let network_include = config
@@ -787,6 +892,12 @@ impl TryFrom<Config> for RuntimeConfig {
                         .filesystem
                         .include_virtual_filesystems,
                     limit: config.families.filesystem.limit,
+                    include_devices: filesystem_include_devices,
+                    exclude_devices: filesystem_exclude_devices,
+                    include_fs_types: filesystem_include_fs_types,
+                    exclude_fs_types: filesystem_exclude_fs_types,
+                    include_mount_points: filesystem_include_mount_points,
+                    exclude_mount_points: filesystem_exclude_mount_points,
                 },
                 network: RuntimeNetworkFamily {
                     enabled: config.families.network.enabled,
@@ -1043,6 +1154,20 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 filesystem_limit: config.families.filesystem.limit,
                 disk_include: config.families.disk.include.clone(),
                 disk_exclude: config.families.disk.exclude.clone(),
+                filesystem_include_devices: config.families.filesystem.include_devices.clone(),
+                filesystem_exclude_devices: config.families.filesystem.exclude_devices.clone(),
+                filesystem_include_fs_types: config.families.filesystem.include_fs_types.clone(),
+                filesystem_exclude_fs_types: config.families.filesystem.exclude_fs_types.clone(),
+                filesystem_include_mount_points: config
+                    .families
+                    .filesystem
+                    .include_mount_points
+                    .clone(),
+                filesystem_exclude_mount_points: config
+                    .families
+                    .filesystem
+                    .exclude_mount_points
+                    .clone(),
                 network_include: config.families.network.include.clone(),
                 network_exclude: config.families.network.exclude.clone(),
                 validation: config.validation,
@@ -1324,7 +1449,15 @@ mod tests {
                 "filesystem": {
                     "interval": "5m",
                     "include_virtual_filesystems": true,
-                    "limit": true
+                    "limit": true,
+                    "exclude_fs_types": {
+                        "fs_types": ["tmpfs"],
+                        "match_type": "strict"
+                    },
+                    "include_mount_points": {
+                        "mount_points": ["/", "/data*"],
+                        "match_type": "glob"
+                    }
                 }
             }
         }))
@@ -1336,6 +1469,26 @@ mod tests {
         );
         assert!(config.families.filesystem.include_virtual_filesystems);
         assert!(config.families.filesystem.limit);
+        assert_eq!(
+            config
+                .families
+                .filesystem
+                .exclude_fs_types
+                .as_ref()
+                .expect("exclude fs types")
+                .fs_types,
+            vec!["tmpfs".to_owned()]
+        );
+        assert_eq!(
+            config
+                .families
+                .filesystem
+                .include_mount_points
+                .as_ref()
+                .expect("include mount points")
+                .mount_points,
+            vec!["/".to_owned(), "/data*".to_owned()]
+        );
         validate_config(&config).expect("valid config");
     }
 
