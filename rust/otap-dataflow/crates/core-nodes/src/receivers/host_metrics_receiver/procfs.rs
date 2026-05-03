@@ -57,6 +57,25 @@ pub struct ProcfsConfig {
     pub network_exclude: Option<CompiledFilter>,
 }
 
+/// Families due for one scrape.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProcfsFamilies {
+    /// CPU metrics.
+    pub cpu: bool,
+    /// Memory metrics.
+    pub memory: bool,
+    /// Paging metrics.
+    pub paging: bool,
+    /// System metrics.
+    pub system: bool,
+    /// Disk metrics.
+    pub disk: bool,
+    /// Network metrics.
+    pub network: bool,
+    /// Process summary metrics.
+    pub processes: bool,
+}
+
 impl ProcfsSource {
     /// Creates a procfs source rooted at `/` or at a host root bind mount.
     pub fn new(root_path: Option<&Path>, config: ProcfsConfig) -> io::Result<Self> {
@@ -70,11 +89,11 @@ impl ProcfsSource {
         Ok(source)
     }
 
-    /// Collects one host snapshot.
-    pub fn scrape(&mut self) -> io::Result<HostSnapshot> {
+    /// Collects one host snapshot for the due family set.
+    pub fn scrape_due(&mut self, due: ProcfsFamilies) -> io::Result<HostSnapshot> {
         let now_unix_nano = now_unix_nano();
         let clk_tck = self.clk_tck;
-        let needs_stat = self.config.cpu || self.config.system || self.config.processes;
+        let needs_stat = due.cpu || due.system || due.processes;
         let stat = if needs_stat {
             let proc_stat = self.read_path(PathKind::Stat)?;
             parse_stat(proc_stat, clk_tck)
@@ -82,42 +101,42 @@ impl ProcfsSource {
             StatSnapshot::default()
         };
 
-        let cpuinfo = if self.config.cpu {
+        let cpuinfo = if due.cpu {
             let cpuinfo = self.read_path(PathKind::Cpuinfo)?;
             parse_cpuinfo(cpuinfo)
         } else {
             CpuInfo::default()
         };
 
-        let memory = if self.config.memory {
+        let memory = if due.memory {
             let meminfo = self.read_path(PathKind::Meminfo)?;
             parse_meminfo(meminfo)
         } else {
             None
         };
 
-        let uptime_seconds = if self.config.system {
+        let uptime_seconds = if due.system {
             let uptime = self.read_path(PathKind::Uptime)?;
             parse_uptime(uptime)
         } else {
             None
         };
 
-        let paging = if self.config.paging {
+        let paging = if due.paging {
             let vmstat = self.read_path(PathKind::Vmstat)?;
             Some(parse_vmstat(vmstat))
         } else {
             None
         };
 
-        let swaps = if self.config.paging {
+        let swaps = if due.paging {
             let swaps = self.read_path(PathKind::Swaps)?;
             parse_swaps(swaps)
         } else {
             Vec::new()
         };
 
-        let disks = if self.config.disk {
+        let disks = if due.disk {
             let disk_include = self.config.disk_include.clone();
             let disk_exclude = self.config.disk_exclude.clone();
             let diskstats = self.read_path(PathKind::Diskstats)?;
@@ -126,7 +145,7 @@ impl ProcfsSource {
             Vec::new()
         };
 
-        let networks = if self.config.network {
+        let networks = if due.network {
             let network_include = self.config.network_include.clone();
             let network_exclude = self.config.network_exclude.clone();
             let netdev = self.read_path(PathKind::NetDev)?;
@@ -146,7 +165,7 @@ impl ProcfsSource {
             uptime_seconds,
             paging,
             swaps,
-            processes: self.config.processes.then_some(stat.processes),
+            processes: due.processes.then_some(stat.processes),
             disks,
             networks,
             resource,

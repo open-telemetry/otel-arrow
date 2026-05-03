@@ -32,11 +32,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
-use tokio::time::interval;
+use tokio::time::{Instant, sleep_until};
 
 mod procfs;
 
-use procfs::{HostSnapshot, ProcfsConfig, ProcfsSource};
+use procfs::{HostSnapshot, ProcfsConfig, ProcfsFamilies, ProcfsSource};
 
 /// The URN for the host metrics receiver.
 pub const HOST_METRICS_RECEIVER_URN: &str = "urn:otel:receiver:host_metrics";
@@ -53,6 +53,10 @@ pub struct Config {
     #[serde(default = "default_collection_interval", with = "humantime_serde")]
     pub collection_interval: Duration,
 
+    /// Delay before the first scrape.
+    #[serde(default, with = "humantime_serde")]
+    pub initial_delay: Duration,
+
     /// Optional host root path. In Kubernetes this is commonly `/host`.
     #[serde(default)]
     pub root_path: Option<PathBuf>,
@@ -66,6 +70,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             collection_interval: default_collection_interval(),
+            initial_delay: Duration::ZERO,
             root_path: None,
             families: FamiliesConfig::default(),
         }
@@ -110,11 +115,17 @@ impl FamiliesConfig {
 pub struct FamilyConfig {
     /// Enable this family.
     pub enabled: bool,
+    /// Family collection interval. Defaults to top-level `collection_interval`.
+    #[serde(default, with = "humantime_serde::option")]
+    pub interval: Option<Duration>,
 }
 
 impl Default for FamilyConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            interval: None,
+        }
     }
 }
 
@@ -124,6 +135,9 @@ impl Default for FamilyConfig {
 pub struct DiskFamilyConfig {
     /// Enable disk metrics.
     pub enabled: bool,
+    /// Family collection interval. Defaults to top-level `collection_interval`.
+    #[serde(default, with = "humantime_serde::option")]
+    pub interval: Option<Duration>,
     /// Device include filter.
     pub include: Option<DeviceFilterConfig>,
     /// Device exclude filter.
@@ -134,6 +148,7 @@ impl Default for DiskFamilyConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            interval: None,
             include: None,
             exclude: None,
         }
@@ -146,6 +161,9 @@ impl Default for DiskFamilyConfig {
 pub struct NetworkFamilyConfig {
     /// Enable network metrics.
     pub enabled: bool,
+    /// Family collection interval. Defaults to top-level `collection_interval`.
+    #[serde(default, with = "humantime_serde::option")]
+    pub interval: Option<Duration>,
     /// Interface include filter.
     pub include: Option<InterfaceFilterConfig>,
     /// Interface exclude filter.
@@ -158,6 +176,7 @@ impl Default for NetworkFamilyConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            interval: None,
             include: None,
             exclude: None,
             include_connection_count: false,
@@ -171,6 +190,9 @@ impl Default for NetworkFamilyConfig {
 pub struct ProcessesFamilyConfig {
     /// Enable process summary metrics.
     pub enabled: bool,
+    /// Family collection interval. Defaults to top-level `collection_interval`.
+    #[serde(default, with = "humantime_serde::option")]
+    pub interval: Option<Duration>,
     /// Only `summary` is supported in v1.
     pub mode: ProcessMode,
 }
@@ -179,6 +201,7 @@ impl Default for ProcessesFamilyConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            interval: None,
             mode: ProcessMode::Summary,
         }
     }
@@ -236,24 +259,31 @@ pub enum MatchType {
 #[derive(Clone)]
 struct RuntimeConfig {
     root_path: Option<PathBuf>,
-    collection_interval: Duration,
+    initial_delay: Duration,
     families: RuntimeFamilies,
 }
 
 #[derive(Clone)]
 struct RuntimeFamilies {
-    cpu: bool,
-    memory: bool,
-    paging: bool,
-    system: bool,
+    cpu: RuntimeFamily,
+    memory: RuntimeFamily,
+    paging: RuntimeFamily,
+    system: RuntimeFamily,
     disk: RuntimeDiskFamily,
     network: RuntimeNetworkFamily,
-    processes: bool,
+    processes: RuntimeFamily,
+}
+
+#[derive(Clone)]
+struct RuntimeFamily {
+    enabled: bool,
+    interval: Duration,
 }
 
 #[derive(Clone)]
 struct RuntimeDiskFamily {
     enabled: bool,
+    interval: Duration,
     include: Option<CompiledFilter>,
     exclude: Option<CompiledFilter>,
 }
@@ -261,6 +291,7 @@ struct RuntimeDiskFamily {
 #[derive(Clone)]
 struct RuntimeNetworkFamily {
     enabled: bool,
+    interval: Duration,
     include: Option<CompiledFilter>,
     exclude: Option<CompiledFilter>,
 }
@@ -421,7 +452,55 @@ fn validate_config(config: &Config) -> Result<(), otap_df_config::error::Error> 
             error: "network include_connection_count is not supported in v1".to_owned(),
         });
     }
+    validate_family_interval(
+        "cpu",
+        config.families.cpu.enabled,
+        config.families.cpu.interval,
+    )?;
+    validate_family_interval(
+        "memory",
+        config.families.memory.enabled,
+        config.families.memory.interval,
+    )?;
+    validate_family_interval(
+        "paging",
+        config.families.paging.enabled,
+        config.families.paging.interval,
+    )?;
+    validate_family_interval(
+        "system",
+        config.families.system.enabled,
+        config.families.system.interval,
+    )?;
+    validate_family_interval(
+        "disk",
+        config.families.disk.enabled,
+        config.families.disk.interval,
+    )?;
+    validate_family_interval(
+        "network",
+        config.families.network.enabled,
+        config.families.network.interval,
+    )?;
+    validate_family_interval(
+        "processes",
+        config.families.processes.enabled,
+        config.families.processes.interval,
+    )?;
     let _ = normalized_root_path(config.root_path.as_deref())?;
+    Ok(())
+}
+
+fn validate_family_interval(
+    family: &'static str,
+    enabled: bool,
+    interval: Option<Duration>,
+) -> Result<(), otap_df_config::error::Error> {
+    if enabled && interval.is_some_and(|interval| interval.is_zero()) {
+        return Err(otap_df_config::error::Error::InvalidUserConfig {
+            error: format!("{family} interval must be greater than zero"),
+        });
+    }
     Ok(())
 }
 
@@ -461,25 +540,168 @@ impl TryFrom<Config> for RuntimeConfig {
 
         Ok(Self {
             root_path: config.root_path,
-            collection_interval: config.collection_interval,
+            initial_delay: config.initial_delay,
             families: RuntimeFamilies {
-                cpu: config.families.cpu.enabled,
-                memory: config.families.memory.enabled,
-                paging: config.families.paging.enabled,
-                system: config.families.system.enabled,
+                cpu: RuntimeFamily::new(&config.families.cpu, config.collection_interval),
+                memory: RuntimeFamily::new(&config.families.memory, config.collection_interval),
+                paging: RuntimeFamily::new(&config.families.paging, config.collection_interval),
+                system: RuntimeFamily::new(&config.families.system, config.collection_interval),
                 disk: RuntimeDiskFamily {
                     enabled: config.families.disk.enabled,
+                    interval: config
+                        .families
+                        .disk
+                        .interval
+                        .unwrap_or(config.collection_interval),
                     include: disk_include,
                     exclude: disk_exclude,
                 },
                 network: RuntimeNetworkFamily {
                     enabled: config.families.network.enabled,
+                    interval: config
+                        .families
+                        .network
+                        .interval
+                        .unwrap_or(config.collection_interval),
                     include: network_include,
                     exclude: network_exclude,
                 },
-                processes: config.families.processes.enabled,
+                processes: RuntimeFamily {
+                    enabled: config.families.processes.enabled,
+                    interval: config
+                        .families
+                        .processes
+                        .interval
+                        .unwrap_or(config.collection_interval),
+                },
             },
         })
+    }
+}
+
+impl RuntimeFamily {
+    fn new(config: &FamilyConfig, default_interval: Duration) -> Self {
+        Self {
+            enabled: config.enabled,
+            interval: config.interval.unwrap_or(default_interval),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScheduledFamilyKind {
+    Cpu,
+    Memory,
+    Paging,
+    System,
+    Disk,
+    Network,
+    Processes,
+}
+
+struct ScheduledFamily {
+    kind: ScheduledFamilyKind,
+    interval: Duration,
+    next_due: Instant,
+}
+
+struct FamilyScheduler {
+    entries: Vec<ScheduledFamily>,
+}
+
+impl FamilyScheduler {
+    fn new(config: &RuntimeConfig, now: Instant) -> Self {
+        let first_due = now + config.initial_delay;
+        let mut entries = Vec::with_capacity(7);
+        push_scheduled(
+            &mut entries,
+            ScheduledFamilyKind::Cpu,
+            &config.families.cpu,
+            first_due,
+        );
+        push_scheduled(
+            &mut entries,
+            ScheduledFamilyKind::Memory,
+            &config.families.memory,
+            first_due,
+        );
+        push_scheduled(
+            &mut entries,
+            ScheduledFamilyKind::Paging,
+            &config.families.paging,
+            first_due,
+        );
+        push_scheduled(
+            &mut entries,
+            ScheduledFamilyKind::System,
+            &config.families.system,
+            first_due,
+        );
+        if config.families.disk.enabled {
+            entries.push(ScheduledFamily {
+                kind: ScheduledFamilyKind::Disk,
+                interval: config.families.disk.interval,
+                next_due: first_due,
+            });
+        }
+        if config.families.network.enabled {
+            entries.push(ScheduledFamily {
+                kind: ScheduledFamilyKind::Network,
+                interval: config.families.network.interval,
+                next_due: first_due,
+            });
+        }
+        push_scheduled(
+            &mut entries,
+            ScheduledFamilyKind::Processes,
+            &config.families.processes,
+            first_due,
+        );
+        Self { entries }
+    }
+
+    fn next_due(&self) -> Instant {
+        self.entries
+            .iter()
+            .map(|entry| entry.next_due)
+            .min()
+            .expect("scheduler has at least one enabled family")
+    }
+
+    fn mark_due(&mut self, now: Instant) -> ProcfsFamilies {
+        let mut due = ProcfsFamilies::default();
+        for entry in &mut self.entries {
+            if entry.next_due <= now {
+                match entry.kind {
+                    ScheduledFamilyKind::Cpu => due.cpu = true,
+                    ScheduledFamilyKind::Memory => due.memory = true,
+                    ScheduledFamilyKind::Paging => due.paging = true,
+                    ScheduledFamilyKind::System => due.system = true,
+                    ScheduledFamilyKind::Disk => due.disk = true,
+                    ScheduledFamilyKind::Network => due.network = true,
+                    ScheduledFamilyKind::Processes => due.processes = true,
+                }
+                while entry.next_due <= now {
+                    entry.next_due += entry.interval;
+                }
+            }
+        }
+        due
+    }
+}
+
+fn push_scheduled(
+    entries: &mut Vec<ScheduledFamily>,
+    kind: ScheduledFamilyKind,
+    family: &RuntimeFamily,
+    first_due: Instant,
+) {
+    if family.enabled {
+        entries.push(ScheduledFamily {
+            kind,
+            interval: family.interval,
+            next_due: first_due,
+        });
     }
 }
 
@@ -554,13 +776,13 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
         let mut source = ProcfsSource::new(
             self.config.root_path.as_deref(),
             ProcfsConfig {
-                cpu: self.config.families.cpu,
-                memory: self.config.families.memory,
-                paging: self.config.families.paging,
-                system: self.config.families.system,
+                cpu: self.config.families.cpu.enabled,
+                memory: self.config.families.memory.enabled,
+                paging: self.config.families.paging.enabled,
+                system: self.config.families.system.enabled,
                 disk: self.config.families.disk.enabled,
                 network: self.config.families.network.enabled,
-                processes: self.config.families.processes,
+                processes: self.config.families.processes.enabled,
                 disk_include: self.config.families.disk.include.clone(),
                 disk_exclude: self.config.families.disk.exclude.clone(),
                 network_include: self.config.families.network.include.clone(),
@@ -573,7 +795,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
             error: format!("failed to validate host metrics procfs sources: {err}"),
             source_detail: String::new(),
         })?;
-        let mut ticker = interval(self.config.collection_interval);
+        let mut scheduler = FamilyScheduler::new(&self.config, Instant::now());
 
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
@@ -600,8 +822,9 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     }
                 }
 
-                _ = ticker.tick() => {
-                    match source.scrape() {
+                _ = sleep_until(scheduler.next_due()) => {
+                    let due = scheduler.mark_due(Instant::now());
+                    match source.scrape_due(due) {
                         Ok(snapshot) => {
                             let pdata = encode_snapshot(snapshot).map_err(|err| Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
@@ -670,10 +893,22 @@ mod tests {
     fn rejects_all_families_disabled() {
         let config = Config {
             families: FamiliesConfig {
-                cpu: FamilyConfig { enabled: false },
-                memory: FamilyConfig { enabled: false },
-                paging: FamilyConfig { enabled: false },
-                system: FamilyConfig { enabled: false },
+                cpu: FamilyConfig {
+                    enabled: false,
+                    ..FamilyConfig::default()
+                },
+                memory: FamilyConfig {
+                    enabled: false,
+                    ..FamilyConfig::default()
+                },
+                paging: FamilyConfig {
+                    enabled: false,
+                    ..FamilyConfig::default()
+                },
+                system: FamilyConfig {
+                    enabled: false,
+                    ..FamilyConfig::default()
+                },
                 disk: DiskFamilyConfig {
                     enabled: false,
                     ..DiskFamilyConfig::default()
@@ -713,6 +948,61 @@ mod tests {
             validate_config(&config),
             Err(otap_df_config::error::Error::InvalidUserConfig { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_zero_enabled_family_interval() {
+        let config = Config {
+            families: FamiliesConfig {
+                cpu: FamilyConfig {
+                    interval: Some(Duration::ZERO),
+                    ..FamilyConfig::default()
+                },
+                ..FamiliesConfig::default()
+            },
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            validate_config(&config),
+            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+        ));
+    }
+
+    #[test]
+    fn scheduler_honors_initial_delay_and_family_intervals() {
+        let config = Config {
+            collection_interval: Duration::from_secs(10),
+            initial_delay: Duration::from_secs(1),
+            families: FamiliesConfig {
+                cpu: FamilyConfig {
+                    interval: Some(Duration::from_secs(5)),
+                    ..FamilyConfig::default()
+                },
+                ..FamiliesConfig::default()
+            },
+            ..Config::default()
+        };
+        let config = RuntimeConfig::try_from(config).expect("valid config");
+        let now = Instant::now();
+        let mut scheduler = FamilyScheduler::new(&config, now);
+
+        assert_eq!(scheduler.next_due(), now + Duration::from_secs(1));
+        assert_eq!(
+            scheduler.mark_due(now),
+            ProcfsFamilies::default(),
+            "nothing is due before initial_delay"
+        );
+
+        let first_due = scheduler.mark_due(now + Duration::from_secs(1));
+        assert!(first_due.cpu);
+        assert!(first_due.memory);
+        assert!(first_due.disk);
+
+        let second_due = scheduler.mark_due(now + Duration::from_secs(6));
+        assert!(second_due.cpu);
+        assert!(!second_due.memory);
+        assert!(!second_due.disk);
     }
 
     #[test]
