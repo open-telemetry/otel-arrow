@@ -29,6 +29,7 @@ pub struct ProcfsSource {
     config: ProcfsConfig,
     buf: String,
     clk_tck: f64,
+    previous_cpu: Option<CpuTimes>,
 }
 
 /// Procfs collection config.
@@ -47,6 +48,8 @@ pub struct ProcfsConfig {
     pub network: bool,
     /// Process summary metrics.
     pub processes: bool,
+    /// Derived aggregate CPU utilization.
+    pub cpu_utilization: bool,
     /// Disk include filter.
     pub disk_include: Option<CompiledFilter>,
     /// Disk exclude filter.
@@ -86,6 +89,7 @@ impl ProcfsSource {
             config,
             buf: String::with_capacity(16 * 1024),
             clk_tck: clock_ticks_per_second(),
+            previous_cpu: None,
         };
         source.apply_startup_validation()?;
         Ok(source)
@@ -117,6 +121,16 @@ impl ProcfsSource {
                 record_partial_error(&mut partial_errors, &mut first_error, err);
                 StatSnapshot::default()
             }
+        };
+        let cpu_utilization = if due.cpu && self.config.cpu_utilization {
+            let utilization = stat.cpu.and_then(|current| {
+                self.previous_cpu
+                    .and_then(|previous| cpu_utilization(previous, current))
+            });
+            self.previous_cpu = stat.cpu;
+            utilization
+        } else {
+            None
         };
 
         let cpuinfo = match due
@@ -222,6 +236,7 @@ impl ProcfsSource {
             now_unix_nano,
             start_time_unix_nano: stat.boot_time_unix_nano,
             cpu: stat.cpu,
+            cpu_utilization,
             cpuinfo,
             memory,
             uptime_seconds,
@@ -423,6 +438,7 @@ pub struct HostSnapshot {
     now_unix_nano: u64,
     start_time_unix_nano: u64,
     cpu: Option<CpuTimes>,
+    cpu_utilization: Option<CpuTimes>,
     cpuinfo: CpuInfo,
     memory: Option<MemoryStats>,
     uptime_seconds: Option<f64>,
@@ -437,6 +453,7 @@ pub struct HostSnapshot {
 impl HostSnapshot {
     fn has_metrics(&self) -> bool {
         self.cpu.is_some()
+            || self.cpu_utilization.is_some()
             || self.cpuinfo.logical_count != 0
             || self.cpuinfo.physical_count != 0
             || !self.cpuinfo.frequencies_hz.is_empty()
@@ -461,6 +478,24 @@ impl HostSnapshot {
                 "system.cpu.time",
                 "s",
                 start,
+                now,
+                &[
+                    ("user", cpu.user),
+                    ("nice", cpu.nice),
+                    ("system", cpu.system),
+                    ("idle", cpu.idle),
+                    ("wait", cpu.wait),
+                    ("interrupt", cpu.interrupt),
+                    ("steal", cpu.steal),
+                ],
+                "cpu.mode",
+            );
+        }
+        if let Some(cpu) = self.cpu_utilization {
+            push_gauge_f64_by_attr(
+                &mut metrics,
+                "system.cpu.utilization",
+                "1",
                 now,
                 &[
                     ("user", cpu.user),
@@ -890,6 +925,30 @@ fn parse_cpu_total(input: &str, clk_tck: f64) -> Option<CpuTimes> {
     })
 }
 
+fn cpu_utilization(previous: CpuTimes, current: CpuTimes) -> Option<CpuTimes> {
+    let user = counter_delta(previous.user, current.user)?;
+    let nice = counter_delta(previous.nice, current.nice)?;
+    let system = counter_delta(previous.system, current.system)?;
+    let idle = counter_delta(previous.idle, current.idle)?;
+    let wait = counter_delta(previous.wait, current.wait)?;
+    let interrupt = counter_delta(previous.interrupt, current.interrupt)?;
+    let steal = counter_delta(previous.steal, current.steal)?;
+    let total = user + nice + system + idle + wait + interrupt + steal;
+    (total > 0.0).then(|| CpuTimes {
+        user: user / total,
+        nice: nice / total,
+        system: system / total,
+        idle: idle / total,
+        wait: wait / total,
+        interrupt: interrupt / total,
+        steal: steal / total,
+    })
+}
+
+fn counter_delta(previous: f64, current: f64) -> Option<f64> {
+    (current >= previous).then_some(current - previous)
+}
+
 fn parse_cpuinfo(input: &str) -> CpuInfo {
     let mut logical_count = 0;
     let mut frequencies_hz = Vec::new();
@@ -1190,6 +1249,34 @@ fn push_gauge_f64(
         metadata: Vec::new(),
         data: Some(metric::Data::Gauge(Gauge {
             data_points: vec![number_point_f64(Vec::new(), 0, now, value)],
+        })),
+    });
+}
+
+fn push_gauge_f64_by_attr(
+    metrics: &mut Vec<Metric>,
+    name: &'static str,
+    unit: &'static str,
+    now: u64,
+    values: &[(&'static str, f64)],
+    attr_name: &'static str,
+) {
+    let mut points = Vec::with_capacity(values.len());
+    for (state, value) in values {
+        points.push(number_point_f64(
+            vec![kv_str(attr_name, state)],
+            0,
+            now,
+            *value,
+        ));
+    }
+    metrics.push(Metric {
+        name: name.to_owned(),
+        description: String::new(),
+        unit: unit.to_owned(),
+        metadata: Vec::new(),
+        data: Some(metric::Data::Gauge(Gauge {
+            data_points: points,
         })),
     });
 }
@@ -1671,6 +1758,15 @@ mod tests {
                 interrupt: 6.0,
                 steal: 7.0,
             }),
+            cpu_utilization: Some(CpuTimes {
+                user: 0.1,
+                nice: 0.1,
+                system: 0.2,
+                idle: 0.3,
+                wait: 0.1,
+                interrupt: 0.1,
+                steal: 0.1,
+            }),
             cpuinfo: CpuInfo {
                 logical_count: 2,
                 physical_count: 1,
@@ -1745,6 +1841,8 @@ mod tests {
         let metrics = &resource_metrics.scope_metrics[0].metrics;
         assert_metric_shape(metrics, "system.cpu.time", "s", true);
         assert_first_point_attr(metrics, "system.cpu.time", "cpu.mode", "user");
+        assert_metric_shape(metrics, "system.cpu.utilization", "1", false);
+        assert_first_point_attr(metrics, "system.cpu.utilization", "cpu.mode", "user");
         assert_metric_shape(metrics, "system.cpu.logical.count", "{cpu}", false);
         assert_metric_shape(metrics, "system.cpu.physical.count", "{cpu}", false);
         assert_metric_shape(metrics, "system.cpu.frequency", "Hz", false);
@@ -1824,6 +1922,7 @@ mod tests {
                 disk: true,
                 network: false,
                 processes: false,
+                cpu_utilization: false,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -1859,6 +1958,7 @@ mod tests {
                 disk: false,
                 network: false,
                 processes: false,
+                cpu_utilization: false,
                 disk_include: None,
                 disk_exclude: None,
                 network_include: None,
@@ -1894,6 +1994,43 @@ mod tests {
         assert_eq!(cpu.user, 9.0);
         assert_eq!(cpu.nice, 4.6);
         assert_eq!(cpu.interrupt, 0.5);
+    }
+
+    #[test]
+    fn cpu_utilization_uses_counter_deltas() {
+        let utilization = cpu_utilization(
+            CpuTimes {
+                user: 1.0,
+                idle: 1.0,
+                ..CpuTimes::default()
+            },
+            CpuTimes {
+                user: 3.0,
+                idle: 2.0,
+                ..CpuTimes::default()
+            },
+        )
+        .expect("utilization");
+
+        assert_eq!(utilization.user, 2.0 / 3.0);
+        assert_eq!(utilization.idle, 1.0 / 3.0);
+    }
+
+    #[test]
+    fn cpu_utilization_skips_counter_resets() {
+        assert!(
+            cpu_utilization(
+                CpuTimes {
+                    user: 2.0,
+                    ..CpuTimes::default()
+                },
+                CpuTimes {
+                    user: 1.0,
+                    ..CpuTimes::default()
+                },
+            )
+            .is_none()
+        );
     }
 
     #[test]

@@ -200,6 +200,8 @@ pub struct CpuFamilyConfig {
     pub interval: Option<Duration>,
     /// Emit per-logical-CPU time series. Not supported in v1.
     pub per_cpu: bool,
+    /// Emit aggregate CPU utilization derived from CPU time deltas.
+    pub utilization: bool,
 }
 
 impl Default for CpuFamilyConfig {
@@ -208,6 +210,7 @@ impl Default for CpuFamilyConfig {
             enabled: true,
             interval: None,
             per_cpu: false,
+            utilization: false,
         }
     }
 }
@@ -359,6 +362,7 @@ struct RuntimeConfig {
     root_path: PathBuf,
     validation: HostViewValidationMode,
     initial_delay: Duration,
+    cpu_utilization: bool,
     families: RuntimeFamilies,
 }
 
@@ -707,6 +711,7 @@ impl TryFrom<Config> for RuntimeConfig {
             root_path,
             validation: config.host_view.validation,
             initial_delay: config.initial_delay,
+            cpu_utilization: config.families.cpu.utilization,
             families: RuntimeFamilies {
                 cpu: RuntimeFamily::new_cpu(&config.families.cpu, config.collection_interval),
                 memory: RuntimeFamily::new(&config.families.memory, config.collection_interval),
@@ -961,6 +966,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 disk: config.families.disk.enabled,
                 network: config.families.network.enabled,
                 processes: config.families.processes.enabled,
+                cpu_utilization: config.cpu_utilization,
                 disk_include: config.families.disk.include.clone(),
                 disk_exclude: config.families.disk.exclude.clone(),
                 network_include: config.families.network.include.clone(),
@@ -1200,6 +1206,21 @@ mod tests {
         .expect("valid cpu config");
 
         assert!(!config.families.cpu.per_cpu);
+        validate_config(&config).expect("valid config");
+    }
+
+    #[test]
+    fn accepts_cpu_utilization_opt_in() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "families": {
+                "cpu": {
+                    "utilization": true
+                }
+            }
+        }))
+        .expect("valid cpu config");
+
+        assert!(config.families.cpu.utilization);
         validate_config(&config).expect("valid config");
     }
 
