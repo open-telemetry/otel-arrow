@@ -1346,8 +1346,10 @@ mod tests {
 
     #[test]
     fn rejects_zero_collection_interval() {
-        let mut config = Config::default();
-        config.collection_interval = Duration::ZERO;
+        let config = Config {
+            collection_interval: Duration::ZERO,
+            ..Config::default()
+        };
 
         assert!(matches!(
             validate_config(&config),
