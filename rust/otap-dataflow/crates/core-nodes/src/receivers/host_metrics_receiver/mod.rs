@@ -465,6 +465,7 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
+        validate_supported_platform()?;
         if pipeline.num_cores() > 1 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: "host-wide collection must run in a one-core source pipeline; use receiver:host_metrics -> exporter:topic and fan out downstream".to_owned(),
@@ -493,6 +494,7 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 impl HostMetricsReceiver {
     /// Creates a new host metrics receiver.
     pub fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
+        validate_supported_platform()?;
         let root_path = normalized_root_path(Some(effective_root_path(&config)?))?;
         let lease = HostMetricsLease::acquire(root_path)?;
         let config = RuntimeConfig::try_from(config)?;
@@ -568,6 +570,16 @@ fn validate_config(config: &Config) -> Result<(), otap_df_config::error::Error> 
     )?;
     let _ = normalized_root_path(Some(effective_root_path(config)?))?;
     Ok(())
+}
+
+fn validate_supported_platform() -> Result<(), otap_df_config::error::Error> {
+    if cfg!(target_os = "linux") {
+        Ok(())
+    } else {
+        Err(otap_df_config::error::Error::InvalidUserConfig {
+            error: "host_metrics receiver is supported only on Linux".to_owned(),
+        })
+    }
 }
 
 fn effective_root_path(config: &Config) -> Result<&Path, otap_df_config::error::Error> {
