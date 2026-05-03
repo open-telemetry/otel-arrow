@@ -1110,8 +1110,8 @@ pub fn try_attrs_value_filter_from_literal(
 #[cfg(test)]
 mod test {
     use data_engine_kql_parser::Parser;
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{OtapArrowRecords, otap::Logs};
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner};
 

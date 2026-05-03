@@ -32,7 +32,6 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_opl::parser::OplParser;
 use otap_df_otap::{
     OTAP_PROCESSOR_FACTORIES,
     accessory::slots::Key,
@@ -45,6 +44,7 @@ use otap_df_query_engine::{
     parser::default_parser_options,
     pipeline::{Pipeline, PipelineOptions, routing::RouterExtType, state::ExecutionState},
 };
+use otap_df_query_engine_languages::opl::parser::OplParser;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use slotmap::Key as _;

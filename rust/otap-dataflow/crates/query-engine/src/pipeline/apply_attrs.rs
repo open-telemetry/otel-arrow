@@ -95,7 +95,6 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 mod test {
     use arrow::{array::UInt8Array, datatypes::DataType};
     use data_engine_kql_parser::Parser;
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
         otap::Logs,
@@ -115,6 +114,7 @@ mod test {
             round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data},
         },
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
 

@@ -3,9 +3,7 @@ members = [
     "expressions",
     "parser-abstractions",
     "kql-parser",
-    "ottl-parser",
     "engine-recordset",
-    "engine-recordset-otlp-bridge",
 ]
 resolver = "2"
 

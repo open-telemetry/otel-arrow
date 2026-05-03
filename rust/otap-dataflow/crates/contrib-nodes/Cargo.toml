@@ -38,8 +38,10 @@ chrono = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
+data_engine_expressions = { workspace = true, optional = true }
+data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
-data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
+regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
@@ -85,17 +87,23 @@ contrib-processors = [
 ]
 condense-attributes-processor = []
 recordset-kql-processor = [
-    "dep:data_engine_recordset_otlp_bridge",
+    "dep:data_engine_expressions",
+    "dep:data_engine_kql_parser",
     "dep:data_engine_recordset",
+    "dep:regex",
     "dep:chrono",
 ]
 resource-validator-processor = []
 
 [dev-dependencies]
 axum.workspace = true
+chrono.workspace = true
 clap.workspace = true
 criterion = { workspace = true, features = ["html_reports"] }
+data_engine_expressions.workspace = true
+data_engine_recordset.workspace = true
 humantime.workspace = true
+opentelemetry-proto.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["test-utils"] }
 pretty_assertions.workspace = true
@@ -114,6 +122,17 @@ name = "azure_monitor_gzip_batcher"
 path = "benches/exporters/azure_monitor_exporter/gzip_batcher.rs"
 harness = false
 required-features = ["azure-monitor-exporter"]
+
+[[bench]]
+name = "otlp_bridge_extend"
+path = "benches/processors/recordset_kql_processor/extend.rs"
+harness = false
+required-features = ["recordset-kql-processor"]
+
+[[test]]
+name = "otlp_kql_recordset"
+path = "tests/processors/recordset_kql_processor/otlp_kql_recordset.rs"
+required-features = ["recordset-kql-processor"]
 
 [[example]]
 name = "mock_la_server"
