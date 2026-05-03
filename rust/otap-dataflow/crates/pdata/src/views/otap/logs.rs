@@ -15,7 +15,7 @@ use arrow::array::{TimestampNanosecondArray, UInt32Array};
 
 use crate::arrays::NullableArrayAccessor;
 use crate::error::Error;
-use crate::otap::OtapArrowRecords;
+use crate::otap::{Logs, OtapArrowRecords, OtapBatchStore};
 use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
 use crate::otlp::logs::{LogBodyArrays, LogsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -135,6 +135,24 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapLogsView<'a> {
     type Error = Error;
 
     fn try_from(records: &'a OtapArrowRecords) -> Result<Self, Self::Error> {
+        let logs_batch = records
+            .get(ArrowPayloadType::Logs)
+            .ok_or(Error::RecordBatchNotFound {
+                payload_type: ArrowPayloadType::Logs,
+            })?;
+
+        let resource_attrs = records.get(ArrowPayloadType::ResourceAttrs);
+        let scope_attrs = records.get(ArrowPayloadType::ScopeAttrs);
+        let log_attrs = records.get(ArrowPayloadType::LogAttrs);
+
+        Self::new(logs_batch, resource_attrs, scope_attrs, log_attrs)
+    }
+}
+
+impl<'a> TryFrom<&'a Logs> for OtapLogsView<'a> {
+    type Error = Error;
+
+    fn try_from(records: &'a Logs) -> Result<Self, Self::Error> {
         let logs_batch = records
             .get(ArrowPayloadType::Logs)
             .ok_or(Error::RecordBatchNotFound {
