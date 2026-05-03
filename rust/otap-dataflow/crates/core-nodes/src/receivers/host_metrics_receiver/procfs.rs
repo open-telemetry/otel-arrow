@@ -1563,6 +1563,153 @@ mod tests {
     use super::*;
 
     #[test]
+    fn projection_uses_expected_metric_shapes() {
+        let request = HostSnapshot {
+            now_unix_nano: 2_000,
+            start_time_unix_nano: 1_000,
+            cpu: Some(CpuTimes {
+                user: 1.0,
+                nice: 2.0,
+                system: 3.0,
+                idle: 4.0,
+                wait: 5.0,
+                interrupt: 6.0,
+                steal: 7.0,
+            }),
+            cpuinfo: CpuInfo {
+                logical_count: 2,
+                physical_count: 1,
+                frequencies_hz: vec![2_400_000_000.0],
+            },
+            memory: Some(MemoryStats {
+                total: 100,
+                used: 80,
+                free: 10,
+                available: 20,
+                cached: 5,
+                buffered: 5,
+                slab_reclaimable: 3,
+                slab_unreclaimable: 2,
+            }),
+            uptime_seconds: Some(42.0),
+            paging: Some(PagingStats {
+                minor_faults: 9,
+                major_faults: 1,
+                swap_in: 2,
+                swap_out: 3,
+            }),
+            swaps: vec![SwapStats {
+                name: "/dev/swap".to_owned(),
+                size: 100,
+                used: 25,
+                free: 75,
+            }],
+            processes: Some(ProcessStats {
+                running: 4,
+                blocked: 1,
+                created: 99,
+            }),
+            disks: vec![DiskStats {
+                name: "sda".to_owned(),
+                read_bytes: 10,
+                write_bytes: 20,
+                read_ops: 1,
+                write_ops: 2,
+                read_merged: 3,
+                write_merged: 4,
+                read_time_seconds: 0.5,
+                write_time_seconds: 0.6,
+                io_time_seconds: 0.7,
+            }],
+            networks: vec![NetworkStats {
+                name: "eth0".to_owned(),
+                rx_bytes: 10,
+                tx_bytes: 20,
+                rx_packets: 1,
+                tx_packets: 2,
+                rx_errors: 3,
+                tx_errors: 4,
+                rx_dropped: 5,
+                tx_dropped: 6,
+            }],
+            resource: HostResource {
+                host_id: Some("host-id".to_owned()),
+                host_name: Some("host-name".to_owned()),
+                host_arch: Some("amd64"),
+            },
+        }
+        .into_export_request();
+
+        let resource_metrics = request.resource_metrics.first().expect("resource metrics");
+        let resource = resource_metrics.resource.as_ref().expect("resource");
+        assert_has_attr(&resource.attributes, "os.type", "linux");
+        assert_has_attr(&resource.attributes, "host.id", "host-id");
+        assert_has_attr(&resource.attributes, "host.name", "host-name");
+        assert_has_attr(&resource.attributes, "host.arch", "amd64");
+
+        let metrics = &resource_metrics.scope_metrics[0].metrics;
+        assert_metric_shape(metrics, "system.cpu.time", "s", true);
+        assert_first_point_attr(metrics, "system.cpu.time", "cpu.mode", "user");
+        assert_metric_shape(metrics, "system.cpu.logical.count", "{cpu}", false);
+        assert_metric_shape(metrics, "system.cpu.physical.count", "{cpu}", false);
+        assert_metric_shape(metrics, "system.cpu.frequency", "Hz", false);
+        assert_first_point_attr(metrics, "system.cpu.frequency", "cpu.logical_number", "0");
+        assert_metric_shape(metrics, "system.memory.usage", "By", false);
+        assert_first_point_attr(
+            metrics,
+            "system.memory.usage",
+            "system.memory.state",
+            "used",
+        );
+        assert_metric_shape(metrics, "system.memory.utilization", "1", false);
+        assert_metric_shape(metrics, "system.memory.linux.available", "By", false);
+        assert_metric_shape(metrics, "system.memory.linux.slab.usage", "By", false);
+        assert_metric_shape(metrics, "system.uptime", "s", false);
+        assert_metric_shape(metrics, "system.paging.faults", "{fault}", true);
+        assert_first_point_attr(
+            metrics,
+            "system.paging.faults",
+            "system.paging.fault.type",
+            "minor",
+        );
+        assert_metric_shape(metrics, "system.paging.operations", "{operation}", true);
+        assert_metric_shape(metrics, "system.paging.usage", "By", false);
+        assert_first_point_attr(metrics, "system.paging.usage", "system.device", "/dev/swap");
+        assert_metric_shape(metrics, "system.paging.utilization", "1", false);
+        assert_metric_shape(metrics, "system.process.count", "{process}", false);
+        assert_metric_shape(metrics, "system.process.created", "{process}", true);
+        assert_metric_shape(metrics, "system.disk.io", "By", true);
+        assert_first_point_attr(metrics, "system.disk.io", "disk.io.direction", "read");
+        assert_metric_shape(metrics, "system.disk.operations", "{operation}", true);
+        assert_metric_shape(metrics, "system.disk.io_time", "s", true);
+        assert_first_point_attr(metrics, "system.disk.io_time", "system.device", "sda");
+        assert_metric_shape(metrics, "system.disk.operation_time", "s", true);
+        assert_metric_shape(metrics, "system.disk.merged", "{operation}", true);
+        assert_metric_shape(metrics, "system.network.io", "By", true);
+        assert_first_point_attr(
+            metrics,
+            "system.network.io",
+            "network.interface.name",
+            "eth0",
+        );
+        assert_metric_shape(metrics, "system.network.packet.count", "{packet}", true);
+        assert_first_point_attr(
+            metrics,
+            "system.network.packet.count",
+            "system.device",
+            "eth0",
+        );
+        assert_metric_shape(metrics, "system.network.packet.dropped", "{packet}", true);
+        assert_first_point_attr(
+            metrics,
+            "system.network.packet.dropped",
+            "network.interface.name",
+            "eth0",
+        );
+        assert_metric_shape(metrics, "system.network.errors", "{error}", true);
+    }
+
+    #[test]
     fn cpu_parser_accepts_missing_newer_fields() {
         let cpu = parse_cpu_total("10 20 30 40", 10.0).expect("cpu row");
         assert_eq!(cpu.user, 1.0);
@@ -1693,5 +1840,76 @@ mod tests {
                 "amd64" | "arm32" | "arm64" | "ppc32" | "ppc64" | "x86"
             ));
         }
+    }
+
+    fn assert_metric_shape(
+        metrics: &[Metric],
+        name: &'static str,
+        unit: &'static str,
+        is_sum: bool,
+    ) {
+        let metric = metric_by_name(metrics, name);
+        assert_eq!(metric.unit, unit);
+        match metric.data.as_ref().expect("metric data") {
+            metric::Data::Sum(sum) => {
+                assert!(is_sum, "{name} should be a gauge");
+                assert_eq!(
+                    sum.aggregation_temporality,
+                    AggregationTemporality::Cumulative as i32
+                );
+                assert!(sum.is_monotonic);
+                assert!(
+                    sum.data_points
+                        .iter()
+                        .all(|point| point.start_time_unix_nano == 1_000)
+                );
+            }
+            metric::Data::Gauge(gauge) => {
+                assert!(!is_sum, "{name} should be a cumulative sum");
+                assert!(
+                    gauge
+                        .data_points
+                        .iter()
+                        .all(|point| point.start_time_unix_nano == 0)
+                );
+            }
+            _ => panic!("unexpected data kind for {name}"),
+        }
+    }
+
+    fn assert_first_point_attr(
+        metrics: &[Metric],
+        name: &'static str,
+        key: &'static str,
+        value: &'static str,
+    ) {
+        let metric = metric_by_name(metrics, name);
+        let point = match metric.data.as_ref().expect("metric data") {
+            metric::Data::Sum(sum) => sum.data_points.first(),
+            metric::Data::Gauge(gauge) => gauge.data_points.first(),
+            _ => None,
+        }
+        .expect("data point");
+        assert_has_attr(&point.attributes, key, value);
+    }
+
+    fn metric_by_name<'a>(metrics: &'a [Metric], name: &'static str) -> &'a Metric {
+        metrics
+            .iter()
+            .find(|metric| metric.name == name)
+            .unwrap_or_else(|| panic!("missing metric {name}"))
+    }
+
+    fn assert_has_attr(attributes: &[KeyValue], key: &'static str, value: &'static str) {
+        assert!(
+            attributes.iter().any(|attr| {
+                attr.key == key
+                    && matches!(
+                        attr.value.as_ref().and_then(|value| value.value.as_ref()),
+                        Some(any_value::Value::StringValue(actual)) if actual == value
+                    )
+            }),
+            "missing attribute {key}={value}"
+        );
     }
 }
