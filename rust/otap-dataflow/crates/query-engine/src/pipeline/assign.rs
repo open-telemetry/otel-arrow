@@ -1514,7 +1514,7 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
     }
 
     // scalar int type can be converted to any integer type
-    if dest_type.is_integer() && source_type == &ExprLogicalType::ScalarInt {
+    if dest_type.is_integer() && source_type == &ExprLogicalType::AnyInt {
         return true;
     }
 
@@ -1531,7 +1531,7 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
                 | ExprLogicalType::Int64
                 | ExprLogicalType::Float64
                 | ExprLogicalType::AnyValueNumeric
-                | ExprLogicalType::ScalarInt
+                | ExprLogicalType::AnyInt
         ),
 
         // TODO - handle other cases as we support a greater variety of destinations
@@ -2057,7 +2057,7 @@ mod test {
             Err(e) => {
                 let err_msg = e.to_string();
                 assert!(
-                    err_msg.contains("cannot assign expression of type ScalarInt to type String"),
+                    err_msg.contains("cannot assign expression of type AnyInt to type String"),
                     "unexpected error message: {err_msg:?}"
                 )
             }

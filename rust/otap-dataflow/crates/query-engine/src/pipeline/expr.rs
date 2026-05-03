@@ -310,7 +310,7 @@ impl ExprLogicalPlanner {
             ScalarExpression::Static(static_scalar_expr) => {
                 let (logical_expr, expr_type) = match static_scalar_expr {
                     StaticScalarExpression::Integer(int_expr) => {
-                        (lit(int_expr.get_value()), ExprLogicalType::ScalarInt)
+                        (lit(int_expr.get_value()), ExprLogicalType::AnyInt)
                     }
                     StaticScalarExpression::Double(double_expr) => {
                         (lit(double_expr.get_value()), ExprLogicalType::Float64)

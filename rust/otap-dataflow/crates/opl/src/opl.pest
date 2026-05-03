@@ -151,7 +151,7 @@ type_check_op = @{ "is" }
 
 type_check_expression = {
     type_check_op ~ type_name
-  | rel_expression ~ (type_check_op ~ type_name)?
+  | rel_expression ~ (type_check_op ~ ident)?
 }
 
 and_expression = {
