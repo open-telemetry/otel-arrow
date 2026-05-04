@@ -501,7 +501,7 @@ impl GenevaExporter {
                     mut otap_records @ OtapArrowRecords::Logs(_) => {
                         otel_info!(
                             "geneva_exporter.upload",
-                            message = "Uploading logs to Geneva using OTAP record views"
+                            message = "Uploading log batches to Geneva using OTAP record views"
                         );
 
                         otap_records.decode_transport_optimized_ids().map_err(|e| {
@@ -529,7 +529,7 @@ impl GenevaExporter {
                         otel_info!(
                             "geneva_exporter.upload",
                             count = batches_uploaded,
-                            message = "Successfully uploaded log batches to Geneva (OTAP views)"
+                            message = "Successfully uploaded log batches to Geneva using OTAP record views"
                         );
 
                         Ok(batches_uploaded)
@@ -598,7 +598,7 @@ impl GenevaExporter {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         otel_info!(
                             "geneva_exporter.upload",
-                            message = "Uploading logs to Geneva using OTLP path"
+                            message = "Uploading log batches to Geneva using OTLP raw-byte view"
                         );
 
                         let logs_view = RawLogsData::try_new(bytes.as_ref()).map_err(|e| {
@@ -622,7 +622,7 @@ impl GenevaExporter {
                         otel_info!(
                             "geneva_exporter.upload",
                             count = batches_uploaded,
-                            message = "Successfully uploaded log batches to Geneva (OTLP path)"
+                            message = "Successfully uploaded log batches to Geneva using OTLP raw-byte view"
                         );
 
                         Ok(batches_uploaded)
