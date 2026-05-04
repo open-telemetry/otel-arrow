@@ -403,8 +403,6 @@ const fn make_len_placeholder<const N: usize>() -> [u8; N] {
 /// atomic field-level writes: either the entire field is written, or the
 /// buffer is rolled back to its previous state.
 pub trait BoundedBuf {
-    // ===== Storage primitives =====
-
     /// Current write position (encoded byte count).
     fn len(&self) -> usize;
 
@@ -429,8 +427,6 @@ pub trait BoundedBuf {
 
     /// Reset the buffer to empty (preserves any underlying allocation).
     fn clear(&mut self);
-
-    // ===== Default methods =====
 
     /// Returns true if no bytes have been written.
     #[inline]
@@ -526,22 +522,17 @@ pub trait BoundedBuf {
             return Err(Dropped);
         }
 
-        // Content bytes available (excluding suffix).
-        let max_content = avail - tag_bytes - suffix_len;
-        let content_plus_suffix = |content_len: usize| content_len + suffix_len;
-        let mut content_len = max_content;
-        loop {
-            let total_payload = content_plus_suffix(content_len);
-            let len_varint_size = varint_len(total_payload as u64);
-            let total_field = tag_bytes + len_varint_size + total_payload;
-            if total_field <= avail {
-                break;
-            }
-            if content_len == 0 {
-                return Err(Dropped);
-            }
-            content_len -= 1;
+        // Find max payload that fits in `avail - tag_bytes` bytes including
+        // its own length-varint. varint_len is monotonic non-decreasing, so
+        // varint_len(s - varint_len(s)) <= varint_len(s) — i.e. the chosen
+        // payload's actual varint always fits in the reserved slot.
+        let s = avail - tag_bytes;
+        let len_varint_size = varint_len(s as u64);
+        let max_payload = s - len_varint_size;
+        if max_payload < suffix_len {
+            return Err(Dropped);
         }
+        let content_len = max_payload - suffix_len;
 
         // Truncate at a UTF-8 character boundary.
         let truncated_str = truncate_utf8(val, content_len);
@@ -892,24 +883,6 @@ impl AsMut<[u8]> for ProtoBuffer {
     }
 }
 
-impl std::io::Write for ProtoBuffer {
-    /// Write bytes to the buffer, ignoring the size limit.
-    ///
-    /// This is provided for compatibility with `std::io::Write`-based
-    /// formatters (e.g., `write!(buf, ...)` for Debug values). Use the
-    /// typed `encode_*` methods for limit-aware writes.
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    #[inline]
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Stack-backed protobuf encoding buffer with fixed `N`-byte capacity.
 ///
 /// Performs zero allocations: storage is an inline `[u8; N]` array with a
@@ -919,16 +892,6 @@ pub struct StackProtoBuffer<const N: usize> {
     buf: [u8; N],
     pos: usize,
     limit: usize,
-}
-
-impl<const N: usize> fmt::Debug for StackProtoBuffer<N> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StackProtoBuffer")
-            .field("len", &self.pos)
-            .field("limit", &self.limit)
-            .field("capacity", &N)
-            .finish()
-    }
 }
 
 impl<const N: usize> StackProtoBuffer<N> {
@@ -1016,29 +979,6 @@ impl<const N: usize> AsRef<[u8]> for StackProtoBuffer<N> {
 impl<const N: usize> AsMut<[u8]> for StackProtoBuffer<N> {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.buf[..self.pos]
-    }
-}
-
-impl<const N: usize> std::io::Write for StackProtoBuffer<N> {
-    /// Write bytes to the buffer up to the fixed capacity `N`.
-    ///
-    /// Unlike [`ProtoBuffer`], this cannot grow; if the buffer is full
-    /// the call returns `Ok(0)` and excess bytes are dropped.
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let avail = N.saturating_sub(self.pos);
-        let n = avail.min(buf.len());
-        if n == 0 {
-            return Ok(0);
-        }
-        self.buf[self.pos..self.pos + n].copy_from_slice(&buf[..n]);
-        self.pos += n;
-        Ok(n)
-    }
-
-    #[inline]
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 
