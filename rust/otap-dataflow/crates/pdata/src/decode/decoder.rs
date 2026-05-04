@@ -15,6 +15,7 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
+use otap_df_config::ConversionOptions;
 use prost::Message;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -55,6 +56,12 @@ pub struct Consumer {
 }
 
 impl Consumer {
+    /// Construct a consumer with conversion options.
+    #[must_use]
+    pub fn with_options(_opts: ConversionOptions) -> Self {
+        Self::default()
+    }
+
     /// consume and deserialize record batches
     pub fn consume_bar(&mut self, bar: &mut BatchArrowRecords) -> Result<Vec<RecordMessage>> {
         let mut records = Vec::with_capacity(bar.arrow_payloads.len());
