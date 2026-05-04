@@ -239,7 +239,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             &processor_indices,
             node_interests,
             &pipeline_context,
-        );
+        )?;
 
         // Spawn node tasks and register their control senders, scoping telemetry where available.
         for exporter in exporters {

@@ -44,7 +44,7 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::processor::ProcessorRuntimeRequirements;
 use crate::shared::message::SharedSender;
-use crate::stopwatch::{StopwatchMetrics, nanos_u64};
+use crate::stopwatch::{SharedStopwatchState, StopMeasurements, StopwatchMetrics, nanos_u64};
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
@@ -126,33 +126,14 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<SharedSender<PData>>,
-    /// Stopwatch fields use `Arc<Cell-equivalent>` to remain `Send + Sync`
-    /// and clonable across worker tasks.
+    /// Per-handler stopwatch state. See [`SharedStopwatchState`] /
+    /// [`StopMeasurements`] for field-level documentation.
     ///
-    /// Marker for the most recent timing point on the current message's
-    /// path through `process()`. Set by `begin_process_timing` at the
-    /// start of every `process()` call and advanced by
-    /// `take_elapsed_since_send_marker_ns` each time the send hook
-    /// records a stopwatch delta. `None` when no `process()` is in
-    /// flight or when stopwatches are inactive.
-    ///
-    /// `Mutex` should be fine here — contention is bounded to the
-    /// per-processor sequential `process()` loop.
-    last_send_marker: Arc<Mutex<Option<Instant>>>,
-    /// Whether this node is a stopwatch start node.
-    stopwatch_is_start: bool,
-    /// Whether any stopwatch is configured in this pipeline.
-    stopwatches_active: bool,
-    /// Metric set for the stopwatch where this node is the stop node.
-    /// Only meaningful on the engine-owned handler; clones see `None` in
-    /// practice but the field is replicated harmlessly.
-    stopwatch_stop_metric: Option<MetricSet<StopwatchMetrics>>,
-    /// Shared Mmsc accumulator for stopwatch stop observations.
-    /// Drained and reported on `CollectTelemetry` and shutdown.
-    ///
-    /// `Mutex` should be fine here — contention is bounded to the stop
-    /// node and only on messages with an active stopwatch.
-    stopwatch_stop_acc: Arc<Mutex<Mmsc>>,
+    /// `Mutex` is used inside the marker/accumulator cells because shared
+    /// processors run on worker threads — contention is bounded to the
+    /// per-processor sequential `process()` loop and the periodic
+    /// telemetry drain.
+    pub(crate) stopwatch: SharedStopwatchState,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -170,11 +151,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            last_send_marker: Arc::new(Mutex::new(None)),
-            stopwatch_is_start: false,
-            stopwatches_active: false,
-            stopwatch_stop_metric: None,
-            stopwatch_stop_acc: Arc::new(Mutex::new(Mmsc::default())),
+            stopwatch: SharedStopwatchState::default(),
         }
     }
 
@@ -221,27 +198,30 @@ impl<PData> EffectHandler<PData> {
         stop_metric: Option<MetricSet<StopwatchMetrics>>,
         stopwatches_active: bool,
     ) {
-        self.stopwatch_is_start = is_start;
-        self.stopwatch_stop_metric = stop_metric;
-        self.stopwatches_active = stopwatches_active;
+        self.stopwatch.is_start = is_start;
+        self.stopwatch.active = stopwatches_active;
+        self.stopwatch.stop = stop_metric.map(|metrics| StopMeasurements {
+            metrics,
+            duration_acc: Arc::new(Mutex::new(Mmsc::default())),
+        });
     }
 
     /// Returns whether this node is a stopwatch start node.
     #[must_use]
     pub fn is_stopwatch_start(&self) -> bool {
-        self.stopwatch_is_start
+        self.stopwatch.is_start
     }
 
     /// Returns whether this node is a stopwatch stop node.
     #[must_use]
     pub fn is_stopwatch_stop(&self) -> bool {
-        self.stopwatch_stop_metric.is_some()
+        self.stopwatch.stop.is_some()
     }
 
     /// Returns whether any stopwatch is configured in this pipeline.
     #[must_use]
     pub fn stopwatches_active(&self) -> bool {
-        self.stopwatches_active
+        self.stopwatch.active
     }
 
     /// Begin per-message stopwatch timing for the upcoming `process()` call.
@@ -251,8 +231,9 @@ impl<PData> EffectHandler<PData> {
     /// hook) measures elapsed time from the start of `process()`.
     /// No-op when no stopwatches are configured.
     pub(crate) fn begin_process_timing(&self) {
-        if self.stopwatches_active {
+        if self.stopwatch.active {
             *self
+                .stopwatch
                 .last_send_marker
                 .lock()
                 .expect("last_send_marker poisoned") = Some(Instant::now());
@@ -266,6 +247,7 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn take_elapsed_since_send_marker_ns(&self) -> u64 {
         let mut guard = self
+            .stopwatch
             .last_send_marker
             .lock()
             .expect("last_send_marker poisoned");
@@ -279,25 +261,28 @@ impl<PData> EffectHandler<PData> {
 
     /// Record `total` nanoseconds into the shared stopwatch accumulator.
     pub fn record_stopwatch_stop(&self, total: u64) {
-        let mut acc = self
-            .stopwatch_stop_acc
+        let Some(stop) = self.stopwatch.stop.as_ref() else {
+            return;
+        };
+        let mut acc = stop
+            .duration_acc
             .lock()
-            .expect("stopwatch_stop_acc poisoned");
+            .expect("stopwatch duration_acc poisoned");
         acc.record(total as f64);
     }
 
     /// Drain accumulated stopwatch observations into the MetricSet and report.
     pub(crate) fn report_stopwatch(&mut self) {
-        if let Some(metric_set) = self.stopwatch_stop_metric.as_mut() {
+        if let Some(stop) = self.stopwatch.stop.as_mut() {
             let drained = {
-                let mut guard = self
-                    .stopwatch_stop_acc
+                let mut guard = stop
+                    .duration_acc
                     .lock()
-                    .expect("stopwatch_stop_acc poisoned");
+                    .expect("stopwatch duration_acc poisoned");
                 std::mem::take(&mut *guard)
             };
-            metric_set.compute_duration.merge(drained);
-            let _ = self.core.metrics_reporter.report(metric_set);
+            stop.metrics.compute_duration.merge(drained);
+            let _ = self.core.metrics_reporter.report(&mut stop.metrics);
         }
     }
 
@@ -472,7 +457,7 @@ impl<PData> EffectHandler<PData> {
     }
 }
 
-impl<PData> crate::processor::ProcessorHandler for EffectHandler<PData> {
+impl<PData> crate::processor::StopwatchEffectHandler for EffectHandler<PData> {
     #[inline]
     fn is_stopwatch_start(&self) -> bool {
         EffectHandler::is_stopwatch_start(self)
@@ -676,13 +661,29 @@ mod tests {
             eh.record_stopwatch_stop(ns);
         }
 
-        let before_report = eh.stopwatch_stop_acc.lock().unwrap().get();
+        let before_report = eh
+            .stopwatch
+            .stop
+            .as_ref()
+            .unwrap()
+            .duration_acc
+            .lock()
+            .unwrap()
+            .get();
         assert_eq!(before_report.count, 3);
         assert!((before_report.sum - 6000.0).abs() < f64::EPSILON);
 
         eh.report_stopwatch();
 
-        let drained = eh.stopwatch_stop_acc.lock().unwrap().get();
+        let drained = eh
+            .stopwatch
+            .stop
+            .as_ref()
+            .unwrap()
+            .duration_acc
+            .lock()
+            .unwrap()
+            .get();
         assert_eq!(drained.count, 0, "stop accumulator should be drained");
 
         let snapshot = metrics_rx

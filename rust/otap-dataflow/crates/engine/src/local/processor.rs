@@ -45,7 +45,7 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
 use crate::processor::ProcessorRuntimeRequirements;
-use crate::stopwatch::{StopwatchMetrics, nanos_u64};
+use crate::stopwatch::{LocalStopwatchState, StopMeasurements, StopwatchMetrics, nanos_u64};
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
@@ -55,7 +55,6 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
@@ -128,27 +127,9 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<Sender<PData>>,
-    /// Marker for the most recent timing point on the current message's
-    /// path through `process()`. Armed by `begin_process_timing` before
-    /// each PData `process()` call and advanced by
-    /// `take_elapsed_since_send_marker_ns` on each send. Stays `None`
-    /// when stopwatches are inactive on this pipeline; otherwise stays
-    /// `Some(_)` once armed (each `take_elapsed_...` rewrites it to
-    /// "now", and the next PData's `begin_process_timing` overwrites it).
-    last_send_marker: Rc<Cell<Option<Instant>>>,
-    /// Whether this node is a stopwatch start node.
-    stopwatch_is_start: bool,
-    /// Whether any stopwatch is configured in this pipeline.
-    /// When false, `begin_process_timing` and
-    /// `take_elapsed_since_send_marker_ns` are no-ops.
-    stopwatches_active: bool,
-    /// Metric set for the stopwatch where this node is the stop node.
-    /// `None` when this node is not a stopwatch stop node.
-    /// Reported periodically via [`report_stopwatch`], not on every message.
-    stopwatch_stop_metric: Option<MetricSet<StopwatchMetrics>>,
-    /// Local Mmsc accumulator for stopwatch stop observations.
-    /// Drained into `stopwatch_stop_metric` on periodic telemetry collection.
-    stopwatch_stop_acc: Cell<Mmsc>,
+    /// Per-handler stopwatch state. See [`LocalStopwatchState`] /
+    /// [`StopMeasurements`] for field-level documentation.
+    pub(crate) stopwatch: LocalStopwatchState,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -166,11 +147,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            last_send_marker: Rc::new(Cell::new(None)),
-            stopwatch_is_start: false,
-            stopwatches_active: false,
-            stopwatch_stop_metric: None,
-            stopwatch_stop_acc: Cell::new(Mmsc::default()),
+            stopwatch: LocalStopwatchState::default(),
         }
     }
 
@@ -217,8 +194,8 @@ impl<PData> EffectHandler<PData> {
     /// hook) measures elapsed time from the start of `process()`.
     /// No-op when no stopwatches are configured.
     pub(crate) fn begin_process_timing(&self) {
-        if self.stopwatches_active {
-            self.last_send_marker.set(Some(Instant::now()));
+        if self.stopwatch.active {
+            self.stopwatch.last_send_marker.set(Some(Instant::now()));
         }
     }
 
@@ -228,18 +205,18 @@ impl<PData> EffectHandler<PData> {
     /// `begin_process_timing` was not called for this message).
     #[must_use]
     pub fn take_elapsed_since_send_marker_ns(&self) -> u64 {
-        let Some(prev) = self.last_send_marker.get() else {
+        let Some(prev) = self.stopwatch.last_send_marker.get() else {
             return 0;
         };
         let now = Instant::now();
-        self.last_send_marker.set(Some(now));
+        self.stopwatch.last_send_marker.set(Some(now));
         nanos_u64(now.duration_since(prev).as_nanos())
     }
 
     /// Returns whether any stopwatch is configured in this pipeline.
     #[must_use]
     pub fn stopwatches_active(&self) -> bool {
-        self.stopwatches_active
+        self.stopwatch.active
     }
 
     /// Sets stopwatch start/stop roles for this node.
@@ -249,21 +226,24 @@ impl<PData> EffectHandler<PData> {
         stop_metric: Option<MetricSet<StopwatchMetrics>>,
         stopwatches_active: bool,
     ) {
-        self.stopwatch_is_start = is_start;
-        self.stopwatch_stop_metric = stop_metric;
-        self.stopwatches_active = stopwatches_active;
+        self.stopwatch.is_start = is_start;
+        self.stopwatch.active = stopwatches_active;
+        self.stopwatch.stop = stop_metric.map(|metrics| StopMeasurements {
+            metrics,
+            duration_acc: Cell::new(Mmsc::default()),
+        });
     }
 
     /// Returns whether this node is a stopwatch start node.
     #[must_use]
     pub fn is_stopwatch_start(&self) -> bool {
-        self.stopwatch_is_start
+        self.stopwatch.is_start
     }
 
     /// Returns whether this node is a stopwatch stop node.
     #[must_use]
     pub fn is_stopwatch_stop(&self) -> bool {
-        self.stopwatch_stop_metric.is_some()
+        self.stopwatch.stop.is_some()
     }
 
     /// Record `total` nanoseconds into the local stopwatch accumulator.
@@ -273,9 +253,12 @@ impl<PData> EffectHandler<PData> {
     /// on the next periodic [`report_stopwatch`] call — matching the
     /// `ComputeDuration` reporting pattern.
     pub fn record_stopwatch_stop(&self, total: u64) {
-        let mut acc = self.stopwatch_stop_acc.get();
+        let Some(stop) = self.stopwatch.stop.as_ref() else {
+            return;
+        };
+        let mut acc = stop.duration_acc.get();
         acc.record(total as f64);
-        self.stopwatch_stop_acc.set(acc);
+        stop.duration_acc.set(acc);
     }
 
     /// Drain accumulated stopwatch observations into the MetricSet and
@@ -284,10 +267,10 @@ impl<PData> EffectHandler<PData> {
     /// Called by the engine on periodic `CollectTelemetry` and at
     /// shutdown — the same cadence as `ComputeDuration::report`.
     pub(crate) fn report_stopwatch(&mut self) {
-        if let Some(metric_set) = self.stopwatch_stop_metric.as_mut() {
-            let acc = self.stopwatch_stop_acc.replace(Mmsc::default());
-            metric_set.compute_duration.merge(acc);
-            let _ = self.core.metrics_reporter.report(metric_set);
+        if let Some(stop) = self.stopwatch.stop.as_mut() {
+            let acc = stop.duration_acc.replace(Mmsc::default());
+            stop.metrics.compute_duration.merge(acc);
+            let _ = self.core.metrics_reporter.report(&mut stop.metrics);
         }
     }
 
@@ -492,7 +475,7 @@ impl<PData> EffectHandler<PData> {
     // More methods will be added in the future as needed.
 }
 
-impl<PData> crate::processor::ProcessorHandler for EffectHandler<PData> {
+impl<PData> crate::processor::StopwatchEffectHandler for EffectHandler<PData> {
     #[inline]
     fn is_stopwatch_start(&self) -> bool {
         EffectHandler::is_stopwatch_start(self)
@@ -991,15 +974,17 @@ mod tests {
         eh.record_stopwatch_stop(1000);
         eh.record_stopwatch_stop(2000);
 
-        let acc = eh.stopwatch_stop_acc.get().get();
+        let acc = eh.stopwatch.stop.as_ref().unwrap().duration_acc.get().get();
         assert_eq!(acc.count, 2, "local Mmsc should have 2 observations");
         assert!((acc.sum - 3000.0).abs() < f64::EPSILON);
 
         // MetricSet should still be empty before report.
         let ms_snap = eh
-            .stopwatch_stop_metric
+            .stopwatch
+            .stop
             .as_ref()
             .unwrap()
+            .metrics
             .compute_duration
             .get();
         assert_eq!(ms_snap.count, 0, "MetricSet should be empty before report");
@@ -1008,13 +993,13 @@ mod tests {
         eh.report_stopwatch();
 
         // Accumulator should be drained.
-        let acc_after = eh.stopwatch_stop_acc.get().get();
+        let acc_after = eh.stopwatch.stop.as_ref().unwrap().duration_acc.get().get();
         assert_eq!(acc_after.count, 0, "accumulator should be drained");
 
         // Another record + report cycle should work independently.
         eh.record_stopwatch_stop(500);
         eh.report_stopwatch();
-        let acc_final = eh.stopwatch_stop_acc.get().get();
+        let acc_final = eh.stopwatch.stop.as_ref().unwrap().duration_acc.get().get();
         assert_eq!(
             acc_final.count, 0,
             "accumulator drained after second report"
@@ -1029,7 +1014,7 @@ mod tests {
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
         eh.set_stopwatch_roles(true, None, true);
-        assert!(eh.stopwatches_active);
+        assert!(eh.stopwatch.active);
 
         eh.begin_process_timing();
 

@@ -415,22 +415,6 @@ pub trait StopwatchAccumulation {
     fn take_stopwatch_compute(&mut self) -> Option<u64>;
 }
 
-impl StopwatchAccumulation for () {
-    fn start_stopwatch(&mut self) {}
-    fn add_stopwatch_compute(&mut self, _ns: u64) {}
-    fn take_stopwatch_compute(&mut self) -> Option<u64> {
-        None
-    }
-}
-
-impl StopwatchAccumulation for String {
-    fn start_stopwatch(&mut self) {}
-    fn add_stopwatch_compute(&mut self, _ns: u64) {}
-    fn take_stopwatch_compute(&mut self) -> Option<u64> {
-        None
-    }
-}
-
 /// Effect handler extensions for producers specific to data type.
 #[async_trait(?Send)]
 pub trait ProducerEffectHandlerExtension<PData> {

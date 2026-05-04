@@ -38,13 +38,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Abstract processor `EffectHandler` surface used by per-message
-/// bookkeeping hooks (currently: distributed stopwatch accumulation).
+/// Stopwatch-relevant slice of a processor `EffectHandler`'s surface.
 ///
 /// Implemented by both `local::processor::EffectHandler<PData>` and
-/// `shared::processor::EffectHandler<PData>` so that PData-side hooks can
-/// be written once, generic over handler kind.
-pub trait ProcessorHandler {
+/// `shared::processor::EffectHandler<PData>` so that PData-side stopwatch
+/// hooks (see [`ProcessorSendHook`]) can be written once, generic over
+/// handler kind.
+pub trait StopwatchEffectHandler {
     /// Whether this node is the start of a stopwatch range.
     fn is_stopwatch_start(&self) -> bool;
     /// Whether this node is the end of a stopwatch range.
@@ -75,7 +75,7 @@ pub trait ProcessorHandler {
 pub trait ProcessorSendHook: Sized {
     /// Invoked once per message immediately before the processor handler
     /// forwards it to the output router.
-    fn before_processor_send<H: ProcessorHandler>(&mut self, _handler: &H) {}
+    fn before_processor_send<H: StopwatchEffectHandler>(&mut self, _handler: &H) {}
 }
 
 /// Processor-local wakeup requirements declared by a processor implementation.
@@ -607,23 +607,25 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.is_stopwatch_stop()
-                        && matches!(
-                            &msg,
+                    if effect_handler.stopwatches_active() {
+                        match &msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
-                        )
-                    {
-                        effect_handler.report_stopwatch();
-                    }
-                    if matches!(&msg, Message::PData(_)) {
-                        effect_handler.begin_process_timing();
+                                if effect_handler.is_stopwatch_stop() =>
+                            {
+                                effect_handler.report_stopwatch();
+                            }
+                            Message::PData(_) => effect_handler.begin_process_timing(),
+                            _ => {}
+                        }
                     }
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
-                effect_handler.report_stopwatch();
+                if effect_handler.is_stopwatch_stop() {
+                    effect_handler.report_stopwatch();
+                }
                 processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
@@ -658,23 +660,25 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.is_stopwatch_stop()
-                        && matches!(
-                            &msg,
+                    if effect_handler.stopwatches_active() {
+                        match &msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
-                        )
-                    {
-                        effect_handler.report_stopwatch();
-                    }
-                    if matches!(&msg, Message::PData(_)) {
-                        effect_handler.begin_process_timing();
+                                if effect_handler.is_stopwatch_stop() =>
+                            {
+                                effect_handler.report_stopwatch();
+                            }
+                            Message::PData(_) => effect_handler.begin_process_timing(),
+                            _ => {}
+                        }
                     }
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
-                effect_handler.report_stopwatch();
+                if effect_handler.is_stopwatch_stop() {
+                    effect_handler.report_stopwatch();
+                }
                 processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
@@ -1082,7 +1086,10 @@ mod tests {
     }
 
     impl crate::processor::ProcessorSendHook for StopwatchTestPData {
-        fn before_processor_send<H: crate::processor::ProcessorHandler>(&mut self, handler: &H) {
+        fn before_processor_send<H: crate::processor::StopwatchEffectHandler>(
+            &mut self,
+            handler: &H,
+        ) {
             if !handler.is_stopwatch_start()
                 && !handler.is_stopwatch_stop()
                 && !self.stopwatch_active

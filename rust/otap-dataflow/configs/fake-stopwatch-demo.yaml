@@ -5,8 +5,13 @@
 #
 #   stopwatch "ingest_pipeline" - covers attr1 through attr5 (full chain)
 #
-# Stopwatches sum per-message compute.*.duration (the time spent inside timed()
-# closures) across each processor in the range, excluding queue wait and async I/O.
+# Stopwatches sum per-processor wall-clock compute time across each node in the
+# range. The engine arms an Instant send-marker before each `process()` call
+# and advances it on every `send_message`; the elapsed delta is accumulated
+# onto the message's stopwatch context and recorded at the stop node. This
+# captures synchronous compute plus any await/I/O that occurs inside
+# `process()` between sends; it excludes time the message spends queued in
+# inbound channels.
 # Metrics appear as stopwatch.compute.duration (MMSC histograms in
 # nanoseconds).
 #

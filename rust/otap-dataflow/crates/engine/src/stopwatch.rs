@@ -13,7 +13,11 @@
 //! into the stopwatch metric entity.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use otap_df_telemetry::instrument::Mmsc;
 use otap_df_telemetry::metrics::MetricSet;
@@ -66,7 +70,7 @@ pub type StopwatchId = usize;
 /// Metric sets are cloned to the processor `EffectHandler` (local or
 /// shared) at build time; reporting happens from the processor's own
 /// telemetry path, not from this state.
-pub(crate) struct StopwatchState {
+pub(crate) struct PipelineStopwatchState {
     /// Metric sets indexed by internal stopwatch index.
     /// Cloned to processors at build time; not reported from here.
     pub metrics: Vec<MetricSet<StopwatchMetrics>>,
@@ -75,6 +79,88 @@ pub(crate) struct StopwatchState {
     pub stop_nodes: HashMap<usize, usize>,
     /// Set of node indices that are **start** nodes.
     pub start_nodes: HashSet<usize>,
+}
+
+/// Stop-side measurements for a node that terminates a stopwatch range.
+///
+/// Groups the metric set and its accumulator so that they share the
+/// `Option` on `StopwatchState` — non-stop nodes pay no allocation for
+/// either. When item-counts ship, this struct grows a `produced_acc`
+/// field next to `duration_acc`.
+#[derive(Clone)]
+pub(crate) struct StopMeasurements<Accumulator> {
+    /// Metric set registered for this stopwatch entity.
+    /// Reported periodically via `report_stopwatch`, not on every message.
+    pub metrics: MetricSet<StopwatchMetrics>,
+    /// Accumulator for stopwatch duration observations.
+    /// Drained into `metrics` on periodic telemetry collection.
+    pub duration_acc: Accumulator,
+}
+
+/// Per-`EffectHandler` stopwatch state.
+///
+/// Groups the stopwatch-related fields that every processor
+/// `EffectHandler` carries. Generic over the cell types used to store
+/// the per-message send marker and the periodic-report accumulator —
+/// the local (`!Send`) handler instantiates it with `Rc<Cell<_>>` /
+/// `Cell<_>`, the shared (`Send + Sync`) handler with
+/// `Arc<Mutex<_>>` / `Arc<Mutex<_>>`. The plain fields
+/// (`is_start`, `active`) are identical in both instantiations and
+/// live here once. Stop-side state lives in [`StopMeasurements`] and
+/// is `None` for nodes that are not the stop endpoint of a stopwatch.
+///
+/// All fields are `pub(crate)` so the local/shared `EffectHandler`
+/// methods can read and write them directly through the
+/// `stopwatch.<field>` access path.
+#[derive(Clone)]
+pub(crate) struct StopwatchState<Marker, Accumulator> {
+    /// Marker for the most recent timing point on the current message's
+    /// path through `process()`. Armed by `begin_process_timing` before
+    /// each PData `process()` call and advanced by
+    /// `take_elapsed_since_send_marker_ns` on each send. Stays `None`
+    /// when stopwatches are inactive on this pipeline; otherwise stays
+    /// `Some(_)` once armed.
+    pub last_send_marker: Marker,
+    /// Whether this node is a stopwatch start node.
+    pub is_start: bool,
+    /// Whether any stopwatch is configured in this pipeline.
+    /// When false, `begin_process_timing` and
+    /// `take_elapsed_since_send_marker_ns` are no-ops.
+    pub active: bool,
+    /// Stop-side measurements (metric set + accumulators).
+    /// `None` when this node is not a stopwatch stop node — non-stop
+    /// nodes pay no allocation cost for the metric set or accumulator.
+    pub stop: Option<StopMeasurements<Accumulator>>,
+}
+
+/// Concrete `StopwatchState` for the local (`!Send`) `EffectHandler`.
+pub(crate) type LocalStopwatchState = StopwatchState<Rc<Cell<Option<Instant>>>, Cell<Mmsc>>;
+
+/// Concrete `StopwatchState` for the shared (`Send + Sync`)
+/// `EffectHandler`.
+pub(crate) type SharedStopwatchState =
+    StopwatchState<Arc<Mutex<Option<Instant>>>, Arc<Mutex<Mmsc>>>;
+
+impl Default for LocalStopwatchState {
+    fn default() -> Self {
+        Self {
+            last_send_marker: Rc::new(Cell::new(None)),
+            is_start: false,
+            active: false,
+            stop: None,
+        }
+    }
+}
+
+impl Default for SharedStopwatchState {
+    fn default() -> Self {
+        Self {
+            last_send_marker: Arc::new(Mutex::new(None)),
+            is_start: false,
+            active: false,
+            stop: None,
+        }
+    }
 }
 
 /// Build stopwatch state from the telemetry policy configuration.
@@ -89,14 +175,21 @@ pub(crate) struct StopwatchState {
 /// If `node_interests` does not include `PROCESS_DURATION`
 /// (e.g. `runtime_metrics: basic` or `none`), all configured stopwatches
 /// are skipped with a single warning so users see a clear signal rather
-/// than silent zero-duration metrics.
+/// than silent zero-duration metrics. This is a deliberate global
+/// telemetry-level setting, not a stopwatch misconfiguration, so it does
+/// not produce an error.
+///
+/// Returns `Err(Error::ConfigError(InvalidUserConfig))` if any stopwatch
+/// references an unknown node, has a non-processor endpoint, or overlaps
+/// with another stopwatch — these are configuration mistakes that should
+/// fail pipeline startup rather than be silently skipped.
 pub(crate) fn build_stopwatch_state(
     telemetry_policy: &TelemetryPolicy,
     node_name_to_index: &HashMap<String, usize>,
     processor_indices: &HashSet<usize>,
     node_interests: Interests,
     pipeline_context: &PipelineContext,
-) -> StopwatchState {
+) -> Result<PipelineStopwatchState, crate::error::Error> {
     let mut metrics = Vec::new();
     let mut stop_nodes: HashMap<usize, usize> = HashMap::new();
     let mut start_nodes: HashSet<usize> = HashSet::new();
@@ -109,11 +202,11 @@ pub(crate) fn build_stopwatch_state(
             count = telemetry_policy.stopwatches.len() as u64,
             "Stopwatches require runtime_metrics level that enables PROCESS_DURATION (normal or detailed); skipping all configured stopwatches"
         );
-        return StopwatchState {
+        return Ok(PipelineStopwatchState {
             metrics,
             stop_nodes,
             start_nodes,
-        };
+        });
     }
 
     let pipeline_attrs = pipeline_context.pipeline_attribute_set();
@@ -123,45 +216,42 @@ pub(crate) fn build_stopwatch_state(
         let stop_idx = node_name_to_index.get(&sw_config.stop_node).copied();
 
         let (Some(start_idx), Some(stop_idx)) = (start_idx, stop_idx) else {
-            otap_df_telemetry::otel_warn!(
-                "stopwatch.config.invalid",
-                name = sw_config.name,
-                start = sw_config.start_node,
-                stop = sw_config.stop_node,
-                "Stopwatch references unknown node(s), skipping"
-            );
-            continue;
+            return Err(invalid_stopwatch_config(format!(
+                "stopwatch `{}` references unknown node(s): start=`{}`, stop=`{}`",
+                sw_config.name, sw_config.start_node, sw_config.stop_node
+            )));
         };
 
         // Stopwatch endpoints must be processors. Local and shared processors
         // are accepted; receivers and exporters are rejected.
         if !processor_indices.contains(&start_idx) || !processor_indices.contains(&stop_idx) {
-            otap_df_telemetry::otel_warn!(
-                "stopwatch.config.non_processor",
-                name = sw_config.name,
-                start = sw_config.start_node,
-                stop = sw_config.stop_node,
-                "Stopwatch start/stop nodes must be processors, skipping"
-            );
-            continue;
+            return Err(invalid_stopwatch_config(format!(
+                "stopwatch `{}` start/stop nodes must be processors: start=`{}`, stop=`{}`",
+                sw_config.name, sw_config.start_node, sw_config.stop_node
+            )));
         }
 
         // Non-overlapping: a node cannot appear in either role across
         // stopwatches. The second definition would silently overwrite the
         // first accumulator on PData.
+        //
+        // TODO(stopwatch-interleave): this only catches *shared-endpoint*
+        // overlaps. It does not detect interleaving of ranges with all
+        // distinct endpoints along a path — e.g. stopwatches 1→3 and 2→4
+        // where 2 is downstream of 1 and 3 lies between 2 and 4. Catching
+        // that requires pipeline-graph reachability analysis (the
+        // `connections` are available on the surrounding `PipelineConfig`).
+        // Until then, `OtapPdata::start_stopwatch` keeps a defensive runtime
+        // warning so misconfigured pipelines remain diagnosable.
         if start_nodes.contains(&start_idx)
             || stop_nodes.contains_key(&start_idx)
             || start_nodes.contains(&stop_idx)
             || stop_nodes.contains_key(&stop_idx)
         {
-            otap_df_telemetry::otel_warn!(
-                "stopwatch.config.overlap",
-                name = sw_config.name,
-                start = sw_config.start_node,
-                stop = sw_config.stop_node,
-                "Stopwatch overlaps with another stopwatch (non-overlapping ranges only), skipping"
-            );
-            continue;
+            return Err(invalid_stopwatch_config(format!(
+                "stopwatch `{}` overlaps with another stopwatch (non-overlapping ranges only): start=`{}`, stop=`{}`",
+                sw_config.name, sw_config.start_node, sw_config.stop_node
+            )));
         }
 
         let attrs = StopwatchAttributeSet {
@@ -182,11 +272,17 @@ pub(crate) fn build_stopwatch_state(
         let _ = start_nodes.insert(start_idx);
     }
 
-    StopwatchState {
+    Ok(PipelineStopwatchState {
         metrics,
         stop_nodes,
         start_nodes,
-    }
+    })
+}
+
+fn invalid_stopwatch_config(error: String) -> crate::error::Error {
+    crate::error::Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+        error,
+    }))
 }
 
 /// Saturating cast of `u128` nanoseconds to `u64`.
@@ -200,7 +296,7 @@ pub fn nanos_u64(ns: u128) -> u64 {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-impl StopwatchState {
+impl PipelineStopwatchState {
     /// Create an empty stopwatch state (no stopwatches configured).
     #[must_use]
     #[allow(dead_code)]
@@ -225,7 +321,7 @@ mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;
 
-    fn one_stopwatch_state() -> StopwatchState {
+    fn one_stopwatch_state() -> PipelineStopwatchState {
         let (ctx, _) = test_pipeline_ctx();
         let entity_key = ctx
             .metrics_registry()
@@ -233,7 +329,7 @@ mod tests {
         let metric_set = ctx
             .metrics_registry()
             .register_metric_set_for_entity::<StopwatchMetrics>(entity_key);
-        StopwatchState {
+        PipelineStopwatchState {
             metrics: vec![metric_set],
             stop_nodes: HashMap::from([(2, 0)]),
             start_nodes: HashSet::from([0]),
@@ -242,7 +338,7 @@ mod tests {
 
     #[test]
     fn empty_state_is_inactive() {
-        let state = StopwatchState::empty();
+        let state = PipelineStopwatchState::empty();
         assert!(!state.is_active());
     }
 
@@ -284,6 +380,23 @@ mod tests {
         }
     }
 
+    /// Asserts that `err` is `Error::ConfigError(InvalidUserConfig)` whose
+    /// message mentions the given stopwatch name.
+    fn assert_invalid_user_config(err: &crate::error::Error, sw_name: &str) {
+        match err {
+            crate::error::Error::ConfigError(boxed) => match boxed.as_ref() {
+                otap_df_config::error::Error::InvalidUserConfig { error } => {
+                    assert!(
+                        error.contains(sw_name),
+                        "expected error to mention `{sw_name}`, got: {error}"
+                    );
+                }
+                other => panic!("expected InvalidUserConfig, got: {other:?}"),
+            },
+            other => panic!("expected ConfigError(InvalidUserConfig), got: {other:?}"),
+        }
+    }
+
     /// Helper: build name→index and processor_indices for a set of node
     /// names.  All nodes are processors unless listed in `non_processors`.
     fn test_maps(
@@ -313,7 +426,8 @@ mod tests {
         let policy = policy_with(vec![sw("sw1", "a", "c")]);
 
         let state =
-            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx)
+                .expect("valid config should build");
 
         assert_eq!(state.metrics.len(), 1);
         assert!(state.start_nodes.contains(&0)); // "a" = index 0
@@ -321,41 +435,42 @@ mod tests {
     }
 
     #[test]
-    fn unknown_node_is_skipped() {
+    fn unknown_node_is_rejected() {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["a", "b"], &[]);
         let policy = policy_with(vec![sw("sw1", "a", "missing")]);
 
-        let state =
-            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+        let err = build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx)
+            .err()
+            .expect("expected Err");
 
-        assert!(state.metrics.is_empty());
-        assert!(state.start_nodes.is_empty());
-        assert!(state.stop_nodes.is_empty());
+        assert_invalid_user_config(&err, "sw1");
     }
 
     #[test]
-    fn non_processor_start_node_is_skipped() {
+    fn non_processor_start_node_is_rejected() {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["recv", "proc1", "proc2"], &["recv"]);
         let policy = policy_with(vec![sw("sw1", "recv", "proc2")]);
 
-        let state =
-            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+        let err = build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx)
+            .err()
+            .expect("expected Err");
 
-        assert!(state.metrics.is_empty());
+        assert_invalid_user_config(&err, "sw1");
     }
 
     #[test]
-    fn non_processor_stop_node_is_skipped() {
+    fn non_processor_stop_node_is_rejected() {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["proc1", "proc2", "exp"], &["exp"]);
         let policy = policy_with(vec![sw("sw1", "proc1", "exp")]);
 
-        let state =
-            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+        let err = build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx)
+            .err()
+            .expect("expected Err");
 
-        assert!(state.metrics.is_empty());
+        assert_invalid_user_config(&err, "sw1");
     }
 
     #[test]
@@ -365,14 +480,11 @@ mod tests {
         // Two stopwatches share "a" as start node.
         let policy = policy_with(vec![sw("sw1", "a", "b"), sw("sw2", "a", "d")]);
 
-        let state =
-            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+        let err = build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx)
+            .err()
+            .expect("expected Err");
 
-        // Only the first should be registered.
-        assert_eq!(state.metrics.len(), 1);
-        assert!(state.start_nodes.contains(&0)); // "a"
-        assert_eq!(state.stop_nodes.get(&1), Some(&0)); // "b"
-        assert!(!state.stop_nodes.contains_key(&3)); // "d" not registered
+        assert_invalid_user_config(&err, "sw2");
     }
 
     #[test]
@@ -382,13 +494,11 @@ mod tests {
         // Two stopwatches share "d" as stop node.
         let policy = policy_with(vec![sw("sw1", "a", "d"), sw("sw2", "c", "d")]);
 
-        let state =
-            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+        let err = build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx)
+            .err()
+            .expect("expected Err");
 
-        // Only the first should be registered.
-        assert_eq!(state.metrics.len(), 1);
-        assert!(state.start_nodes.contains(&0)); // "a"
-        assert!(!state.start_nodes.contains(&2)); // "c" not registered
+        assert_invalid_user_config(&err, "sw2");
     }
 
     #[test]
@@ -397,14 +507,11 @@ mod tests {
         let (names, procs) = test_maps(&["a", "b", "c"], &[]);
         let policy = policy_with(vec![sw("sw1", "a", "b"), sw("sw2", "b", "c")]);
 
-        let state =
-            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+        let err = build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx)
+            .err()
+            .expect("expected Err");
 
-        assert_eq!(state.metrics.len(), 1);
-        assert!(state.start_nodes.contains(&0));
-        assert_eq!(state.stop_nodes.get(&1), Some(&0));
-        assert!(!state.start_nodes.contains(&2));
-        assert!(!state.stop_nodes.contains_key(&2));
+        assert_invalid_user_config(&err, "sw2");
     }
 
     #[test]
@@ -415,7 +522,8 @@ mod tests {
         let policy = policy_with(vec![sw("sw1", "a", "b"), sw("sw2", "c", "d")]);
 
         let state =
-            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx);
+            build_stopwatch_state(&policy, &names, &procs, Interests::PROCESS_DURATION, &ctx)
+                .expect("disjoint config should build");
 
         assert_eq!(state.metrics.len(), 2);
         assert!(state.start_nodes.contains(&0)); // "a"
@@ -430,8 +538,11 @@ mod tests {
         let (names, procs) = test_maps(&["a", "b"], &[]);
         let policy = policy_with(vec![sw("sw1", "a", "b")]);
 
-        // Empty interests => PROCESS_DURATION not set; all stopwatches skipped.
-        let state = build_stopwatch_state(&policy, &names, &procs, Interests::empty(), &ctx);
+        // Empty interests => PROCESS_DURATION not set; all stopwatches skipped
+        // (this is a deliberate global telemetry-level setting, not a misconfig,
+        // so it is not an error).
+        let state = build_stopwatch_state(&policy, &names, &procs, Interests::empty(), &ctx)
+            .expect("metric-level skip should not error");
 
         assert!(state.metrics.is_empty());
         assert!(state.start_nodes.is_empty());

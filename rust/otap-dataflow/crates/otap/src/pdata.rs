@@ -20,7 +20,7 @@ use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::processor::{ProcessorHandler, ProcessorSendHook};
+use otap_df_engine::processor::{ProcessorSendHook, StopwatchEffectHandler};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
     MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
@@ -356,6 +356,13 @@ impl otap_df_engine::StampOutputPort for OtapPdata {
 
 impl StopwatchAccumulation for OtapPdata {
     fn start_stopwatch(&mut self) {
+        // Build-time validation in `build_stopwatch_state` rejects stopwatches
+        // that share a start or stop node, but it does NOT yet detect
+        // interleaved ranges with distinct endpoints (e.g. 1→3 + 2→4 on the
+        // path 1→2→3→4). Until that gap is closed (see TODO(stopwatch-interleave)
+        // in engine/src/stopwatch.rs), keep a defensive runtime warning so a
+        // misconfigured pipeline is diagnosable instead of silently producing
+        // truncated histograms.
         if self.context.stopwatch_compute_ns.is_some() {
             otap_df_telemetry::otel_warn!(
                 "stopwatch.overlap",
@@ -698,7 +705,7 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 /// Forward-path stopwatch accumulation for non-overlapping ranges.
 /// Invoked by local and shared processor handlers (via `ProcessorSendHook`);
 /// receivers and exporters do not measure stopwatches.
-fn stopwatch_accumulate<H: ProcessorHandler>(handler: &H, data: &mut OtapPdata) {
+fn stopwatch_accumulate<H: StopwatchEffectHandler>(handler: &H, data: &mut OtapPdata) {
     let is_start = handler.is_stopwatch_start();
     let is_stop = handler.is_stopwatch_stop();
     if !is_start && !is_stop && !data.has_active_stopwatch() {
@@ -717,7 +724,7 @@ fn stopwatch_accumulate<H: ProcessorHandler>(handler: &H, data: &mut OtapPdata) 
 }
 
 impl ProcessorSendHook for OtapPdata {
-    fn before_processor_send<H: ProcessorHandler>(&mut self, handler: &H) {
+    fn before_processor_send<H: StopwatchEffectHandler>(&mut self, handler: &H) {
         stopwatch_accumulate(handler, self);
     }
 }
@@ -2122,8 +2129,9 @@ mod test {
         pdata.add_stopwatch_compute(100);
 
         // Second stopwatch starts while first is still active — this is
-        // the 1→3 + 2→4 overlap scenario.  The runtime warning fires
-        // and the accumulator is reset to the 1ns active sentinel.
+        // the interleaved 1→3 + 2→4 scenario that build-time validation
+        // does not yet detect. The runtime warning fires and the accumulator
+        // is reset to the 1ns active sentinel.
         pdata.start_stopwatch();
         assert!(pdata.has_active_stopwatch());
 
