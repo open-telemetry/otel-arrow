@@ -620,6 +620,17 @@ impl HostSnapshot {
             || !self.networks.is_empty()
     }
 
+    /// Converts a snapshot directly into an OTAP Arrow metrics batch.
+    pub fn into_otap_records(
+        self,
+    ) -> Result<otap_df_pdata::otap::OtapArrowRecords, arrow::error::ArrowError> {
+        use crate::receivers::host_metrics_receiver::otap_builder::HostMetricsArrowBuilder;
+        let mut b = HostMetricsArrowBuilder::new();
+        b.append_resource(&self.resource);
+        project_snapshot(&self, &mut b);
+        b.finish()
+    }
+
     /// Converts a snapshot into an OTLP metrics request.
     pub fn into_export_request(self) -> ExportMetricsServiceRequest {
         let mut metrics = Vec::with_capacity(64);
@@ -992,6 +1003,409 @@ impl HostResource {
         }
         attributes
     }
+}
+
+fn project_snapshot(
+    snap: &HostSnapshot,
+    b: &mut crate::receivers::host_metrics_receiver::otap_builder::HostMetricsArrowBuilder,
+) {
+    let now = snap.now_unix_nano;
+    let start = snap.start_time_unix_nano;
+    let cs = &snap.counter_starts;
+
+    // ── CPU ──────────────────────────────────────────────────────────────────
+    if let Some(cpu) = snap.cpu {
+        let m = b.begin_counter_f64("system.cpu.time", "s");
+        for (mode, value) in [
+            ("user", cpu.user),
+            ("nice", cpu.nice),
+            ("system", cpu.system),
+            ("idle", cpu.idle),
+            ("iowait", cpu.wait),
+            ("interrupt", cpu.interrupt),
+            ("steal", cpu.steal),
+        ] {
+            b.append_f64_dp(m, cs.get("system.cpu.time", mode, start), now, value, |w| {
+                w.str("cpu.mode", mode);
+            });
+        }
+    }
+    if let Some(cpu) = snap.cpu_utilization {
+        let m = b.begin_gauge_f64("system.cpu.utilization", "1");
+        for (mode, value) in [
+            ("user", cpu.user),
+            ("nice", cpu.nice),
+            ("system", cpu.system),
+            ("idle", cpu.idle),
+            ("iowait", cpu.wait),
+            ("interrupt", cpu.interrupt),
+            ("steal", cpu.steal),
+        ] {
+            b.append_f64_dp(m, 0, now, value, |w| {
+                w.str("cpu.mode", mode);
+            });
+        }
+    }
+    if snap.cpuinfo.logical_count != 0 {
+        let m = b.begin_updown_i64("system.cpu.logical.count", "{cpu}");
+        b.append_i64_dp(m, start, now, saturating_i64(snap.cpuinfo.logical_count), |_| {});
+    }
+    if snap.cpuinfo.physical_count != 0 {
+        let m = b.begin_updown_i64("system.cpu.physical.count", "{cpu}");
+        b.append_i64_dp(m, start, now, saturating_i64(snap.cpuinfo.physical_count), |_| {});
+    }
+    if !snap.cpuinfo.frequencies_hz.is_empty() {
+        let m = b.begin_gauge_i64("system.cpu.frequency", "Hz");
+        for (idx, &freq) in snap.cpuinfo.frequencies_hz.iter().enumerate() {
+            let logical = i64::try_from(idx).unwrap_or(i64::MAX);
+            b.append_i64_dp(m, 0, now, frequency_hz_i64(freq), |w| {
+                w.int("cpu.logical_number", logical);
+            });
+        }
+    }
+
+    // ── Memory ───────────────────────────────────────────────────────────────
+    if let Some(memory) = snap.memory {
+        let m = b.begin_updown_i64("system.memory.usage", "By");
+        for (state, value) in [
+            ("used", memory.used),
+            ("free", memory.free),
+            ("cached", memory.cached),
+            ("buffers", memory.buffered),
+        ] {
+            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+                w.str("system.memory.state", state);
+            });
+        }
+        if memory.total > 0 {
+            let m = b.begin_gauge_f64("system.memory.utilization", "1");
+            let total = memory.total as f64;
+            for (state, value) in [
+                ("used", memory.used),
+                ("free", memory.free),
+                ("cached", memory.cached),
+                ("buffers", memory.buffered),
+            ] {
+                b.append_f64_dp(m, 0, now, value as f64 / total, |w| {
+                    w.str("system.memory.state", state);
+                });
+            }
+        }
+        if memory.has_available {
+            let m = b.begin_updown_i64("system.memory.linux.available", "By");
+            b.append_i64_dp(m, start, now, saturating_i64(memory.available), |_| {});
+        }
+        let m = b.begin_updown_i64("system.memory.linux.slab.usage", "By");
+        for (state, value) in [
+            ("reclaimable", memory.slab_reclaimable),
+            ("unreclaimable", memory.slab_unreclaimable),
+        ] {
+            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+                w.str("system.memory.linux.slab.state", state);
+            });
+        }
+        if snap.memory_limit {
+            let m = b.begin_updown_i64("system.memory.limit", "By");
+            b.append_i64_dp(m, start, now, saturating_i64(memory.total), |_| {});
+        }
+        if snap.memory_shared {
+            let m = b.begin_updown_i64("system.memory.linux.shared", "By");
+            b.append_i64_dp(m, start, now, saturating_i64(memory.shared), |_| {});
+        }
+        if snap.memory_hugepages {
+            project_hugepages(snap, b, start, now, &memory.hugepages);
+        }
+    }
+
+    // ── System / uptime ──────────────────────────────────────────────────────
+    if let Some(uptime) = snap.uptime_seconds {
+        let m = b.begin_gauge_f64("system.uptime", "s");
+        b.append_f64_dp(m, 0, now, uptime, |_| {});
+    }
+
+    // ── Paging ───────────────────────────────────────────────────────────────
+    if let Some(paging) = snap.paging {
+        let m = b.begin_counter_i64("system.paging.faults", "{fault}");
+        for (fault_type, value) in
+            [("minor", paging.minor_faults), ("major", paging.major_faults)]
+        {
+            b.append_i64_dp(
+                m,
+                cs.get("system.paging.faults", fault_type, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str("system.paging.fault.type", fault_type);
+                },
+            );
+        }
+        let m = b.begin_counter_i64("system.paging.operations", "{operation}");
+        for (direction, fault_type, value) in [
+            ("in", "major", paging.swap_in),
+            ("out", "major", paging.swap_out),
+            ("in", "minor", paging.page_in),
+            ("out", "minor", paging.page_out),
+        ] {
+            b.append_i64_dp(
+                m,
+                cs.get_joined("system.paging.operations", direction, fault_type, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str("system.paging.direction", direction);
+                    w.str("system.paging.fault.type", fault_type);
+                },
+            );
+        }
+    }
+    for swap in &snap.swaps {
+        let m = b.begin_updown_i64("system.paging.usage", "By");
+        for (state, value) in [("used", swap.used), ("free", swap.free)] {
+            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+                w.str("system.device", &swap.name);
+                w.str("system.paging.state", state);
+            });
+        }
+        let size = swap.size;
+        if size > 0 {
+            let m = b.begin_gauge_f64("system.paging.utilization", "1");
+            let total = size as f64;
+            for (state, value) in [("used", swap.used), ("free", swap.free)] {
+                b.append_f64_dp(m, 0, now, value as f64 / total, |w| {
+                    w.str("system.device", &swap.name);
+                    w.str("system.paging.state", state);
+                });
+            }
+        }
+    }
+
+    // ── Processes ────────────────────────────────────────────────────────────
+    if let Some(processes) = snap.processes {
+        let m = b.begin_updown_i64("system.process.count", "{process}");
+        for (state, value) in
+            [("running", processes.running), ("blocked", processes.blocked)]
+        {
+            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+                w.str("process.state", state);
+            });
+        }
+        let m = b.begin_counter_i64("system.process.created", "{process}");
+        b.append_i64_dp(
+            m,
+            cs.get("system.process.created", "", start),
+            now,
+            saturating_i64(processes.created),
+            |_| {},
+        );
+    }
+
+    // ── Disk ─────────────────────────────────────────────────────────────────
+    for disk in &snap.disks {
+        if let Some(limit_bytes) = disk.limit_bytes {
+            let m = b.begin_updown_i64("system.disk.limit", "By");
+            b.append_i64_dp(m, start, now, saturating_i64(limit_bytes), |w| {
+                w.str("system.device", &disk.name);
+            });
+        }
+        let m = b.begin_counter_i64("system.disk.io", "By");
+        for (dir, value) in [("read", disk.read_bytes), ("write", disk.write_bytes)] {
+            b.append_i64_dp(
+                m,
+                cs.get_joined("system.disk.io", &disk.name, dir, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str("system.device", &disk.name);
+                    w.str("disk.io.direction", dir);
+                },
+            );
+        }
+        let m = b.begin_counter_i64("system.disk.operations", "{operation}");
+        for (dir, value) in [("read", disk.read_ops), ("write", disk.write_ops)] {
+            b.append_i64_dp(
+                m,
+                cs.get_joined("system.disk.operations", &disk.name, dir, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str("system.device", &disk.name);
+                    w.str("disk.io.direction", dir);
+                },
+            );
+        }
+        let m = b.begin_counter_f64("system.disk.io_time", "s");
+        b.append_f64_dp(
+            m,
+            cs.get("system.disk.io_time", &disk.name, start),
+            now,
+            disk.io_time_seconds,
+            |w| {
+                w.str("system.device", &disk.name);
+            },
+        );
+        let m = b.begin_counter_f64("system.disk.operation_time", "s");
+        for (dir, value) in [
+            ("read", disk.read_time_seconds),
+            ("write", disk.write_time_seconds),
+        ] {
+            b.append_f64_dp(
+                m,
+                cs.get_joined("system.disk.operation_time", &disk.name, dir, start),
+                now,
+                value,
+                |w| {
+                    w.str("system.device", &disk.name);
+                    w.str("disk.io.direction", dir);
+                },
+            );
+        }
+        let m = b.begin_counter_i64("system.disk.merged", "{operation}");
+        for (dir, value) in [("read", disk.read_merged), ("write", disk.write_merged)] {
+            b.append_i64_dp(
+                m,
+                cs.get_joined("system.disk.merged", &disk.name, dir, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str("system.device", &disk.name);
+                    w.str("disk.io.direction", dir);
+                },
+            );
+        }
+    }
+
+    // ── Filesystem ───────────────────────────────────────────────────────────
+    for fs in &snap.filesystems {
+        let total = fs.used.saturating_add(fs.free).saturating_add(fs.reserved);
+        let m = b.begin_updown_i64("system.filesystem.usage", "By");
+        for (state, value) in [("used", fs.used), ("free", fs.free), ("reserved", fs.reserved)]
+        {
+            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+                w.str("system.device", &fs.device);
+                w.str("system.filesystem.state", state);
+                w.str("system.filesystem.type", &fs.fs_type);
+                w.str("system.filesystem.mode", fs.mode);
+                w.str("system.filesystem.mountpoint", &fs.mountpoint);
+            });
+        }
+        if total > 0 {
+            let m = b.begin_gauge_f64("system.filesystem.utilization", "1");
+            let total_f = total as f64;
+            for (state, value) in
+                [("used", fs.used), ("free", fs.free), ("reserved", fs.reserved)]
+            {
+                b.append_f64_dp(m, 0, now, value as f64 / total_f, |w| {
+                    w.str("system.device", &fs.device);
+                    w.str("system.filesystem.state", state);
+                    w.str("system.filesystem.type", &fs.fs_type);
+                    w.str("system.filesystem.mode", fs.mode);
+                    w.str("system.filesystem.mountpoint", &fs.mountpoint);
+                });
+            }
+        }
+        if let Some(limit_bytes) = fs.limit_bytes {
+            let m = b.begin_updown_i64("system.filesystem.limit", "By");
+            b.append_i64_dp(m, start, now, saturating_i64(limit_bytes), |w| {
+                w.str("system.device", &fs.device);
+                w.str("system.filesystem.type", &fs.fs_type);
+                w.str("system.filesystem.mode", fs.mode);
+                w.str("system.filesystem.mountpoint", &fs.mountpoint);
+            });
+        }
+    }
+
+    // ── Network ──────────────────────────────────────────────────────────────
+    for net in &snap.networks {
+        let m = b.begin_counter_i64("system.network.io", "By");
+        for (dir, iface_attr, value) in [
+            ("receive", "network.interface.name", net.rx_bytes),
+            ("transmit", "network.interface.name", net.tx_bytes),
+        ] {
+            b.append_i64_dp(
+                m,
+                cs.get_joined("system.network.io", &net.name, dir, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str(iface_attr, &net.name);
+                    w.str("network.io.direction", dir);
+                },
+            );
+        }
+        let m = b.begin_counter_i64("system.network.packet.count", "{packet}");
+        for (dir, value) in [("receive", net.rx_packets), ("transmit", net.tx_packets)] {
+            b.append_i64_dp(
+                m,
+                cs.get_joined("system.network.packet.count", &net.name, dir, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str("system.device", &net.name);
+                    w.str("network.io.direction", dir);
+                },
+            );
+        }
+        let m = b.begin_counter_i64("system.network.packet.dropped", "{packet}");
+        for (dir, value) in [("receive", net.rx_dropped), ("transmit", net.tx_dropped)] {
+            b.append_i64_dp(
+                m,
+                cs.get_joined("system.network.packet.dropped", &net.name, dir, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str("network.interface.name", &net.name);
+                    w.str("network.io.direction", dir);
+                },
+            );
+        }
+        let m = b.begin_counter_i64("system.network.errors", "{error}");
+        for (dir, value) in [("receive", net.rx_errors), ("transmit", net.tx_errors)] {
+            b.append_i64_dp(
+                m,
+                cs.get_joined("system.network.errors", &net.name, dir, start),
+                now,
+                saturating_i64(value),
+                |w| {
+                    w.str("network.interface.name", &net.name);
+                    w.str("network.io.direction", dir);
+                },
+            );
+        }
+    }
+}
+
+fn project_hugepages(
+    snap: &HostSnapshot,
+    b: &mut crate::receivers::host_metrics_receiver::otap_builder::HostMetricsArrowBuilder,
+    start: u64,
+    now: u64,
+    hugepages: &HugepageStats,
+) {
+    let m = b.begin_updown_i64("system.memory.linux.hugepages.limit", "{page}");
+    b.append_i64_dp(m, start, now, saturating_i64(hugepages.total), |_| {});
+    let m = b.begin_updown_i64("system.memory.linux.hugepages.page_size", "By");
+    b.append_i64_dp(m, start, now, saturating_i64(hugepages.page_size_bytes), |_| {});
+    let m = b.begin_updown_i64("system.memory.linux.hugepages.reserved", "{page}");
+    b.append_i64_dp(m, start, now, saturating_i64(hugepages.reserved), |_| {});
+    let m = b.begin_updown_i64("system.memory.linux.hugepages.surplus", "{page}");
+    b.append_i64_dp(m, start, now, saturating_i64(hugepages.surplus), |_| {});
+    let used = hugepages.total.saturating_sub(hugepages.free);
+    let m = b.begin_updown_i64("system.memory.linux.hugepages.usage", "{page}");
+    for (state, value) in [("used", used), ("free", hugepages.free)] {
+        b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+            w.str("system.memory.linux.hugepages.state", state);
+        });
+    }
+    if hugepages.total > 0 {
+        let total = hugepages.total as f64;
+        let m = b.begin_gauge_f64("system.memory.linux.hugepages.utilization", "1");
+        for (state, value) in [("used", used), ("free", hugepages.free)] {
+            b.append_f64_dp(m, 0, now, value as f64 / total, |w| {
+                w.str("system.memory.linux.hugepages.state", state);
+            });
+        }
+    }
+    let _ = snap; // suppress unused warning; snap may be used in future extensions
 }
 
 #[derive(Default)]

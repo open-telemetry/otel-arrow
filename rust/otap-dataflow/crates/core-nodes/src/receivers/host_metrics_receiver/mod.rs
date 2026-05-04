@@ -18,9 +18,6 @@ use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::encode::encode_metrics_otap_batch;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
 use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -1340,12 +1337,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
     }
 }
 
-fn encode_snapshot(snapshot: HostSnapshot) -> Result<OtapPdata, otap_df_pdata::encode::Error> {
-    let request = snapshot.into_export_request();
-    let data = MetricsData {
-        resource_metrics: request.resource_metrics,
-    };
-    let records: OtapArrowRecords = encode_metrics_otap_batch(&data)?;
+fn encode_snapshot(snapshot: HostSnapshot) -> Result<OtapPdata, arrow::error::ArrowError> {
+    let records = snapshot.into_otap_records()?;
     Ok(OtapPdata::new(Context::default(), records.into()))
 }
 

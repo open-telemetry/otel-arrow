@@ -109,19 +109,28 @@ impl HostMetricsArrowBuilder {
 
     // ── Metric openers ──────────────────────────────────────────────────────
 
-    /// Open a monotonic cumulative Sum metric.  Returns the metric_id for use
-    /// in subsequent [`append_i64_dp`] / [`append_f64_dp`] calls.
+    /// Open a monotonic cumulative Sum metric (i64 data points).
     pub(crate) fn begin_counter_i64(&mut self, name: &str, unit: &str) -> u16 {
         self.begin_metric(name, unit, MetricType::Sum, true)
     }
 
-    /// Open a non-monotonic cumulative Sum metric (UpDownCounter).
+    /// Open a monotonic cumulative Sum metric (f64 data points).
+    pub(crate) fn begin_counter_f64(&mut self, name: &str, unit: &str) -> u16 {
+        self.begin_metric(name, unit, MetricType::Sum, true)
+    }
+
+    /// Open a non-monotonic cumulative Sum metric / UpDownCounter (i64 data points).
     pub(crate) fn begin_updown_i64(&mut self, name: &str, unit: &str) -> u16 {
         self.begin_metric(name, unit, MetricType::Sum, false)
     }
 
-    /// Open a Gauge metric (f64).
+    /// Open a Gauge metric (f64 data points).
     pub(crate) fn begin_gauge_f64(&mut self, name: &str, unit: &str) -> u16 {
+        self.begin_metric(name, unit, MetricType::Gauge, false)
+    }
+
+    /// Open a Gauge metric (i64 data points).
+    pub(crate) fn begin_gauge_i64(&mut self, name: &str, unit: &str) -> u16 {
         self.begin_metric(name, unit, MetricType::Gauge, false)
     }
 
