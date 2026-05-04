@@ -29,9 +29,7 @@ use otap_df_pdata_views::views::logs::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
-use otap_df_telemetry::self_tracing::{
-    AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter,
-};
+use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
