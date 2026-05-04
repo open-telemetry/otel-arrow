@@ -181,7 +181,8 @@ impl HostMetricsArrowBuilder {
                 self.metrics.append_is_monotonic(None);
             }
         }
-        self.curr_metric_id = self.curr_metric_id.wrapping_add(1);
+        self.curr_metric_id = self.curr_metric_id.checked_add(1)
+            .expect("metric_id overflow: more than u16::MAX metrics in one batch");
         id
     }
 
@@ -212,7 +213,8 @@ impl HostMetricsArrowBuilder {
             dp_id,
         };
         attrs(&mut w);
-        self.curr_dp_id = self.curr_dp_id.wrapping_add(1);
+        self.curr_dp_id = self.curr_dp_id.checked_add(1)
+            .expect("dp_id overflow: more than u32::MAX datapoints in one batch");
     }
 
     /// Append one f64 data point for `metric_id`.
@@ -240,7 +242,8 @@ impl HostMetricsArrowBuilder {
             dp_id,
         };
         attrs(&mut w);
-        self.curr_dp_id = self.curr_dp_id.wrapping_add(1);
+        self.curr_dp_id = self.curr_dp_id.checked_add(1)
+            .expect("dp_id overflow: more than u32::MAX datapoints in one batch");
     }
 
     // ── Finalization ─────────────────────────────────────────────────────────
@@ -266,26 +269,10 @@ impl HostMetricsArrowBuilder {
             .append_scope_schema_url_n(SEMCONV_SCHEMA_URL, n);
 
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
-        finish_batch(
-            &mut records,
-            ArrowPayloadType::UnivariateMetrics,
-            self.metrics.finish()?,
-        );
-        finish_batch(
-            &mut records,
-            ArrowPayloadType::NumberDataPoints,
-            self.ndp.finish()?,
-        );
-        finish_batch(
-            &mut records,
-            ArrowPayloadType::ResourceAttrs,
-            self.resource_attrs.finish()?,
-        );
-        finish_batch(
-            &mut records,
-            ArrowPayloadType::NumberDpAttrs,
-            self.ndp_attrs.finish()?,
-        );
+        finish_batch(&mut records, ArrowPayloadType::UnivariateMetrics, self.metrics.finish()?)?;
+        finish_batch(&mut records, ArrowPayloadType::NumberDataPoints, self.ndp.finish()?)?;
+        finish_batch(&mut records, ArrowPayloadType::ResourceAttrs, self.resource_attrs.finish()?)?;
+        finish_batch(&mut records, ArrowPayloadType::NumberDpAttrs, self.ndp_attrs.finish()?)?;
         Ok(records)
     }
 }
@@ -294,10 +281,11 @@ fn finish_batch(
     records: &mut OtapArrowRecords,
     payload_type: ArrowPayloadType,
     rb: arrow::array::RecordBatch,
-) {
+) -> Result<(), ArrowError> {
     if rb.num_rows() > 0 {
         records
             .set(payload_type, rb)
-            .expect("host metrics record batch schema is valid");
+            .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
     }
+    Ok(())
 }
