@@ -35,6 +35,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant as StdInstant};
 use tokio::time::{Instant, sleep_until};
 
+mod otap_builder;
 mod procfs;
 
 use procfs::{HostSnapshot, ProcfsConfig, ProcfsFamilies, ProcfsSource};

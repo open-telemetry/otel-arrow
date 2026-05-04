@@ -971,10 +971,10 @@ impl HostSnapshot {
 }
 
 #[derive(Default)]
-struct HostResource {
-    host_id: Option<String>,
-    host_name: Option<String>,
-    host_arch: Option<&'static str>,
+pub(super) struct HostResource {
+    pub(super) host_id: Option<String>,
+    pub(super) host_name: Option<String>,
+    pub(super) host_arch: Option<&'static str>,
 }
 
 impl HostResource {
