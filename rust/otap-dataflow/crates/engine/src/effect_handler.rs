@@ -425,6 +425,8 @@ impl<PData> EffectHandlerCore<PData> {
     pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.local_scheduler
             .as_ref()
+            // Safety: processor runtime preparation installs the node-local scheduler
+            // before processor code receives an effect handler.
             .expect("node-local scheduler not set for processor effect handler")
             .requeue_later(when, data)
             .map_err(|data| *data)

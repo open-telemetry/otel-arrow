@@ -315,7 +315,12 @@ impl<PData> NodeLocalScheduler<PData> {
         };
 
         if take_resume {
-            let resume = self.delayed_resumes.pop().expect("resume must exist");
+            let resume = self
+                .delayed_resumes
+                .pop()
+                // Safety: take_resume is true only after peeking a due resume,
+                // and no delayed-resume mutation happens between peek and pop.
+                .expect("resume must exist");
             return Some(NodeControlMsg::DelayedData {
                 when: resume.when,
                 data: resume.data,
@@ -327,7 +332,12 @@ impl<PData> NodeLocalScheduler<PData> {
             return None;
         }
 
-        let (slot, priority) = self.heap.pop().expect("due wakeup should exist");
+        let (slot, priority) = self
+            .heap
+            .pop()
+            // Safety: next_due was read from the heap head above, and no wakeup
+            // heap mutation happens between peek and pop.
+            .expect("due wakeup should exist");
         if let Some(metrics) = &mut self.metrics {
             metrics.pop_due.inc();
         }
