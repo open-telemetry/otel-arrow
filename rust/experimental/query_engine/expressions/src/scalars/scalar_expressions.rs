@@ -43,6 +43,9 @@ pub enum ScalarExpression {
     /// Returns the type string for the inner expression.
     GetType(GetTypeScalarExpression),
 
+    /// Returns the type string for the record.
+    GetRecordType(GetRecordTypeScalarExpression),
+
     /// Invoke a user-defined function.
     InvokeFunction(InvokeFunctionScalarExpression),
 
@@ -101,6 +104,7 @@ impl ScalarExpression {
             ScalarExpression::Constant(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Collection(c) => c.try_resolve_value_type(scope),
             ScalarExpression::GetType(_) => Ok(Some(ValueType::String)),
+            ScalarExpression::GetRecordType(_) => Ok(Some(ValueType::String)),
             ScalarExpression::Logical(_) => Ok(Some(ValueType::Boolean)),
             ScalarExpression::Coalesce(c) => c.try_resolve_value_type(scope),
             ScalarExpression::Conditional(c) => c.try_resolve_value_type(scope),
@@ -205,6 +209,7 @@ impl ScalarExpression {
             ScalarExpression::Case(c) => c.try_resolve_static(scope),
             ScalarExpression::Convert(c) => c.try_resolve_static(scope),
             ScalarExpression::GetType(g) => g.try_resolve_static(scope),
+            ScalarExpression::GetRecordType(g) => g.try_resolve_static(scope),
             ScalarExpression::Length(l) => l.try_resolve_static(scope),
             ScalarExpression::Slice(s) => s.try_resolve_static(scope),
             ScalarExpression::Parse(p) => p.try_resolve_static(scope),
@@ -231,6 +236,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Constant(c) => c.get_query_location(),
             ScalarExpression::Collection(c) => c.get_query_location(),
             ScalarExpression::GetType(g) => g.get_query_location(),
+            ScalarExpression::GetRecordType(g) => g.get_query_location(),
             ScalarExpression::Logical(l) => l.get_query_location(),
             ScalarExpression::Coalesce(c) => c.get_query_location(),
             ScalarExpression::Conditional(c) => c.get_query_location(),
@@ -256,6 +262,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Static(s) => s.get_name(),
             ScalarExpression::Collection(_) => "ScalarExpression(Collection)",
             ScalarExpression::GetType(_) => "ScalarExpression(GetType)",
+            ScalarExpression::GetRecordType(_) => "ScalarExpression(GetRecordType)",
             ScalarExpression::Logical(_) => "ScalarExpression(Logical)",
             ScalarExpression::Coalesce(_) => "ScalarExpression(Coalesce)",
             ScalarExpression::Conditional(_) => "ScalarExpression(Conditional)",
@@ -284,6 +291,7 @@ impl Expression for ScalarExpression {
             ScalarExpression::Conditional(c) => c.fmt_with_indent(f, indent),
             ScalarExpression::Convert(c) => c.fmt_with_indent(f, indent),
             ScalarExpression::GetType(g) => g.fmt_with_indent(f, indent),
+            ScalarExpression::GetRecordType(g) => g.fmt_with_indent(f, indent),
             ScalarExpression::Temporal(t) => t.fmt_with_indent(f, indent),
             ScalarExpression::Length(l) => l.fmt_with_indent(f, indent),
             ScalarExpression::Logical(l) => l.fmt_with_indent(f, indent),
@@ -1303,6 +1311,39 @@ impl Expression for GetTypeScalarExpression {
         write!(f, "GetType(Scalar): ")?;
         self.value.fmt_with_indent(f, indent)?;
 
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetRecordTypeScalarExpression {
+    query_location: QueryLocation,
+}
+
+impl GetRecordTypeScalarExpression {
+    pub fn new(query_location: QueryLocation) -> GetRecordTypeScalarExpression {
+        Self { query_location }
+    }
+
+    pub(crate) fn try_resolve_static(
+        &mut self,
+        _scope: &PipelineResolutionScope,
+    ) -> ScalarStaticResolutionResult<'_> {
+        ScalarStaticResolutionResult::Ok(None)
+    }
+}
+
+impl Expression for GetRecordTypeScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "GetRecordTypeScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, _indent: &str) -> std::fmt::Result {
+        writeln!(f, "GetRecordTypeScalarExpression")?;
         Ok(())
     }
 }

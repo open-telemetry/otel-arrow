@@ -326,6 +326,12 @@ where
         ScalarExpression::Math(m) => {
             return execute_math_scalar_expression(execution_context, m);
         }
+        ScalarExpression::GetRecordType(r) => {
+            return Err(ExpressionError::NotSupported(
+                r.get_query_location().clone(),
+                format!("{} not yet supported  in RecordSet engine", r.get_name()),
+            ));
+        }
         ScalarExpression::GetType(g) => {
             let value_type =
                 execute_scalar_expression(execution_context, g.get_value())?.get_value_type();

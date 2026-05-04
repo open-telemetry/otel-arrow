@@ -6,7 +6,7 @@
 use crate::proto::opentelemetry::metrics::v1::{
     ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint,
     Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary,
-    SummaryDataPoint, metric,
+    SummaryDataPoint, exponential_histogram_data_point::Buckets, metric,
 };
 use crate::testing::equiv::canonical::{
     assert_equivalent, canonicalize_any_value, canonicalize_resource, canonicalize_scope,
@@ -249,6 +249,22 @@ fn canonicalize_histogram_data_point(dp: &mut HistogramDataPoint) {
     });
 }
 
+/// Normalize absent buckets to the default Buckets struct.
+/// The OTAP Arrow encoding cannot distinguish `None` from
+/// `Some(Buckets { offset: 0, bucket_counts: [] })` because
+/// `BucketsRecordBatchBuilder` stores both as a non-null struct
+/// with default values. Canonicalize `None` -> `Some(default)` so
+/// the equivalence check is not affected by this known
+/// encode/decode limitation.
+fn canonicalize_buckets(buckets: &mut Option<Buckets>) {
+    if buckets.is_none() {
+        *buckets = Some(Buckets {
+            offset: 0,
+            bucket_counts: vec![],
+        });
+    }
+}
+
 fn canonicalize_exp_histogram_data_point(dp: &mut ExponentialHistogramDataPoint) {
     canonicalize_vec(&mut dp.attributes, |attr| {
         if let Some(value) = &mut attr.value {
@@ -262,6 +278,9 @@ fn canonicalize_exp_histogram_data_point(dp: &mut ExponentialHistogramDataPoint)
             }
         });
     });
+
+    canonicalize_buckets(&mut dp.positive);
+    canonicalize_buckets(&mut dp.negative);
 }
 
 fn canonicalize_summary_data_point(dp: &mut SummaryDataPoint) {
