@@ -1503,7 +1503,7 @@ mod test {
             .unwrap();
 
         let mut encoder = MetricsProtoBytesEncoder::new();
-        let mut result_buf = ProtoBuffer::new();
+        let mut result_buf = ProtoBuffer::default();
         encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
         let result = MetricsData::decode(result_buf.as_ref()).unwrap();
 

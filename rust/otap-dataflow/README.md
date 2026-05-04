@@ -187,8 +187,8 @@ A simple component to produce synthetic data from semantic convention registries
 #### Batch processor
 
 A batching processor that works directly with OTAP records. This is
-[based on lower-level support in the `otal_arrow_rust`
-crate](../otel-arrow-rust/src/otap/batching.rs).
+[based on lower-level support in the `otap-df-pdata`
+crate](./crates/pdata/src/otap/batching.rs).
 
 #### OTAP exporter
 

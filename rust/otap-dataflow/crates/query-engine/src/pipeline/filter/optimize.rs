@@ -366,7 +366,7 @@ pub mod test {
             Self {
                 source_filter,
                 attribute_filter: attribute_filter.map(T::into),
-                expr_filter: None,
+                ..Default::default()
             }
         }
     }

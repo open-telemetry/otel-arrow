@@ -211,7 +211,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
-- [Lei Huang](https://github.com/v0y4g3r), Greptime
 - [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
@@ -227,6 +226,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 ### Emeritus
 
 - [Alex Boten](https://github.com/codeboten), Approver
+- [Lei Huang](https://github.com/v0y4g3r), Approver
 - [Moh Osman](https://github.com/moh-osman3), Approver
 
 ### Thanks to all of our contributors

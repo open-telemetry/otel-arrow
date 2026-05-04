@@ -141,8 +141,21 @@ rel_expression = {
 
 // TODO add bitwise expressions
 
+type_name = {
+    "Log"
+  | "Metric"
+  | "Span"
+}
+
+type_check_op = @{ "is" }
+
+type_check_expression = {
+    type_check_op ~ type_name
+  | rel_expression ~ (type_check_op ~ type_name)?
+}
+
 and_expression = {
-    rel_expression ~ ("and" ~ and_expression)*
+    type_check_expression ~ ("and" ~ and_expression)*
 }
 
 or_expression = {
