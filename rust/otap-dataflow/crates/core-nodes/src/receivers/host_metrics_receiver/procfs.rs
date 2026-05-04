@@ -3,6 +3,7 @@
 
 //! Linux procfs-backed host metric source.
 
+use crate::receivers::host_metrics_receiver::semconv::metric;
 use crate::receivers::host_metrics_receiver::{CompiledFilter, HostViewValidationMode};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -640,7 +641,7 @@ fn project_snapshot(
 
     // ── CPU ──────────────────────────────────────────────────────────────────
     if let Some(cpu) = snap.cpu {
-        let m = b.begin_counter_f64("system.cpu.time", "s");
+        let m = b.begin_counter_f64(metric::CPU_TIME, "s");
         for (mode, value) in [
             ("user", cpu.user),
             ("nice", cpu.nice),
@@ -650,13 +651,13 @@ fn project_snapshot(
             ("interrupt", cpu.interrupt),
             ("steal", cpu.steal),
         ] {
-            b.append_f64_dp(m, cs.get("system.cpu.time", mode, start), now, value, |w| {
+            b.append_f64_dp(m, cs.get(metric::CPU_TIME, mode, start), now, value, |w| {
                 w.str("cpu.mode", mode);
             });
         }
     }
     if let Some(cpu) = snap.cpu_utilization {
-        let m = b.begin_gauge_f64("system.cpu.utilization", "1");
+        let m = b.begin_gauge_f64(metric::CPU_UTILIZATION, "1");
         for (mode, value) in [
             ("user", cpu.user),
             ("nice", cpu.nice),
@@ -672,7 +673,7 @@ fn project_snapshot(
         }
     }
     if snap.cpuinfo.logical_count != 0 {
-        let m = b.begin_updown_i64("system.cpu.logical.count", "{cpu}");
+        let m = b.begin_updown_i64(metric::CPU_LOGICAL_COUNT, "{cpu}");
         b.append_i64_dp(
             m,
             start,
@@ -682,7 +683,7 @@ fn project_snapshot(
         );
     }
     if snap.cpuinfo.physical_count != 0 {
-        let m = b.begin_updown_i64("system.cpu.physical.count", "{cpu}");
+        let m = b.begin_updown_i64(metric::CPU_PHYSICAL_COUNT, "{cpu}");
         b.append_i64_dp(
             m,
             start,
@@ -692,7 +693,7 @@ fn project_snapshot(
         );
     }
     if !snap.cpuinfo.frequencies_hz.is_empty() {
-        let m = b.begin_gauge_i64("system.cpu.frequency", "Hz");
+        let m = b.begin_gauge_i64(metric::CPU_FREQUENCY, "Hz");
         for (idx, &freq) in snap.cpuinfo.frequencies_hz.iter().enumerate() {
             let logical = i64::try_from(idx).unwrap_or(i64::MAX);
             b.append_i64_dp(m, 0, now, frequency_hz_i64(freq), |w| {
@@ -703,7 +704,7 @@ fn project_snapshot(
 
     // ── Memory ───────────────────────────────────────────────────────────────
     if let Some(memory) = snap.memory {
-        let m = b.begin_updown_i64("system.memory.usage", "By");
+        let m = b.begin_updown_i64(metric::MEMORY_USAGE, "By");
         for (state, value) in [
             ("used", memory.used),
             ("free", memory.free),
@@ -715,7 +716,7 @@ fn project_snapshot(
             });
         }
         if memory.total > 0 {
-            let m = b.begin_gauge_f64("system.memory.utilization", "1");
+            let m = b.begin_gauge_f64(metric::MEMORY_UTILIZATION, "1");
             let total = memory.total as f64;
             for (state, value) in [
                 ("used", memory.used),
@@ -729,10 +730,10 @@ fn project_snapshot(
             }
         }
         if memory.has_available {
-            let m = b.begin_updown_i64("system.memory.linux.available", "By");
+            let m = b.begin_updown_i64(metric::MEMORY_LINUX_AVAILABLE, "By");
             b.append_i64_dp(m, start, now, saturating_i64(memory.available), |_| {});
         }
-        let m = b.begin_updown_i64("system.memory.linux.slab.usage", "By");
+        let m = b.begin_updown_i64(metric::MEMORY_LINUX_SLAB_USAGE, "By");
         for (state, value) in [
             ("reclaimable", memory.slab_reclaimable),
             ("unreclaimable", memory.slab_unreclaimable),
@@ -742,11 +743,11 @@ fn project_snapshot(
             });
         }
         if snap.memory_limit {
-            let m = b.begin_updown_i64("system.memory.limit", "By");
+            let m = b.begin_updown_i64(metric::MEMORY_LIMIT, "By");
             b.append_i64_dp(m, start, now, saturating_i64(memory.total), |_| {});
         }
         if snap.memory_shared {
-            let m = b.begin_updown_i64("system.memory.linux.shared", "By");
+            let m = b.begin_updown_i64(metric::MEMORY_LINUX_SHARED, "By");
             b.append_i64_dp(m, start, now, saturating_i64(memory.shared), |_| {});
         }
         if snap.memory_hugepages {
@@ -756,20 +757,20 @@ fn project_snapshot(
 
     // ── System / uptime ──────────────────────────────────────────────────────
     if let Some(uptime) = snap.uptime_seconds {
-        let m = b.begin_gauge_f64("system.uptime", "s");
+        let m = b.begin_gauge_f64(metric::UPTIME, "s");
         b.append_f64_dp(m, 0, now, uptime, |_| {});
     }
 
     // ── Paging ───────────────────────────────────────────────────────────────
     if let Some(paging) = snap.paging {
-        let m = b.begin_counter_i64("system.paging.faults", "{fault}");
+        let m = b.begin_counter_i64(metric::PAGING_FAULTS, "{fault}");
         for (fault_type, value) in [
             ("minor", paging.minor_faults),
             ("major", paging.major_faults),
         ] {
             b.append_i64_dp(
                 m,
-                cs.get("system.paging.faults", fault_type, start),
+                cs.get(metric::PAGING_FAULTS, fault_type, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -777,7 +778,7 @@ fn project_snapshot(
                 },
             );
         }
-        let m = b.begin_counter_i64("system.paging.operations", "{operation}");
+        let m = b.begin_counter_i64(metric::PAGING_OPERATIONS, "{operation}");
         for (direction, fault_type, value) in [
             ("in", "major", paging.swap_in),
             ("out", "major", paging.swap_out),
@@ -786,7 +787,7 @@ fn project_snapshot(
         ] {
             b.append_i64_dp(
                 m,
-                cs.get_joined("system.paging.operations", direction, fault_type, start),
+                cs.get_joined(metric::PAGING_OPERATIONS, direction, fault_type, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -797,7 +798,7 @@ fn project_snapshot(
         }
     }
     for swap in &snap.swaps {
-        let m = b.begin_updown_i64("system.paging.usage", "By");
+        let m = b.begin_updown_i64(metric::PAGING_USAGE, "By");
         for (state, value) in [("used", swap.used), ("free", swap.free)] {
             b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
                 w.str("system.device", &swap.name);
@@ -806,7 +807,7 @@ fn project_snapshot(
         }
         let size = swap.size;
         if size > 0 {
-            let m = b.begin_gauge_f64("system.paging.utilization", "1");
+            let m = b.begin_gauge_f64(metric::PAGING_UTILIZATION, "1");
             let total = size as f64;
             for (state, value) in [("used", swap.used), ("free", swap.free)] {
                 b.append_f64_dp(m, 0, now, value as f64 / total, |w| {
@@ -819,7 +820,7 @@ fn project_snapshot(
 
     // ── Processes ────────────────────────────────────────────────────────────
     if let Some(processes) = snap.processes {
-        let m = b.begin_updown_i64("system.process.count", "{process}");
+        let m = b.begin_updown_i64(metric::PROCESS_COUNT, "{process}");
         for (state, value) in [
             ("running", processes.running),
             ("blocked", processes.blocked),
@@ -828,10 +829,10 @@ fn project_snapshot(
                 w.str("process.state", state);
             });
         }
-        let m = b.begin_counter_i64("system.process.created", "{process}");
+        let m = b.begin_counter_i64(metric::PROCESS_CREATED, "{process}");
         b.append_i64_dp(
             m,
-            cs.get("system.process.created", "", start),
+            cs.get(metric::PROCESS_CREATED, "", start),
             now,
             saturating_i64(processes.created),
             |_| {},
@@ -841,16 +842,16 @@ fn project_snapshot(
     // ── Disk ─────────────────────────────────────────────────────────────────
     for disk in &snap.disks {
         if let Some(limit_bytes) = disk.limit_bytes {
-            let m = b.begin_updown_i64("system.disk.limit", "By");
+            let m = b.begin_updown_i64(metric::DISK_LIMIT, "By");
             b.append_i64_dp(m, start, now, saturating_i64(limit_bytes), |w| {
                 w.str("system.device", &disk.name);
             });
         }
-        let m = b.begin_counter_i64("system.disk.io", "By");
+        let m = b.begin_counter_i64(metric::DISK_IO, "By");
         for (dir, value) in [("read", disk.read_bytes), ("write", disk.write_bytes)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined("system.disk.io", &disk.name, dir, start),
+                cs.get_joined(metric::DISK_IO, &disk.name, dir, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -859,11 +860,11 @@ fn project_snapshot(
                 },
             );
         }
-        let m = b.begin_counter_i64("system.disk.operations", "{operation}");
+        let m = b.begin_counter_i64(metric::DISK_OPERATIONS, "{operation}");
         for (dir, value) in [("read", disk.read_ops), ("write", disk.write_ops)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined("system.disk.operations", &disk.name, dir, start),
+                cs.get_joined(metric::DISK_OPERATIONS, &disk.name, dir, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -872,24 +873,24 @@ fn project_snapshot(
                 },
             );
         }
-        let m = b.begin_counter_f64("system.disk.io_time", "s");
+        let m = b.begin_counter_f64(metric::DISK_IO_TIME, "s");
         b.append_f64_dp(
             m,
-            cs.get("system.disk.io_time", &disk.name, start),
+            cs.get(metric::DISK_IO_TIME, &disk.name, start),
             now,
             disk.io_time_seconds,
             |w| {
                 w.str("system.device", &disk.name);
             },
         );
-        let m = b.begin_counter_f64("system.disk.operation_time", "s");
+        let m = b.begin_counter_f64(metric::DISK_OPERATION_TIME, "s");
         for (dir, value) in [
             ("read", disk.read_time_seconds),
             ("write", disk.write_time_seconds),
         ] {
             b.append_f64_dp(
                 m,
-                cs.get_joined("system.disk.operation_time", &disk.name, dir, start),
+                cs.get_joined(metric::DISK_OPERATION_TIME, &disk.name, dir, start),
                 now,
                 value,
                 |w| {
@@ -898,11 +899,11 @@ fn project_snapshot(
                 },
             );
         }
-        let m = b.begin_counter_i64("system.disk.merged", "{operation}");
+        let m = b.begin_counter_i64(metric::DISK_MERGED, "{operation}");
         for (dir, value) in [("read", disk.read_merged), ("write", disk.write_merged)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined("system.disk.merged", &disk.name, dir, start),
+                cs.get_joined(metric::DISK_MERGED, &disk.name, dir, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -916,7 +917,7 @@ fn project_snapshot(
     // ── Filesystem ───────────────────────────────────────────────────────────
     for fs in &snap.filesystems {
         let total = fs.used.saturating_add(fs.free).saturating_add(fs.reserved);
-        let m = b.begin_updown_i64("system.filesystem.usage", "By");
+        let m = b.begin_updown_i64(metric::FILESYSTEM_USAGE, "By");
         for (state, value) in [
             ("used", fs.used),
             ("free", fs.free),
@@ -931,7 +932,7 @@ fn project_snapshot(
             });
         }
         if total > 0 {
-            let m = b.begin_gauge_f64("system.filesystem.utilization", "1");
+            let m = b.begin_gauge_f64(metric::FILESYSTEM_UTILIZATION, "1");
             let total_f = total as f64;
             for (state, value) in [
                 ("used", fs.used),
@@ -948,7 +949,7 @@ fn project_snapshot(
             }
         }
         if let Some(limit_bytes) = fs.limit_bytes {
-            let m = b.begin_updown_i64("system.filesystem.limit", "By");
+            let m = b.begin_updown_i64(metric::FILESYSTEM_LIMIT, "By");
             b.append_i64_dp(m, start, now, saturating_i64(limit_bytes), |w| {
                 w.str("system.device", &fs.device);
                 w.str("system.filesystem.type", &fs.fs_type);
@@ -960,14 +961,14 @@ fn project_snapshot(
 
     // ── Network ──────────────────────────────────────────────────────────────
     for net in &snap.networks {
-        let m = b.begin_counter_i64("system.network.io", "By");
+        let m = b.begin_counter_i64(metric::NETWORK_IO, "By");
         for (dir, iface_attr, value) in [
             ("receive", "network.interface.name", net.rx_bytes),
             ("transmit", "network.interface.name", net.tx_bytes),
         ] {
             b.append_i64_dp(
                 m,
-                cs.get_joined("system.network.io", &net.name, dir, start),
+                cs.get_joined(metric::NETWORK_IO, &net.name, dir, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -976,11 +977,11 @@ fn project_snapshot(
                 },
             );
         }
-        let m = b.begin_counter_i64("system.network.packet.count", "{packet}");
+        let m = b.begin_counter_i64(metric::NETWORK_PACKET_COUNT, "{packet}");
         for (dir, value) in [("receive", net.rx_packets), ("transmit", net.tx_packets)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined("system.network.packet.count", &net.name, dir, start),
+                cs.get_joined(metric::NETWORK_PACKET_COUNT, &net.name, dir, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -989,11 +990,11 @@ fn project_snapshot(
                 },
             );
         }
-        let m = b.begin_counter_i64("system.network.packet.dropped", "{packet}");
+        let m = b.begin_counter_i64(metric::NETWORK_PACKET_DROPPED, "{packet}");
         for (dir, value) in [("receive", net.rx_dropped), ("transmit", net.tx_dropped)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined("system.network.packet.dropped", &net.name, dir, start),
+                cs.get_joined(metric::NETWORK_PACKET_DROPPED, &net.name, dir, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -1002,11 +1003,11 @@ fn project_snapshot(
                 },
             );
         }
-        let m = b.begin_counter_i64("system.network.errors", "{error}");
+        let m = b.begin_counter_i64(metric::NETWORK_ERRORS, "{error}");
         for (dir, value) in [("receive", net.rx_errors), ("transmit", net.tx_errors)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined("system.network.errors", &net.name, dir, start),
+                cs.get_joined(metric::NETWORK_ERRORS, &net.name, dir, start),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -1025,9 +1026,9 @@ fn project_hugepages(
     now: u64,
     hugepages: &HugepageStats,
 ) {
-    let m = b.begin_updown_i64("system.memory.linux.hugepages.limit", "{page}");
+    let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_LIMIT, "{page}");
     b.append_i64_dp(m, start, now, saturating_i64(hugepages.total), |_| {});
-    let m = b.begin_updown_i64("system.memory.linux.hugepages.page_size", "By");
+    let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_PAGE_SIZE, "By");
     b.append_i64_dp(
         m,
         start,
@@ -1035,12 +1036,12 @@ fn project_hugepages(
         saturating_i64(hugepages.page_size_bytes),
         |_| {},
     );
-    let m = b.begin_updown_i64("system.memory.linux.hugepages.reserved", "{page}");
+    let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_RESERVED, "{page}");
     b.append_i64_dp(m, start, now, saturating_i64(hugepages.reserved), |_| {});
-    let m = b.begin_updown_i64("system.memory.linux.hugepages.surplus", "{page}");
+    let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_SURPLUS, "{page}");
     b.append_i64_dp(m, start, now, saturating_i64(hugepages.surplus), |_| {});
     let used = hugepages.total.saturating_sub(hugepages.free);
-    let m = b.begin_updown_i64("system.memory.linux.hugepages.usage", "{page}");
+    let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_USAGE, "{page}");
     for (state, value) in [("used", used), ("free", hugepages.free)] {
         b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
             w.str("system.memory.linux.hugepages.state", state);
@@ -1048,7 +1049,7 @@ fn project_hugepages(
     }
     if hugepages.total > 0 {
         let total = hugepages.total as f64;
-        let m = b.begin_gauge_f64("system.memory.linux.hugepages.utilization", "1");
+        let m = b.begin_gauge_f64(metric::MEMORY_LINUX_HUGEPAGES_UTILIZATION, "1");
         for (state, value) in [("used", used), ("free", hugepages.free)] {
             b.append_f64_dp(m, 0, now, value as f64 / total, |w| {
                 w.str("system.memory.linux.hugepages.state", state);
@@ -1111,7 +1112,7 @@ impl CounterTracker {
         let mut starts = CounterStarts::default();
         if let Some(cpu) = cpu {
             self.observe_all(
-                "system.cpu.time",
+                metric::CPU_TIME,
                 default_start,
                 now,
                 &[
@@ -1128,7 +1129,7 @@ impl CounterTracker {
         }
         if let Some(paging) = paging {
             self.observe_all(
-                "system.paging.faults",
+                metric::PAGING_FAULTS,
                 default_start,
                 now,
                 &[
@@ -1138,7 +1139,7 @@ impl CounterTracker {
                 &mut starts,
             );
             self.observe_all(
-                "system.paging.operations",
+                metric::PAGING_OPERATIONS,
                 default_start,
                 now,
                 &[
@@ -1152,7 +1153,7 @@ impl CounterTracker {
         }
         if let Some(processes) = processes {
             self.observe(
-                "system.process.created",
+                metric::PROCESS_CREATED,
                 "",
                 processes.created as f64,
                 default_start,
@@ -1162,7 +1163,7 @@ impl CounterTracker {
         }
         for disk in disks {
             self.observe_disk_all(
-                "system.disk.io",
+                metric::DISK_IO,
                 default_start,
                 now,
                 &disk.name,
@@ -1173,7 +1174,7 @@ impl CounterTracker {
                 &mut starts,
             );
             self.observe_disk_all(
-                "system.disk.operations",
+                metric::DISK_OPERATIONS,
                 default_start,
                 now,
                 &disk.name,
@@ -1184,7 +1185,7 @@ impl CounterTracker {
                 &mut starts,
             );
             self.observe(
-                "system.disk.io_time",
+                metric::DISK_IO_TIME,
                 &disk.name,
                 disk.io_time_seconds,
                 default_start,
@@ -1192,7 +1193,7 @@ impl CounterTracker {
                 &mut starts,
             );
             self.observe_disk_all(
-                "system.disk.operation_time",
+                metric::DISK_OPERATION_TIME,
                 default_start,
                 now,
                 &disk.name,
@@ -1203,7 +1204,7 @@ impl CounterTracker {
                 &mut starts,
             );
             self.observe_disk_all(
-                "system.disk.merged",
+                metric::DISK_MERGED,
                 default_start,
                 now,
                 &disk.name,
@@ -1216,7 +1217,7 @@ impl CounterTracker {
         }
         for network in networks {
             self.observe_network(
-                "system.network.io",
+                metric::NETWORK_IO,
                 default_start,
                 now,
                 network,
@@ -1225,7 +1226,7 @@ impl CounterTracker {
                 &mut starts,
             );
             self.observe_network(
-                "system.network.packet.count",
+                metric::NETWORK_PACKET_COUNT,
                 default_start,
                 now,
                 network,
@@ -1234,7 +1235,7 @@ impl CounterTracker {
                 &mut starts,
             );
             self.observe_network(
-                "system.network.packet.dropped",
+                metric::NETWORK_PACKET_DROPPED,
                 default_start,
                 now,
                 network,
@@ -1243,7 +1244,7 @@ impl CounterTracker {
                 &mut starts,
             );
             self.observe_network(
-                "system.network.errors",
+                metric::NETWORK_ERRORS,
                 default_start,
                 now,
                 network,
@@ -2191,157 +2192,148 @@ mod tests {
         assert_has_attr(&resource.attributes, "host.arch", "amd64");
 
         let metrics = &resource_metrics.scope_metrics[0].metrics;
-        assert_metric_shape(metrics, "system.cpu.time", "s", Some(true));
-        assert_first_point_attr(metrics, "system.cpu.time", "cpu.mode", "user");
-        assert_sum_point_attr(metrics, "system.cpu.time", "cpu.mode", "iowait");
-        assert_metric_shape(metrics, "system.cpu.utilization", "1", None);
-        assert_first_point_attr(metrics, "system.cpu.utilization", "cpu.mode", "user");
-        assert_metric_shape(metrics, "system.cpu.logical.count", "{cpu}", Some(false));
-        assert_metric_shape(metrics, "system.cpu.physical.count", "{cpu}", Some(false));
-        assert_metric_shape(metrics, "system.cpu.frequency", "Hz", None);
-        assert_first_point_int(metrics, "system.cpu.frequency", 2_400_000_000);
-        assert_first_point_attr_int(metrics, "system.cpu.frequency", "cpu.logical_number", 0);
-        assert_metric_shape(metrics, "system.memory.usage", "By", Some(false));
-        assert_first_point_attr(
-            metrics,
-            "system.memory.usage",
-            "system.memory.state",
-            "used",
-        );
-        assert_metric_shape(metrics, "system.memory.utilization", "1", None);
-        assert_metric_shape(metrics, "system.memory.linux.available", "By", Some(false));
-        assert_metric_shape(metrics, "system.memory.linux.slab.usage", "By", Some(false));
-        assert_metric_shape(metrics, "system.memory.limit", "By", Some(false));
-        assert_metric_shape(metrics, "system.memory.linux.shared", "By", Some(false));
+        assert_metric_shape(metrics, metric::CPU_TIME, "s", Some(true));
+        assert_first_point_attr(metrics, metric::CPU_TIME, "cpu.mode", "user");
+        assert_sum_point_attr(metrics, metric::CPU_TIME, "cpu.mode", "iowait");
+        assert_metric_shape(metrics, metric::CPU_UTILIZATION, "1", None);
+        assert_first_point_attr(metrics, metric::CPU_UTILIZATION, "cpu.mode", "user");
+        assert_metric_shape(metrics, metric::CPU_LOGICAL_COUNT, "{cpu}", Some(false));
+        assert_metric_shape(metrics, metric::CPU_PHYSICAL_COUNT, "{cpu}", Some(false));
+        assert_metric_shape(metrics, metric::CPU_FREQUENCY, "Hz", None);
+        assert_first_point_int(metrics, metric::CPU_FREQUENCY, 2_400_000_000);
+        assert_first_point_attr_int(metrics, metric::CPU_FREQUENCY, "cpu.logical_number", 0);
+        assert_metric_shape(metrics, metric::MEMORY_USAGE, "By", Some(false));
+        assert_first_point_attr(metrics, metric::MEMORY_USAGE, "system.memory.state", "used");
+        assert_metric_shape(metrics, metric::MEMORY_UTILIZATION, "1", None);
+        assert_metric_shape(metrics, metric::MEMORY_LINUX_AVAILABLE, "By", Some(false));
+        assert_metric_shape(metrics, metric::MEMORY_LINUX_SLAB_USAGE, "By", Some(false));
+        assert_metric_shape(metrics, metric::MEMORY_LIMIT, "By", Some(false));
+        assert_metric_shape(metrics, metric::MEMORY_LINUX_SHARED, "By", Some(false));
         assert_metric_shape(
             metrics,
-            "system.memory.linux.hugepages.limit",
+            metric::MEMORY_LINUX_HUGEPAGES_LIMIT,
             "{page}",
             Some(false),
         );
         assert_metric_shape(
             metrics,
-            "system.memory.linux.hugepages.page_size",
+            metric::MEMORY_LINUX_HUGEPAGES_PAGE_SIZE,
             "By",
             Some(false),
         );
         assert_metric_shape(
             metrics,
-            "system.memory.linux.hugepages.reserved",
+            metric::MEMORY_LINUX_HUGEPAGES_RESERVED,
             "{page}",
             Some(false),
         );
         assert_metric_shape(
             metrics,
-            "system.memory.linux.hugepages.surplus",
+            metric::MEMORY_LINUX_HUGEPAGES_SURPLUS,
             "{page}",
             Some(false),
         );
         assert_metric_shape(
             metrics,
-            "system.memory.linux.hugepages.usage",
+            metric::MEMORY_LINUX_HUGEPAGES_USAGE,
             "{page}",
             Some(false),
         );
         assert_first_point_attr(
             metrics,
-            "system.memory.linux.hugepages.usage",
+            metric::MEMORY_LINUX_HUGEPAGES_USAGE,
             "system.memory.linux.hugepages.state",
             "used",
         );
         assert_metric_shape(
             metrics,
-            "system.memory.linux.hugepages.utilization",
+            metric::MEMORY_LINUX_HUGEPAGES_UTILIZATION,
             "1",
             None,
         );
-        assert_metric_shape(metrics, "system.uptime", "s", None);
-        assert_metric_shape(metrics, "system.paging.faults", "{fault}", Some(true));
+        assert_metric_shape(metrics, metric::UPTIME, "s", None);
+        assert_metric_shape(metrics, metric::PAGING_FAULTS, "{fault}", Some(true));
         assert_first_point_attr(
             metrics,
-            "system.paging.faults",
+            metric::PAGING_FAULTS,
             "system.paging.fault.type",
             "minor",
         );
         assert_metric_shape(
             metrics,
-            "system.paging.operations",
+            metric::PAGING_OPERATIONS,
             "{operation}",
             Some(true),
         );
         assert_sum_point_attr(
             metrics,
-            "system.paging.operations",
+            metric::PAGING_OPERATIONS,
             "system.paging.direction",
             "in",
         );
         assert_sum_point_attr(
             metrics,
-            "system.paging.operations",
+            metric::PAGING_OPERATIONS,
             "system.paging.fault.type",
             "minor",
         );
-        assert_metric_shape(metrics, "system.paging.usage", "By", Some(false));
-        assert_first_point_attr(metrics, "system.paging.usage", "system.device", "/dev/swap");
-        assert_metric_shape(metrics, "system.paging.utilization", "1", None);
-        assert_metric_shape(metrics, "system.process.count", "{process}", Some(false));
-        assert_sum_point_attr(metrics, "system.process.count", "process.state", "blocked");
-        assert_metric_shape(metrics, "system.process.created", "{process}", Some(true));
-        assert_metric_shape(metrics, "system.disk.io", "By", Some(true));
-        assert_first_point_attr(metrics, "system.disk.io", "disk.io.direction", "read");
-        assert_metric_shape(metrics, "system.disk.operations", "{operation}", Some(true));
-        assert_metric_shape(metrics, "system.disk.io_time", "s", Some(true));
-        assert_first_point_attr(metrics, "system.disk.io_time", "system.device", "sda");
-        assert_metric_shape(metrics, "system.disk.operation_time", "s", Some(true));
-        assert_metric_shape(metrics, "system.disk.merged", "{operation}", Some(true));
-        assert_metric_shape(metrics, "system.disk.limit", "By", Some(false));
-        assert_first_point_attr(metrics, "system.disk.limit", "system.device", "sda");
-        assert_metric_shape(metrics, "system.filesystem.usage", "By", Some(false));
+        assert_metric_shape(metrics, metric::PAGING_USAGE, "By", Some(false));
+        assert_first_point_attr(metrics, metric::PAGING_USAGE, "system.device", "/dev/swap");
+        assert_metric_shape(metrics, metric::PAGING_UTILIZATION, "1", None);
+        assert_metric_shape(metrics, metric::PROCESS_COUNT, "{process}", Some(false));
+        assert_sum_point_attr(metrics, metric::PROCESS_COUNT, "process.state", "blocked");
+        assert_metric_shape(metrics, metric::PROCESS_CREATED, "{process}", Some(true));
+        assert_metric_shape(metrics, metric::DISK_IO, "By", Some(true));
+        assert_first_point_attr(metrics, metric::DISK_IO, "disk.io.direction", "read");
+        assert_metric_shape(metrics, metric::DISK_OPERATIONS, "{operation}", Some(true));
+        assert_metric_shape(metrics, metric::DISK_IO_TIME, "s", Some(true));
+        assert_first_point_attr(metrics, metric::DISK_IO_TIME, "system.device", "sda");
+        assert_metric_shape(metrics, metric::DISK_OPERATION_TIME, "s", Some(true));
+        assert_metric_shape(metrics, metric::DISK_MERGED, "{operation}", Some(true));
+        assert_metric_shape(metrics, metric::DISK_LIMIT, "By", Some(false));
+        assert_first_point_attr(metrics, metric::DISK_LIMIT, "system.device", "sda");
+        assert_metric_shape(metrics, metric::FILESYSTEM_USAGE, "By", Some(false));
         assert_first_point_attr(
             metrics,
-            "system.filesystem.usage",
+            metric::FILESYSTEM_USAGE,
             "system.filesystem.state",
             "used",
         );
-        assert_metric_shape(metrics, "system.filesystem.utilization", "1", None);
-        assert_metric_shape(metrics, "system.filesystem.limit", "By", Some(false));
-        assert_no_first_point_attr(
-            metrics,
-            "system.filesystem.limit",
-            "system.filesystem.state",
-        );
-        assert_metric_shape(metrics, "system.network.io", "By", Some(true));
+        assert_metric_shape(metrics, metric::FILESYSTEM_UTILIZATION, "1", None);
+        assert_metric_shape(metrics, metric::FILESYSTEM_LIMIT, "By", Some(false));
+        assert_no_first_point_attr(metrics, metric::FILESYSTEM_LIMIT, "system.filesystem.state");
+        assert_metric_shape(metrics, metric::NETWORK_IO, "By", Some(true));
         assert_first_point_attr(
             metrics,
-            "system.network.io",
+            metric::NETWORK_IO,
             "network.interface.name",
             "eth0",
         );
         assert_metric_shape(
             metrics,
-            "system.network.packet.count",
+            metric::NETWORK_PACKET_COUNT,
             "{packet}",
             Some(true),
         );
         assert_first_point_attr(
             metrics,
-            "system.network.packet.count",
+            metric::NETWORK_PACKET_COUNT,
             "system.device",
             "eth0",
         );
         assert_metric_shape(
             metrics,
-            "system.network.packet.dropped",
+            metric::NETWORK_PACKET_DROPPED,
             "{packet}",
             Some(true),
         );
         assert_first_point_attr(
             metrics,
-            "system.network.packet.dropped",
+            metric::NETWORK_PACKET_DROPPED,
             "network.interface.name",
             "eth0",
         );
-        assert_metric_shape(metrics, "system.network.errors", "{error}", Some(true));
+        assert_metric_shape(metrics, metric::NETWORK_ERRORS, "{error}", Some(true));
     }
 
     #[cfg(feature = "dev-tools")]
@@ -2412,7 +2404,7 @@ mod tests {
                 now_unix_nano: 2_000,
                 start_time_unix_nano: 1_000,
                 counter_starts: CounterStarts {
-                    entries: vec![(counter_key("system.process.created", ""), 1_500)],
+                    entries: vec![(counter_key(metric::PROCESS_CREATED, ""), 1_500)],
                 },
                 processes: Some(ProcessStats {
                     created: 99,
@@ -2425,7 +2417,7 @@ mod tests {
         );
 
         let metrics = &data.resource_metrics[0].scope_metrics[0].metrics;
-        assert_first_sum_point_start(metrics, "system.process.created", 1_500);
+        assert_first_sum_point_start(metrics, metric::PROCESS_CREATED, 1_500);
     }
 
     #[test]
@@ -2439,8 +2431,8 @@ mod tests {
         }];
         let starts = tracker.snapshot(10, 20, None, None, None, &disks, &[]);
 
-        assert_eq!(starts.get_joined("system.disk.io", "sda", "read", 10), 10);
-        assert_eq!(starts.get_joined("system.disk.io", "sda", "write", 10), 10);
+        assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "read", 10), 10);
+        assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "write", 10), 10);
 
         let disks = vec![DiskStats {
             name: "sda".to_owned(),
@@ -2450,13 +2442,13 @@ mod tests {
         }];
         let starts = tracker.snapshot(10, 30, None, None, None, &disks, &[]);
 
-        assert_eq!(starts.get_joined("system.disk.io", "sda", "read", 10), 30);
-        assert_eq!(starts.get_joined("system.disk.io", "sda", "write", 10), 10);
+        assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "read", 10), 30);
+        assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "write", 10), 10);
     }
 
     #[test]
     fn counter_keys_do_not_collide_with_pipe_in_series_values() {
-        let metric = "system.disk.io";
+        let metric = metric::DISK_IO;
         let device = "read|write";
         let joined = counter_key_joined(metric, device, "read");
         assert!(!counter_key_matches_joined(
@@ -3156,10 +3148,7 @@ mod tests {
 
     #[cfg(feature = "dev-tools")]
     fn is_intentional_semconv_enum_value_gap(name: &str, attr: &str, value: &str) -> bool {
-        matches!(
-            (name, attr, value),
-            ("system.process.count", "process.state", "blocked")
-        )
+        name == metric::PROCESS_COUNT && attr == "process.state" && value == "blocked"
     }
 
     #[cfg(feature = "dev-tools")]

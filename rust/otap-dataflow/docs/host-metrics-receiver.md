@@ -534,7 +534,7 @@ timestamp.
 | Linux hugepage metrics | No | Mixed | Mixed | Use current `system.memory.linux.hugepages.*` registry definitions. |
 | `system.paging.usage` | Yes | UpDownCounter | `By` | `system.paging.state`, `system.device`; use `/proc/swaps` for swap device identity. |
 | `system.paging.utilization` | Yes | Gauge | `1` | `system.paging.state`, `system.device`; use `/proc/swaps` for swap device identity. |
-| `system.paging.operations` | Yes | Counter | `{operation}` | `system.paging.direction` from `pswpin` and `pswpout`; intentionally omit `system.paging.fault.type` because Linux swap-in/out counters are not broken down by fault type. |
+| `system.paging.operations` | Yes | Counter | `{operation}` | `system.paging.direction`, `system.paging.fault.type`; follow the current registry shape. Linux projection follows the Go Collector precedent: `pswpin`/`pswpout` as `major`, `pgpgin`/`pgpgout` as `minor`. Linux does not expose this as a direct fault-type split, so maintainers may choose a narrower projection. |
 | `system.paging.faults` | Yes | Counter | `{fault}` | `system.paging.fault.type`; use `pgmajfault` for `major` and `pgfault - pgmajfault` for `minor` when both are available. |
 | `system.uptime` | Yes | Gauge | `s` | Prefer `CLOCK_BOOTTIME`; fall back to `/proc/uptime`. Emit double seconds. |
 | `system.disk.io` | Yes | Counter | `By` | `system.device`, `disk.io.direction`. |

@@ -56,6 +56,8 @@ use tokio::time::{Instant, sleep_until};
 mod otap_builder;
 #[cfg(target_os = "linux")]
 mod procfs;
+#[cfg(target_os = "linux")]
+mod semconv;
 
 #[cfg(target_os = "linux")]
 use procfs::{HostSnapshot, ProcfsConfig, ProcfsFamilies, ProcfsSource};
@@ -76,6 +78,8 @@ pub struct HostMetricsReceiverMetrics {
     /// Number of fatal scrape failures.
     #[metric(unit = "{scrape}")]
     pub scrapes_failed: Counter<u64>,
+    // TODO: Decide whether fixed per-family error counters are needed here.
+    // Metric-level attributes are not supported by the internal telemetry API today.
     /// Number of source read errors skipped because other families succeeded.
     #[metric(unit = "{error}")]
     pub partial_errors: Counter<u64>,

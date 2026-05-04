@@ -18,31 +18,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 #[cfg(target_os = "linux")]
 use crate::receivers::host_metrics_receiver::procfs::HostResource;
-
-/// Semconv version targeted by this receiver's projection layer.
-///
-/// `SEMCONV_SCHEMA_URL` must be kept in sync with this value.
-pub(crate) const SEMCONV_VERSION: &str = "1.41.0";
-const SEMCONV_SCHEMA_URL: &[u8] = b"https://opentelemetry.io/schemas/1.41.0";
-
-const _: () = {
-    // Enforce that SEMCONV_SCHEMA_URL ends with SEMCONV_VERSION.
-    let url = SEMCONV_SCHEMA_URL;
-    let ver = SEMCONV_VERSION.as_bytes();
-    assert!(
-        url.len() >= ver.len(),
-        "SEMCONV_SCHEMA_URL is shorter than SEMCONV_VERSION"
-    );
-    let suffix = url.split_at(url.len() - ver.len()).1;
-    let mut i = 0;
-    while i < ver.len() {
-        assert!(
-            suffix[i] == ver[i],
-            "SEMCONV_SCHEMA_URL suffix does not match SEMCONV_VERSION"
-        );
-        i += 1;
-    }
-};
+use crate::receivers::host_metrics_receiver::semconv;
 
 const SCOPE_NAME: &[u8] = b"otap-df-core-nodes/host-metrics";
 const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
@@ -87,8 +63,8 @@ impl ResourceAttrWriter<'_> {
 
 /// Builds an `OtapArrowRecords::Metrics` batch directly from host metric values.
 ///
-/// Call [`begin_sum_i64`], [`begin_sum_f64`], or [`begin_gauge_f64`] to open a
-/// metric, then [`append_i64_dp`] / [`append_f64_dp`] for each data point.
+/// Call a `begin_*` method to open a metric, then [`append_i64_dp`] /
+/// [`append_f64_dp`] for each data point.
 /// Call [`finish`] to produce the final batch.
 pub(crate) struct HostMetricsArrowBuilder {
     metrics: MetricsRecordBatchBuilder,
@@ -261,7 +237,7 @@ impl HostMetricsArrowBuilder {
         self.metrics.resource.append_id_n(0, n);
         self.metrics
             .resource
-            .append_schema_url_n(Some(SEMCONV_SCHEMA_URL), n);
+            .append_schema_url_n(Some(semconv::SCHEMA_URL), n);
         self.metrics
             .resource
             .append_dropped_attributes_count_n(0, n);
@@ -272,7 +248,7 @@ impl HostMetricsArrowBuilder {
         self.metrics.scope.append_dropped_attributes_count_n(0, n);
         // Schema URL on scope column.
         self.metrics
-            .append_scope_schema_url_n(SEMCONV_SCHEMA_URL, n);
+            .append_scope_schema_url_n(semconv::SCHEMA_URL, n);
 
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
         finish_batch(
