@@ -765,7 +765,7 @@ mod tests {
                 let received_metrics_data = &msgs[0];
                 let (_, payload) = received_metrics_data.clone().into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload
-                    .try_into()
+                    .try_into_with_default()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_metrics_data = match otlp_bytes {
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
