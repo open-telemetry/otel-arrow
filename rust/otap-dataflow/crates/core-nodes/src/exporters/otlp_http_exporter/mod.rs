@@ -256,7 +256,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut tel_timer_cancelled = false;
         let tel_timer_cancel_fut = async {
             let _ = telemetry_timer_cancel.cancel().await;
-            futures::future::pending::<()>().await
         }
         .fuse();
         pin_mut!(tel_timer_cancel_fut);
@@ -315,10 +314,28 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
 
                     loop {
-                        // If the exports are completed in time, we exit the loop to evaluate the
-                        // rest of the possible races
-                        if inflight_exports.is_empty() && tel_timer_cancelled {
-                            break;
+                        // If the exports are completed in time, we exit the loop and return
+                        // `TerminalState`
+                        if inflight_exports.is_empty() {
+                            if tel_timer_cancelled {
+                                break;
+                            }
+
+                            // Nothing in flight so we don't poll `next_completion()` here. `FuturesUnordered::next()`
+                            // resolves `Ready(None)` immediately on an empty set, which would starve the branches
+                            // below in a tight, non-yielding loop. Removing this breaks
+                            futures::select_biased! {
+                                _ = tel_timer_cancel_fut => {
+                                    tel_timer_cancelled = true;
+                                }
+                                _timeout = timeout => {
+                                    return Err(EngineError::IoError {
+                                        node: exporter_id.clone(),
+                                        error: std::io::Error::from(ErrorKind::TimedOut),
+                                    });
+                                },
+                            }
+                            continue;
                         }
 
                         futures::select_biased! {
@@ -336,15 +353,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 tel_timer_cancelled = true
                             }
                             _timeout = timeout => {
-                                let mut shutdown_exports: ShutdownExport = inflight_exports.into();
-                                self.pdata_metrics.add_failed(SignalType::Metrics, 1);
-                                self.pdata_metrics.add_failed(SignalType::Logs, 1);
-                                self.pdata_metrics.add_failed(SignalType::Traces, 1);
+                                for signal_type in inflight_exports.pending_signal_types() {
+                                    self.pdata_metrics.add_failed(signal_type, 1);
+                                }
                                 return Err(EngineError::IoError {node: exporter_id.clone(), error: std::io::Error::from(ErrorKind::TimedOut)})
                             },
                         };
                     }
-
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -414,7 +429,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let max_response_body_len = self.config.max_response_body_length;
 
                     let client = client_pool.get_client();
-                    inflight_exports.push(async move {
+                    inflight_exports.push(signal_type, async move {
                         let result = client.post(endpoint.as_str()).body(body).send().await;
 
                         CompletedExport {
@@ -627,102 +642,6 @@ async fn finalize_completed_export(
     pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
 ) {
     let CompletedExport {
-        result,
-        context,
-        saved_payload,
-        signal_type,
-    } = completed;
-
-    let pdata = OtapPdata::new(context, saved_payload);
-
-    let err = match result {
-        Ok(service_resp) => service_resp.partial_success.and_then(|partial_success| {
-            // As per OTLP HTTP spec, the server may use partial success to convey information
-            // even in the case where it fully accepts the request. In these cases, it MUST have
-            // set the rejected_<signal> field to 0. We'll treat this case as a success
-            if partial_success.rejected == 0 {
-                otel_debug!(
-                    "otlp.exporter.http.zero_partial_rejected",
-                    details = partial_success.error_message
-                );
-
-                None
-            } else {
-                // In the case we received a partial_success, the spec states that the request
-                // should not be retried.
-                // https://opentelemetry.io/docs/specs/otlp/#partial-success-1
-                let retryable = false;
-                Some((
-                    format!(
-                        "{} ({} rejected)",
-                        partial_success.error_message, partial_success.rejected
-                    ),
-                    retryable,
-                ))
-            }
-        }),
-        Err(e) => Some((e.to_string(), e.is_retryable())),
-    };
-
-    let export_and_notify_success = match err {
-        None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
-        Some((err_msg, retryable)) => {
-            otel_warn!(
-                "otlp.exporter.http.export_error",
-                message = err_msg,
-                retryable = retryable
-            );
-            pdata_metrics.add_failed(signal_type, 1);
-            let mut nack = NackMsg::new(&err_msg, pdata);
-            nack.permanent = !retryable;
-            _ = effect_handler.notify_nack(nack).await;
-            false
-        }
-    };
-
-    if export_and_notify_success {
-        pdata_metrics.add_exported(signal_type, 1)
-    } else {
-        pdata_metrics.add_failed(signal_type, 1)
-    }
-}
-
-#[derive(Debug)]
-struct ShutdownExport {
-    result: Result<ServiceResponse, ServiceRequestError>,
-    context: Context,
-    saved_payload: OtapPayload,
-    signal_type: SignalType,
-}
-
-impl From<CompletedExport> for ShutdownExport {
-    fn from(completed_export: CompletedExport) -> Self {
-        ShutdownExport {
-            result: completed_export.result,
-            context: completed_export.context,
-            saved_payload: completed_export.saved_payload,
-            signal_type: completed_export.signal_type,
-        }
-    }
-}
-
-impl From<ShutdownExport> for CompletedExport {
-    fn from(shutdown_export: ShutdownExport) -> Self {
-        CompletedExport {
-            result: shutdown_export.result,
-            context: shutdown_export.context,
-            saved_payload: shutdown_export.saved_payload,
-            signal_type: shutdown_export.signal_type,
-        }
-    }
-}
-
-async fn finalize_shutdown_export(
-    completed: ShutdownExport,
-    effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
-) {
-    let ShutdownExport {
         result,
         context,
         saved_payload,
@@ -2942,5 +2861,117 @@ mod test {
                     )
                 })
             });
+    }
+
+    /// run an http server that delays every response by `delay` before returning a normal
+    /// success response. This is used to simulate a slow backend that a shutdown deadline should
+    /// time out against
+    fn run_slow_server(
+        tokio_rt: &Runtime,
+        endpoint_addr: &str,
+        delay: Duration,
+    ) -> CancellationToken {
+        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token2 = server_cancellation_token.clone();
+        let endpoint_addr = endpoint_addr.to_string();
+        _ = tokio_rt.spawn(async move {
+        let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
+        let tracker = TaskTracker::new();
+        loop {
+            tokio::select! {
+                _ = server_cancellation_token.cancelled() => break,
+                accept_result = listener.accept() => {
+                    let (stream, peer_addr) = accept_result.unwrap();
+                    let shutdown_token = server_cancellation_token.clone();
+                    drop(tracker.spawn(async move {
+                        let io = TokioIo::new(stream);
+                        let conn = http1::Builder::new().serve_connection(io, service_fn(move |_req| async move {
+                            tokio::time::sleep(delay).await;
+
+                            let mut body = Vec::new();
+                            let service_resp = ExportLogsServiceResponse { partial_success: None };
+                            service_resp.encode(&mut body).unwrap();
+
+                            Ok::<_, hyper::Error>(Response::builder()
+                                .status(200)
+                                .body(Full::new(Bytes::from(body)))
+                                .unwrap())
+                        }));
+                        let mut conn = std::pin::pin!(conn);
+
+                        tokio::select! {
+                            _ = shutdown_token.cancelled() => {
+                                conn.as_mut().graceful_shutdown();
+                                let _ = conn.await;
+                            },
+                            conn_result = &mut conn => {
+                                if let Err(e) = conn_result {
+                                    eprintln!("Error serving connection from {peer_addr}: {e}");
+                                }
+                            }
+                        }
+                    }));
+                }
+            }
+        }
+
+        let _ = tracker.close();
+    });
+
+        server_cancellation_token2
+    }
+
+    #[test]
+    fn test_shutdown_times_out_pending_exports() {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = default_test_config(endpoint);
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        // server takes 2s to respond; the shutdown deadline below is much shorter
+        let server_cancellation_token =
+            run_slow_server(&tokio_rt, &endpoint_addr, Duration::from_secs(2));
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+        ))];
+        let pdatas = subscribe_pdatas(pdatas, false);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    // give the exporter a moment to actually dispatch the request
+                    // before starting the shutdown clock
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    server_cancellation_token.cancel();
+
+                    match result {
+                        Err(EngineError::IoError { node, error }) => {
+                            assert_eq!(node.name, "test_exporter");
+                            assert_eq!(error.kind(), ErrorKind::TimedOut);
+                        }
+                        other => panic!("expected timeout IoError, got {other:?}"),
+                    }
+                })
+            })
     }
 }

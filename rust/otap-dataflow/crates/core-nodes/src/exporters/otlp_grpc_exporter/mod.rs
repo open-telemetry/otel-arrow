@@ -179,7 +179,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         let timer_cancel_fut = async {
             let _ = timer_cancel_handle.cancel().await;
-            futures::future::pending::<()>().await
         }
         .fuse();
         pin_mut!(timer_cancel_fut);
@@ -257,10 +256,28 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     let mut timer_cancelled = false;
 
                     loop {
-                        // If the exports are completed in time, we exit the loop to evaluate the
-                        // rest of the possible races
-                        if inflight_exports.is_empty() && timer_cancelled {
-                            break;
+                        // If the exports are completed in time, we exit the loop and return
+                        // `TerminalState`
+                        if inflight_exports.is_empty() {
+                            if timer_cancelled {
+                                break;
+                            }
+
+                            // Nothing in flight so we don't poll `next_completion()` here. `FuturesUnordered::next()`
+                            // resolves `Ready(None)` immediately on an empty set, which would starve the branches
+                            // below in a tight, non-yielding loop
+                            futures::select_biased! {
+                                _ = timer_cancel_fut => {
+                                    timer_cancelled = true;
+                                }
+                                _timeout = timeout => {
+                                    return Err(Error::IoError {
+                                        node: exporter_id.clone(),
+                                        error: std::io::Error::from(ErrorKind::TimedOut),
+                                    });
+                                },
+                            }
+                            continue;
                         }
 
                         futures::select_biased! {
@@ -289,6 +306,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             },
                         };
                     }
+                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
@@ -750,10 +768,9 @@ fn make_export_future(
     }
 }
 
-/// Wrapper designed to be able to properly get the signal type of an export in case of shutdown.
-/// [`FuturesUnordered`] provides no way to inspect pending futures, so without this wrapper
-/// there is no way to know which signal types are still in flight at any given point.
+/// Wrapper designed to be able to retrieve information about the opaque export future.
 struct InFlightExport<Output> {
+    /// The signal type of the batch being exported
     signal_type: SignalType,
     fut: Pin<Box<dyn Future<Output = Output>>>,
 }
@@ -969,6 +986,10 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
+
+    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsService;
+    use tonic::{Request, Response, Status};
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
     async fn wait_for_ack_or_nack(
@@ -1760,5 +1781,118 @@ mod tests {
             result.is_none(),
             "should return None when policy drops all headers"
         );
+    }
+
+    struct SlowLogsService {
+        delay: Duration,
+    }
+
+    #[tonic::async_trait]
+    impl LogsService for SlowLogsService {
+        async fn export(
+            &self,
+            _request: Request<ExportLogsServiceRequest>,
+        ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+            tokio::time::sleep(self.delay).await;
+            Ok(Response::new(ExportLogsServiceResponse {
+                partial_success: None,
+            }))
+        }
+    }
+
+    #[test]
+    fn test_shutdown_times_out_pending_exports() {
+        let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
+        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let tokio_rt = Runtime::new().unwrap();
+
+        // server takes 2s to respond to every export; the shutdown deadline below is much shorter
+        _ = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = ready_sender.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            let mock_logs_service = LogsServiceServer::new(SlowLogsService {
+                delay: Duration::from_secs(2),
+            });
+            Server::builder()
+                .add_service(mock_logs_service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = shutdown_signal.await;
+                })
+                .await
+                .expect("Test gRPC server has failed");
+        });
+
+        tokio_rt
+            .block_on(ready_receiver)
+            .expect("Server failed to start");
+
+        let test_runtime = TestRuntime::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint,
+                        ..Default::default()
+                    },
+                    max_in_flight: 32,
+                },
+                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    let req = ExportLogsServiceRequest::default();
+                    let mut req_bytes = vec![];
+                    req.encode(&mut req_bytes).unwrap();
+                    let logs_pdata = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(Bytes::from(req_bytes)).into(),
+                    )
+                    .test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::default().into(),
+                        123,
+                    );
+                    ctx.send_pdata(logs_pdata).await.unwrap();
+
+                    // give the exporter a moment to actually dispatch the request
+                    // before starting the shutdown clock
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    // deadline is far shorter than the server's 2s delay, so shutdown must time out
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    _ = shutdown_sender.send("shutdown");
+
+                    match result {
+                        Err(Error::IoError { node, error }) => {
+                            assert_eq!(node.name, "test_exporter");
+                            assert_eq!(error.kind(), ErrorKind::TimedOut);
+                        }
+                        other => panic!("expected timeout IoError, got {other:?}"),
+                    }
+                })
+            });
     }
 }
