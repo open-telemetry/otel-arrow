@@ -1,7 +1,25 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Node-local delayed resume and wakeup scheduling for processor inboxes.
+//! Processor-local scheduling for work that should re-enter a processor inbox.
+//!
+//! This module implements two related but intentionally distinct mechanisms:
+//!
+//! - Delayed resume stores a retained `Box<PData>` until a deadline and then
+//!   surfaces that same payload as `NodeControlMsg::DelayedData`. Delayed
+//!   resumes are append-only: there is no key, deduplication, or replacement.
+//!   Equal deadlines are emitted FIFO by scheduler sequence. Rejection is
+//!   payload-preserving so callers can turn failed scheduling into explicit
+//!   failure handling.
+//! - Wakeup scheduling stores only a lightweight keyed deadline. A
+//!   `WakeupSlot` identifies the logical timer and later surfaces as
+//!   `NodeControlMsg::Wakeup`; no `PData` is retained. Scheduling the same slot
+//!   again replaces the previous deadline and assigns a new revision so callers
+//!   can ignore stale wakeups.
+//!
+//! The processor inbox consumes both mechanisms as control traffic. That keeps
+//! fairness, shutdown latching, and drain behavior in one place while avoiding
+//! the older runtime-global delayed-data path for processor-local retry work.
 
 use crate::clock;
 use crate::control::{NodeControlMsg, WakeupRevision, WakeupSlot};
@@ -93,14 +111,23 @@ pub(crate) struct NodeLocalWakeupSchedulerMetrics {
     capacity: Gauge<u64>,
 }
 
+/// Retained payload scheduled for future delivery back to the same processor.
+///
+/// `BinaryHeap` is a max-heap, so the ordering implementation below reverses
+/// comparisons to make the earliest deadline appear at the heap head. The
+/// scheduler-owned `sequence` field breaks equal-deadline ties FIFO.
 #[derive(Debug)]
 struct ScheduledResume<PData> {
+    /// Deadline at which the retained payload becomes due.
     when: Instant,
+    /// Monotonic scheduler sequence used as a FIFO tie-breaker.
     sequence: u64,
+    /// Original retained pdata returned to the processor when due.
     data: Box<PData>,
 }
 
 impl<PData> Ord for ScheduledResume<PData> {
+    // Reverse ordering so BinaryHeap behaves like a min-heap by due time.
     fn cmp(&self, other: &Self) -> Ordering {
         other
             .when
@@ -110,12 +137,14 @@ impl<PData> Ord for ScheduledResume<PData> {
 }
 
 impl<PData> PartialOrd for ScheduledResume<PData> {
+    // Delegate partial ordering to the total ordering used by BinaryHeap.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl<PData> PartialEq for ScheduledResume<PData> {
+    // Payload identity is not part of scheduling identity.
     fn eq(&self, other: &Self) -> bool {
         self.when == other.when && self.sequence == other.sequence
     }
@@ -145,24 +174,41 @@ impl PartialOrd for WakeupPriority {
     }
 }
 
+/// Mutable state behind a processor's local delayed-resume and wakeup handle.
+///
+/// The scheduler is shared between the processor `EffectHandler` and inbox via
+/// [`NodeLocalSchedulerHandle`]. All mutation happens under the handle mutex,
+/// and the inbox polls due work through `next_expiry` and `pop_due`.
 struct NodeLocalScheduler<PData> {
+    /// Maximum number of retained delayed resumes accepted at once.
     delayed_resume_capacity: usize,
+    /// Maximum number of live wakeup slots accepted at once.
     wakeup_capacity: usize,
+    /// Next FIFO sequence number for delayed resumes.
     next_sequence: u64,
+    /// Next revision assigned to accepted wakeup schedules.
     next_revision: WakeupRevision,
+    /// Retained payloads ordered by earliest due time and FIFO sequence.
     delayed_resumes: BinaryHeap<ScheduledResume<PData>>,
+    /// Immediate control messages produced by shutdown drain conversion.
     due_now: VecDeque<NodeControlMsg<PData>>,
+    /// Keyed wakeup deadlines with replace/remove support by slot.
     heap: IndexedMinHeap<WakeupSlot, WakeupPriority>,
+    /// Whether shutdown has latched and new local scheduling must be rejected.
     shutting_down: bool,
+    /// Optional per-node telemetry for wakeup activity.
     metrics: Option<MetricSet<NodeLocalWakeupSchedulerMetrics>>,
 }
 
 impl<PData> NodeLocalScheduler<PData> {
+    /// Creates a scheduler without metrics for tests.
     #[cfg(test)]
     fn new(delayed_resume_capacity: usize, wakeup_capacity: usize) -> Self {
         Self::new_with_metrics(delayed_resume_capacity, wakeup_capacity, None)
     }
 
+    /// Creates a scheduler with explicit delayed-resume/wakeup capacities and
+    /// optional wakeup metrics.
     fn new_with_metrics(
         delayed_resume_capacity: usize,
         wakeup_capacity: usize,
@@ -181,18 +227,21 @@ impl<PData> NodeLocalScheduler<PData> {
         }
     }
 
+    /// Allocates the next delayed-resume FIFO sequence number.
     fn next_sequence(&mut self) -> u64 {
         let next = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         next
     }
 
+    /// Allocates the next wakeup revision number.
     fn next_revision(&mut self) -> WakeupRevision {
         let next = self.next_revision;
         self.next_revision = self.next_revision.saturating_add(1);
         next
     }
 
+    /// Refreshes gauges derived from current wakeup state.
     fn refresh_gauges(&mut self) {
         if let Some(metrics) = &mut self.metrics {
             metrics.live.set(self.heap.len() as u64);
@@ -200,6 +249,10 @@ impl<PData> NodeLocalScheduler<PData> {
         }
     }
 
+    /// Stores a retained payload for later delivery to this processor.
+    ///
+    /// Returns the original payload on capacity pressure or after shutdown is
+    /// latched so callers never lose ownership on rejection.
     fn requeue_later(&mut self, when: Instant, data: Box<PData>) -> Result<(), Box<PData>> {
         if self.shutting_down || self.delayed_resumes.len() >= self.delayed_resume_capacity {
             return Err(data);
@@ -214,6 +267,10 @@ impl<PData> NodeLocalScheduler<PData> {
         Ok(())
     }
 
+    /// Inserts or replaces a lightweight keyed wakeup.
+    ///
+    /// Unlike delayed resumes, wakeups retain no payload and replacement of an
+    /// existing slot does not consume additional capacity.
     fn set_wakeup(
         &mut self,
         slot: WakeupSlot,
@@ -257,6 +314,7 @@ impl<PData> NodeLocalScheduler<PData> {
         }
     }
 
+    /// Cancels one live wakeup slot if shutdown has not already latched.
     fn cancel_wakeup(&mut self, slot: WakeupSlot) -> bool {
         if self.shutting_down {
             if let Some(metrics) = &mut self.metrics {
@@ -276,6 +334,10 @@ impl<PData> NodeLocalScheduler<PData> {
         removed
     }
 
+    /// Returns the earliest instant at which local work may become due.
+    ///
+    /// `due_now` is represented as ready immediately so the inbox can drain
+    /// shutdown-converted delayed resumes without sleeping.
     fn next_expiry(&mut self) -> Option<Instant> {
         if !self.due_now.is_empty() {
             return Some(clock::now());
@@ -295,6 +357,11 @@ impl<PData> NodeLocalScheduler<PData> {
         }
     }
 
+    /// Pops one local control message due at or before `now`.
+    ///
+    /// Delayed resumes and wakeups share one due stream. When both mechanisms
+    /// are due, earlier deadlines win; equal deadlines prefer delayed resume
+    /// because it represents retained payload drain.
     fn pop_due(&mut self, now: Instant) -> Option<NodeControlMsg<PData>> {
         if let Some(msg) = self.due_now.pop_front() {
             return Some(msg);
@@ -366,6 +433,11 @@ impl<PData> NodeLocalScheduler<PData> {
         Some((slot, priority.when, priority.revision))
     }
 
+    /// Latches shutdown and converts pending delayed resumes into immediate
+    /// `DelayedData` controls while dropping pending wakeups.
+    ///
+    /// This preserves payload drain expectations for retry-like flows. Wakeups
+    /// are intentionally not retained because they carry no payload.
     fn begin_shutdown(&mut self, now: Instant) {
         if self.shutting_down {
             return;
@@ -387,10 +459,12 @@ impl<PData> NodeLocalScheduler<PData> {
         self.refresh_gauges();
     }
 
+    /// Returns whether all retained local work has drained.
     fn is_drained(&self) -> bool {
         self.due_now.is_empty() && self.delayed_resumes.is_empty() && self.heap.is_empty()
     }
 
+    /// Reports current wakeup scheduler metrics through the provided reporter.
     fn report_metrics(
         &mut self,
         metrics_reporter: &mut MetricsReporter,
@@ -644,6 +718,9 @@ mod tests {
         assert!(scheduler.pop_due(now).is_none());
     }
 
+    /// Scenario: a wakeup slot is scheduled once and then reaches its deadline.
+    /// Guarantees: the scheduler reports the deadline, emits one `Wakeup`
+    /// control with the accepted revision, and clears the slot afterward.
     #[test]
     fn set_wakeup_schedules_a_wakeup() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
@@ -662,6 +739,10 @@ mod tests {
         assert_eq!(scheduler.next_expiry(), None);
     }
 
+    /// Scenario: the same wakeup slot is scheduled twice with different due
+    /// times before either deadline is popped.
+    /// Guarantees: the second schedule replaces the first in place and only
+    /// the latest deadline/revision is emitted.
     #[test]
     fn setting_same_slot_replaces_previous_due_time() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
@@ -685,6 +766,9 @@ mod tests {
         assert!(scheduler.pop_due(later).is_none());
     }
 
+    /// Scenario: a live wakeup slot is canceled before its deadline.
+    /// Guarantees: cancellation removes the wakeup, a second cancellation
+    /// reports a miss, and no wakeup is emitted at the old deadline.
     #[test]
     fn cancel_wakeup_removes_pending_wakeup() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
@@ -702,6 +786,10 @@ mod tests {
         assert!(scheduler.pop_due(when).is_none());
     }
 
+    /// Scenario: wakeup insertion, replacement, capacity rejection,
+    /// cancellation, and due delivery all occur on a metrics-enabled scheduler.
+    /// Guarantees: lifecycle counters and gauges reflect each accepted,
+    /// rejected, canceled, missed, and popped wakeup operation.
     #[test]
     fn scheduler_metrics_count_wakeup_lifecycle() {
         let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
@@ -830,6 +918,10 @@ mod tests {
         );
     }
 
+    /// Scenario: one wakeup slot is repeatedly rescheduled with earlier
+    /// deadlines.
+    /// Guarantees: replacement keeps a single live heap entry, advances the
+    /// revision each time, and emits only the final schedule.
     #[test]
     fn repeated_reschedules_keep_single_heap_entry() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
@@ -851,6 +943,9 @@ mod tests {
         assert_eq!(scheduler.next_expiry(), None);
     }
 
+    /// Scenario: multiple wakeup slots share the same deadline.
+    /// Guarantees: equal-deadline wakeups are emitted in scheduler revision
+    /// order and heap/index consistency is preserved.
     #[test]
     fn equal_deadlines_follow_schedule_sequence() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(4, 4);
