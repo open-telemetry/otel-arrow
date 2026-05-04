@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -5.632352828979492
+    "value": 1.2658227682113647
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 70.34925715098154
+    "value": 78.49758723811306
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 79.61598014888337
+    "value": 82.84196078431373
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 12.38359375
+    "value": 13.614453125
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 14.46484375
+    "value": 18.14453125
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 696411.2086974386
+    "value": 808683.9967988398
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 747207.8658321337
+    "value": 815240.7374542289
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 20.000612
+    "value": 20.000751
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 17205231.47283856
+    "value": 20057456.59719386
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/800k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 17182584.554109834
+    "value": 20016243.225099668
   }
 ]

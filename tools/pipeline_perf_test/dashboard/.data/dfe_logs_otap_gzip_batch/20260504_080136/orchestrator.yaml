@@ -1,0 +1,239 @@
+name: DFE OTAP Batch Processor w/ Gzip (Logs)
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/loadgen-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/engine-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/backend-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  # 100k: 1 loadgen core
+  - name: 100k
+    from_template:
+      path: dashboard/templates/steps/df-engine.yaml
+      variables:
+        engine_config_template: dashboard/templates/engine/otap-batch-otap.yaml
+        loadgen_config_template: dashboard/templates/loadgen/otap.yaml.j2
+        backend_config_template: dashboard/templates/backend/otap.yaml.j2
+        data_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136
+        test_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/tests/100k
+        report_config: dashboard/reports/integration_report_logs.yaml
+        compression_method: gzip
+        report_name: "DF Engine 100k - DFE OTAP Batch Processor w/ Gzip (Logs)"
+        observation_interval: 20
+        signals_per_second: 100000
+        max_batch_size: 1000
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+        engine_core_start: 0
+        engine_core_end: 0
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 2
+
+  # 200k: 2 loadgen cores
+  - name: 200k
+    from_template:
+      path: dashboard/templates/steps/df-engine.yaml
+      variables:
+        engine_config_template: dashboard/templates/engine/otap-batch-otap.yaml
+        loadgen_config_template: dashboard/templates/loadgen/otap.yaml.j2
+        backend_config_template: dashboard/templates/backend/otap.yaml.j2
+        data_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136
+        test_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/tests/200k
+        report_config: dashboard/reports/integration_report_logs.yaml
+        compression_method: gzip
+        report_name: "DF Engine 200k - DFE OTAP Batch Processor w/ Gzip (Logs)"
+        observation_interval: 20
+        signals_per_second: 100000
+        max_batch_size: 1000
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+        engine_core_start: 0
+        engine_core_end: 0
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 3
+
+  # 300k: 3 loadgen cores
+  - name: 300k
+    from_template:
+      path: dashboard/templates/steps/df-engine.yaml
+      variables:
+        engine_config_template: dashboard/templates/engine/otap-batch-otap.yaml
+        loadgen_config_template: dashboard/templates/loadgen/otap.yaml.j2
+        backend_config_template: dashboard/templates/backend/otap.yaml.j2
+        data_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136
+        test_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/tests/300k
+        report_config: dashboard/reports/integration_report_logs.yaml
+        compression_method: gzip
+        report_name: "DF Engine 300k - DFE OTAP Batch Processor w/ Gzip (Logs)"
+        observation_interval: 20
+        signals_per_second: 100000
+        max_batch_size: 1000
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+        engine_core_start: 0
+        engine_core_end: 0
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 4
+
+  # 400k: 4 loadgen cores
+  - name: 400k
+    from_template:
+      path: dashboard/templates/steps/df-engine.yaml
+      variables:
+        engine_config_template: dashboard/templates/engine/otap-batch-otap.yaml
+        loadgen_config_template: dashboard/templates/loadgen/otap.yaml.j2
+        backend_config_template: dashboard/templates/backend/otap.yaml.j2
+        data_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136
+        test_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/tests/400k
+        report_config: dashboard/reports/integration_report_logs.yaml
+        compression_method: gzip
+        report_name: "DF Engine 400k - DFE OTAP Batch Processor w/ Gzip (Logs)"
+        observation_interval: 20
+        signals_per_second: 100000
+        max_batch_size: 1000
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+        engine_core_start: 0
+        engine_core_end: 0
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 5
+
+  - name: 600k
+    from_template:
+      path: dashboard/templates/steps/df-engine.yaml
+      variables:
+        engine_config_template: dashboard/templates/engine/otap-batch-otap.yaml
+        loadgen_config_template: dashboard/templates/loadgen/otap.yaml.j2
+        backend_config_template: dashboard/templates/backend/otap.yaml.j2
+        data_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136
+        test_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/tests/600k
+        report_config: dashboard/reports/integration_report_logs.yaml
+        compression_method: gzip
+        report_name: "DF Engine 600k - DFE OTAP Batch Processor w/ Gzip (Logs)"
+        observation_interval: 20
+        signals_per_second: 100000
+        max_batch_size: 1000
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+        engine_core_start: 0
+        engine_core_end: 0
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 7
+
+  - name: 800k
+    from_template:
+      path: dashboard/templates/steps/df-engine.yaml
+      variables:
+        engine_config_template: dashboard/templates/engine/otap-batch-otap.yaml
+        loadgen_config_template: dashboard/templates/loadgen/otap.yaml.j2
+        backend_config_template: dashboard/templates/backend/otap.yaml.j2
+        data_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136
+        test_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/tests/800k
+        report_config: dashboard/reports/integration_report_logs.yaml
+        compression_method: gzip
+        report_name: "DF Engine 800k - DFE OTAP Batch Processor w/ Gzip (Logs)"
+        observation_interval: 20
+        signals_per_second: 100000
+        max_batch_size: 1000
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+        engine_core_start: 0
+        engine_core_end: 0
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 9
+
+  - name: 1000k
+    from_template:
+      path: dashboard/templates/steps/df-engine.yaml
+      variables:
+        engine_config_template: dashboard/templates/engine/otap-batch-otap.yaml
+        loadgen_config_template: dashboard/templates/loadgen/otap.yaml.j2
+        backend_config_template: dashboard/templates/backend/otap.yaml.j2
+        data_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136
+        test_dir: dashboard/.data/dfe_logs_otap_gzip_batch/20260504_080136/tests/1000k
+        report_config: dashboard/reports/integration_report_logs.yaml
+        compression_method: gzip
+        report_name: "DF Engine 1000k - DFE OTAP Batch Processor w/ Gzip (Logs)"
+        observation_interval: 20
+        signals_per_second: 100000
+        max_batch_size: 1000
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+        engine_core_start: 0
+        engine_core_end: 0
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 11

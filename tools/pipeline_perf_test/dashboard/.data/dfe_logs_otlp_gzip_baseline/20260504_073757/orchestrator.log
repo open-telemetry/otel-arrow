@@ -1,0 +1,5 @@
+usage: run_orchestrator.py [-h] --config CONFIG [--debug]
+                           [--otlp-endpoint OTLP_ENDPOINT] [--export-traces]
+                           [--export-metrics] [--print-spans] [--print-events]
+                           [--print-metrics] [--docker.no-build]
+run_orchestrator.py: error: unrecognized arguments: --tests 800k

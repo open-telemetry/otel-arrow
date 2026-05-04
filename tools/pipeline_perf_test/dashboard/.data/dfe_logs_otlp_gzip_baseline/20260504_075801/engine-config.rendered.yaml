@@ -9,8 +9,8 @@ policies:
     core_allocation:
       type: core_set
       set:
-        - start: {{core_start}}
-          end: {{core_end}}
+        - start: 0
+          end: 0
 engine:
   telemetry:
     logs:
@@ -26,21 +26,12 @@ groups:
               protocols:
                 grpc:
                   listening_addr: 0.0.0.0:4317
-                  wait_for_result: true
-          batch:
-            type: urn:otel:processor:batch
-            config:
-              otlp:
-                min_size: 1048576
-                sizer: bytes
-              max_batch_duration: 200ms
+                  wait_for_result: false
           exporter:
             type: urn:otel:exporter:otlp_grpc
             config:
-              grpc_endpoint: http://{{backend_hostname}}:1235
-              compression_method: {% if compression_method == "none" %}null{% else %}{{compression_method}}{% endif %}
+              grpc_endpoint: http://backend-service:1235
+              compression_method: gzip
         connections:
-        - from: receiver
-          to: batch
-        - from: batch
-          to: exporter
+          - from: receiver
+            to: exporter

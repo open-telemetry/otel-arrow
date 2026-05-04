@@ -37,6 +37,7 @@ groups:
             config:
               grpc_endpoint: "http://{{ engine_hostname | default("localhost") }}:{{ exporter_port | default(4317) }}"
               compression_method: {% if compression_method == "none" %}null{% else %}{{compression_method}}{% endif %}
+              max_in_flight: 256
 
         connections:
           - from: receiver
