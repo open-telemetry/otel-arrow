@@ -468,15 +468,17 @@ impl GenevaExporter {
         }
     }
 
-    /// Handle PData message with dual-path encoding
+    /// Handle PData message with dual-path log encoding.
     ///
-    /// Supports two data paths for Geneva encoding:
-    /// - **Zero-copy path**: OTAP Arrow RecordBatch → Geneva (via LogsDataView)
-    ///   Avoids protobuf deserialization by iterating directly over Arrow columns
-    ///   Used when data flows through batch processor (converts OTLP → OTAP) or syslog receiver
-    /// - **Fallback path**: OTLP bytes → Geneva (validated raw OTLP byte view)
-    ///   Used when OTLP receiver connects directly to Geneva exporter (no batch processor)
-    ///   Validates protobuf framing without materializing OTLP protobuf structs
+    /// Supports two log data paths for Geneva encoding:
+    /// - **OTAP Arrow view path**: OTAP Arrow RecordBatch -> Geneva (via LogsDataView)
+    ///   Avoids protobuf deserialization by iterating directly over Arrow columns.
+    ///   Used when data flows through a batch processor or syslog receiver.
+    /// - **OTLP raw-byte view path**: OTLP bytes -> Geneva (via RawLogsData)
+    ///   Used when an OTLP receiver connects directly to the Geneva exporter.
+    ///   Validates top-level protobuf framing without materializing OTLP protobuf structs.
+    ///
+    /// Trace export still uses the existing fallback/prost path.
     async fn export_payload(
         &mut self,
         payload: OtapPayload,
