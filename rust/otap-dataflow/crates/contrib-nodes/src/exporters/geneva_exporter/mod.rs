@@ -40,6 +40,7 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 // Zero-copy view import (currently unused, for future optimization)
 // use otap_df_pdata::views::otap::OtapLogsView;
@@ -508,7 +509,7 @@ impl GenevaExporter {
 
                         let otlp_bytes: OtlpProtoBytes =
                             OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(otap_records))
-                                .try_into()
+                                .try_into_with_default()
                                 .map_err(|e| {
                                     self.metrics.conversion_errors.inc();
                                     format!("Failed to convert OTAP to OTLP: {:?}", e)
@@ -558,7 +559,7 @@ impl GenevaExporter {
 
                         let otlp_bytes: OtlpProtoBytes =
                             OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(otap_records))
-                                .try_into()
+                                .try_into_with_default()
                                 .map_err(|e| {
                                     self.metrics.conversion_errors.inc();
                                     format!("Failed to convert OTAP to OTLP: {:?}", e)

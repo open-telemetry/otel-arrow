@@ -644,7 +644,7 @@ mod test {
         otap_batch
             .set(ArrowPayloadType::ScopeAttrs, attrs_record_batch.clone())
             .unwrap();
-        let mut result_buf = ProtoBuffer::new();
+        let mut result_buf = ProtoBuffer::default();
         let mut encoder = LogsProtoBytesEncoder::new();
         encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
 
@@ -790,7 +790,7 @@ mod test {
             .set(ArrowPayloadType::Logs, logs_record_batch)
             .unwrap();
 
-        let mut result_buf = ProtoBuffer::new();
+        let mut result_buf = ProtoBuffer::default();
         let mut encoder = LogsProtoBytesEncoder::new();
         encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
 
@@ -866,7 +866,7 @@ mod test {
         otap_batch
             .set(ArrowPayloadType::LogAttrs, log_attrs_batch)
             .unwrap();
-        let mut result_buf = ProtoBuffer::new();
+        let mut result_buf = ProtoBuffer::default();
         let mut encoder = LogsProtoBytesEncoder::new();
         encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
         let result = LogsData::decode(result_buf.as_ref()).unwrap();
