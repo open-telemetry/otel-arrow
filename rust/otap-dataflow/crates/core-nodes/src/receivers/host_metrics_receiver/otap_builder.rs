@@ -184,6 +184,7 @@ impl HostMetricsArrowBuilder {
         self.ndp.append_time_unix_nano(now as i64);
         self.ndp.append_int_value(Some(value));
         self.ndp.append_double_value(None);
+        self.ndp.append_flags(0);
         let mut w = DpAttrWriter {
             attrs: &mut self.ndp_attrs,
             dp_id,
@@ -211,6 +212,7 @@ impl HostMetricsArrowBuilder {
         self.ndp.append_time_unix_nano(now as i64);
         self.ndp.append_int_value(None);
         self.ndp.append_double_value(Some(value));
+        self.ndp.append_flags(0);
         let mut w = DpAttrWriter {
             attrs: &mut self.ndp_attrs,
             dp_id,
