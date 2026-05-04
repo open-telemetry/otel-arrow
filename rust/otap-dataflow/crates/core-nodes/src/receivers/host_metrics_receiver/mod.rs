@@ -1284,7 +1284,11 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
 
                 msg = ctrl_msg_recv.recv() => {
                     match msg {
-                        Ok(NodeControlMsg::CollectTelemetry { .. }) => {}
+                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            if let Some(metrics) = metrics.as_mut() {
+                                let _ = metrics_reporter.report(metrics);
+                            }
+                        }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.drain_ingress");
                             effect_handler.notify_receiver_drained().await?;
