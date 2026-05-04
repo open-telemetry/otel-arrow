@@ -122,6 +122,7 @@ tikv-jemalloc-sys = "0.6.1"
 memchr = "2.8.0"
 memmap2 = "0.9"
 memory-stats = "1"
+libc = "0.2"
 nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"

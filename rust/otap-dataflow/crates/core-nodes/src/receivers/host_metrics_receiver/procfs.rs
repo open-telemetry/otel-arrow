@@ -2816,13 +2816,11 @@ fn millis_to_seconds(ms: u64) -> f64 {
     ms as f64 / 1_000.0
 }
 
+#[allow(unsafe_code)]
 fn clock_ticks_per_second() -> f64 {
-    nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
-        .ok()
-        .flatten()
-        .filter(|ticks| *ticks > 0)
-        .map(|ticks| ticks as f64)
-        .unwrap_or(100.0)
+    // SAFETY: _SC_CLK_TCK is a valid sysconf name; the call has no side effects.
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks > 0 { ticks as f64 } else { 100.0 }
 }
 
 fn now_unix_nano() -> u64 {
