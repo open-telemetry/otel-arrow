@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 use otap_df_config::SignalType;
 use otap_df_pdata::OtapPayload;
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use prost::EncodeError;
 use weaver_forge::registry::ResolvedRegistry;
@@ -739,7 +741,9 @@ mod tests {
 
         // Helper: extract the tenant.id attribute value from a log payload.
         let extract_tenant_id = |payload: OtapPayload| -> Option<String> {
-            let otlp_bytes: OtlpProtoBytes = payload.try_into().expect("convert to otlp bytes");
+            let otlp_bytes: OtlpProtoBytes = payload
+                .try_into_with_default()
+                .expect("convert to otlp bytes");
             let bytes = match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(b) => b,
                 _ => panic!("expected logs"),
@@ -825,7 +829,9 @@ mod tests {
 
         // Neither payload should carry a tenant.id attribute.
         for (i, batch) in [batch_1, batch_2].into_iter().enumerate() {
-            let otlp_bytes: OtlpProtoBytes = batch.try_into().expect("convert to otlp bytes");
+            let otlp_bytes: OtlpProtoBytes = batch
+                .try_into_with_default()
+                .expect("convert to otlp bytes");
             let bytes = match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(b) => b,
                 _ => panic!("expected logs"),
