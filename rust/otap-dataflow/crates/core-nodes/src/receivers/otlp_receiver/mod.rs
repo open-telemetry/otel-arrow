@@ -872,7 +872,6 @@ mod tests {
     use otap_df_otap::otlp_http::RpcStatus;
     use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,

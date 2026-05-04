@@ -51,9 +51,8 @@ use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, TryIntoWithOptions,
-    error::Error as PDataError, otap::batching::make_item_batches,
-    otlp::batching::make_bytes_batches,
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
+    otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
 };
 use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;

@@ -34,7 +34,6 @@ pretty_assertions = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
 
-otap-df-config = { workspace = true }
 otap-df-opl = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 

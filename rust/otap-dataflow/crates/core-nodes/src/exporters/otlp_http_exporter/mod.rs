@@ -732,7 +732,6 @@ mod test {
     use otap_df_engine::testing::node::test_node;
     use otap_df_pdata::OtapArrowRecords;
     use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;

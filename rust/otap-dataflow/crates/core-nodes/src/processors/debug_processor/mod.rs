@@ -29,12 +29,13 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
     metrics::v1::{MetricsData, metric::Data},
     trace::v1::TracesData,
 };
-use otap_df_pdata::{OtlpProtoBytes, TryIntoWithOptions};
 use otap_df_telemetry::metrics::MetricSet;
 use prost::Message as _;
 use serde_json::Value;

@@ -471,7 +471,6 @@ mod test {
     use super::*;
     use crate::testing::fixtures::logs_with_full_resource_and_scope;
     use crate::{
-        TryIntoWithOptions,
         otap::OtapArrowRecords,
         proto::opentelemetry::{
             collector::{

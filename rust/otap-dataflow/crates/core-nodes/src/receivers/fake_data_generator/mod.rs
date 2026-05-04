@@ -597,7 +597,6 @@ mod tests {
         test_node,
     };
     use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
