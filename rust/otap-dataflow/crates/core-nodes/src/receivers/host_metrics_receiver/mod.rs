@@ -32,9 +32,9 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::Context;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, Mmsc};
+use otap_df_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
 use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
 use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
@@ -46,9 +46,9 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::time::Instant as StdInstant;
-use std::time::Duration;
 #[cfg(target_os = "linux")]
 use tokio::time::{Instant, sleep_until};
 

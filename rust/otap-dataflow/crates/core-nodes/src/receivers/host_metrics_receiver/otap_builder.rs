@@ -181,7 +181,9 @@ impl HostMetricsArrowBuilder {
                 self.metrics.append_is_monotonic(None);
             }
         }
-        self.curr_metric_id = self.curr_metric_id.checked_add(1)
+        self.curr_metric_id = self
+            .curr_metric_id
+            .checked_add(1)
             .expect("metric_id overflow: more than u16::MAX metrics in one batch");
         id
     }
@@ -213,7 +215,9 @@ impl HostMetricsArrowBuilder {
             dp_id,
         };
         attrs(&mut w);
-        self.curr_dp_id = self.curr_dp_id.checked_add(1)
+        self.curr_dp_id = self
+            .curr_dp_id
+            .checked_add(1)
             .expect("dp_id overflow: more than u32::MAX datapoints in one batch");
     }
 
@@ -242,7 +246,9 @@ impl HostMetricsArrowBuilder {
             dp_id,
         };
         attrs(&mut w);
-        self.curr_dp_id = self.curr_dp_id.checked_add(1)
+        self.curr_dp_id = self
+            .curr_dp_id
+            .checked_add(1)
             .expect("dp_id overflow: more than u32::MAX datapoints in one batch");
     }
 
@@ -269,10 +275,26 @@ impl HostMetricsArrowBuilder {
             .append_scope_schema_url_n(SEMCONV_SCHEMA_URL, n);
 
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
-        finish_batch(&mut records, ArrowPayloadType::UnivariateMetrics, self.metrics.finish()?)?;
-        finish_batch(&mut records, ArrowPayloadType::NumberDataPoints, self.ndp.finish()?)?;
-        finish_batch(&mut records, ArrowPayloadType::ResourceAttrs, self.resource_attrs.finish()?)?;
-        finish_batch(&mut records, ArrowPayloadType::NumberDpAttrs, self.ndp_attrs.finish()?)?;
+        finish_batch(
+            &mut records,
+            ArrowPayloadType::UnivariateMetrics,
+            self.metrics.finish()?,
+        )?;
+        finish_batch(
+            &mut records,
+            ArrowPayloadType::NumberDataPoints,
+            self.ndp.finish()?,
+        )?;
+        finish_batch(
+            &mut records,
+            ArrowPayloadType::ResourceAttrs,
+            self.resource_attrs.finish()?,
+        )?;
+        finish_batch(
+            &mut records,
+            ArrowPayloadType::NumberDpAttrs,
+            self.ndp_attrs.finish()?,
+        )?;
         Ok(records)
     }
 }
