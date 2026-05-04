@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 1.2784810066223145
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 18.219617504988296
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 18.948858218318694
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 11.12109375
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 11.453125
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 409142.60748448194
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 403911.79693309806
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000764
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 143733309.0974164
+  },
+  {
+    "extra": "DFE OTLP Baseline (Logs)/400k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 143645451.63629675
+  }
+]

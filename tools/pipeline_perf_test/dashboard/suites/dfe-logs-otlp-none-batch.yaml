@@ -1,0 +1,21 @@
+name: DFE OTLP Batch Processor (Logs)
+slug: dfe_logs_otlp_none_batch
+description: Dataflow Engine OTLP logs through a batch processor with no compression
+orchestrator_template: dashboard/templates/orchestrator/dfe-single-core-multi-rate.yaml
+
+meta:
+  binary: dfe
+  protocols: [otlp]
+  signals: [logs]
+  compression: none
+
+variables:
+  report: dashboard/reports/integration_report_logs.yaml
+  engine_config: dashboard/templates/engine/otlp-batch-otlp.yaml
+  loadgen_config: dashboard/templates/loadgen/otlp.yaml.j2
+  backend_config: dashboard/templates/backend/otlp.yaml.j2
+  protocol: otlp
+  signal: logs
+  observation_interval: 20
+  max_batch_size: 1000
+  compression_method: none

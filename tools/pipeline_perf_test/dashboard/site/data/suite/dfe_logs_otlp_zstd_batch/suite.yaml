@@ -1,0 +1,10 @@
+name: DFE OTLP Batch Processor w/ Zstd (Logs)
+slug: dfe_logs_otlp_zstd_batch
+description: Dataflow Engine OTLP logs through a batch processor with zstd compression
+meta:
+  binary: dfe
+  protocols:
+  - otlp
+  signals:
+  - logs
+  compression: zstd

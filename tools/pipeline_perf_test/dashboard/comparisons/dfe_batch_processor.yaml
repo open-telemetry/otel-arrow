@@ -1,0 +1,52 @@
+slug: dfe_batch_processor
+name: DFE Batch Processor
+description: Compare the effect of the batch processor on DFE logs throughput across protocols and compression methods
+
+suites:
+  # OTAP — no compression
+  - name: DFE OTAP Baseline (None)
+    slug: dfe_logs_otap_none_baseline
+    short: OTAP/None (No Batch)
+  - name: DFE OTAP Batch (None)
+    slug: dfe_logs_otap_none_batch
+    short: OTAP/None (Batch)
+
+  # OTAP — gzip
+  - name: DFE OTAP Baseline (Gzip)
+    slug: dfe_logs_otap_gzip_baseline
+    short: OTAP/Gzip (No Batch)
+  - name: DFE OTAP Batch (Gzip)
+    slug: dfe_logs_otap_gzip_batch
+    short: OTAP/Gzip (Batch)
+
+  # OTAP — zstd
+  - name: DFE OTAP Baseline (Zstd)
+    slug: dfe_logs_otap_zstd_baseline
+    short: OTAP/Zstd (No Batch)
+  - name: DFE OTAP Batch (Zstd)
+    slug: dfe_logs_otap_zstd_batch
+    short: OTAP/Zstd (Batch)
+
+  # OTLP — no compression
+  - name: DFE OTLP Baseline (None)
+    slug: dfe_logs_otlp_none_baseline
+    short: OTLP/None (No Batch)
+  - name: DFE OTLP Batch (None)
+    slug: dfe_logs_otlp_none_batch
+    short: OTLP/None (Batch)
+
+  # OTLP — gzip
+  - name: DFE OTLP Baseline (Gzip)
+    slug: dfe_logs_otlp_gzip_baseline
+    short: OTLP/Gzip (No Batch)
+  - name: DFE OTLP Batch (Gzip)
+    slug: dfe_logs_otlp_gzip_batch
+    short: OTLP/Gzip (Batch)
+
+  # OTLP — zstd
+  - name: DFE OTLP Baseline (Zstd)
+    slug: dfe_logs_otlp_zstd_baseline
+    short: OTLP/Zstd (No Batch)
+  - name: DFE OTLP Batch (Zstd)
+    slug: dfe_logs_otlp_zstd_batch
+    short: OTLP/Zstd (Batch)

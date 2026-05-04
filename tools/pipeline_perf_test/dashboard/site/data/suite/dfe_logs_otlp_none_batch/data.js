@@ -1,0 +1,17 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_logs_otlp_none_batch"] = {
+  "name": "DFE OTLP Batch Processor (Logs)",
+  "slug": "dfe_logs_otlp_none_batch",
+  "description": "Dataflow Engine OTLP logs through a batch processor with no compression",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "tests": []
+};

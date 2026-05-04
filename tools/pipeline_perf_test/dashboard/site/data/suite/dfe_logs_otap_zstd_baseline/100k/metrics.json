@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.052631575614213943
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 7.482810379553498
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 8.125217391304348
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 13.593359375
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 13.66015625
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 99322.82222558293
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 99375.09739517535
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000712
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 769844.4535533814
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Zstd (Logs)/100k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 736855.5295729067
+  }
+]

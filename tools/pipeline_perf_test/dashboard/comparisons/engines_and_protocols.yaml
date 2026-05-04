@@ -1,0 +1,46 @@
+slug: engines_and_protocols
+name: Engines & Protocols
+description: Compare the Dataflow Engine to the OpenTelemetry Collector across protocols and compression methods
+
+suites:
+  # No compression
+  - name: Dataflow Engine (OTAP/None)
+    slug: dfe_logs_otap_none_baseline
+    short: DFE (OTAP/None)
+  - name: Dataflow Engine (OTLP/None)
+    slug: dfe_logs_otlp_none_baseline
+    short: DFE (OTLP/None)
+  - name: OpenTelemetry Collector (OTAP/None)
+    slug: otc_logs_otap_none_baseline
+    short: OTC (OTAP/None)
+  - name: OpenTelemetry Collector (OTLP/None)
+    slug: otc_logs_otlp_none_baseline
+    short: OTC (OTLP/None)
+
+  # Gzip compression
+  - name: Dataflow Engine (OTAP/Gzip)
+    slug: dfe_logs_otap_gzip_baseline
+    short: DFE (OTAP/Gzip)
+  - name: Dataflow Engine (OTLP/Gzip)
+    slug: dfe_logs_otlp_gzip_baseline
+    short: DFE (OTLP/Gzip)
+  - name: OpenTelemetry Collector (OTAP/Gzip)
+    slug: otc_logs_otap_gzip_baseline
+    short: OTC (OTAP/Gzip)
+  - name: OpenTelemetry Collector (OTLP/Gzip)
+    slug: otc_logs_otlp_gzip_baseline
+    short: OTC (OTLP/Gzip)
+
+  # Zstd compression
+  - name: Dataflow Engine (OTAP/Zstd)
+    slug: dfe_logs_otap_zstd_baseline
+    short: DFE (OTAP/Zstd)
+  - name: Dataflow Engine (OTLP/Zstd)
+    slug: dfe_logs_otlp_zstd_baseline
+    short: DFE (OTLP/Zstd)
+  - name: OpenTelemetry Collector (OTAP/Zstd)
+    slug: otc_logs_otap_zstd_baseline
+    short: OTC (OTAP/Zstd)
+  - name: OpenTelemetry Collector (OTLP/Zstd)
+    slug: otc_logs_otlp_zstd_baseline
+    short: OTC (OTLP/Zstd)

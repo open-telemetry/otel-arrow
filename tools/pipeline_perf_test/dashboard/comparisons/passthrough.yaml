@@ -1,0 +1,28 @@
+slug: passthrough
+name: Passthrough 
+description: Comparison of Passthrough Scenarios
+
+suites:
+  # No compression
+  - name: Dataflow Engine (OTAP/None)
+    slug: dfe_logs_otap_none_baseline
+    short: DFE (OTAP/None)
+  - name: Dataflow Engine (OTLP/None)
+    slug: dfe_logs_otlp_none_baseline
+    short: DFE (OTLP/None)
+
+  # Gzip compression
+  - name: Dataflow Engine (OTAP/Gzip)
+    slug: dfe_logs_otap_gzip_baseline
+    short: DFE (OTAP/Gzip)
+  - name: Dataflow Engine (OTLP/Gzip)
+    slug: dfe_logs_otlp_gzip_baseline
+    short: DFE (OTLP/Gzip)
+
+  # Zstd compression
+  - name: Dataflow Engine (OTAP/Zstd)
+    slug: dfe_logs_otap_zstd_baseline
+    short: DFE (OTAP/Zstd)
+  - name: Dataflow Engine (OTLP/Zstd)
+    slug: dfe_logs_otlp_zstd_baseline
+    short: DFE (OTLP/Zstd)

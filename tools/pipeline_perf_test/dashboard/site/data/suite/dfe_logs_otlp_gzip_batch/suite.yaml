@@ -1,0 +1,10 @@
+name: DFE OTLP Batch Processor w/ Gzip (Logs)
+slug: dfe_logs_otlp_gzip_batch
+description: Dataflow Engine OTLP logs through a batch processor with gzip compression
+meta:
+  binary: dfe
+  protocols:
+  - otlp
+  signals:
+  - logs
+  compression: gzip

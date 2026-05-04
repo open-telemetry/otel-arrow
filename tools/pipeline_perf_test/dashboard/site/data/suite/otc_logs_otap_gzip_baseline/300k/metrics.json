@@ -1,0 +1,56 @@
+[
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 100.0
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 97.37232772122555
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 98.1309717097171
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 74.651171875
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 77.109375
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 295847.6382586844
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000739
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 5621821.826438785
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Logs)/300k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 2408147.422314248
+  }
+]

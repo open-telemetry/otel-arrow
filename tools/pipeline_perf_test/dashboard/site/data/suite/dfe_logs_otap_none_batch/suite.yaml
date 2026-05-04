@@ -1,0 +1,10 @@
+name: DFE OTAP Batch Processor (Logs)
+slug: dfe_logs_otap_none_batch
+description: Dataflow Engine OTAP logs through a batch processor with no compression
+meta:
+  binary: dfe
+  protocols:
+  - otap
+  signals:
+  - logs
+  compression: none

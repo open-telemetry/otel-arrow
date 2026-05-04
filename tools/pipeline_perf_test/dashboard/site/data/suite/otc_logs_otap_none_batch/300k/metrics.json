@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.2894858717918396
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 89.45711430227361
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 99.68686567164178
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 113.1
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 126.8125
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 224315.33562078176
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 223788.39937369223
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000621
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 22909236.761681642
+  },
+  {
+    "extra": "OTC OTAP Batch Processor (Logs)/300k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 24583895.82387684
+  }
+]

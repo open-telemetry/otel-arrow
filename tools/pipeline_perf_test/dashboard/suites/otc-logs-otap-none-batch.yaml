@@ -1,0 +1,22 @@
+name: OTC OTAP Batch Processor (Logs)
+slug: otc_logs_otap_none_batch
+description: OpenTelemetry Collector OTAP logs through a batch processor with no compression
+orchestrator_template: dashboard/templates/orchestrator/otc-single-core-multi-rate.yaml
+
+meta:
+  binary: otc
+  protocols: [otap]
+  signals: [logs]
+  compression: none
+
+variables:
+  report: dashboard/reports/integration_report_logs.yaml
+  collector_config: dashboard/templates/otelcol/otap-batch-otap.yaml
+  loadgen_config: dashboard/templates/loadgen/otap.yaml.j2
+  backend_config: dashboard/templates/backend/otap.yaml.j2
+  protocol: otap
+  signal: logs
+  observation_interval: 20
+  max_batch_size: 1000
+  compression_method: none
+  otelcol_gomaxprocs: 1

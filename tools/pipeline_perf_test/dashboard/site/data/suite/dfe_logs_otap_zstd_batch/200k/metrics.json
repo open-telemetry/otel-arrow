@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.18464785814285278
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 12.164892066903668
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 13.693004926108374
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 18.691796875
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 19.46484375
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 197951.70375271732
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 198317.2173180745
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.00066
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 21384705.72410392
+  },
+  {
+    "extra": "DFE OTAP Batch Processor w/ Zstd (Logs)/200k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 22034114.94910094
+  }
+]

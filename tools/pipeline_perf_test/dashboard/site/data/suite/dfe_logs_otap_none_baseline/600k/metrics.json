@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -4.698113441467285
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 20.410882989156423
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 23.11876160990712
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 12.433984375
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 13.33984375
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 608552.2255501227
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 605700.1305164257
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000629
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 58753211.81548078
+  },
+  {
+    "extra": "DFE OTAP Baseline (Logs)/600k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 58707272.04749948
+  }
+]

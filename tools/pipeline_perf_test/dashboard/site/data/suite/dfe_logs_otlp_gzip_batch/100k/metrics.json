@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.052631575614213943
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 9.894174495024059
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 11.1263523573201
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 18.219140625
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 29.6484375
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 99081.32318622382
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 99029.17512138897
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.001121
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 36325104.99937021
+  },
+  {
+    "extra": "DFE OTLP Batch Processor w/ Gzip (Logs)/100k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 35979448.99758989
+  }
+]

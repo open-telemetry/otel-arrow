@@ -1,0 +1,22 @@
+name: OTC OTAP Baseline w/ Gzip (Logs)
+slug: otc_logs_otap_gzip_baseline
+description: OpenTelemetry Collector baseline for OTAP logs with gzip compression
+orchestrator_template: dashboard/templates/orchestrator/otc-single-core-multi-rate.yaml
+
+meta:
+  binary: otc
+  protocols: [otap]
+  signals: [logs]
+  compression: gzip
+
+variables:
+  report: dashboard/reports/integration_report_logs.yaml
+  collector_config: dashboard/templates/otelcol/otap-otap.yaml
+  loadgen_config: dashboard/templates/loadgen/otap.yaml.j2
+  backend_config: dashboard/templates/backend/otap.yaml.j2
+  protocol: otap
+  signal: logs
+  observation_interval: 20
+  max_batch_size: 1000
+  compression_method: gzip
+  otelcol_gomaxprocs: 1

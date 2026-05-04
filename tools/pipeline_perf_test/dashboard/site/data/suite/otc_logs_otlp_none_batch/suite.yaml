@@ -1,0 +1,10 @@
+name: OTC OTLP Batch Processor (Logs)
+slug: otc_logs_otlp_none_batch
+description: OpenTelemetry Collector OTLP logs through a batch processor with no compression
+meta:
+  binary: otc
+  protocols:
+  - otlp
+  signals:
+  - logs
+  compression: none

@@ -1,0 +1,21 @@
+name: DFE OTLP Baseline w/ Zstd (Logs)
+slug: dfe_logs_otlp_zstd_baseline
+description: Dataflow Engine baseline for OTLP logs with zstd compression
+orchestrator_template: dashboard/templates/orchestrator/dfe-single-core-multi-rate.yaml
+
+meta:
+  binary: dfe
+  protocols: [otlp]
+  signals: [logs]
+  compression: zstd
+
+variables:
+  report: dashboard/reports/integration_report_logs.yaml
+  engine_config: dashboard/templates/engine/otlp-otlp.yaml
+  loadgen_config: dashboard/templates/loadgen/otlp.yaml.j2
+  backend_config: dashboard/templates/backend/otlp.yaml.j2
+  protocol: otlp
+  signal: logs
+  observation_interval: 20
+  max_batch_size: 1000
+  compression_method: zstd
