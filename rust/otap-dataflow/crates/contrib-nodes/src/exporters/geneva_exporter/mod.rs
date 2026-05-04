@@ -371,9 +371,11 @@ impl GenevaExporter {
         // to avoid an intermediate Vec allocation.
         let mut stream = futures::stream::iter(batches.iter())
             .map(|batch| {
-                // TODO: restore compressed byte accounting after geneva-uploader exposes
-                // EncodedBatch::data_len() or an equivalent public accessor.
-                let batch_size = 0;
+                // TODO(https://github.com/open-telemetry/opentelemetry-rust-contrib/issues/605):
+                // restore compressed byte accounting after geneva-uploader exposes a public
+                // accessor such as EncodedBatch::compressed_len() returning the post-compression
+                // payload size uploaded to Geneva.
+                let batch_size: Option<u64> = None;
                 let row_count = batch.row_count as u64;
                 async move {
                     let start = Instant::now();
@@ -393,7 +395,7 @@ impl GenevaExporter {
         let mut failed: u64 = 0;
         let mut records_ok: u64 = 0;
         let mut records_err: u64 = 0;
-        let mut bytes_ok: u64 = 0;
+        let mut bytes_ok: Option<u64> = None;
 
         while let Some((result, duration_ms, batch_size, row_count)) = stream.next().await {
             match result {
@@ -411,7 +413,9 @@ impl GenevaExporter {
                     }
                     succeeded += 1;
                     records_ok += row_count;
-                    bytes_ok += batch_size;
+                    if let Some(batch_size) = batch_size {
+                        bytes_ok = Some(bytes_ok.unwrap_or_default() + batch_size);
+                    }
                 }
                 Err(e) => {
                     match signal_type {
@@ -438,14 +442,18 @@ impl GenevaExporter {
             SignalType::Logs => {
                 self.metrics.log_batches_uploaded.add(succeeded);
                 self.metrics.log_records_uploaded.add(records_ok);
-                self.metrics.log_bytes_uploaded.add(bytes_ok);
+                if let Some(bytes_ok) = bytes_ok {
+                    self.metrics.log_bytes_uploaded.add(bytes_ok);
+                }
                 self.metrics.log_batches_failed.add(failed);
                 self.metrics.log_records_failed.add(records_err);
             }
             SignalType::Traces => {
                 self.metrics.trace_batches_uploaded.add(succeeded);
                 self.metrics.trace_records_uploaded.add(records_ok);
-                self.metrics.trace_bytes_uploaded.add(bytes_ok);
+                if let Some(bytes_ok) = bytes_ok {
+                    self.metrics.trace_bytes_uploaded.add(bytes_ok);
+                }
                 self.metrics.trace_batches_failed.add(failed);
                 self.metrics.trace_records_failed.add(records_err);
             }
@@ -465,9 +473,9 @@ impl GenevaExporter {
     /// - **Zero-copy path**: OTAP Arrow RecordBatch → Geneva (via LogsDataView)
     ///   Avoids protobuf deserialization by iterating directly over Arrow columns
     ///   Used when data flows through batch processor (converts OTLP → OTAP) or syslog receiver
-    /// - **Fallback path**: OTLP bytes → Geneva (protobuf decoding)
+    /// - **Fallback path**: OTLP bytes → Geneva (validated raw OTLP byte view)
     ///   Used when OTLP receiver connects directly to Geneva exporter (no batch processor)
-    ///   Deserializes OTLP protobuf into structs before encoding
+    ///   Validates protobuf framing without materializing OTLP protobuf structs
     async fn export_payload(
         &mut self,
         payload: OtapPayload,
@@ -487,11 +495,16 @@ impl GenevaExporter {
             // OTAP Arrow path: encode logs through LogsDataView without converting back to OTLP.
             OtapPayload::OtapArrowRecords(otap_records) => {
                 match otap_records {
-                    OtapArrowRecords::Logs(otap_records) => {
+                    mut otap_records @ OtapArrowRecords::Logs(_) => {
                         otel_info!(
                             "geneva_exporter.upload",
                             message = "Uploading logs to Geneva using OTAP record views"
                         );
+
+                        otap_records.decode_transport_optimized_ids().map_err(|e| {
+                            self.metrics.conversion_errors.inc();
+                            format!("Failed to decode OTAP transport-optimized log IDs: {}", e)
+                        })?;
 
                         let logs_view = OtapLogsView::try_from(&otap_records).map_err(|e| {
                             self.metrics.conversion_errors.inc();
@@ -585,7 +598,10 @@ impl GenevaExporter {
                             message = "Uploading logs to Geneva using OTLP path"
                         );
 
-                        let logs_view = RawLogsData::new(bytes.as_ref());
+                        let logs_view = RawLogsData::try_new(bytes.as_ref()).map_err(|e| {
+                            self.metrics.conversion_errors.inc();
+                            format!("Failed to decode logs request: {}", e)
+                        })?;
 
                         // Encode and compress using Geneva client
                         let encode_start = Instant::now();
@@ -766,7 +782,7 @@ mod tests {
 
     use arrow::array::{
         ArrayRef, Int32Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray,
-        UInt16Array, UInt32Array,
+        UInt8Array, UInt16Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
@@ -776,33 +792,34 @@ mod tests {
     use otap_df_engine::control::PipelineCompletionMsg;
     use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
     use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otap_df_pdata::schema::{FieldExt, consts};
+    use otap_df_pdata::views::otap::OtapLogsView;
+    use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
     use std::time::{Duration, Instant};
 
-    // TODO: Re-enable these imports when zero-copy view tests are uncommented
-    // use otap_df_pdata::otap::OtapArrowRecords;
-    // use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    // use otap_df_pdata::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
-    // use otap_df_pdata::views::otap::OtapLogsView;
+    fn plain_field(name: &str, data_type: DataType, nullable: bool) -> Field {
+        Field::new(name, data_type, nullable).with_encoding(consts::metadata::encodings::PLAIN)
+    }
 
-    // TODO: Re-enable when zero-copy view tests are uncommented
     /// Helper to create a simple OTAP logs RecordBatch for testing Geneva exporter
-    #[allow(dead_code)]
     fn create_test_logs_batch() -> RecordBatch {
         // Define schema matching OTAP logs structure
         let resource_field = Field::new(
             "resource",
-            DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+            DataType::Struct(vec![plain_field("id", DataType::UInt16, false)].into()),
             false,
         );
 
         let scope_field = Field::new(
             "scope",
-            DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+            DataType::Struct(vec![plain_field("id", DataType::UInt16, false)].into()),
             false,
         );
 
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::UInt16, false),
+            plain_field("id", DataType::UInt16, false),
             resource_field,
             scope_field,
             Field::new(
@@ -817,7 +834,17 @@ mod tests {
             ),
             Field::new("severity_number", DataType::Int32, true),
             Field::new("severity_text", DataType::Utf8, true),
-            Field::new("body", DataType::Utf8, true),
+            Field::new(
+                "body",
+                DataType::Struct(
+                    vec![
+                        Field::new("type", DataType::UInt8, false),
+                        Field::new("str", DataType::Utf8, true),
+                    ]
+                    .into(),
+                ),
+                true,
+            ),
             Field::new("flags", DataType::UInt32, true),
             Field::new("event_name", DataType::Utf8, true),
         ]));
@@ -828,14 +855,14 @@ mod tests {
         // Resource structs (all from resource_id=1)
         let resource_id_array = UInt16Array::from(vec![1, 1, 1]);
         let resource_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_field("id", DataType::UInt16, false)),
             Arc::new(resource_id_array) as ArrayRef,
         )]);
 
         // Scope structs (logs 1-2 from scope_id=10, log 3 from scope_id=11)
         let scope_id_array = UInt16Array::from(vec![10, 10, 11]);
         let scope_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_field("id", DataType::UInt16, false)),
             Arc::new(scope_id_array) as ArrayRef,
         )]);
 
@@ -855,10 +882,21 @@ mod tests {
         let severity_text_array =
             StringArray::from(vec![Some("INFO"), Some("ERROR"), Some("WARN")]);
 
-        let body_array = StringArray::from(vec![
+        let body_type_array = UInt8Array::from(vec![1, 1, 1]);
+        let body_str_array = StringArray::from(vec![
             Some("Log message 1"),
             Some("Error occurred"),
             Some("Warning message"),
+        ]);
+        let body_struct = StructArray::from(vec![
+            (
+                Arc::new(Field::new("type", DataType::UInt8, false)),
+                Arc::new(body_type_array) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("str", DataType::Utf8, true)),
+                Arc::new(body_str_array) as ArrayRef,
+            ),
         ]);
 
         let flags_array = UInt32Array::from(vec![Some(1), Some(1), Some(0)]);
@@ -875,7 +913,7 @@ mod tests {
                 Arc::new(observed_time_array),
                 Arc::new(severity_array),
                 Arc::new(severity_text_array),
-                Arc::new(body_array),
+                Arc::new(body_struct),
                 Arc::new(flags_array),
                 Arc::new(event_name_array),
             ],
@@ -989,47 +1027,51 @@ mod tests {
             });
     }
 
-    // TODO: Re-enable these tests when zero-copy view path is uncommented
-    // #[test]
-    // fn test_geneva_exporter_creates_view_from_otap_records() {
-    //     // This test verifies that the Geneva exporter can successfully create
-    //     // an OtapLogsView from OtapArrowRecords using the TryFrom implementation.
-    //
-    //     let logs_batch = create_test_logs_batch();
-    //
-    //     // Create OtapArrowRecords (simulating what batch processor would send)
-    //     let mut otap_records = OtapArrowRecords::Logs(Default::default());
-    //     otap_records.set(ArrowPayloadType::Logs, logs_batch.clone());
-    //
-    //     // This is what the Geneva exporter does internally
-    //     let logs_view = OtapLogsView::try_from(&otap_records)
-    //         .expect("Geneva exporter should create view from OTAP records");
-    //
-    //     // Verify the view can be used (basic sanity check)
-    //     let mut log_count = 0;
-    //     for resource_logs in logs_view.resources() {
-    //         for scope_logs in resource_logs.scopes() {
-    //             for _log_record in scope_logs.log_records() {
-    //                 log_count += 1;
-    //             }
-    //         }
-    //     }
-    //
-    //     assert_eq!(log_count, 3, "Expected 3 logs");
-    // }
-    //
-    // #[test]
-    // fn test_geneva_exporter_handles_missing_logs_batch() {
-    //     // Verify that Geneva exporter properly handles the case where
-    //     // OtapArrowRecords is missing the required logs batch
-    //
-    //     let otap_records = OtapArrowRecords::Logs(Default::default());
-    //
-    //     // This should fail because logs batch is missing
-    //     let result = OtapLogsView::try_from(&otap_records);
-    //
-    //     assert!(result.is_err(), "Should fail when logs batch is missing");
-    // }
+    #[test]
+    fn test_geneva_exporter_creates_view_from_otap_records() {
+        // This test verifies that the Geneva exporter can successfully create
+        // an OtapLogsView from OtapArrowRecords using the TryFrom implementation.
+
+        let logs_batch = create_test_logs_batch();
+
+        // Create OtapArrowRecords (simulating what batch processor would send)
+        let mut otap_records = OtapArrowRecords::Logs(Default::default());
+        otap_records
+            .set(ArrowPayloadType::Logs, logs_batch)
+            .expect("set logs batch");
+
+        // This is what the Geneva exporter does internally after transport decode.
+        otap_records
+            .decode_transport_optimized_ids()
+            .expect("decode transport IDs");
+        let logs_view = OtapLogsView::try_from(&otap_records)
+            .expect("Geneva exporter should create view from OTAP records");
+
+        // Verify the view can be used (basic sanity check)
+        let mut log_count = 0;
+        for resource_logs in logs_view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for _log_record in scope_logs.log_records() {
+                    log_count += 1;
+                }
+            }
+        }
+
+        assert_eq!(log_count, 3, "Expected 3 logs");
+    }
+
+    #[test]
+    fn test_geneva_exporter_handles_missing_logs_batch() {
+        // Verify that Geneva exporter properly handles the case where
+        // OtapArrowRecords is missing the required logs batch
+
+        let otap_records = OtapArrowRecords::Logs(Default::default());
+
+        // This should fail because logs batch is missing
+        let result = OtapLogsView::try_from(&otap_records);
+
+        assert!(result.is_err(), "Should fail when logs batch is missing");
+    }
 
     // Configuration tests
     #[test]
