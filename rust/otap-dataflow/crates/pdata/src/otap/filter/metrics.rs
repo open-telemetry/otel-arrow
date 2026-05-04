@@ -50,10 +50,16 @@ impl MetricFilter {
 
     /// Take a metrics payload and return the filtered result.
     ///
+    /// `pool` is borrowed from the caller so that paged-bitmap allocations are reused
+    /// across batches. The filter itself does not own the pool because it is `&self`
+    /// (potentially shared); the caller (typically the processor) is the natural owner
+    /// of the per-instance reuse state. See [`crate::otap::filter::IdBitmapPool`].
+    ///
     /// Returns tuple of (filtered batch, metrics_consumed, metrics_filtered).
     pub fn filter(
         &self,
         metrics_payload: OtapArrowRecords,
+        pool: &mut IdBitmapPool,
     ) -> Result<(OtapArrowRecords, u64, u64)> {
         let payload_type = metrics_payload.root_payload_type();
         let metrics = metrics_payload
@@ -81,8 +87,7 @@ impl MetricFilter {
         };
 
         let filtered_count = num_rows - metric_filter.true_count() as u64;
-        let mut pool = IdBitmapPool::new();
-        let filtered = filter_otap_batch(&metric_filter, &metrics_payload, &mut pool)?;
+        let filtered = filter_otap_batch(&metric_filter, &metrics_payload, pool)?;
         Ok((filtered, num_rows, filtered_count))
     }
 }
@@ -193,6 +198,7 @@ mod test {
             vec!["test.counter1".into(), "test.counter3".into()],
         );
         let filter = MetricFilter::new(Some(include), None);
+        let mut pool = IdBitmapPool::new();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Metrics(build_metrics(&[
             "test.counter1",
@@ -200,7 +206,7 @@ mod test {
             "test.counter3",
         ])));
 
-        let (result, metrics_consumed, metrics_filtered) = filter.filter(input).unwrap();
+        let (result, metrics_consumed, metrics_filtered) = filter.filter(input, &mut pool).unwrap();
         assert_eq!(metrics_consumed, 3);
         assert_eq!(metrics_filtered, 1);
 
@@ -216,6 +222,7 @@ mod test {
     fn test_filter_exclude_metric_names() {
         let exclude = MetricMatchProperties::new(MatchType::Strict, vec!["test.counter2".into()]);
         let filter = MetricFilter::new(None, Some(exclude));
+        let mut pool = IdBitmapPool::new();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Metrics(build_metrics(&[
             "test.counter1",
@@ -223,7 +230,7 @@ mod test {
             "test.counter3",
         ])));
 
-        let (result, metrics_consumed, metrics_filtered) = filter.filter(input).unwrap();
+        let (result, metrics_consumed, metrics_filtered) = filter.filter(input, &mut pool).unwrap();
         assert_eq!(metrics_consumed, 3);
         assert_eq!(metrics_filtered, 1);
 
@@ -239,6 +246,7 @@ mod test {
     fn test_filter_metric_names_regex() {
         let include = MetricMatchProperties::new(MatchType::Regexp, vec![r"^aio_.*_count$".into()]);
         let filter = MetricFilter::new(Some(include), None);
+        let mut pool = IdBitmapPool::new();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Metrics(build_metrics(&[
             "aio_akri_count",
@@ -246,7 +254,7 @@ mod test {
             "other_count",
         ])));
 
-        let (result, metrics_consumed, metrics_filtered) = filter.filter(input).unwrap();
+        let (result, metrics_consumed, metrics_filtered) = filter.filter(input, &mut pool).unwrap();
         assert_eq!(metrics_consumed, 3);
         assert_eq!(metrics_filtered, 2);
 

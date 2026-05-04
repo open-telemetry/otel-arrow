@@ -28,6 +28,7 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::otap::filter::IdBitmapPool;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
@@ -42,6 +43,11 @@ pub struct FilterProcessor {
     config: Config,
     metrics: MetricSet<FilterPdataMetrics>,
     compute_duration: ComputeDuration,
+    /// Reusable paged-bitmap pool for filtering metric child batches across
+    /// successive `Message::PData` calls. Storing the pool on the processor
+    /// (rather than allocating one per call) preserves the page allocations
+    /// that `IdBitmap::clear` would otherwise re-create on every batch.
+    metric_id_pool: IdBitmapPool,
 }
 
 /// Factory function to create a FilterProcessor.
@@ -88,6 +94,7 @@ impl FilterProcessor {
             config,
             metrics,
             compute_duration,
+            metric_id_pool: IdBitmapPool::new(),
         }
     }
 
@@ -103,6 +110,7 @@ impl FilterProcessor {
             config,
             metrics,
             compute_duration,
+            metric_id_pool: IdBitmapPool::new(),
         })
     }
 }
@@ -141,18 +149,19 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
                         match signal {
                             SignalType::Metrics => {
-                                let (filtered, consumed, filtered_count) =
-                                    self.config.metric_filters().filter(arrow_records).map_err(
-                                        |e| {
-                                            let source_detail = format_error_sources(&e);
-                                            Error::ProcessorError {
-                                                processor: effect_handler.processor_id(),
-                                                kind: ProcessorErrorKind::Other,
-                                                error: format!("Filter error: {e}"),
-                                                source_detail,
-                                            }
-                                        },
-                                    )?;
+                                let (filtered, consumed, filtered_count) = self
+                                    .config
+                                    .metric_filters()
+                                    .filter(arrow_records, &mut self.metric_id_pool)
+                                    .map_err(|e| {
+                                        let source_detail = format_error_sources(&e);
+                                        Error::ProcessorError {
+                                            processor: effect_handler.processor_id(),
+                                            kind: ProcessorErrorKind::Other,
+                                            error: format!("Filter error: {e}"),
+                                            source_detail,
+                                        }
+                                    })?;
                                 Ok((filtered, consumed, filtered_count))
                             }
                             SignalType::Logs => {
