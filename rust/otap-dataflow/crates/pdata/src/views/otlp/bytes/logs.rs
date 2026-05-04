@@ -47,10 +47,13 @@ impl<'a> RawLogsData<'a> {
         Self { buf }
     }
 
-    /// Create a new instance after validating top-level protobuf wire framing.
+    /// Construct a [`RawLogsData`] after validating top-level protobuf wire framing.
     ///
-    /// This validates the outer `ExportLogsServiceRequest` envelope without allocating or
-    /// recursively decoding nested `ResourceLogs` bodies.
+    /// Cost: a single linear walk of `buf` with no allocations. Each field tag is decoded,
+    /// and each length-delimited or fixed-width field is bounds-checked against the end of
+    /// `buf`. Length-delimited payloads are not recursively decoded as messages; nested
+    /// `ResourceLogs`, `ScopeLogs`, and `LogRecord` content is interpreted lazily on access
+    /// via the view APIs.
     pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
         let mut pos = 0;
         while pos < buf.len() {
