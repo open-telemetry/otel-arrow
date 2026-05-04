@@ -19,9 +19,29 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::receivers::host_metrics_receiver::procfs::HostResource;
 
 /// Semconv version targeted by this receiver's projection layer.
-#[allow(dead_code)]
+///
+/// `SEMCONV_SCHEMA_URL` must be kept in sync with this value.
 pub(crate) const SEMCONV_VERSION: &str = "1.41.0";
 const SEMCONV_SCHEMA_URL: &[u8] = b"https://opentelemetry.io/schemas/1.41.0";
+
+const _: () = {
+    // Enforce that SEMCONV_SCHEMA_URL ends with SEMCONV_VERSION.
+    let url = SEMCONV_SCHEMA_URL;
+    let ver = SEMCONV_VERSION.as_bytes();
+    assert!(
+        url.len() >= ver.len(),
+        "SEMCONV_SCHEMA_URL is shorter than SEMCONV_VERSION"
+    );
+    let suffix = url.split_at(url.len() - ver.len()).1;
+    let mut i = 0;
+    while i < ver.len() {
+        assert!(
+            suffix[i] == ver[i],
+            "SEMCONV_SCHEMA_URL suffix does not match SEMCONV_VERSION"
+        );
+        i += 1;
+    }
+};
 
 const SCOPE_NAME: &[u8] = b"otap-df-core-nodes/host-metrics";
 const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
