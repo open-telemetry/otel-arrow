@@ -8,6 +8,7 @@ pub(crate) const SCOPE_FIELD_NAME: &str = "instrumentation_scope";
 pub(crate) const VALUE_FIELD_NAME: &str = "value";
 
 pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
+pub(crate) const ENDS_WITH_FUNC_NAME: &str = "ends_with";
 pub(crate) const FORMAT_DATETIME_FUNC_NAME: &str = "format_datetime";
 pub(crate) const LOG_FUNC_NAME: &str = "log10";
 pub(crate) const LTRIM_FUNC_NAME: &str = "ltrim";
@@ -22,6 +23,7 @@ pub(crate) const SHA1_FUNC_NAME: &str = "sha1";
 pub(crate) const SHA512_FUNC_NAME: &str = "sha512";
 pub(crate) const XXH3_FUNC_NAME: &str = "xxh3";
 pub(crate) const XXH128_FUNC_NAME: &str = "xxh128";
+pub(crate) const STARTS_WITH_FUNC_NAME: &str = "starts_with";
 pub(crate) const UUID_FUNC_NAME: &str = "uuid";
 pub(crate) const UUIDV7_FUNC_NAME: &str = "uuidv7";
 pub(crate) const LOWER_CASE_FUNC_NAME: &str = "lower_case";
