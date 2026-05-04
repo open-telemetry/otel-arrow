@@ -35,6 +35,7 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otap_df_telemetry::metrics::MetricSet;
@@ -100,7 +101,7 @@ impl LogSamplingProcessor {
 
         // Convert to Arrow records (no-op if already Arrow)
         let (context, payload) = pdata.into_parts();
-        let mut records: OtapArrowRecords = payload.try_into()?;
+        let mut records: OtapArrowRecords = payload.try_into_with_default()?;
         records.decode_transport_optimized_ids()?;
 
         // Prepare the filter buffer.

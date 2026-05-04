@@ -388,25 +388,26 @@ mod test {
     use crate::parser::default_parser_options;
 
     use super::*;
+    use otap_df_pdata::TryIntoWithOptions;
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
         LogsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
     /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
     pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
         TracesData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
     /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
     pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
         MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
