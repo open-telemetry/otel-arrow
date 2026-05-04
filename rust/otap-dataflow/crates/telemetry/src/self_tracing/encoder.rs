@@ -706,7 +706,7 @@ mod tests {
 
         let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
 
-        let mut buf = ProtoBuffer::new();
+        let mut buf = ProtoBuffer::default();
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
@@ -810,7 +810,7 @@ mod tests {
         let log_event = LogEvent { time, record };
 
         let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
-        let mut buf = ProtoBuffer::new();
+        let mut buf = ProtoBuffer::default();
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();

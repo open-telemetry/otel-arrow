@@ -52,19 +52,31 @@ pub enum ColorMode {
 
 /// A buffer writer with color mode for styled output.
 ///
-/// Combines a \`Cursor<&mut [u8]>\` buffer with a \`ColorMode\` so callbacks
+/// Combines a `Cursor<&mut [u8]>` buffer with a `ColorMode` so callbacks
 /// only need one argument that can both write bytes and apply ANSI styling.
+///
+/// One byte of the underlying buffer is reserved for a trailing newline
+/// (written by [`finish_line`](Self::finish_line)), so writers always have
+/// room to terminate the line even when content fills the buffer.
 pub struct StyledBufWriter<'a> {
     buf: Cursor<&'a mut [u8]>,
+    /// Logical capacity for content (always `underlying.len() - 1`, or 0 if empty).
+    /// The byte at `cap` is reserved for the trailing newline.
+    cap: usize,
     color_mode: ColorMode,
 }
 
 impl<'a> StyledBufWriter<'a> {
     /// Create a new styled buffer writer.
+    ///
+    /// One byte of `buf` is reserved for the trailing newline written by
+    /// [`finish_line`](Self::finish_line). Caller must size `buf` accordingly.
     #[inline]
     pub const fn new(buf: &'a mut [u8], color_mode: ColorMode) -> Self {
+        let cap = buf.len().saturating_sub(1);
         Self {
             buf: Cursor::new(buf),
+            cap,
             color_mode,
         }
     }
@@ -86,30 +98,21 @@ impl<'a> StyledBufWriter<'a> {
         self.buf.position() as usize
     }
 
-    /// Check if the buffer is full (position >= capacity).
+    /// Check if the buffer is full (position >= content capacity).
     #[inline]
     #[must_use]
     pub const fn is_full(&self) -> bool {
-        self.buf.position() as usize >= self.buf.get_ref().len()
+        self.buf.position() as usize >= self.cap
     }
 
-    /// Finish the current line by writing a trailing newline.
+    /// Finish the current line by writing the trailing newline.
     ///
-    /// Guarantees the buffer always ends in `\n`, even when the buffer
-    /// filled up mid-line (in which case the last byte of content is
-    /// overwritten with `\n` rather than silently lost). Without this
-    /// guarantee, undersized buffers cause adjacent log lines to glom
-    /// together on the console.
+    /// The reserved last byte guarantees that `\n` always fits — even when
+    /// callers tried to write more content than the buffer holds.
     #[inline]
     pub fn finish_line(&mut self) {
-        let cap = self.buf.get_ref().len();
-        if cap == 0 {
+        if self.buf.get_ref().is_empty() {
             return;
-        }
-        let pos = self.buf.position() as usize;
-        if pos >= cap {
-            // Buffer is full — back up one byte and overwrite with '\n'.
-            self.buf.set_position((cap - 1) as u64);
         }
         let _ = self.buf.write_all(b"\n");
     }
@@ -118,7 +121,10 @@ impl<'a> StyledBufWriter<'a> {
 impl Write for StyledBufWriter<'_> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buf.write(buf)
+        let pos = self.buf.position() as usize;
+        let remaining = self.cap.saturating_sub(pos);
+        let n = buf.len().min(remaining);
+        self.buf.write(&buf[..n])
     }
 
     #[inline]
@@ -658,7 +664,7 @@ mod tests {
             *self.formatted.lock().unwrap() = format_log_record_to_string(Some(time), &record);
 
             // Capture full OTLP encoding
-            let mut buf = ProtoBuffer::new();
+            let mut buf = ProtoBuffer::default();
             let mut encoder = DirectLogRecordEncoder::new(&mut buf);
             let _ = encoder.encode_log_record(time, &record);
             *self.encoded.lock().unwrap() = buf.into_bytes();
@@ -833,7 +839,7 @@ mod tests {
         );
 
         // Verify full OTLP encoding with known callsite
-        let mut buf = ProtoBuffer::new();
+        let mut buf = ProtoBuffer::default();
         let mut encoder = DirectLogRecordEncoder::new(&mut buf);
         let _ = encoder.encode_log_record(time, &record);
         let decoded = ProtoLogRecord::decode(buf.into_bytes().as_ref()).expect("decode failed");
@@ -911,20 +917,18 @@ mod tests {
 
     #[test]
     fn finish_line_guarantees_trailing_newline() {
-        // Even when the buffer fills up before the line is complete,
-        // finish_line must overwrite the last byte with '\n' so adjacent
-        // log lines never glom together on the console.
+        // Even when callers attempt to write more content than fits, the
+        // reserved last byte ensures finish_line can always terminate the
+        // line so adjacent log lines never glom together on the console.
         use std::io::Write;
 
-        // Tiny buffer; content overflows.
+        // Tiny buffer; content is clamped to cap (= len-1).
         let mut buf = [0u8; 8];
         let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
         let _ = w.write_all(b"AAAAAAAAAAAAAA"); // exceeds 8
         assert!(w.is_full());
         w.finish_line();
-        let pos = w.position();
-        assert_eq!(buf[pos - 1], b'\n', "last byte must be newline");
-        assert_eq!(pos, 8, "position should be at capacity (overwrote)");
+        assert_eq!(&buf, b"AAAAAAA\n", "last byte is reserved newline");
 
         // Non-full buffer: append newline normally.
         let mut buf = [0u8; 16];
@@ -934,7 +938,7 @@ mod tests {
         let pos = w.position();
         assert_eq!(&buf[..pos], b"abc\n");
 
-        // Already-full-exactly: should still terminate by overwriting last.
+        // Filled to logical cap (= len-1): newline goes in reserved slot.
         let mut buf = [0u8; 4];
         let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
         let _ = w.write_all(b"abcd");

@@ -65,7 +65,7 @@ impl Consumer {
     #[must_use]
     pub fn with_options(opts: ConversionOptions) -> Self {
         Self {
-            proto_buffer: ProtoBuffer::new_with_options(opts),
+            proto_buffer: ProtoBuffer::new(opts),
             ..Default::default()
         }
     }

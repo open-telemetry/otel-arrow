@@ -754,15 +754,9 @@ impl Default for ProtoBuffer {
 }
 
 impl ProtoBuffer {
-    /// Construct a new heap-backed buffer with the maximum default limit.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Construct a new buffer applying [`ConversionOptions`].
     #[must_use]
-    pub fn new_with_options(opts: ConversionOptions) -> Self {
+    pub fn new(opts: ConversionOptions) -> Self {
         let mut s = Self::default();
         if let Some(limit) = opts.otlp_size_limit {
             s.limit = MAX_OTLP_SIZE_LIMIT.min(limit.get());
@@ -1744,7 +1738,7 @@ mod test {
         use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
 
         fn check<const N: usize>() {
-            let mut buf = ProtoBuffer::new();
+            let mut buf = ProtoBuffer::default();
             encode_len_placeholder::<N, _>(&mut buf).unwrap();
             assert_eq!(buf.len(), N);
             for i in 0..N - 1 {
@@ -1771,7 +1765,7 @@ mod test {
                 if len > max_len {
                     continue;
                 }
-                let mut buf = ProtoBuffer::new();
+                let mut buf = ProtoBuffer::default();
                 let start = buf.len();
                 encode_len_placeholder::<N, _>(&mut buf).unwrap();
                 patch_len_placeholder::<N, _>(&mut buf, len, start);
@@ -1819,10 +1813,10 @@ mod test {
             Ok(())
         }
 
-        let mut buf_large = ProtoBuffer::new();
+        let mut buf_large = ProtoBuffer::default();
         encode_large(&mut buf_large).unwrap();
 
-        let mut buf_small = ProtoBuffer::new();
+        let mut buf_small = ProtoBuffer::default();
         encode_small(&mut buf_small).unwrap();
 
         // The 2-byte variant should be exactly 2 bytes shorter than the 4-byte variant.
@@ -1858,7 +1852,7 @@ mod test {
         assert_eq!(buf.len(), 7);
 
         // A default (256MiB limit) buffer should use a 4-byte placeholder.
-        let mut buf = ProtoBuffer::new();
+        let mut buf = ProtoBuffer::default();
         buf.encode_len_delimited(1, |buf| -> Result<()> { Ok(buf.encode_string(1, "hi")?) })
             .unwrap();
         // tag(1) + placeholder(4) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 9
@@ -1877,7 +1871,7 @@ mod test {
     fn try_encode_rolls_back_buffer_on_error() {
         use crate::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
 
-        let mut buf = ProtoBuffer::new();
+        let mut buf = ProtoBuffer::default();
         buf.encode_string(1, "before").unwrap();
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
         let snapshot_len = buf.len();

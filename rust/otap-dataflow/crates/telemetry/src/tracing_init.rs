@@ -488,7 +488,7 @@ mod tests {
             let resource_bytes = Bytes::new();
             let registry = crate::registry::TelemetryRegistryHandle::new();
             let mut scope_cache = ScopeToBytesMap::new(registry);
-            let mut buf = ProtoBuffer::new();
+            let mut buf = ProtoBuffer::default();
             encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
             let bytes_vec = buf.into_bytes();
 
