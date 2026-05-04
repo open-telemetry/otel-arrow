@@ -16,6 +16,7 @@ use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
 use otap_df_pdata::otlp::metrics::MetricType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
+#[cfg(target_os = "linux")]
 use crate::receivers::host_metrics_receiver::procfs::HostResource;
 
 /// Semconv version targeted by this receiver's projection layer.
@@ -112,6 +113,7 @@ impl HostMetricsArrowBuilder {
 
     /// Append resource attributes (host.id, host.name, host.arch, os.type).
     /// Must be called exactly once per batch before any metrics are appended.
+    #[cfg(target_os = "linux")]
     pub(crate) fn append_resource(&mut self, resource: &HostResource) {
         let mut w = ResourceAttrWriter {
             attrs: &mut self.resource_attrs,

@@ -2,39 +2,62 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Host metrics receiver.
+//!
+//! Most implementation is Linux-only (`#[cfg(target_os = "linux")]`).
+//! Structs and filters defined here are dead on other platforms by design.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+#[cfg(target_os = "linux")]
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
+#[cfg(target_os = "linux")]
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
+#[cfg(target_os = "linux")]
 use otap_df_engine::control::NodeControlMsg;
+#[cfg(target_os = "linux")]
 use otap_df_engine::error::{Error, ReceiverErrorKind, TypedError};
+#[cfg(target_os = "linux")]
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
+#[cfg(target_os = "linux")]
 use otap_df_engine::receiver::ReceiverWrapper;
+#[cfg(target_os = "linux")]
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::{Context, OtapPdata};
+#[cfg(target_os = "linux")]
+use otap_df_otap::pdata::Context;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
+#[cfg(target_os = "linux")]
+use otap_df_telemetry::metrics::MetricSetSnapshot;
+use otap_df_telemetry::metrics::MetricSet;
+#[cfg(target_os = "linux")]
 use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant as StdInstant};
+#[cfg(target_os = "linux")]
+use std::time::Instant as StdInstant;
+use std::time::Duration;
+#[cfg(target_os = "linux")]
 use tokio::time::{Instant, sleep_until};
 
+#[cfg(target_os = "linux")]
 mod otap_builder;
+#[cfg(target_os = "linux")]
 mod procfs;
 
+#[cfg(target_os = "linux")]
 use procfs::{HostSnapshot, ProcfsConfig, ProcfsFamilies, ProcfsSource};
 
 /// The URN for the host metrics receiver.
@@ -623,23 +646,31 @@ pub struct HostMetricsReceiver {
 pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: HOST_METRICS_RECEIVER_URN,
     create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             #[cfg(target_os = "linux")] node: NodeId,
+             #[cfg(not(target_os = "linux"))] _node: NodeId,
+             #[cfg(target_os = "linux")] node_config: Arc<NodeUserConfig>,
+             #[cfg(not(target_os = "linux"))] _node_config: Arc<NodeUserConfig>,
+             #[cfg(target_os = "linux")] receiver_config: &ReceiverConfig,
+             #[cfg(not(target_os = "linux"))] _receiver_config: &ReceiverConfig| {
         validate_supported_platform()?;
         if pipeline.num_cores() > 1 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: "host-wide collection must run in a one-core source pipeline; use receiver:host_metrics -> exporter:topic and fan out downstream".to_owned(),
             });
         }
-        let mut receiver = HostMetricsReceiver::from_config(&node_config.config)?;
-        receiver.metrics = Some(pipeline.register_metrics::<HostMetricsReceiverMetrics>());
-        Ok(ReceiverWrapper::local(
-            receiver,
-            node,
-            node_config,
-            receiver_config,
-        ))
+        #[cfg(target_os = "linux")]
+        {
+            let mut receiver = HostMetricsReceiver::from_config(&node_config.config)?;
+            receiver.metrics = Some(pipeline.register_metrics::<HostMetricsReceiverMetrics>());
+            return Ok(ReceiverWrapper::local(
+                receiver,
+                node,
+                node_config,
+                receiver_config,
+            ));
+        }
+        #[cfg(not(target_os = "linux"))]
+        unreachable!("validate_supported_platform returned Ok on a non-Linux platform")
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| {
@@ -652,6 +683,7 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     },
 };
 
+#[cfg(target_os = "linux")]
 impl HostMetricsReceiver {
     /// Creates a new host metrics receiver.
     pub fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
@@ -781,14 +813,17 @@ fn validate_family_interval(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn duration_nanos(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1e9
 }
 
+#[cfg(target_os = "linux")]
 fn elapsed_nanos(start: StdInstant) -> f64 {
     duration_nanos(start.elapsed())
 }
 
+#[cfg(target_os = "linux")]
 fn terminal_state(
     deadline: StdInstant,
     metrics: &Option<MetricSet<HostMetricsReceiverMetrics>>,
@@ -800,6 +835,7 @@ fn terminal_state(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn due_family_count(due: ProcfsFamilies) -> u64 {
     u64::from(due.cpu)
         + u64::from(due.memory)
@@ -980,6 +1016,7 @@ impl RuntimeFamily {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScheduledFamilyKind {
     Cpu,
@@ -992,16 +1029,19 @@ enum ScheduledFamilyKind {
     Processes,
 }
 
+#[cfg(target_os = "linux")]
 struct ScheduledFamily {
     kind: ScheduledFamilyKind,
     interval: Duration,
     next_due: Instant,
 }
 
+#[cfg(target_os = "linux")]
 struct FamilyScheduler {
     entries: Vec<ScheduledFamily>,
 }
 
+#[cfg(target_os = "linux")]
 impl FamilyScheduler {
     fn new(config: &RuntimeConfig, now: Instant) -> Self {
         let first_due = now + config.initial_delay;
@@ -1097,6 +1137,7 @@ impl FamilyScheduler {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn push_scheduled(
     entries: &mut Vec<ScheduledFamily>,
     kind: ScheduledFamilyKind,
@@ -1173,6 +1214,7 @@ fn normalized_root_path(root_path: Option<&Path>) -> Result<PathBuf, otap_df_con
     Ok(normalized)
 }
 
+#[cfg(target_os = "linux")]
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for HostMetricsReceiver {
     async fn start(
@@ -1337,6 +1379,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn encode_snapshot(snapshot: HostSnapshot) -> Result<OtapPdata, arrow::error::ArrowError> {
     let records = snapshot.into_otap_records()?;
     Ok(OtapPdata::new(Context::default(), records.into()))
@@ -1622,6 +1665,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn scheduler_honors_initial_delay_and_family_intervals() {
         let config = Config {
