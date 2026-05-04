@@ -111,9 +111,6 @@ impl<'a> StyledBufWriter<'a> {
     /// callers tried to write more content than the buffer holds.
     #[inline]
     pub fn finish_line(&mut self) {
-        if self.buf.get_ref().is_empty() {
-            return;
-        }
         let _ = self.buf.write_all(b"\n");
     }
 }
