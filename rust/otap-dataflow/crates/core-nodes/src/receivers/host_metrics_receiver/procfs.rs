@@ -630,7 +630,6 @@ pub(super) struct HostResource {
     pub(super) host_arch: Option<&'static str>,
 }
 
-
 fn project_snapshot(
     snap: &HostSnapshot,
     b: &mut crate::receivers::host_metrics_receiver::otap_builder::HostMetricsArrowBuilder,
@@ -674,11 +673,23 @@ fn project_snapshot(
     }
     if snap.cpuinfo.logical_count != 0 {
         let m = b.begin_updown_i64("system.cpu.logical.count", "{cpu}");
-        b.append_i64_dp(m, start, now, saturating_i64(snap.cpuinfo.logical_count), |_| {});
+        b.append_i64_dp(
+            m,
+            start,
+            now,
+            saturating_i64(snap.cpuinfo.logical_count),
+            |_| {},
+        );
     }
     if snap.cpuinfo.physical_count != 0 {
         let m = b.begin_updown_i64("system.cpu.physical.count", "{cpu}");
-        b.append_i64_dp(m, start, now, saturating_i64(snap.cpuinfo.physical_count), |_| {});
+        b.append_i64_dp(
+            m,
+            start,
+            now,
+            saturating_i64(snap.cpuinfo.physical_count),
+            |_| {},
+        );
     }
     if !snap.cpuinfo.frequencies_hz.is_empty() {
         let m = b.begin_gauge_i64("system.cpu.frequency", "Hz");
@@ -752,9 +763,10 @@ fn project_snapshot(
     // ── Paging ───────────────────────────────────────────────────────────────
     if let Some(paging) = snap.paging {
         let m = b.begin_counter_i64("system.paging.faults", "{fault}");
-        for (fault_type, value) in
-            [("minor", paging.minor_faults), ("major", paging.major_faults)]
-        {
+        for (fault_type, value) in [
+            ("minor", paging.minor_faults),
+            ("major", paging.major_faults),
+        ] {
             b.append_i64_dp(
                 m,
                 cs.get("system.paging.faults", fault_type, start),
@@ -808,9 +820,10 @@ fn project_snapshot(
     // ── Processes ────────────────────────────────────────────────────────────
     if let Some(processes) = snap.processes {
         let m = b.begin_updown_i64("system.process.count", "{process}");
-        for (state, value) in
-            [("running", processes.running), ("blocked", processes.blocked)]
-        {
+        for (state, value) in [
+            ("running", processes.running),
+            ("blocked", processes.blocked),
+        ] {
             b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
                 w.str("process.state", state);
             });
@@ -904,8 +917,11 @@ fn project_snapshot(
     for fs in &snap.filesystems {
         let total = fs.used.saturating_add(fs.free).saturating_add(fs.reserved);
         let m = b.begin_updown_i64("system.filesystem.usage", "By");
-        for (state, value) in [("used", fs.used), ("free", fs.free), ("reserved", fs.reserved)]
-        {
+        for (state, value) in [
+            ("used", fs.used),
+            ("free", fs.free),
+            ("reserved", fs.reserved),
+        ] {
             b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
                 w.str("system.device", &fs.device);
                 w.str("system.filesystem.state", state);
@@ -917,9 +933,11 @@ fn project_snapshot(
         if total > 0 {
             let m = b.begin_gauge_f64("system.filesystem.utilization", "1");
             let total_f = total as f64;
-            for (state, value) in
-                [("used", fs.used), ("free", fs.free), ("reserved", fs.reserved)]
-            {
+            for (state, value) in [
+                ("used", fs.used),
+                ("free", fs.free),
+                ("reserved", fs.reserved),
+            ] {
                 b.append_f64_dp(m, 0, now, value as f64 / total_f, |w| {
                     w.str("system.device", &fs.device);
                     w.str("system.filesystem.state", state);
@@ -1010,7 +1028,13 @@ fn project_hugepages(
     let m = b.begin_updown_i64("system.memory.linux.hugepages.limit", "{page}");
     b.append_i64_dp(m, start, now, saturating_i64(hugepages.total), |_| {});
     let m = b.begin_updown_i64("system.memory.linux.hugepages.page_size", "By");
-    b.append_i64_dp(m, start, now, saturating_i64(hugepages.page_size_bytes), |_| {});
+    b.append_i64_dp(
+        m,
+        start,
+        now,
+        saturating_i64(hugepages.page_size_bytes),
+        |_| {},
+    );
     let m = b.begin_updown_i64("system.memory.linux.hugepages.reserved", "{page}");
     b.append_i64_dp(m, start, now, saturating_i64(hugepages.reserved), |_| {});
     let m = b.begin_updown_i64("system.memory.linux.hugepages.surplus", "{page}");
@@ -3241,117 +3265,117 @@ mod tests {
 
     fn projection_fixture_request() -> MetricsData {
         decode_metrics(
-        HostSnapshot {
-            now_unix_nano: 2_000,
-            start_time_unix_nano: 1_000,
-            counter_starts: CounterStarts::default(),
-            memory_limit: true,
-            memory_shared: true,
-            memory_hugepages: true,
-            cpu: Some(CpuTimes {
-                user: 1.0,
-                nice: 2.0,
-                system: 3.0,
-                idle: 4.0,
-                wait: 5.0,
-                interrupt: 6.0,
-                steal: 7.0,
-            }),
-            cpu_utilization: Some(CpuTimes {
-                user: 0.1,
-                nice: 0.1,
-                system: 0.2,
-                idle: 0.3,
-                wait: 0.1,
-                interrupt: 0.1,
-                steal: 0.1,
-            }),
-            cpuinfo: CpuInfo {
-                logical_count: 2,
-                physical_count: 1,
-                frequencies_hz: vec![2_400_000_000.0],
-            },
-            memory: Some(MemoryStats {
-                total: 100,
-                used: 80,
-                free: 10,
-                available: 20,
-                has_available: true,
-                cached: 5,
-                buffered: 5,
-                shared: 7,
-                slab_reclaimable: 3,
-                slab_unreclaimable: 2,
-                hugepages: HugepageStats {
-                    total: 10,
-                    free: 4,
-                    reserved: 2,
-                    surplus: 1,
-                    page_size_bytes: 2 * BYTES_PER_KIB,
+            HostSnapshot {
+                now_unix_nano: 2_000,
+                start_time_unix_nano: 1_000,
+                counter_starts: CounterStarts::default(),
+                memory_limit: true,
+                memory_shared: true,
+                memory_hugepages: true,
+                cpu: Some(CpuTimes {
+                    user: 1.0,
+                    nice: 2.0,
+                    system: 3.0,
+                    idle: 4.0,
+                    wait: 5.0,
+                    interrupt: 6.0,
+                    steal: 7.0,
+                }),
+                cpu_utilization: Some(CpuTimes {
+                    user: 0.1,
+                    nice: 0.1,
+                    system: 0.2,
+                    idle: 0.3,
+                    wait: 0.1,
+                    interrupt: 0.1,
+                    steal: 0.1,
+                }),
+                cpuinfo: CpuInfo {
+                    logical_count: 2,
+                    physical_count: 1,
+                    frequencies_hz: vec![2_400_000_000.0],
                 },
-            }),
-            uptime_seconds: Some(42.0),
-            paging: Some(PagingStats {
-                minor_faults: 9,
-                major_faults: 1,
-                page_in: 4,
-                page_out: 5,
-                swap_in: 2,
-                swap_out: 3,
-            }),
-            swaps: vec![SwapStats {
-                name: "/dev/swap".to_owned(),
-                size: 100,
-                used: 25,
-                free: 75,
-            }],
-            processes: Some(ProcessStats {
-                running: 4,
-                blocked: 1,
-                created: 99,
-            }),
-            disks: vec![DiskStats {
-                name: "sda".to_owned(),
-                limit_bytes: Some(123),
-                read_bytes: 10,
-                write_bytes: 20,
-                read_ops: 1,
-                write_ops: 2,
-                read_merged: 3,
-                write_merged: 4,
-                read_time_seconds: 0.5,
-                write_time_seconds: 0.6,
-                io_time_seconds: 0.7,
-            }],
-            filesystems: vec![FilesystemStats {
-                device: "/dev/sda1".to_owned(),
-                mountpoint: "/".to_owned(),
-                fs_type: "ext4".to_owned(),
-                mode: "rw",
-                used: 60,
-                free: 30,
-                reserved: 10,
-                limit_bytes: Some(100),
-            }],
-            networks: vec![NetworkStats {
-                name: "eth0".to_owned(),
-                rx_bytes: 10,
-                tx_bytes: 20,
-                rx_packets: 1,
-                tx_packets: 2,
-                rx_errors: 3,
-                tx_errors: 4,
-                rx_dropped: 5,
-                tx_dropped: 6,
-            }],
-            resource: HostResource {
-                host_id: Some("host-id".to_owned()),
-                host_name: Some("host-name".to_owned()),
-                host_arch: Some("amd64"),
-            },
-        }
-        .into_otap_records()
-        .expect("encode ok"),
+                memory: Some(MemoryStats {
+                    total: 100,
+                    used: 80,
+                    free: 10,
+                    available: 20,
+                    has_available: true,
+                    cached: 5,
+                    buffered: 5,
+                    shared: 7,
+                    slab_reclaimable: 3,
+                    slab_unreclaimable: 2,
+                    hugepages: HugepageStats {
+                        total: 10,
+                        free: 4,
+                        reserved: 2,
+                        surplus: 1,
+                        page_size_bytes: 2 * BYTES_PER_KIB,
+                    },
+                }),
+                uptime_seconds: Some(42.0),
+                paging: Some(PagingStats {
+                    minor_faults: 9,
+                    major_faults: 1,
+                    page_in: 4,
+                    page_out: 5,
+                    swap_in: 2,
+                    swap_out: 3,
+                }),
+                swaps: vec![SwapStats {
+                    name: "/dev/swap".to_owned(),
+                    size: 100,
+                    used: 25,
+                    free: 75,
+                }],
+                processes: Some(ProcessStats {
+                    running: 4,
+                    blocked: 1,
+                    created: 99,
+                }),
+                disks: vec![DiskStats {
+                    name: "sda".to_owned(),
+                    limit_bytes: Some(123),
+                    read_bytes: 10,
+                    write_bytes: 20,
+                    read_ops: 1,
+                    write_ops: 2,
+                    read_merged: 3,
+                    write_merged: 4,
+                    read_time_seconds: 0.5,
+                    write_time_seconds: 0.6,
+                    io_time_seconds: 0.7,
+                }],
+                filesystems: vec![FilesystemStats {
+                    device: "/dev/sda1".to_owned(),
+                    mountpoint: "/".to_owned(),
+                    fs_type: "ext4".to_owned(),
+                    mode: "rw",
+                    used: 60,
+                    free: 30,
+                    reserved: 10,
+                    limit_bytes: Some(100),
+                }],
+                networks: vec![NetworkStats {
+                    name: "eth0".to_owned(),
+                    rx_bytes: 10,
+                    tx_bytes: 20,
+                    rx_packets: 1,
+                    tx_packets: 2,
+                    rx_errors: 3,
+                    tx_errors: 4,
+                    rx_dropped: 5,
+                    tx_dropped: 6,
+                }],
+                resource: HostResource {
+                    host_id: Some("host-id".to_owned()),
+                    host_name: Some("host-name".to_owned()),
+                    host_arch: Some("amd64"),
+                },
+            }
+            .into_otap_records()
+            .expect("encode ok"),
         )
     }
 

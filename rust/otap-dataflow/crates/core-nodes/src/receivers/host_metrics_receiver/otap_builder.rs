@@ -18,7 +18,8 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::receivers::host_metrics_receiver::procfs::HostResource;
 
-// Semconv version targeted by this receiver.
+/// Semconv version targeted by this receiver's projection layer.
+#[allow(dead_code)]
 pub(crate) const SEMCONV_VERSION: &str = "1.41.0";
 const SEMCONV_SCHEMA_URL: &[u8] = b"https://opentelemetry.io/schemas/1.41.0";
 
@@ -179,8 +180,7 @@ impl HostMetricsArrowBuilder {
         let dp_id = self.curr_dp_id;
         self.ndp.append_id(dp_id);
         self.ndp.append_parent_id(metric_id);
-        self.ndp
-            .append_start_time_unix_nano(Some(start as i64));
+        self.ndp.append_start_time_unix_nano(Some(start as i64));
         self.ndp.append_time_unix_nano(now as i64);
         self.ndp.append_int_value(Some(value));
         self.ndp.append_double_value(None);
@@ -207,8 +207,7 @@ impl HostMetricsArrowBuilder {
         let dp_id = self.curr_dp_id;
         self.ndp.append_id(dp_id);
         self.ndp.append_parent_id(metric_id);
-        self.ndp
-            .append_start_time_unix_nano(Some(start as i64));
+        self.ndp.append_start_time_unix_nano(Some(start as i64));
         self.ndp.append_time_unix_nano(now as i64);
         self.ndp.append_int_value(None);
         self.ndp.append_double_value(Some(value));
@@ -227,15 +226,20 @@ impl HostMetricsArrowBuilder {
         let n = self.metrics.len();
         // Resource: single entry with id=0 repeated for every metric row.
         self.metrics.resource.append_id_n(0, n);
-        self.metrics.resource.append_schema_url_n(Some(SEMCONV_SCHEMA_URL), n);
-        self.metrics.resource.append_dropped_attributes_count_n(0, n);
+        self.metrics
+            .resource
+            .append_schema_url_n(Some(SEMCONV_SCHEMA_URL), n);
+        self.metrics
+            .resource
+            .append_dropped_attributes_count_n(0, n);
         // Scope: single entry with id=0.
         self.metrics.scope.append_id_n(0, n);
         self.metrics.scope.append_name_n(Some(SCOPE_NAME), n);
         self.metrics.scope.append_version_n(Some(SCOPE_VERSION), n);
         self.metrics.scope.append_dropped_attributes_count_n(0, n);
         // Schema URL on scope column.
-        self.metrics.append_scope_schema_url_n(SEMCONV_SCHEMA_URL, n);
+        self.metrics
+            .append_scope_schema_url_n(SEMCONV_SCHEMA_URL, n);
 
         let mut records = OtapArrowRecords::Metrics(Metrics::default());
         finish_batch(
