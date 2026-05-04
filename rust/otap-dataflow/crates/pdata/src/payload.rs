@@ -25,7 +25,7 @@
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
 //!     resource::v1::Resource
 //! };
-//! # use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+//! # use otap_df_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 //! # use prost::Message;
 //! # use bytes::Bytes;
 //! let otlp_service_req = ExportLogsServiceRequest::new(vec![
@@ -53,7 +53,7 @@
 //! let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(Bytes::from(buf)).into();
 //!
 //! // Convert to OTAP records
-//! let otap_arrow_records: OtapArrowRecords = payload.try_into().unwrap();
+//! let otap_arrow_records: OtapArrowRecords = payload.try_into_with_default().unwrap();
 //! ```
 //!
 //! Internally, conversions are happening using various utility functions:

@@ -23,6 +23,8 @@ use otap_df_otap::otap_grpc::otlp::server_new::{
 };
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;

@@ -27,6 +27,8 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde_json::Value;

@@ -37,6 +37,8 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
@@ -245,7 +247,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut proto_buffer = ProtoBuffer::default();
 
         loop {
             // Opportunistically drain completions before we park on a recv.

@@ -179,7 +179,7 @@ where
                 }
             }
             BenchOp::EncodeProto => {
-                let mut buf = ProtoBuffer::new();
+                let mut buf = ProtoBuffer::default();
                 let mut encoder = DirectLogRecordEncoder::new(&mut buf);
 
                 for _ in 0..self.iterations {

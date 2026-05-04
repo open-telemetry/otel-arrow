@@ -59,6 +59,27 @@ fn init_test_tracing() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CI Timing Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Generous timeout for `wait_for_condition` in flip threads.
+///
+/// These threads start before the pipeline is running. On slow CI (e.g.,
+/// overloaded Windows runners), pipeline startup -- Tokio runtime creation,
+/// Quiver engine init, segment finalization -- can consume several seconds
+/// before the first NACK reaches the exporter. This timeout must absorb all
+/// startup latency. It does not affect test duration on healthy machines
+/// because `wait_for_condition` returns immediately when the condition is met.
+const FLIP_CONDITION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pipeline max_duration ceiling for tests with flip threads.
+///
+/// Must exceed the sum of all flip thread phase timeouts plus delivery time.
+/// On healthy machines the shutdown condition fires in ~2s; this is a safety
+/// ceiling for extremely slow CI.
+const PIPELINE_MAX_DURATION: Duration = Duration::from_secs(60);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Test Configuration Builder
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -952,10 +973,14 @@ fn test_durable_buffer_retries_on_nack() {
     // Spawn a thread to flip the exporter after NACKs are observed
     let flip_test_id = test_id.to_owned();
     let flip_handle = std::thread::spawn(move || {
-        // Wait for at least 5 NACKs (condition-based, not fixed timeout)
+        // Wait for at least 5 NACKs (condition-based, not fixed timeout).
+        // Use a generous timeout because this thread starts before the pipeline
+        // is running. On slow CI, pipeline startup (runtime init, engine init,
+        // segment finalization) can consume several seconds before the first
+        // NACK arrives.
         let nacks_observed = wait_for_condition(
             || flaky_exporter::nack_count_by_id(&flip_test_id) >= 5,
-            Duration::from_secs(5), // generous timeout for CI
+            FLIP_CONDITION_TIMEOUT,
             Duration::from_millis(10),
         );
         assert!(nacks_observed, "Expected at least 5 NACKs within timeout");
@@ -975,7 +1000,7 @@ fn test_durable_buffer_retries_on_nack() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(10), // generous max timeout for CI
+        PIPELINE_MAX_DURATION,
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
         true, // wait for telemetry cycle before shutdown so metrics are populated
@@ -2004,10 +2029,13 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
     // tighter timeout in this thread caused failures on slow CI (see #2354).
     let flip_test_id = test_id.to_owned();
     let flip_handle = std::thread::spawn(move || {
-        // Wait for at least 3 permanent NACKs
+        // Wait for at least 3 permanent NACKs.
+        // Use a generous timeout because this thread starts before the pipeline
+        // is running. On slow CI, pipeline startup can consume several seconds
+        // before the first NACK arrives.
         let permanent_nacks_observed = wait_for_condition(
             || flaky_exporter::permanent_nack_count_by_id(&flip_test_id) >= 3,
-            Duration::from_secs(5),
+            FLIP_CONDITION_TIMEOUT,
             Duration::from_millis(10),
         );
         assert!(
@@ -2021,7 +2049,7 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
 
         // Switch to ACK mode - new data should be delivered.
         // The pipeline shutdown condition gates on delivered_counter > 0, so delivery
-        // is verified there (with a 15 s ceiling) rather than here.
+        // is verified there (with PIPELINE_MAX_DURATION ceiling) rather than here.
         flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
 
         (permanent_nacks_before, transient_nacks_before)
@@ -2033,7 +2061,7 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(15),
+        PIPELINE_MAX_DURATION,
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
         true, // wait for telemetry cycle before shutdown so metrics are populated
@@ -2224,10 +2252,15 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
 
     let flip_test_id = test_id.to_owned();
     let flip_handle = std::thread::spawn(move || {
-        // Phase 1: Wait for transient NACKs
+        // Phase 1: Wait for transient NACKs.
+        // Use a generous timeout because this thread starts before the pipeline
+        // is running. On slow CI (e.g., overloaded Windows runners), pipeline
+        // startup (Tokio runtime creation, Quiver engine init, segment
+        // finalization) can consume several seconds before the first NACK
+        // arrives at the exporter.
         let transient_observed = wait_for_condition(
             || flaky_exporter::nack_count_by_id(&flip_test_id) >= 3,
-            Duration::from_secs(5),
+            FLIP_CONDITION_TIMEOUT,
             Duration::from_millis(10),
         );
         assert!(
@@ -2242,7 +2275,7 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
 
         let permanent_observed = wait_for_condition(
             || flaky_exporter::permanent_nack_count_by_id(&flip_test_id) >= 3,
-            Duration::from_secs(5),
+            FLIP_CONDITION_TIMEOUT,
             Duration::from_millis(10),
         );
         assert!(
@@ -2253,9 +2286,10 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         let permanent_nacks_phase2 = flaky_exporter::permanent_nack_count_by_id(&flip_test_id);
 
         // Phase 3: Switch to ACK mode.
-        // The pipeline shutdown condition gates on delivered_counter > 0 with a 15 s
-        // ceiling, so delivery is verified there rather than here. Waiting
-        // here with a tighter timeout caused failures on slow CI (see #2354).
+        // The pipeline shutdown condition gates on delivered_counter > 0 with
+        // PIPELINE_MAX_DURATION ceiling, so delivery is verified there rather
+        // than here. Waiting here with a tighter timeout caused failures on
+        // slow CI (see #2354).
         flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
 
         (transient_nacks_phase1, permanent_nacks_phase2)
@@ -2266,7 +2300,7 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(15),
+        PIPELINE_MAX_DURATION,
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
         true, // wait for telemetry cycle before shutdown so metrics are populated

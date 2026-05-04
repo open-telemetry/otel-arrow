@@ -49,6 +49,7 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, TryIntoWithOptions,
     error::Error as PDataError, otap::batching::make_item_batches,

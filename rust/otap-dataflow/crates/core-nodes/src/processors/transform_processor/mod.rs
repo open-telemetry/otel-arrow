@@ -1112,7 +1112,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap)
                     .map(|otap_batch| otap_to_otlp(&otap_batch));
 
