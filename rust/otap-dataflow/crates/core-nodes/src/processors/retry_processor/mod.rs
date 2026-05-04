@@ -914,8 +914,10 @@ mod test {
             });
     }
 
-    // If the local delayed-resume queue is full, the processor must convert the
-    // request to a terminal Nack instead of leaving retry state stranded forever.
+    /// Scenario: retry receives a transient downstream NACK while the
+    /// processor-local delayed-resume queue is already full.
+    /// Guarantees: the processor converts the rejected `requeue_later` request
+    /// into a terminal NACK instead of leaving retry state stranded.
     #[test]
     fn test_retry_processor_cannot_requeue_becomes_terminal_nack() {
         let pipeline_ctx = create_test_pipeline_context();

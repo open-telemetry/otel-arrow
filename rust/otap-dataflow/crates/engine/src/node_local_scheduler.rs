@@ -552,6 +552,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a retained payload is scheduled through the processor-local
+    /// delayed-resume queue and then becomes due.
+    /// Guarantees: the scheduler emits the original payload as
+    /// `NodeControlMsg::DelayedData` and clears the delayed-resume deadline.
     #[test]
     fn requeue_later_emits_the_stored_payload() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
@@ -562,6 +566,10 @@ mod tests {
         assert_eq!(scheduler.next_expiry(), None);
     }
 
+    /// Scenario: multiple delayed resumes are scheduled at different times,
+    /// including two with the same due time.
+    /// Guarantees: due resumes are emitted by due time, with FIFO ordering for
+    /// equal deadlines.
     #[test]
     fn delayed_resumes_preserve_due_time_ordering() {
         let mut scheduler = NodeLocalScheduler::new(4, 2);
@@ -582,6 +590,9 @@ mod tests {
         expect_delayed(scheduler.pop_due(later), later, 3);
     }
 
+    /// Scenario: the delayed-resume heap has reached its configured capacity.
+    /// Guarantees: additional requeue attempts are rejected instead of
+    /// exceeding the bound.
     #[test]
     fn delayed_resume_capacity_is_enforced() {
         let mut scheduler = NodeLocalScheduler::new(1, 1);
@@ -594,6 +605,10 @@ mod tests {
         assert_eq!(*rejected, 2);
     }
 
+    /// Scenario: the scheduler has already latched shutdown when a caller tries
+    /// to schedule another delayed resume.
+    /// Guarantees: rejection preserves ownership by returning the original
+    /// retained payload to the caller.
     #[test]
     fn rejected_requeue_returns_the_original_payload() {
         let mut scheduler = NodeLocalScheduler::new(2, 1);
@@ -606,6 +621,10 @@ mod tests {
         assert_eq!(*rejected, 99);
     }
 
+    /// Scenario: shutdown begins while future delayed resumes are still pending
+    /// in the processor-local scheduler.
+    /// Guarantees: pending delayed resumes are converted into immediate
+    /// `DelayedData` delivery using the shutdown-start timestamp.
     #[test]
     fn shutdown_makes_pending_delayed_resumes_due_immediately() {
         let mut scheduler = NodeLocalScheduler::new(4, 2);
@@ -773,6 +792,10 @@ mod tests {
         assert_eq!(scheduler.next_expiry(), None);
     }
 
+    /// Scenario: distinct live wakeup slots fill the configured wakeup
+    /// capacity while an existing slot is later rescheduled.
+    /// Guarantees: new distinct slots are rejected at capacity, but replacing
+    /// an existing slot remains accepted.
     #[test]
     fn wakeup_capacity_is_enforced_on_distinct_live_slots() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(1, 1);
@@ -793,6 +816,9 @@ mod tests {
         assert_heap_bound(&scheduler);
     }
 
+    /// Scenario: a scheduler is configured with zero wakeup capacity.
+    /// Guarantees: wakeup scheduling reports `WakeupError::Unsupported` rather
+    /// than treating the zero bound as a full queue.
     #[test]
     fn wakeup_is_unsupported_when_capacity_is_zero() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(1, 0);

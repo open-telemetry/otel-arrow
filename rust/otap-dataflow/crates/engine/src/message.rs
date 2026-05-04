@@ -912,6 +912,10 @@ mod tests {
         (control_tx, pdata_tx, scheduler, inbox)
     }
 
+    /// Scenario: a processor-local delayed resume is scheduled for immediate
+    /// delivery while the processor inbox is otherwise idle.
+    /// Guarantees: the inbox surfaces the due retained payload as
+    /// `NodeControlMsg::DelayedData` with the original deadline and payload.
     #[tokio::test]
     async fn processor_inbox_emits_due_delayed_resume_as_control_message() {
         let (_control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -959,6 +963,10 @@ mod tests {
         ));
     }
 
+    /// Scenario: a processor inbox has pending pdata and a burst of due
+    /// processor-local delayed resumes.
+    /// Guarantees: delayed resumes participate in the existing control
+    /// fairness policy, so pdata is eventually delivered instead of starving.
     #[tokio::test]
     async fn processor_inbox_delayed_resume_preserves_control_fairness() {
         let (_control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -1074,6 +1082,10 @@ mod tests {
         ));
     }
 
+    /// Scenario: shutdown has been latched and the processor-local scheduler
+    /// receives a new delayed-resume request while the inbox is draining.
+    /// Guarantees: new delayed resumes are rejected after shutdown latch and
+    /// the caller receives the original retained payload back.
     #[tokio::test]
     async fn processor_inbox_rejects_delayed_resumes_after_shutdown_latch() {
         let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -1150,6 +1162,10 @@ mod tests {
         );
     }
 
+    /// Scenario: shutdown is latched while the processor-local scheduler still
+    /// holds a future delayed resume.
+    /// Guarantees: pending delayed resumes become immediately available as
+    /// `DelayedData` control traffic before the latched shutdown is delivered.
     #[tokio::test]
     async fn processor_inbox_returns_pending_delayed_resumes_on_shutdown_latch() {
         let (control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
