@@ -1,0 +1,110 @@
+# Demonstrates the distributed stopwatch feature.
+#
+# Five attribute processors form a sequential processing chain. A stopwatch
+# measures aggregate synchronous compute duration across the full chain:
+#
+#   stopwatch "ingest_pipeline" - covers attr1 through attr5 (full chain)
+#
+# Stopwatches sum per-processor wall-clock compute time across each node in the
+# range. The engine arms an Instant send-marker before each `process()` call
+# and advances it on every `send_message`; the elapsed delta is accumulated
+# onto the message's stopwatch context and recorded at the stop node. This
+# captures synchronous compute plus any await/I/O that occurs inside
+# `process()` between sends; it excludes time the message spends queued in
+# inbound channels.
+# Metrics appear as stopwatch.compute.duration (MMSC histograms in
+# nanoseconds).
+#
+# Note: only non-overlapping stopwatch ranges are supported. A message can be
+# inside at most one stopwatch range at a time.
+#
+# Query metrics while running:
+#   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[] | select(.name == "stopwatch" or .name == "processor.compute")]'
+
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: normal
+            stopwatches:
+              - name: ingest_pipeline
+                start_node: attr1
+                stop_node: attr5
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+          attr1:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage
+                  value: "1"
+
+          attr2:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage2
+                  value: "2"
+
+          attr3:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage3
+                  value: "3"
+
+          attr4:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage4
+                  value: "4"
+
+          attr5:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage5
+                  value: "5"
+
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: attr1
+          - from: attr1
+            to: attr2
+          - from: attr2
+            to: attr3
+          - from: attr3
+            to: attr4
+          - from: attr4
+            to: attr5
+          - from: attr5
+            to: noop

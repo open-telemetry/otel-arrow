@@ -251,7 +251,7 @@ geneva-uploader = "0.4.0"
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
-default = ["jemalloc", "crypto-ring", "dev-tools"]
+default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
@@ -265,6 +265,9 @@ dhat-heap = [
 
 # Dev/test tooling (fake data generator).
 dev-tools = ["otap-df-core-nodes/dev-tools"]
+
+# Admin UI live log streaming over WebSocket.
+admin-live-logs-ws = ["otap-df-controller/admin-live-logs-ws"]
 
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).
