@@ -1,212 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777926857436,
+  "lastUpdate": 1777940293847,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "6933f8e2d5629a7b76983b60ff43526d67e7f33f",
-          "message": "AzMonExporter - simplify auth retry and logging (#2311)\n\nRemoved redundant exponential backoff\nThe Azure SDK already performs exponential backoff internally (e.g., 6\nretries over 72s for IMDS via ManagedIdentityCredential). Our additional\nexponential backoff (5s → 30s with jitter) on top of that added\nnegligible value (4–30% extra wait) and unnecessary complexity. Replaced\nwith a fixed 1-second pause to prevent tight-spinning between SDK retry\ncycles.\n\n\nImproved get_token_failed WARN message\nAdded a message field that tells operators:\nToken acquisition failed\nThe exporter will keep retrying (counteracting the SDK's inner error\ntext which says \"the request will no longer be retried\")\nThe \"retries exhausted\" language in the error refers to an internal\nretry layer, not the exporter's outer loop\nFull error details remain available at DEBUG level via\nget_token_failed.details.\n\n\nBefore (two noisy WARN lines per failure, misleading retry timing):\n\n```txt\nWARN get_token_failed     [attempt=1, error=Auth error: ManagedIdentityCredential authentication failed. retry policy expired and the request will no longer be retried]\nWARN retry_scheduled      [delay_secs=5.23]\n```\n\nAfter (single clear WARN per failure, self-explanatory):\n\n```txt\nWARN get_token_failed     [message=Token acquisition failed. Will keep retrying. The error may mention retries being exhausted; that refers to an internal retry layer, not this outer loop., attempt=1, error=Auth error (token acquisition): ManagedIdentityCredential authentication failed. retry policy expired and the request will no longer be retried]\n```",
-          "timestamp": "2026-03-13T23:05:22Z",
-          "tree_id": "439575ca0c15db91ab32d2387177285a12e66ac1",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/6933f8e2d5629a7b76983b60ff43526d67e7f33f"
-        },
-        "date": 1773445639471,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.37245537652139593,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.5065978274760383,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 107.08314732142857,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 107.37109375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001766,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.12042914506607372,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.26445765586034914,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 39.93080357142857,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 40.08984375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001101,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.13040941646843565,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.2453670428893905,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 44.78404017857143,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 44.8828125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000912,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.2318651016548661,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.41760545581938496,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 69.671875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 69.76171875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001034,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.5726815687713184,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.8420550502140911,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 190.19921875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 190.6015625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001026,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.08009496928047759,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.2318433299555694,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 33.797433035714285,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 33.95703125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000903,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -20398,6 +20194,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.002213,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "f5f798f0fc2c2e0760b0879f452431172680393f",
+          "message": "Implement pdata-propagated stopwatch timer across processors (#2747)\n\n# Change Summary\n\nAlternative to the full `ProcessorChain` implementation under discussion\nat #2556\n\nAfter some conversations, trying to simplify back to focusing on ONLY\nthe composite duration problem in a way that isn't directly tied to the\nchannel elimination strategy / full implementation of `ProcessorChain`\n\n## Motivation\n\nPer-node `processor.compute.*.duration` reports each processor in\nisolation. Operators also need a single metric for the combined compute\nof a *range* of processors (e.g. five sequential attribute processors as\none number).\n\nDistributed **stopwatches** are engine-managed metrics that sum\nper-message compute time across configurable processor node pairs on the\nforward path.\n\n## Design\n\n**What's measured.** The wall-clock time spent inside each processor's\n`process()` between successive sends. Queue wait and channel latency\nbetween nodes are excluded.\n\n**How it's measured.** Immediately before each `process()` call, the\nengine arms an `Instant` send-marker on the EffectHandler. On every send\n(`send_message`, `try_send_message`, `_to`, and `_with_source_node*`\nvariants), the unified `ProcessorSendHook` reads the elapsed time since\nthe marker, advances the marker to \"now\", and adds the delta to the\nmessage's on-PData `stopwatch_compute_ns` accumulator. No processor\ncooperation needed — `timed()` is not required for stopwatch\nparticipation, and is used solely to split per-node compute into\nsuccess/failed.\n\n**Non-overlapping ranges.** At most one stopwatch is active per message.\nThe on-PData accumulator is a single `Option<NonZeroU64>`.\n\n**Declarative YAML config.**\n\n```yaml\npolicies:\n  telemetry:\n    runtime_metrics: normal\n    stopwatches:\n      - name: ingest_pipeline\n        start_node: attr1\n        stop_node: attr5\n```\n\nEach stopwatch gets its own metric entity with `stopwatch.name`,\n`stopwatch.start_node`, and `stopwatch.stop_node` attributes.\n\n## How It Works\n\n1. **Build time** — `build_stopwatch_state()` resolves config node names\nto indices, validates that endpoints are processor nodes (local or\nshared; receivers and exporters are rejected) and that no node is reused\nacross roles. If `runtime_metrics` does not include `PROCESS_DURATION`,\nall stopwatches are skipped with a single warning. Each processor's\n`EffectHandler` is assigned its start/stop role and (for stop nodes) the\nmetric set to report into.\n2. **Marker arming** — the engine loop calls\n`effect_handler.begin_process_timing()` before each `process()` call\nwhen stopwatches are active.\n   - Local: `Rc<Cell<Option<Instant>>>`.\n- Shared: `Arc<Mutex<Option<Instant>>>` (mutex contention is bounded to\nthe per-processor sequential `process()` loop).\n3. **Forward-path accumulation** — `OtapPdata::before_processor_send`\n(the unified `ProcessorSendHook` impl, called by both the plain\n`send_message*` family and the `send_message_with_source_node*` family\non local and shared processor handlers) invokes `stopwatch_accumulate`,\nwhich calls `take_elapsed_since_send_marker_ns()` (single\nread-and-advance step) and:\n- **Start node:** initialises the on-PData accumulator with the 1 ns\nsentinel.\n   - **Any node within an active range:** adds the delta.\n- **Stop node:** takes the total via `take_stopwatch_compute()` and\nrecords into the local stop accumulator (`Cell<Mmsc>` for local,\n`Arc<Mutex<Mmsc>>` for shared).\n4. **Periodic reporting** — on `CollectTelemetry` and at shutdown, the\nengine loop calls `effect_handler.report_stopwatch()`, which drains the\nstop accumulator into its `MetricSet` and reports it.\n\n## Metrics Produced\n\n| Metric Set | Metric Name | Unit | Attributes |\n\n|-------------|------------------------------|------|---------------------------------------------------------------------------------|\n| `stopwatch` | `stopwatch.compute.duration` | ns | `stopwatch.name`,\n`stopwatch.start_node`, `stopwatch.stop_node`, pipeline attrs |\n\n`Mmsc` (min/max/sum/count), delta temporality.\n\n## Live Validation\n\nDemo: `configs/fake-stopwatch-demo.yaml` (5 attribute processors, one\nstopwatch spanning the chain).\n\n```bash\ncurl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json&reset=true' | jq '\n  [.metric_sets[] | select(.name == \"stopwatch\" or .name == \"processor.compute\")]\n  | .[] | {\n      name: .name,\n      identity: (.attributes[\"node.id\"].String // .attributes[\"stopwatch.name\"].String),\n      duration: (\n        .metrics[]\n        | select(\n            (.name == \"compute.success.duration\") or\n            (.name == \"stopwatch.compute.duration\")\n          )\n        | .value\n        | if type == \"object\" and .count > 0 then {\n            avg_ms: (.sum / .count / 1e6),\n            count\n          } else empty end\n      )\n    }'\n```\n\nThe stopwatch average is at least the sum of per-processor\n`processor.compute` averages — it also covers `process()` time outside\n`timed()` closures (message handling, send-side bookkeeping):\n\n| Metric | Node / Stopwatch | Avg (ms) | Count |\n\n|---------------------|-----------------------------------|-----------|--------|\n| `processor.compute` | attr1 | 1.305 | 40 |\n| `processor.compute` | attr2 | 0.908 | 40 |\n| `processor.compute` | attr3 | 1.207 | 40 |\n| `processor.compute` | attr4 | 0.521 | 40 |\n| `processor.compute` | attr5 | 0.519 | 40 |\n| **`stopwatch`** | **ingest_pipeline** (attr1→attr5) | **6.121** |\n**40** |\n\n## Limitations / Follow-ups\n\n- **Non-overlapping only.** Build-time validation rejects nodes reused\nacross roles (e.g. `a→b` + `b→c`); runtime detection warns and resets if\ntopologically overlapping ranges (e.g. 1→3 + 2→4) appear.\n- **Requires `runtime_metrics: normal` or higher.** Gated behind the\nsame `PROCESS_DURATION` interest as `processor.compute`. Lower levels\nskip all stopwatches at build time with one warning.\n- **Processors only.** Receivers and exporters are rejected at build\ntime (no incoming-message frame / no further send path).\n- **No topology ordering validation.** Start-before-stop is not\nenforced; a misconfigured stopwatch simply never fires.\n- **Shared processors with worker tasks.** The marker captures only time\nspent inside `process()` itself. Processors that fan work out to spawned\ntasks and return early can still report accurate per-message compute via\n`timed()` from inside their workers.\n- **Send-bounded measurement.** Each processor's contribution is the\nwall-clock span from `begin_process_timing` (or its previous send)\nthrough its next `send_message`. Two consequences:\n- **Dropped messages contribute nothing.** A processor that consumes a\nmessage without sending it never reaches a stop node, so no stopwatch\nobservation is recorded — by design, the metric counts only complete\ntransits.\n- **Post-final-send work is not attributed.** Cleanup performed after\nthe last `send_message` in `process()` is not captured. For typical\nstateless processors this is a trivial return path; processors that do\nsignificant post-send work should perform it before the final send if\nthey want it measured.\n\n## What issue does this PR close?\n\n* Related to #2556\n* Contributes to #2782\n\n## How are these changes tested?\n\nUnit tests, local run of sample config\n\n## Are there any user-facing changes?\n\nYes, users could configure stopwatch metrics across multiple processors",
+          "timestamp": "2026-05-04T23:17:49Z",
+          "tree_id": "cf6955d2d8ba7477dddc57643ae666943bba9521",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f5f798f0fc2c2e0760b0879f452431172680393f"
+        },
+        "date": 1777940292818,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.17473032343408273,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.3431133250311333,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 13.362165178571429,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 13.70703125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.00212,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.6169786072683376,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.8665597009112859,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 18.164620535714285,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 18.44921875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.003358,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 2.1557791695130835,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 2.488058539623229,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 37.34486607142857,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 37.78515625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.008375,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 1.0706945766536728,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 1.319747840298856,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 24.662946428571427,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 24.8359375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002117,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.23476136039342335,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.4267330894372227,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 13.592075892857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 13.8359375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002204,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.3540040429165417,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.5765083320355086,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 16.029575892857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 16.296875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002086,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
           }
