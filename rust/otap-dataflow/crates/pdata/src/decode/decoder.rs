@@ -46,6 +46,7 @@ impl StreamConsumer {
 }
 
 /// Consumer consumes OTAP `BatchArrowRecords` and can convert them into OTLP messages.
+#[derive(Default)]
 pub struct Consumer {
     stream_consumers: HashMap<String, StreamConsumer>,
     logs_proto_encoder: LogsProtoBytesEncoder,
@@ -54,19 +55,13 @@ pub struct Consumer {
     proto_buffer: ProtoBuffer,
 }
 
-impl Default for Consumer {
-    fn default() -> Self {
-        Self::with_options(ConversionOptions::default())
-    }
-}
-
 impl Consumer {
     /// Construct a consumer with conversion options.
     #[must_use]
     pub fn with_options(opts: ConversionOptions) -> Self {
         Self {
             proto_buffer: ProtoBuffer::new(opts),
-            ..Default::default()
+            ..Self::default()
         }
     }
 
