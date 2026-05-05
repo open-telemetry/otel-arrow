@@ -91,17 +91,10 @@ jobs:
         with:
           fail_ci_if_error: true
 
-  # otap-dataflow on ARM and macOS (non-required): build once per OS, fan out tests.
-  # macOS uses the workspace default features. Linux ARM uses a reduced feature set
-  # (mirroring the "Incomplete" Windows variant in `build_required`) and excludes
-  # `otap-df-validation` and `benchmarks`. Both crates depend on
-  # `core-nodes/dev-tools`, which transitively pulls weaver / gix / reqwest /
-  # native-tls / openssl-sys; on Linux that openssl-sys C build is the major
-  # cost not paid by the Windows or macOS variants of native-tls (which is
-  # target-conditional). The `otap-df-otap` crate's `integration-tests` feature
-  # (gating its fake-data-generator-using integration tests) is left disabled
-  # for the same reason. Full feature coverage and validation tests are handled
-  # by the required x86 jobs.
+  # otap-dataflow on ARM and macOS (non-required): build once per OS,
+  # fan out tests.  macOS uses the workspace default features. Linux
+  # ARM uses a reduced feature set Full feature coverage and
+  # validation tests are handled by the required x86 jobs.
   build_nonrequired:
     strategy:
       fail-fast: false
