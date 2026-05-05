@@ -281,7 +281,7 @@ pub(crate) fn build_flow_measurement_state(
                     .metrics_registry()
                     .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key)
             });
-        let duration_metric = flow_config.has(FlowMeasurement::Duration).then(|| {
+        let duration_metric = flow_config.has(FlowMeasurement::ComputeDuration).then(|| {
             pipeline_context
                 .metrics_registry()
                 .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key)
@@ -538,7 +538,7 @@ mod tests {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["a", "b"], &[]);
         let mut flow = sw("duration_only", "a", "b");
-        flow.measurements = Some(vec![FlowMeasurement::Duration]);
+        flow.measurements = Some(vec![FlowMeasurement::ComputeDuration]);
         let policy = policy_with(vec![flow]);
 
         let state = build_flow_measurement_state(&policy, &names, &procs, &ctx)

@@ -315,7 +315,7 @@ pub struct FlowBounds {
 #[serde(rename_all = "snake_case")]
 pub enum FlowMeasurement {
     /// Aggregate processor compute duration across the flow.
-    Duration,
+    ComputeDuration,
     /// Signal item count entering the flow.
     SignalsIncoming,
     /// Signal item count leaving the flow.
@@ -871,7 +871,7 @@ mod tests {
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         let flow = &policy.flow_measurements[0];
         assert!(flow.measurements.is_none());
-        assert!(flow.has(super::FlowMeasurement::Duration));
+        assert!(flow.has(super::FlowMeasurement::ComputeDuration));
         assert!(flow.has(super::FlowMeasurement::SignalsIncoming));
         assert!(flow.has(super::FlowMeasurement::SignalsOutgoing));
     }
@@ -882,11 +882,11 @@ mod tests {
             flow_measurements:
               - name: flow1
                 bounds: { start_node: a, end_node: b }
-                measurements: [duration]
+                measurements: [compute_duration]
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         let flow = &policy.flow_measurements[0];
-        assert!(flow.has(super::FlowMeasurement::Duration));
+        assert!(flow.has(super::FlowMeasurement::ComputeDuration));
         assert!(!flow.has(super::FlowMeasurement::SignalsIncoming));
         assert!(!flow.has(super::FlowMeasurement::SignalsOutgoing));
     }
@@ -926,8 +926,8 @@ mod tests {
                         end_node: "b".to_string(),
                     },
                     measurements: Some(vec![
-                        super::FlowMeasurement::Duration,
-                        super::FlowMeasurement::Duration,
+                        super::FlowMeasurement::ComputeDuration,
+                        super::FlowMeasurement::ComputeDuration,
                     ]),
                 }],
                 ..super::TelemetryPolicy::default()

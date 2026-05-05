@@ -50,7 +50,7 @@ groups:
                   end_node: attr4
                 # measurements is optional
                 # if omitted, all supported measurements are recorded
-                measurements: [ duration, signals_incoming, signals_outgoing ]
+                measurements: [ compute_duration, signals_incoming, signals_outgoing ]
 
         nodes:
           receiver:
