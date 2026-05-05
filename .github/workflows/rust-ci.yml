@@ -83,6 +83,9 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
+      # NOTE: when adding or removing a codecov upload step anywhere in
+      # the repo, update `codecov.notify.after_n_builds` in
+      # .github/codecov.yaml so codecov waits for the new total.
       - name: Upload to codecov.io
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
@@ -577,6 +580,9 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --profile ci --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/otap-dataflow
+      # NOTE: when adding or removing a codecov upload step anywhere in
+      # the repo, update `codecov.notify.after_n_builds` in
+      # .github/codecov.yaml so codecov waits for the new total.
       - name: Upload to codecov.io
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         env:

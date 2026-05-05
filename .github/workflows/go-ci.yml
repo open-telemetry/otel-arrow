@@ -35,6 +35,9 @@ jobs:
       - name: Run tests with coverage
         run: go test -cover -coverprofile=coverage.txt -covermode=atomic -coverpkg=./... ./...
         working-directory: ./go/${{ matrix.folder }}
+      # NOTE: when adding or removing a codecov upload step anywhere in
+      # the repo, update `codecov.notify.after_n_builds` in
+      # .github/codecov.yaml so codecov waits for the new total.
       - name: Upload to codecov.io
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         env:
