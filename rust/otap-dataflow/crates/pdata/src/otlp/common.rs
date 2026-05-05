@@ -456,10 +456,10 @@ pub trait BoundedBuf {
     /// An unsigned varint encoding.
     #[inline]
     fn encode_varint(&mut self, value: u64) -> EncodeResult {
-        if value < 0x80 {
+        if value < tag_width_limit(1) as u64 {
             return self.try_extend(&[value as u8]);
         }
-        if value < 0x4000 {
+        if value < tag_width_limit(2) as u64 {
             return self.try_extend(&[((value & 0x7F) | 0x80) as u8, (value >> 7) as u8]);
         }
         let mut tmp = [0u8; 10];
@@ -516,20 +516,30 @@ pub trait BoundedBuf {
         let suffix_len = TRUNCATION_SUFFIX.len();
         let avail = self.remaining();
 
-        // We need at least: tag + 1 byte length varint + suffix.
+        // Minimum encoding is: tag + 1-byte length varint + suffix bytes
+        // (suffix_len is small enough that a payload of just the suffix
+        // always uses a 1-byte length varint).
         let min_overhead = tag_bytes + 1 + suffix_len;
         if avail < min_overhead {
             return Err(Dropped);
         }
 
-        // Find max payload that fits in `avail - tag_bytes` bytes.
-        let s = avail - tag_bytes;
-        let len_varint_size = varint_len(s as u64);
-        let max_payload = s - len_varint_size;
-        if max_payload < suffix_len {
-            return Err(Dropped);
-        }
-        let content_len = max_payload - suffix_len;
+        // After the tag, we have `len_and_payload` bytes for the length
+        // varint plus the payload (content + suffix). We bound the
+        // length-varint width using `len_and_payload` itself; this may
+        // leave at most one byte unused when the actual payload's varint
+        // is shorter (subtracting `len_varint_size` from `len_and_payload`
+        // can drop the value across at most one 2^7 threshold). Closed-
+        // form, never overshoots `avail`. The `min_overhead` check above
+        // guarantees there is room for the varint and the suffix, so
+        // `content_len` is non-negative.
+        let len_and_payload = avail - tag_bytes;
+        let len_varint_size = varint_len(len_and_payload as u64);
+        debug_assert!(
+            len_and_payload >= len_varint_size + suffix_len,
+            "min_overhead check guarantees varint + suffix fit",
+        );
+        let content_len = len_and_payload - len_varint_size - suffix_len;
 
         // Truncate at a UTF-8 character boundary.
         let truncated_str = truncate_utf8(val, content_len);
@@ -1875,19 +1885,30 @@ mod test {
     }
 
     #[test]
-    fn truncate_at_utf8_boundary_does_not_panic() {
-        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
+    fn truncate_utf8_returns_char_boundary_prefix() {
+        // 4-byte UTF-8 characters (U+1F600, 4 bytes each).
+        let s: String = std::iter::repeat_n('\u{1F600}', 5).collect();
+        assert_eq!(s.len(), 20);
 
-        // A string of 4-byte UTF-8 chars where truncation lands mid-char.
-        let s: String = std::iter::repeat_n('\u{1F600}', 2).collect();
-        let mut buf = StackProtoBuffer::<24>::with_inline();
-        assert_eq!(8, s.len());
-        for i in [1, 2, 3, 5, 6, 7] {
-            let r = buf.encode_string_truncating(i, &s);
-            assert!(matches!(r, Err(_)));
+        // For every possible max_bytes, the result must be:
+        //   - a valid &str prefix of `s` (implicit: no panic on slicing)
+        //   - of length <= max_bytes
+        //   - of length >= max_bytes - 3 (since chars are at most 4 bytes)
+        for max_bytes in 0..=s.len() {
+            let out = super::truncate_utf8(&s, max_bytes);
+            assert!(out.len() <= max_bytes, "max_bytes={max_bytes}");
+            assert!(
+                max_bytes < 4 || out.len() >= max_bytes - 3,
+                "max_bytes={max_bytes}, out.len()={}",
+                out.len()
+            );
+            assert!(s.starts_with(out));
+            // out.len() must be a multiple of 4 (each char is 4 bytes).
+            assert_eq!(out.len() % 4, 0, "max_bytes={max_bytes}");
         }
-        let r = buf.encode_string_truncating(4, &s);
-        assert!(matches!(r, Ok(true)));
+
+        // Above the input length, returns the whole string.
+        assert_eq!(super::truncate_utf8(&s, 1000), s.as_str());
     }
 
     #[test]
