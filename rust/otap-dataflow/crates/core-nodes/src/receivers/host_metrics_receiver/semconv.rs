@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Semantic convention constants used by the host metrics receiver.
+// Keep these strings centralized here. If this surface grows, prefer generating
+// constants from the semconv registry instead of adding scattered literals.
 
 /// Semconv version targeted by this receiver's projection layer.
 pub(crate) const VERSION: &str = "1.41.0";
