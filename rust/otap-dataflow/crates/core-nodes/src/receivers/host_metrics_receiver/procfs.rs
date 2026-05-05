@@ -2620,6 +2620,9 @@ mod tests {
             "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 200 kB\n",
         )
         .expect("meminfo");
+        // Cumulative metrics read /proc/stat once to cache boot time. Provide
+        // btime here so this test only exercises the missing diskstats error.
+        std::fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
         let mut source = ProcfsSource::new(
             Some(root.path()),
             ProcfsConfig {
