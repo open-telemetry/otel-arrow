@@ -17,11 +17,11 @@ use std::time::SystemTime;
 use tracing::Level;
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
-pub struct DirectLogRecordEncoder<'buf, B: BoundedBuf + std::io::Write> {
+pub struct DirectLogRecordEncoder<'buf, B: BoundedBuf> {
     buf: &'buf mut B,
 }
 
-impl<'buf, B: BoundedBuf + std::io::Write> DirectLogRecordEncoder<'buf, B> {
+impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
     /// Create a new encoder that writes to the provided buffer.
     #[inline]
     pub const fn new(buf: &'buf mut B) -> Self {
@@ -82,23 +82,25 @@ impl<'buf, B: BoundedBuf + std::io::Write> DirectLogRecordEncoder<'buf, B> {
 
 /// Encode the event name from callsite metadata.
 /// Format: "target::name (file:line)" or "target::name" if no file/line.
-fn encode_event_name<B: BoundedBuf + std::io::Write>(
+fn encode_event_name<B: BoundedBuf>(
     buf: &mut B,
     callsite: SavedCallsite,
 ) -> EncodeResult {
     buf.encode_len_delimited(LOG_RECORD_EVENT_NAME, |buf| {
-        super::formatter::write_event_name_to(buf, &callsite);
+        buf.try_extend(callsite.target().as_bytes())?;
+        buf.try_extend(b"::")?;
+        buf.try_extend(callsite.name().as_bytes())?;
         Ok(())
     })
 }
 
 /// Visitor that directly encodes tracing fields to protobuf.
-pub struct DirectFieldVisitor<'buf, B: BoundedBuf + std::io::Write> {
+pub struct DirectFieldVisitor<'buf, B: BoundedBuf> {
     buf: &'buf mut B,
     dropped_count: u32,
 }
 
-impl<'buf, B: BoundedBuf + std::io::Write> DirectFieldVisitor<'buf, B> {
+impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     /// Create a new DirectFieldVisitor that writes to the provided buffer.
     pub const fn new(buf: &'buf mut B) -> Self {
         Self {
@@ -226,16 +228,35 @@ impl<'buf, B: BoundedBuf + std::io::Write> DirectFieldVisitor<'buf, B> {
     }
 }
 
+/// Adapter that lets `write!` format directly into a `BoundedBuf` without
+/// an intermediate `String`. `try_extend` returns `Err(Dropped)` on
+/// overflow; we map that to `fmt::Error` so `write!` short-circuits and
+/// the caller learns truncation occurred.
+struct BoundedBufFmt<'a, B: BoundedBuf>(&'a mut B);
+
+impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.try_extend(s.as_bytes()).map_err(|_| std::fmt::Error)
+    }
+}
+
 /// Helper to encode a Debug value as a protobuf string field.
 /// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
 #[inline]
-fn encode_debug_string<B: BoundedBuf + std::io::Write>(
+fn encode_debug_string<B: BoundedBuf>(
     buf: &mut B,
     value: &dyn std::fmt::Debug,
 ) -> EncodeResult {
     buf.encode_len_delimited(ANY_VALUE_STRING_VALUE, |buf| {
-        let _ = write!(buf, "{:?}", value);
-        Ok(())
+        // Wrap in a local fmt::Write adapter so the formatter machinery
+        // writes directly into the buffer (no intermediate String). If the
+        // buffer fills up, `write!` returns `Err(fmt::Error)` and we
+        // propagate as `Dropped` so the surrounding `try_encode` rolls
+        // back partial bytes and the caller bumps `dropped_count`.
+        use std::fmt::Write as _;
+        let mut adapter = BoundedBufFmt(buf);
+        write!(adapter, "{:?}", value).map_err(|_| Dropped)
     })
 }
 
@@ -246,11 +267,11 @@ fn encode_debug_string<B: BoundedBuf + std::io::Write>(
 /// pre-counting the field set, while still preventing one large value from
 /// consuming the entire remaining buffer.
 #[inline]
-fn attr_budget<B: BoundedBuf + std::io::Write>(buf: &B) -> usize {
+fn attr_budget<B: BoundedBuf>(buf: &B) -> usize {
     buf.remaining().div_ceil(2)
 }
 
-impl<B: BoundedBuf + std::io::Write> tracing::field::Visit for DirectFieldVisitor<'_, B> {
+impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         if field.name() == "message" {
             return;
