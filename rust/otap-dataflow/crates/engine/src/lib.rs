@@ -87,6 +87,7 @@ pub mod process_duration;
 mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
+pub mod stopwatch;
 pub mod terminal_state;
 pub mod testing;
 pub mod topic;
@@ -395,6 +396,23 @@ impl StampOutputPort for () {
 
 impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+
+/// Trait for forward-path stopwatch compute accumulation on PData.
+///
+/// At most one stopwatch range can be active on a given message at a
+/// time (non-overlapping ranges).
+pub trait StopwatchAccumulation {
+    /// Initialise a fresh stopwatch accumulator (set to 0).
+    /// Called at the start node.
+    fn start_stopwatch(&mut self);
+
+    /// Add `ns` nanoseconds to the active stopwatch accumulator, if any.
+    fn add_stopwatch_compute(&mut self, ns: u64);
+
+    /// Remove and return the accumulated total.
+    /// Returns `None` if no accumulator was active.
+    fn take_stopwatch_compute(&mut self) -> Option<u64>;
 }
 
 /// Effect handler extensions for producers specific to data type.
