@@ -248,7 +248,7 @@ toml = "1.0.0"
 tonic-prost-build = "0.14"
 urlencoding = "2"
 # Pinned to open-telemetry/opentelemetry-rust-contrib main on 2026-04-25.
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "00225194bab2658ee730ac0c4fe7942c28373848" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "ce866b48a1645f1fb222bdea19c42821a2b48d5a" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }
