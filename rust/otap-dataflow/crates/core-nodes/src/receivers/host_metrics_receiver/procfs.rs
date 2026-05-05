@@ -836,17 +836,22 @@ fn project_snapshot(
             );
         }
     }
-    for swap in &snap.swaps {
-        let m = b.begin_updown_i64(metric::PAGING_USAGE, "By");
-        for (state, value) in [("used", swap.used), ("free", swap.free)] {
-            b.append_i64_sum_dp(m, start, now, saturating_i64(value), |w| {
-                w.str(attr::SYSTEM_DEVICE, &swap.name);
-                w.str(attr::SYSTEM_PAGING_STATE, state);
-            });
-        }
-        let size = swap.size;
-        if size > 0 {
-            let m = b.begin_gauge_f64(metric::PAGING_UTILIZATION, "1");
+    if !snap.swaps.is_empty() {
+        let usage_m = b.begin_updown_i64(metric::PAGING_USAGE, "By");
+        let mut utilization_m = None;
+        for swap in &snap.swaps {
+            for (state, value) in [("used", swap.used), ("free", swap.free)] {
+                b.append_i64_sum_dp(usage_m, start, now, saturating_i64(value), |w| {
+                    w.str(attr::SYSTEM_DEVICE, &swap.name);
+                    w.str(attr::SYSTEM_PAGING_STATE, state);
+                });
+            }
+            let size = swap.size;
+            if size == 0 {
+                continue;
+            }
+            let m = *utilization_m
+                .get_or_insert_with(|| b.begin_gauge_f64(metric::PAGING_UTILIZATION, "1"));
             let total = size as f64;
             for (state, value) in [("used", swap.used), ("free", swap.free)] {
                 b.append_f64_gauge_dp(m, now, value as f64 / total, |w| {
@@ -876,106 +881,97 @@ fn project_snapshot(
     }
 
     // ── Disk ─────────────────────────────────────────────────────────────────
-    for disk in &snap.disks {
-        if let Some(limit_bytes) = disk.limit_bytes {
-            let m = b.begin_updown_i64(metric::DISK_LIMIT, "By");
-            b.append_i64_sum_dp(m, start, now, saturating_i64(limit_bytes), |w| {
-                w.str(attr::SYSTEM_DEVICE, &disk.name);
-            });
-        }
-        let m = b.begin_counter_i64(metric::DISK_IO, "By");
-        for (dir, value) in [("read", disk.read_bytes), ("write", disk.write_bytes)] {
-            b.append_i64_sum_dp(
-                m,
-                cs.get_joined(metric::DISK_IO, &disk.name, dir, start),
-                now,
-                saturating_i64(value),
-                |w| {
+    if !snap.disks.is_empty() {
+        let mut limit_m = None;
+        let io_m = b.begin_counter_i64(metric::DISK_IO, "By");
+        let operations_m = b.begin_counter_i64(metric::DISK_OPERATIONS, "{operation}");
+        let io_time_m = b.begin_counter_f64(metric::DISK_IO_TIME, "s");
+        let operation_time_m = b.begin_counter_f64(metric::DISK_OPERATION_TIME, "s");
+        let merged_m = b.begin_counter_i64(metric::DISK_MERGED, "{operation}");
+        for disk in &snap.disks {
+            if let Some(limit_bytes) = disk.limit_bytes {
+                let m =
+                    *limit_m.get_or_insert_with(|| b.begin_updown_i64(metric::DISK_LIMIT, "By"));
+                b.append_i64_sum_dp(m, start, now, saturating_i64(limit_bytes), |w| {
                     w.str(attr::SYSTEM_DEVICE, &disk.name);
-                    w.str(attr::DISK_IO_DIRECTION, dir);
-                },
-            );
-        }
-        let m = b.begin_counter_i64(metric::DISK_OPERATIONS, "{operation}");
-        for (dir, value) in [("read", disk.read_ops), ("write", disk.write_ops)] {
-            b.append_i64_sum_dp(
-                m,
-                cs.get_joined(metric::DISK_OPERATIONS, &disk.name, dir, start),
-                now,
-                saturating_i64(value),
-                |w| {
-                    w.str(attr::SYSTEM_DEVICE, &disk.name);
-                    w.str(attr::DISK_IO_DIRECTION, dir);
-                },
-            );
-        }
-        let m = b.begin_counter_f64(metric::DISK_IO_TIME, "s");
-        b.append_f64_sum_dp(
-            m,
-            cs.get(metric::DISK_IO_TIME, &disk.name, start),
-            now,
-            disk.io_time_seconds,
-            |w| {
-                w.str(attr::SYSTEM_DEVICE, &disk.name);
-            },
-        );
-        let m = b.begin_counter_f64(metric::DISK_OPERATION_TIME, "s");
-        for (dir, value) in [
-            ("read", disk.read_time_seconds),
-            ("write", disk.write_time_seconds),
-        ] {
+                });
+            }
+            for (dir, value) in [("read", disk.read_bytes), ("write", disk.write_bytes)] {
+                b.append_i64_sum_dp(
+                    io_m,
+                    cs.get_joined(metric::DISK_IO, &disk.name, dir, start),
+                    now,
+                    saturating_i64(value),
+                    |w| {
+                        w.str(attr::SYSTEM_DEVICE, &disk.name);
+                        w.str(attr::DISK_IO_DIRECTION, dir);
+                    },
+                );
+            }
+            for (dir, value) in [("read", disk.read_ops), ("write", disk.write_ops)] {
+                b.append_i64_sum_dp(
+                    operations_m,
+                    cs.get_joined(metric::DISK_OPERATIONS, &disk.name, dir, start),
+                    now,
+                    saturating_i64(value),
+                    |w| {
+                        w.str(attr::SYSTEM_DEVICE, &disk.name);
+                        w.str(attr::DISK_IO_DIRECTION, dir);
+                    },
+                );
+            }
             b.append_f64_sum_dp(
-                m,
-                cs.get_joined(metric::DISK_OPERATION_TIME, &disk.name, dir, start),
+                io_time_m,
+                cs.get(metric::DISK_IO_TIME, &disk.name, start),
                 now,
-                value,
+                disk.io_time_seconds,
                 |w| {
                     w.str(attr::SYSTEM_DEVICE, &disk.name);
-                    w.str(attr::DISK_IO_DIRECTION, dir);
                 },
             );
-        }
-        let m = b.begin_counter_i64(metric::DISK_MERGED, "{operation}");
-        for (dir, value) in [("read", disk.read_merged), ("write", disk.write_merged)] {
-            b.append_i64_sum_dp(
-                m,
-                cs.get_joined(metric::DISK_MERGED, &disk.name, dir, start),
-                now,
-                saturating_i64(value),
-                |w| {
-                    w.str(attr::SYSTEM_DEVICE, &disk.name);
-                    w.str(attr::DISK_IO_DIRECTION, dir);
-                },
-            );
+            for (dir, value) in [
+                ("read", disk.read_time_seconds),
+                ("write", disk.write_time_seconds),
+            ] {
+                b.append_f64_sum_dp(
+                    operation_time_m,
+                    cs.get_joined(metric::DISK_OPERATION_TIME, &disk.name, dir, start),
+                    now,
+                    value,
+                    |w| {
+                        w.str(attr::SYSTEM_DEVICE, &disk.name);
+                        w.str(attr::DISK_IO_DIRECTION, dir);
+                    },
+                );
+            }
+            for (dir, value) in [("read", disk.read_merged), ("write", disk.write_merged)] {
+                b.append_i64_sum_dp(
+                    merged_m,
+                    cs.get_joined(metric::DISK_MERGED, &disk.name, dir, start),
+                    now,
+                    saturating_i64(value),
+                    |w| {
+                        w.str(attr::SYSTEM_DEVICE, &disk.name);
+                        w.str(attr::DISK_IO_DIRECTION, dir);
+                    },
+                );
+            }
         }
     }
 
     // ── Filesystem ───────────────────────────────────────────────────────────
-    for fs in &snap.filesystems {
-        let total = fs.used.saturating_add(fs.free).saturating_add(fs.reserved);
-        let m = b.begin_updown_i64(metric::FILESYSTEM_USAGE, "By");
-        for (state, value) in [
-            ("used", fs.used),
-            ("free", fs.free),
-            ("reserved", fs.reserved),
-        ] {
-            b.append_i64_sum_dp(m, start, now, saturating_i64(value), |w| {
-                w.str(attr::SYSTEM_DEVICE, &fs.device);
-                w.str(attr::SYSTEM_FILESYSTEM_STATE, state);
-                w.str(attr::SYSTEM_FILESYSTEM_TYPE, &fs.fs_type);
-                w.str(attr::SYSTEM_FILESYSTEM_MODE, fs.mode);
-                w.str(attr::SYSTEM_FILESYSTEM_MOUNTPOINT, &fs.mountpoint);
-            });
-        }
-        if total > 0 {
-            let m = b.begin_gauge_f64(metric::FILESYSTEM_UTILIZATION, "1");
-            let total_f = total as f64;
+    if !snap.filesystems.is_empty() {
+        let usage_m = b.begin_updown_i64(metric::FILESYSTEM_USAGE, "By");
+        let mut utilization_m = None;
+        let mut limit_m = None;
+        for fs in &snap.filesystems {
+            let total = fs.used.saturating_add(fs.free).saturating_add(fs.reserved);
             for (state, value) in [
                 ("used", fs.used),
                 ("free", fs.free),
                 ("reserved", fs.reserved),
             ] {
-                b.append_f64_gauge_dp(m, now, value as f64 / total_f, |w| {
+                b.append_i64_sum_dp(usage_m, start, now, saturating_i64(value), |w| {
                     w.str(attr::SYSTEM_DEVICE, &fs.device);
                     w.str(attr::SYSTEM_FILESYSTEM_STATE, state);
                     w.str(attr::SYSTEM_FILESYSTEM_TYPE, &fs.fs_type);
@@ -983,73 +979,94 @@ fn project_snapshot(
                     w.str(attr::SYSTEM_FILESYSTEM_MOUNTPOINT, &fs.mountpoint);
                 });
             }
-        }
-        if let Some(limit_bytes) = fs.limit_bytes {
-            let m = b.begin_updown_i64(metric::FILESYSTEM_LIMIT, "By");
-            b.append_i64_sum_dp(m, start, now, saturating_i64(limit_bytes), |w| {
-                w.str(attr::SYSTEM_DEVICE, &fs.device);
-                w.str(attr::SYSTEM_FILESYSTEM_TYPE, &fs.fs_type);
-                w.str(attr::SYSTEM_FILESYSTEM_MODE, fs.mode);
-                w.str(attr::SYSTEM_FILESYSTEM_MOUNTPOINT, &fs.mountpoint);
-            });
+            if total > 0 {
+                let m = *utilization_m
+                    .get_or_insert_with(|| b.begin_gauge_f64(metric::FILESYSTEM_UTILIZATION, "1"));
+                let total_f = total as f64;
+                for (state, value) in [
+                    ("used", fs.used),
+                    ("free", fs.free),
+                    ("reserved", fs.reserved),
+                ] {
+                    b.append_f64_gauge_dp(m, now, value as f64 / total_f, |w| {
+                        w.str(attr::SYSTEM_DEVICE, &fs.device);
+                        w.str(attr::SYSTEM_FILESYSTEM_STATE, state);
+                        w.str(attr::SYSTEM_FILESYSTEM_TYPE, &fs.fs_type);
+                        w.str(attr::SYSTEM_FILESYSTEM_MODE, fs.mode);
+                        w.str(attr::SYSTEM_FILESYSTEM_MOUNTPOINT, &fs.mountpoint);
+                    });
+                }
+            }
+            if let Some(limit_bytes) = fs.limit_bytes {
+                let m = *limit_m
+                    .get_or_insert_with(|| b.begin_updown_i64(metric::FILESYSTEM_LIMIT, "By"));
+                b.append_i64_sum_dp(m, start, now, saturating_i64(limit_bytes), |w| {
+                    w.str(attr::SYSTEM_DEVICE, &fs.device);
+                    w.str(attr::SYSTEM_FILESYSTEM_TYPE, &fs.fs_type);
+                    w.str(attr::SYSTEM_FILESYSTEM_MODE, fs.mode);
+                    w.str(attr::SYSTEM_FILESYSTEM_MOUNTPOINT, &fs.mountpoint);
+                });
+            }
         }
     }
 
     // ── Network ──────────────────────────────────────────────────────────────
-    for net in &snap.networks {
-        let m = b.begin_counter_i64(metric::NETWORK_IO, "By");
-        for (dir, value) in [("receive", net.rx_bytes), ("transmit", net.tx_bytes)] {
-            b.append_i64_sum_dp(
-                m,
-                cs.get_joined(metric::NETWORK_IO, &net.name, dir, start),
-                now,
-                saturating_i64(value),
-                |w| {
-                    w.str(attr::NETWORK_INTERFACE_NAME, &net.name);
-                    w.str(attr::NETWORK_IO_DIRECTION, dir);
-                },
-            );
-        }
-        let m = b.begin_counter_i64(metric::NETWORK_PACKET_COUNT, "{packet}");
-        for (dir, value) in [("receive", net.rx_packets), ("transmit", net.tx_packets)] {
-            b.append_i64_sum_dp(
-                m,
-                cs.get_joined(metric::NETWORK_PACKET_COUNT, &net.name, dir, start),
-                now,
-                saturating_i64(value),
-                |w| {
-                    // Semconv uses system.device here, while sibling network
-                    // metrics use network.interface.name.
-                    w.str(attr::SYSTEM_DEVICE, &net.name);
-                    w.str(attr::NETWORK_IO_DIRECTION, dir);
-                },
-            );
-        }
-        let m = b.begin_counter_i64(metric::NETWORK_PACKET_DROPPED, "{packet}");
-        for (dir, value) in [("receive", net.rx_dropped), ("transmit", net.tx_dropped)] {
-            b.append_i64_sum_dp(
-                m,
-                cs.get_joined(metric::NETWORK_PACKET_DROPPED, &net.name, dir, start),
-                now,
-                saturating_i64(value),
-                |w| {
-                    w.str(attr::NETWORK_INTERFACE_NAME, &net.name);
-                    w.str(attr::NETWORK_IO_DIRECTION, dir);
-                },
-            );
-        }
-        let m = b.begin_counter_i64(metric::NETWORK_ERRORS, "{error}");
-        for (dir, value) in [("receive", net.rx_errors), ("transmit", net.tx_errors)] {
-            b.append_i64_sum_dp(
-                m,
-                cs.get_joined(metric::NETWORK_ERRORS, &net.name, dir, start),
-                now,
-                saturating_i64(value),
-                |w| {
-                    w.str(attr::NETWORK_INTERFACE_NAME, &net.name);
-                    w.str(attr::NETWORK_IO_DIRECTION, dir);
-                },
-            );
+    if !snap.networks.is_empty() {
+        let io_m = b.begin_counter_i64(metric::NETWORK_IO, "By");
+        let packet_count_m = b.begin_counter_i64(metric::NETWORK_PACKET_COUNT, "{packet}");
+        let packet_dropped_m = b.begin_counter_i64(metric::NETWORK_PACKET_DROPPED, "{packet}");
+        let errors_m = b.begin_counter_i64(metric::NETWORK_ERRORS, "{error}");
+        for net in &snap.networks {
+            for (dir, value) in [("receive", net.rx_bytes), ("transmit", net.tx_bytes)] {
+                b.append_i64_sum_dp(
+                    io_m,
+                    cs.get_joined(metric::NETWORK_IO, &net.name, dir, start),
+                    now,
+                    saturating_i64(value),
+                    |w| {
+                        w.str(attr::NETWORK_INTERFACE_NAME, &net.name);
+                        w.str(attr::NETWORK_IO_DIRECTION, dir);
+                    },
+                );
+            }
+            for (dir, value) in [("receive", net.rx_packets), ("transmit", net.tx_packets)] {
+                b.append_i64_sum_dp(
+                    packet_count_m,
+                    cs.get_joined(metric::NETWORK_PACKET_COUNT, &net.name, dir, start),
+                    now,
+                    saturating_i64(value),
+                    |w| {
+                        // Semconv uses system.device here, while sibling network
+                        // metrics use network.interface.name.
+                        w.str(attr::SYSTEM_DEVICE, &net.name);
+                        w.str(attr::NETWORK_IO_DIRECTION, dir);
+                    },
+                );
+            }
+            for (dir, value) in [("receive", net.rx_dropped), ("transmit", net.tx_dropped)] {
+                b.append_i64_sum_dp(
+                    packet_dropped_m,
+                    cs.get_joined(metric::NETWORK_PACKET_DROPPED, &net.name, dir, start),
+                    now,
+                    saturating_i64(value),
+                    |w| {
+                        w.str(attr::NETWORK_INTERFACE_NAME, &net.name);
+                        w.str(attr::NETWORK_IO_DIRECTION, dir);
+                    },
+                );
+            }
+            for (dir, value) in [("receive", net.rx_errors), ("transmit", net.tx_errors)] {
+                b.append_i64_sum_dp(
+                    errors_m,
+                    cs.get_joined(metric::NETWORK_ERRORS, &net.name, dir, start),
+                    now,
+                    saturating_i64(value),
+                    |w| {
+                        w.str(attr::NETWORK_INTERFACE_NAME, &net.name);
+                        w.str(attr::NETWORK_IO_DIRECTION, dir);
+                    },
+                );
+            }
         }
     }
 }

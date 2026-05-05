@@ -38,7 +38,6 @@ futures.workspace = true
 futures-timer.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
-libc.workspace = true
 object_store = {workspace = true, features = ["fs"]}
 parquet.workspace = true
 prost.workspace = true
@@ -68,6 +67,7 @@ weaver_resolver = { workspace = true, optional = true }
 weaver_semconv = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
 nix.workspace = true
 
 [features]
