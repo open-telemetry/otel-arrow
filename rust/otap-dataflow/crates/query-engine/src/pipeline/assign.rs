@@ -48,16 +48,18 @@ use otap_df_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::eval::scoped_value_to_join_input;
+use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
     RootToAttributesJoin,
 };
+use crate::pipeline::expr::planner::PlannedOp;
 use crate::pipeline::expr::types::{
     ExprLogicalType, nested_struct_field_type, root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, ExprPhysicalPlanner, LogicalExprDataSource, PhysicalExprEvalResult,
-    RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr,
+    DataScope, LeafEval, RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue,
     VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
@@ -70,13 +72,13 @@ use crate::pipeline::state::ExecutionState;
 
 /// Representation of assignment source and destination
 pub struct Assignment<'a> {
-    /// The column destination
     pub dest_column: ColumnAccessor,
 
-    /// The expression that will be evaluated and have its result assigned ot the destination
-    pub source: ScopedLogicalExpr,
+    /// Planned expression that will produce the data to be assigned to the destination column.
+    /// Contains both the `ScopedExpr` execution tree and type metadata.
+    pub source: PlannedOp,
 
-    /// Query location of the destination - used when reporting errors
+    /// The query location of the assignment destination
     pub dest_query_location: Option<&'a QueryLocation>,
 }
 
@@ -96,8 +98,8 @@ pub(crate) struct AssignPipelineStage {
     /// computed from dest_column, we create it up-front to avoid cloning data during evaluation
     dest_scopes: Vec<Rc<DataScope>>,
 
-    /// Expression that will produce the data to be assigned to the destination
-    sources: Vec<ScopedPhysicalExpr>,
+    /// Unified execution trees that produce the data to be assigned to the destination.
+    sources: Vec<ScopedExpr>,
 
     /// When this pipeline stage is used in a nested pipeline that processes attributes, it may be
     /// applying an expression that references the virtual "value" column. This flag will be set if
@@ -120,7 +122,7 @@ impl AssignPipelineStage {
         }
 
         let mut dest_columns = Vec::with_capacity(assignments.len());
-        let mut source_physical_exprs = Vec::with_capacity(assignments.len());
+        let mut source_exprs = Vec::with_capacity(assignments.len());
         for assignment in assignments.drain(..) {
             // validate that all the assignments are for the same record batch:
             if let Some(last_dest_col) = dest_columns.last() {
@@ -145,7 +147,7 @@ impl AssignPipelineStage {
                 }
             }
 
-            // validate that the assignment is expression is valid for the destination:
+            // validate that the assignment expression is valid for the destination:
             validate_assign(
                 &assignment.dest_column,
                 assignment.dest_query_location,
@@ -153,23 +155,15 @@ impl AssignPipelineStage {
             )?;
 
             dest_columns.push(assignment.dest_column);
-            let physical_planner = ExprPhysicalPlanner::default();
-            let physical_expr = physical_planner.plan(assignment.source)?;
-            source_physical_exprs.push(physical_expr);
+            source_exprs.push(assignment.source.expr);
         }
 
         // determine, in the case that we're doing assignment on a nested pipeline for attributes,
         // whether we need to project the virtual "value" column. We only look at the first expr
         // because for these nested pipelines, the planner shouldn't be combining multiple
         // set expressions together due to them all having the same destination.
-        let projection_contains_value_column = source_physical_exprs[0]
-            .projection
-            .schema
-            .iter()
-            .any(|projected_col| match projected_col {
-                ProjectedSchemaColumn::Root(col_name) => col_name == VALUE_COLUMN_NAME,
-                _ => false,
-            });
+        let projection_contains_value_column =
+            projection_references_column(&source_exprs[0], VALUE_COLUMN_NAME);
 
         Ok(Self {
             dest_scopes: dest_columns
@@ -178,7 +172,7 @@ impl AssignPipelineStage {
                 .map(Rc::new)
                 .collect(),
             dest_columns,
-            sources: source_physical_exprs,
+            sources: source_exprs,
             projection_contains_value_column,
             id_bitmap_pool: IdBitmapPool::new(),
         })
@@ -188,8 +182,8 @@ impl AssignPipelineStage {
     fn assign_to_root(
         &self,
         mut otap_batch: OtapArrowRecords,
-        mut eval_result: PhysicalExprEvalResult,
-        dest_scope: &Rc<DataScope>,
+        mut scoped_value: ScopedValue,
+        dest_scope: &DataScope,
         dest_column_name: &str,
     ) -> Result<OtapArrowRecords> {
         let root_batch = match otap_batch.root_record_batch() {
@@ -213,7 +207,7 @@ impl AssignPipelineStage {
             let root_batch = root_batch.clone();
             return self.assign_any_value_to_root(
                 otap_batch,
-                eval_result,
+                scoped_value,
                 dest_scope,
                 dest_column_name,
                 &root_batch,
@@ -229,23 +223,23 @@ impl AssignPipelineStage {
 
         // if we've received an AnyValue as the assignment source, but the destination is not an
         // AnyValue, we coerce attempt to coerce it into a single value
-        if let ColumnarValue::Array(values) = &eval_result.values {
+        if let ColumnarValue::Array(values) = &scoped_value.values {
             if is_any_value_data_type(values.data_type()) {
                 let coerced_value_col =
                     attempt_coerce_value_column_from_any_value_struct_column(values)?;
-                eval_result.values = ColumnarValue::Array(coerced_value_col);
+                scoped_value.values = ColumnarValue::Array(coerced_value_col);
             }
         }
 
-        // coerce static scalar int" if the result was a static scalar integer, it will have been
+        // coerce static scalar int: if the result was a static scalar integer, it will have been
         // produced as an int64 by default, however the expression tree doesn't actually specify
         // the type, so we assume the type should have matched the expected type here and cast it
-        let mut eval_result_column_type = eval_result.values.data_type();
-        if eval_result.data_scope.as_ref() == &DataScope::StaticScalar
+        let mut eval_result_column_type = scoped_value.values.data_type();
+        if scoped_value.scope == DataScope::StaticScalar
             && eval_result_column_type.is_integer()
             && expected_column_data_type.is_integer()
         {
-            eval_result.values = eval_result
+            scoped_value.values = scoped_value
                 .values
                 .cast_to(&expected_column_data_type, None)?;
             eval_result_column_type = expected_column_data_type.clone();
@@ -277,14 +271,13 @@ impl AssignPipelineStage {
         // convert the expression evaluation result to an array, with the correct dict encoding if
         // the destination column supports it
         let mut values = eval_result_to_array(
-            &eval_result.values,
+            &scoped_value.values,
             column_supports_dict_encoding,
             root_batch.num_rows(),
         )?;
 
         // align the rows in the new values with the rows in the root batch, if not already aligned
-        let already_aligned = eval_result.data_scope.is_scalar()
-            || eval_result.data_scope.as_ref() == dest_scope.as_ref();
+        let already_aligned = scoped_value.scope.is_scalar() || scoped_value.scope == *dest_scope;
 
         if !already_aligned {
             // if we're here, it means we have received a column value that has the row order
@@ -292,7 +285,7 @@ impl AssignPipelineStage {
             // computed from attributes. We'll need to join the result's values column to the root
             // column to get the values in the correct order ...
 
-            let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+            let DataScope::Attribute(attrs_id, _) = &scoped_value.scope else {
                 // safety: if the data_scope were anything other than attributes, we'd have taken
                 // the if branch (not the else branch) above when we checked if the data was
                 // already aligned
@@ -300,12 +293,13 @@ impl AssignPipelineStage {
             };
 
             // create a JoinExec implementation that computes joined indices of values to root on
-            // `root.id == attrs.parent_id` and use this to take rows from the result in order
+            // `root.id == attrs.parent_id` and use this to take rows from the result in order.
             let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
             let vals_take_indices = join_exec.rows_to_take(
-                &PhysicalExprEvalResult::new(
+                &JoinInput::new(
                     ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
-                    Rc::clone(dest_scope),
+                    Rc::new(dest_scope.clone()),
                     root_batch,
                 ),
                 &eval_result,
@@ -332,31 +326,31 @@ impl AssignPipelineStage {
     fn assign_any_value_to_root(
         &self,
         mut otap_batch: OtapArrowRecords,
-        eval_result: PhysicalExprEvalResult,
-        dest_scope: &Rc<DataScope>,
+        scoped_value: ScopedValue,
+        dest_scope: &DataScope,
         dest_column_name: &str,
         root_batch: &RecordBatch,
     ) -> Result<OtapArrowRecords> {
         // Convert the evaluation result to an array (no dict encoding for struct columns)
-        let mut values = eval_result_to_array(&eval_result.values, false, root_batch.num_rows())?;
+        let mut values = eval_result_to_array(&scoped_value.values, false, root_batch.num_rows())?;
 
         // Align row order if the result came from a different data scope (e.g., attributes)
-        let already_aligned = eval_result.data_scope.is_scalar()
-            || eval_result.data_scope.as_ref() == dest_scope.as_ref();
+        let already_aligned = scoped_value.scope.is_scalar() || scoped_value.scope == *dest_scope;
 
         if !already_aligned {
-            let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+            let DataScope::Attribute(attrs_id, _) = &scoped_value.scope else {
                 unreachable!("unexpected data_scope for non-aligned result")
             };
 
             let join_exec = RootToAttributesJoin::new(*attrs_id);
+
             let vals_take_indices = join_exec.rows_to_take(
-                &PhysicalExprEvalResult::new(
+                &JoinInput::new(
                     ColumnarValue::Scalar(ScalarValue::Null),
-                    Rc::clone(dest_scope),
+                    Rc::new(dest_scope.clone()),
                     root_batch,
                 ),
-                &eval_result,
+                &scoped_value_to_join_input(scoped_value, &otap_batch)?,
                 &OtapArrowRecords::Logs(Logs::default()),
             )?;
 
@@ -494,7 +488,7 @@ impl AssignPipelineStage {
     fn assign_to_struct_column(
         &self,
         mut otap_batch: OtapArrowRecords,
-        mut eval_result: PhysicalExprEvalResult,
+        mut scoped_value: ScopedValue,
         dest_scope: &Rc<DataScope>,
         dest_column_name: &str,
         dest_field_name: &str,
@@ -510,10 +504,10 @@ impl AssignPipelineStage {
         let column_supports_dict_encoding =
             nested_struct_field_supports_dict_encoding(dest_column_name, dest_field_name);
 
-        if let ColumnarValue::Array(values) = &eval_result.values {
+        if let ColumnarValue::Array(values) = &scoped_value.values {
             if is_any_value_data_type(values.data_type()) {
                 let coerced = attempt_coerce_value_column_from_any_value_struct_column(values)?;
-                eval_result.values = ColumnarValue::Array(coerced);
+                scoped_value.values = ColumnarValue::Array(coerced);
             }
         }
 
@@ -521,17 +515,17 @@ impl AssignPipelineStage {
         // Mirrors the same cast done in assign_to_root.
         if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name) {
             if let Some(dest_arrow_type) = dest_logical_type.datatype() {
-                if eval_result.data_scope.as_ref() == &DataScope::StaticScalar
-                    && eval_result.values.data_type().is_integer()
+                if scoped_value.scope == DataScope::StaticScalar
+                    && scoped_value.values.data_type().is_integer()
                     && dest_arrow_type.is_integer()
                 {
-                    eval_result.values = eval_result.values.cast_to(&dest_arrow_type, None)?;
+                    scoped_value.values = scoped_value.values.cast_to(&dest_arrow_type, None)?;
                 }
             }
         }
 
         let mut values = eval_result_to_array(
-            &eval_result.values,
+            &scoped_value.values,
             column_supports_dict_encoding,
             root_batch.num_rows(),
         )?;
@@ -541,26 +535,26 @@ impl AssignPipelineStage {
         // so their row order matches. If the source is an Attributes batch, it has fewer rows
         // (one per scope/resource) than the root batch (one per log/span/metric), so we need
         // a join to expand and reorder the values to match the root batch row count.
-        let already_aligned = eval_result.data_scope.is_scalar()
-            || eval_result.data_scope.as_ref() == dest_scope.as_ref()
+        let already_aligned = scoped_value.scope.is_scalar()
+            || &scoped_value.scope == dest_scope.as_ref()
             || matches!(
-                eval_result.data_scope.as_ref(),
+                scoped_value.scope,
                 DataScope::Root | DataScope::RootParent(_)
             );
 
         if !already_aligned {
-            let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+            let DataScope::Attribute(attrs_id, _) = scoped_value.scope else {
                 unreachable!("unexpected data_scope")
             };
 
-            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let join_exec = RootToAttributesJoin::new(attrs_id);
             let vals_take_indices = join_exec.rows_to_take(
-                &PhysicalExprEvalResult::new(
+                &JoinInput::new(
                     ColumnarValue::Scalar(ScalarValue::Null),
                     Rc::clone(dest_scope),
                     root_batch,
                 ),
-                &eval_result,
+                &scoped_value_to_join_input(scoped_value, &otap_batch)?,
                 &OtapArrowRecords::Logs(Logs::default()),
             )?;
 
@@ -578,7 +572,7 @@ impl AssignPipelineStage {
     fn assign_to_attributes(
         &mut self,
         mut otap_batch: OtapArrowRecords,
-        eval_results: &mut [Option<PhysicalExprEvalResult>],
+        eval_results: &mut [Option<ScopedValue>],
         dest_attrs_id: AttributesIdentifier,
     ) -> Result<OtapArrowRecords> {
         let root_record_batch = match otap_batch.root_record_batch() {
@@ -672,11 +666,11 @@ impl AssignPipelineStage {
                 unreachable!("invalid column accessor variant")
             };
 
-            // if the evaluation was of the expression turned out to be null, we'll create
+            // if the evaluation of the expression turned out to be null, we'll create
             // empty attributes from the Null scalar value.
-            let mut eval_result = eval_result
+            let mut scoped_value = eval_result
                 .take()
-                .unwrap_or_else(|| PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
+                .unwrap_or_else(|| ScopedValue::new_scalar(ScalarValue::Null));
 
             // determine for which rows will be treated as an attribute "update", and which will
             // be treated as an "insert" (create new attributes)
@@ -725,33 +719,37 @@ impl AssignPipelineStage {
             // Attempt to coerce the AnyValue into a single column. In this case, we do this as an
             // optimization: this makes the join faster because we can take fewer columns, and it
             // also makes it so we avoid entering `decompose_any_value_upsert` upsert.
-            if let ColumnarValue::Array(ref arr) = eval_result.values {
+            if let ColumnarValue::Array(ref arr) = scoped_value.values {
                 if is_any_value_data_type(arr.data_type()) {
                     let coerced_value_col =
                         attempt_coerce_value_column_from_any_value_struct_column(arr)?;
-                    eval_result.values = ColumnarValue::Array(coerced_value_col);
+                    scoped_value.values = ColumnarValue::Array(coerced_value_col);
                 }
             }
 
-            let aligned_values = if let ColumnarValue::Scalar(s) = eval_result.values {
+            let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
                 // if it's a scalar, there's actually no alignment needed
                 ColumnarValue::Scalar(s)
             } else {
-                // align the row-order of the result with the row-order that they will be inserted into
-                // the resulting record batch.
-                let ColumnarValue::Array(result_values) = &eval_result.values else {
-                    // safety: this is the else block of an if statement where we've tried to check if
-                    // this is a scalar. Since we've determined it's not scalar, it must be array.
+                // align the row-order of the result with the row-order that they will be inserted
+                // into the resulting record batch.
+                //
+                // the ScopedValue converted to a JoinInput below. The conversion consumes the it,
+                // so extract the values array first
+                let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
+                let ColumnarValue::Array(ref result_values) = eval_result.values else {
                     unreachable!("expected ColumnarResult::Array")
                 };
-                let left_join_input = &PhysicalExprEvalResult::new_with_parent_ids(
+
+                let left_join_input = &JoinInput::new_with_parent_ids(
                     ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
                     Rc::clone(&self.dest_scopes[i]),
                     &parent_ids,
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
-                    DataScope::Attributes(result_attrs_id, _) => {
+                    DataScope::Attribute(result_attrs_id, _)
+                    | DataScope::AttributesAll(result_attrs_id) => {
                         if dest_attrs_id == *result_attrs_id {
                             AttributeToSameAttributeJoin::new().rows_to_take(
                                 left_join_input,
@@ -773,7 +771,7 @@ impl AssignPipelineStage {
                     }
                 };
 
-                ColumnarValue::Array(take(&result_values, &vals_take_indices, None)?)
+                ColumnarValue::Array(take(result_values, &vals_take_indices, None)?)
             };
 
             // If the expression produced an AnyValue struct and we were not already able to
@@ -933,7 +931,7 @@ impl PipelineStage for AssignPipelineStage {
 
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute(&otap_batch, session_context)?;
+                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
                 eval_results.push(eval_result);
             }
             let result = self.assign_to_attributes(otap_batch, &mut eval_results, *attrs_id)?;
@@ -945,7 +943,7 @@ impl PipelineStage for AssignPipelineStage {
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
         for i in 0..self.sources.len() {
-            let eval_result = self.sources[i].execute(&otap_batch, session_context)?;
+            let eval_result = self.sources[i].execute_as_value(&otap_batch, session_context)?;
             let dest_scope = &self.dest_scopes[i];
             match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(dest_col_name) => {
@@ -1151,7 +1149,7 @@ impl PipelineStage for AssignPipelineStage {
 
             // remove dict encoding if necessary. This would be needed for certain expressions such
             // as arithmetic
-            if self.sources[0].projection_opts.downcast_dicts {
+            if requires_dict_downcast(&self.sources[0]) {
                 Projection::try_downcast_dicts(&mut fields, &mut columns)?
             }
 
@@ -1173,9 +1171,9 @@ impl PipelineStage for AssignPipelineStage {
 
         // determine the "logical" type of the result (e.g. the array type, or the values if the
         // result happens to be dictionary encoded.
-        let mut result_logical_type = result.data_type();
-        if let DataType::Dictionary(_, v) = result_logical_type {
-            result_logical_type = v.as_ref();
+        let mut result_logical_type = result.data_type().clone();
+        if let DataType::Dictionary(_, v) = &result_logical_type {
+            result_logical_type = v.as_ref().clone();
         }
 
         // prepare insert the result into the record batch by determining the column name and
@@ -1520,6 +1518,36 @@ fn decompose_any_value_upsert<'a>(
     Ok(upserts)
 }
 
+/// Check if the top-level `Eval(DatafusionExpr)` node's projection references a given column.
+///
+/// Returns `true` if this is an `Eval(DatafusionExpr)` node whose projection includes the
+/// specified column name. For non-`Eval` nodes or `BatchPredicate` leaves, returns `false`.
+fn projection_references_column(expr: &ScopedExpr, col_name: &str) -> bool {
+    match expr {
+        ScopedExpr::Eval {
+            eval: LeafEval::DatafusionExpr { projection, ..  },
+            ..
+        } => projection.schema.iter().any(|projected_col| {
+            matches!(projected_col, ProjectedSchemaColumn::Root(name) if name == col_name)
+        }),
+        _ => false,
+    }
+}
+
+/// Returns the `downcast_dicts` option from the inner `LeafEval::DatafusionExpr` projection
+/// options, if this is an `Eval(DatafusionExpr)` node. Returns `false` otherwise.
+fn requires_dict_downcast(expr: &ScopedExpr) -> bool {
+    match expr {
+        ScopedExpr::Eval {
+            eval: LeafEval::DatafusionExpr {
+                projection_opts, ..
+            },
+            ..
+        } => projection_opts.downcast_dicts,
+        _ => false,
+    }
+}
+
 /// Validate that the results of the passed expression can be assigned to the destination.
 /// There are multiple validations performed:
 ///
@@ -1550,7 +1578,7 @@ fn decompose_any_value_upsert<'a>(
 fn validate_assign(
     dest_column: &ColumnAccessor,
     dest_query_location: Option<&QueryLocation>,
-    source_logical_plan: &ScopedLogicalExpr,
+    source_plan: &PlannedOp,
 ) -> Result<()> {
     match dest_column {
         ColumnAccessor::ColumnName(col_name) => {
@@ -1564,7 +1592,7 @@ fn validate_assign(
                     query_location: dest_query_location.cloned(),
                 })?;
 
-            let source_type = &source_logical_plan.expr_type;
+            let source_type = &source_plan.expr_type;
             if !can_assign_type(&dest_type, source_type) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -1591,7 +1619,7 @@ fn validate_assign(
                 }
             })?;
 
-            let source_type = &source_logical_plan.expr_type;
+            let source_type = &source_plan.expr_type;
             if !can_assign_type(&dest_type, source_type) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -1604,25 +1632,21 @@ fn validate_assign(
             validate_struct_col_assign_cardinality(
                 struct_name,
                 dest_query_location,
-                source_logical_plan,
+                &source_plan.expr,
             )?;
         }
         ColumnAccessor::Attributes(dest_attrs_id, _) => {
-            if !can_assign_type(&ExprLogicalType::AnyValue, &source_logical_plan.expr_type) {
+            if !can_assign_type(&ExprLogicalType::AnyValue, &source_plan.expr_type) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
                         "cannot assign expression of type {:?} to type AnyValue",
-                        source_logical_plan.expr_type
+                        source_plan.expr_type
                     ),
                     query_location: dest_query_location.cloned(),
                 });
             }
 
-            validate_attribute_assign_cardinality(
-                *dest_attrs_id,
-                dest_query_location,
-                source_logical_plan,
-            )?;
+            validate_expr_cardinality(*dest_attrs_id, dest_query_location, &source_plan.expr)?;
         }
     }
 
@@ -1635,19 +1659,23 @@ fn validate_assign(
 /// For example, if we had an expression like `resource.attributes["x"] = event_name`, because
 /// there can be many logs with different events to a single resource, it is ambiguous what the
 /// actual value should be and os we consider this an invalid expression
-fn validate_attribute_assign_cardinality(
+///
+/// This walks the `ScopedExpr` tree and checks the `DataScope` at each `Eval` leaf. For non-root
+/// attribute destinations, root-scoped data and bitmap operations (which produce root-scoped
+/// booleans) are invalid because of the one-to-many relationship.
+fn validate_expr_cardinality(
     dest_attrs_id: AttributesIdentifier,
     dest_query_location: Option<&QueryLocation>,
-    source_logical_plan: &ScopedLogicalExpr,
+    expr: &ScopedExpr,
 ) -> Result<()> {
     if dest_attrs_id == AttributesIdentifier::Root {
-        // root attributes has no 1:many relations
+        // root attributes have no 1:many relations
         return Ok(());
     }
 
-    match &source_logical_plan.source {
-        LogicalExprDataSource::DataSource(data_scope) => {
-            let is_valid = match data_scope {
+    match expr {
+        ScopedExpr::Eval { scope, .. } => {
+            let is_valid = match scope {
                 // always valid to assign a scalar
                 DataScope::StaticScalar => true,
 
@@ -1656,7 +1684,8 @@ fn validate_attribute_assign_cardinality(
                 // resource or scope
                 DataScope::Root | DataScope::RootParent(_) => false,
 
-                DataScope::Attributes(source_attrs_id, _) => {
+                DataScope::Attribute(source_attrs_id, _)
+                | DataScope::AttributesAll(source_attrs_id) => {
                     dest_attrs_id == *source_attrs_id
                         || matches!(
                             dest_attrs_id,
@@ -1669,24 +1698,26 @@ fn validate_attribute_assign_cardinality(
             };
 
             if !is_valid {
-                // we didn't return, so must be invalid
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
-                        "cannot assign data scope {data_scope:?} to \
+                        "cannot assign data scope {scope:?} to \
                                 attributes {dest_attrs_id:?}"
                     ),
                     query_location: dest_query_location.cloned(),
                 });
             }
         }
-        LogicalExprDataSource::Join(left, right) => {
-            validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, left)?;
-            validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, right)?;
-        }
-        LogicalExprDataSource::MultiJoin(children) => {
+        ScopedExpr::JoinAndEval { children, .. } => {
             for child in children {
-                validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, child)?;
+                validate_expr_cardinality(dest_attrs_id, dest_query_location, child)?;
             }
+        }
+        ScopedExpr::BitmapAnd(left, right) | ScopedExpr::BitmapOr(left, right) => {
+            validate_expr_cardinality(dest_attrs_id, dest_query_location, left)?;
+            validate_expr_cardinality(dest_attrs_id, dest_query_location, right)?;
+        }
+        ScopedExpr::BitmapNot(child) => {
+            validate_expr_cardinality(dest_attrs_id, dest_query_location, child)?;
         }
     }
 
@@ -1726,11 +1757,11 @@ fn nested_struct_field_supports_dict_encoding(struct_name: &str, field_name: &st
 fn validate_struct_col_assign_cardinality(
     dest_struct_name: &str,
     dest_query_location: Option<&QueryLocation>,
-    source_logical_plan: &ScopedLogicalExpr,
+    source_plan: &ScopedExpr,
 ) -> Result<()> {
-    match &source_logical_plan.source {
-        LogicalExprDataSource::DataSource(data_scope) => {
-            let is_valid = match data_scope {
+    match source_plan {
+        ScopedExpr::Eval { scope, .. } => {
+            let is_valid = match scope {
                 DataScope::StaticScalar => true,
                 // root (log/span/metric level) is always lower than resource or scope
                 DataScope::Root => false,
@@ -1744,7 +1775,8 @@ fn validate_struct_col_assign_cardinality(
                     ),
                     _ => false,
                 },
-                DataScope::Attributes(source_attrs_id, _) => match dest_struct_name {
+                DataScope::Attribute(source_attrs_id, _)
+                | DataScope::AttributesAll(source_attrs_id) => match dest_struct_name {
                     consts::RESOURCE => matches!(
                         source_attrs_id,
                         AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
@@ -1761,18 +1793,29 @@ fn validate_struct_col_assign_cardinality(
             if !is_valid {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
-                        "cannot assign data scope {data_scope:?} to \
+                        "cannot assign data scope {scope:?} to \
                         struct column {dest_struct_name}"
                     ),
                     query_location: dest_query_location.cloned(),
                 });
             }
         }
-        LogicalExprDataSource::Join(left, right) => {
-            validate_struct_col_assign_cardinality(dest_struct_name, dest_query_location, left)?;
-            validate_struct_col_assign_cardinality(dest_struct_name, dest_query_location, right)?;
+        ScopedExpr::BitmapAnd(left, right) | ScopedExpr::BitmapOr(left, right) => {
+            validate_struct_col_assign_cardinality(
+                dest_struct_name,
+                dest_query_location,
+                left.as_ref(),
+            )?;
+            validate_struct_col_assign_cardinality(
+                dest_struct_name,
+                dest_query_location,
+                right.as_ref(),
+            )?;
         }
-        LogicalExprDataSource::MultiJoin(children) => {
+        ScopedExpr::BitmapNot(inverted) => {
+            validate_struct_col_assign_cardinality(dest_struct_name, dest_query_location, inverted)?
+        }
+        ScopedExpr::JoinAndEval { children, .. } => {
             for child in children {
                 validate_struct_col_assign_cardinality(
                     dest_struct_name,
@@ -3530,7 +3573,7 @@ mod test {
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string().contains(
-                "cannot assign data scope Attributes(NonRoot(ScopeAttrs), \"key\") to struct column resource"
+                "cannot assign data scope Attribute(NonRoot(ScopeAttrs), \"key\") to struct column resource"
             ),
             "unexpected error: {}",
             err
@@ -5500,7 +5543,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attributes(Root, \"x\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Root, \"x\") to attributes NonRoot(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -5513,7 +5556,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attributes(NonRoot(ScopeAttrs), \"x\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(NonRoot(ScopeAttrs), \"x\") to attributes NonRoot(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -5526,7 +5569,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attributes(Root, \"y\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Root, \"y\") to attributes NonRoot(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -5559,7 +5602,7 @@ mod test {
         let err_msg = err.to_string();
         assert!(
             err_msg.contains(
-                "cannot assign data scope Attributes(Root, \"x\") to attributes NonRoot(ScopeAttrs)"
+                "cannot assign data scope Attribute(Root, \"x\") to attributes NonRoot(ScopeAttrs)"
             ),
             "unexpected error message {}",
             err_msg

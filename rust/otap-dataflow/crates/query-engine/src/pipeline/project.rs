@@ -54,12 +54,6 @@ impl Projection {
         })
     }
 
-    /// Project the record batch to the expected schema. If there are some expected columns in
-    /// the passed [`RecordBatch`] which are missing, this will return `None`.
-    pub fn project(&self, record_batch: &RecordBatch) -> Result<Option<RecordBatch>> {
-        self.project_with_options(record_batch, &ProjectionOptions::default())
-    }
-
     pub fn project_with_options(
         &self,
         record_batch: &RecordBatch,
