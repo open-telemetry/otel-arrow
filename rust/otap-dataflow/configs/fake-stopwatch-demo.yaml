@@ -1,7 +1,7 @@
 # Demonstrates the distributed stopwatch feature.
 #
-# Five attribute processors form a sequential processing chain. A stopwatch
-# measures aggregate synchronous compute duration across the full chain:
+# Five attribute processors form a sequential processing chain, with a 1-in-3
+# log sampler in the middle so that produced < consumed:
 #
 #   stopwatch "ingest_pipeline" - covers attr1 through attr5 (full chain)
 #
@@ -12,8 +12,15 @@
 # captures synchronous compute plus any await/I/O that occurs inside
 # `process()` between sends; it excludes time the message spends queued in
 # inbound channels.
-# Metrics appear as stopwatch.compute.duration (MMSC histograms in
-# nanoseconds).
+#
+# Metrics emitted on the `stopwatch` metric set:
+#   - stopwatch.compute.duration (MMSC histogram, nanoseconds)
+#   - stopwatch.items.consumed   (MMSC, items observed at the start node)
+#   - stopwatch.items.produced   (MMSC, items observed at the stop node)
+#
+# With the sampler in place, `items.consumed` (at attr1) reflects the full
+# input volume while `items.produced` (at attr5) reflects roughly 1/3 of it,
+# so the difference is directly visible.
 #
 # Note: only non-overlapping stopwatch ranges are supported. A message can be
 # inside at most one stopwatch range at a time.
@@ -39,7 +46,7 @@ groups:
             stopwatches:
               - name: ingest_pipeline
                 start_node: attr1
-                stop_node: attr5
+                stop_node: attr4
 
         nodes:
           receiver:
@@ -67,15 +74,17 @@ groups:
                   key: pipeline.stage2
                   value: "2"
 
-          attr3:
-            type: processor:attribute
+          # Drops ~2 of every 3 log records so that items.produced
+          # at attr5 is visibly smaller than items.consumed at attr1.
+          sampler:
+            type: processor:log_sampling
             config:
-              actions:
-                - action: insert
-                  key: pipeline.stage3
-                  value: "3"
+              policy:
+                ratio:
+                  emit: 1
+                  out_of: 3
 
-          attr4:
+          attr3:
             type: processor:attribute
             config:
               actions:
@@ -83,7 +92,7 @@ groups:
                   key: pipeline.stage4
                   value: "4"
 
-          attr5:
+          attr4:
             type: processor:attribute
             config:
               actions:
@@ -101,10 +110,10 @@ groups:
           - from: attr1
             to: attr2
           - from: attr2
+            to: sampler
+          - from: sampler
             to: attr3
           - from: attr3
             to: attr4
           - from: attr4
-            to: attr5
-          - from: attr5
             to: noop

@@ -711,14 +711,21 @@ fn stopwatch_accumulate<H: StopwatchEffectHandler>(handler: &H, data: &mut OtapP
     if !is_start && !is_stop && !data.has_active_stopwatch() {
         return;
     }
+    let items = data.num_items() as u64;
     let delta_ns = handler.take_elapsed_since_send_marker_ns();
     if is_start {
         data.start_stopwatch();
+        if items > 0 {
+            handler.record_stopwatch_start_items(items);
+        }
     }
     data.add_stopwatch_compute(delta_ns);
     if is_stop {
         if let Some(total) = data.take_stopwatch_compute() {
             handler.record_stopwatch_stop(total);
+        }
+        if items > 0 {
+            handler.record_stopwatch_stop_items(items);
         }
     }
 }
@@ -856,11 +863,88 @@ mod test {
     use otap_df_engine::shared::receiver::EffectHandler as SharedReceiverEffectHandler;
     use otap_df_telemetry::reporter::MetricsReporter;
     use pretty_assertions::assert_eq;
+    use std::cell::Cell;
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())
+    }
+
+    struct FakeStopwatchHandler {
+        is_start: bool,
+        is_stop: bool,
+        elapsed_ns: u64,
+        stop_total: Cell<u64>,
+        start_items: Cell<u64>,
+        stop_items: Cell<u64>,
+    }
+
+    impl FakeStopwatchHandler {
+        fn start(elapsed_ns: u64) -> Self {
+            Self {
+                is_start: true,
+                is_stop: false,
+                elapsed_ns,
+                stop_total: Cell::new(0),
+                start_items: Cell::new(0),
+                stop_items: Cell::new(0),
+            }
+        }
+
+        fn stop(elapsed_ns: u64) -> Self {
+            Self {
+                is_start: false,
+                is_stop: true,
+                elapsed_ns,
+                stop_total: Cell::new(0),
+                start_items: Cell::new(0),
+                stop_items: Cell::new(0),
+            }
+        }
+    }
+
+    impl StopwatchEffectHandler for FakeStopwatchHandler {
+        fn is_stopwatch_start(&self) -> bool {
+            self.is_start
+        }
+
+        fn is_stopwatch_stop(&self) -> bool {
+            self.is_stop
+        }
+
+        fn take_elapsed_since_send_marker_ns(&self) -> u64 {
+            self.elapsed_ns
+        }
+
+        fn record_stopwatch_stop(&self, total: u64) {
+            self.stop_total.set(total);
+        }
+
+        fn record_stopwatch_start_items(&self, items: u64) {
+            self.start_items.set(items);
+        }
+
+        fn record_stopwatch_stop_items(&self, items: u64) {
+            self.stop_items.set(items);
+        }
+    }
+
+    #[test]
+    fn stopwatch_accumulate_records_start_and_stop_item_counts() {
+        let mut pdata = create_test_pdata();
+        let items = pdata.num_items() as u64;
+        assert!(items > 0, "test pdata must contain signal items");
+
+        let start_handler = FakeStopwatchHandler::start(5);
+        stopwatch_accumulate(&start_handler, &mut pdata);
+        assert_eq!(start_handler.start_items.get(), items);
+        assert_eq!(start_handler.stop_items.get(), 0);
+
+        let stop_handler = FakeStopwatchHandler::stop(7);
+        stopwatch_accumulate(&stop_handler, &mut pdata);
+        assert_eq!(stop_handler.stop_items.get(), items);
+        assert!(stop_handler.stop_total.get() > 0);
     }
 
     #[tokio::test]
