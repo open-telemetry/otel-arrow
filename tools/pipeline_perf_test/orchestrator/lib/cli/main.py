@@ -35,6 +35,18 @@ def main():
     tr = setup_telemetry(args)
 
     tsc = load_config_from_file(args.config)
+
+    if args.tests:
+        requested = [t.strip() for t in args.tests.split(",")]
+        available = [t.name for t in tsc.tests]
+        unknown = set(requested) - set(available)
+        if unknown:
+            parser.error(
+                f"Unknown test(s): {', '.join(sorted(unknown))}. "
+                f"Available: {', '.join(available)}"
+            )
+        tsc.tests = [t for t in tsc.tests if t.name in requested]
+
     ts = build_test_suite(tsc, tr, args)
 
     ts.run()
