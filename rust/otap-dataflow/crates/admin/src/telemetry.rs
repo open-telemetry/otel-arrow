@@ -5,11 +5,13 @@
 //!
 //! - /api/v1/telemetry/live-schema - current semantic conventions registry
 //! - /api/v1/telemetry/logs - retained internal logs from the in-memory log tap
+//! - /api/v1/telemetry/logs/stream - live internal log stream over WebSocket
 //! - /api/v1/telemetry/metrics - current aggregated metrics in JSON, line protocol, or Prometheus text format
 //! - /api/v1/telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
 
 use crate::AppState;
-use crate::convert::{convert_attribute_value, json_shape};
+use crate::convert::json_shape;
+#[cfg(feature = "live-logs-ws")]
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
@@ -27,20 +29,26 @@ use otap_df_telemetry::self_tracing::format_log_record_to_string;
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+#[cfg(feature = "live-logs-ws")]
 use std::sync::Arc;
+#[cfg(feature = "live-logs-ws")]
 use tokio::sync::broadcast;
 
 /// All the routes for telemetry.
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .route("/telemetry/live-schema", get(get_live_schema))
         .route("/telemetry/logs", get(get_logs))
-        .route("/telemetry/logs/stream", get(ws_logs_stream))
         .route("/telemetry/metrics", get(get_metrics))
         .route("/telemetry/metrics/aggregate", get(get_metrics_aggregate))
-        .route("/metrics", get(get_metrics))
+        .route("/metrics", get(get_metrics));
+
+    #[cfg(feature = "live-logs-ws")]
+    let router = router.route("/telemetry/logs/stream", get(ws_logs_stream));
+
+    router
 }
 
 /// All metric sets.
@@ -147,8 +155,40 @@ struct AggregateGroup {
     metrics: HashMap<String, MetricValue>,
 }
 
-fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> api::LogsResponse {
-    api::LogsResponse {
+#[derive(Serialize)]
+pub(crate) struct LogsResponse {
+    oldest_seq: Option<u64>,
+    newest_seq: Option<u64>,
+    next_seq: u64,
+    truncated_before_seq: Option<u64>,
+    dropped_on_ingest: u64,
+    dropped_on_retention: u64,
+    retained_bytes: usize,
+    logs: Vec<LogEntry>,
+}
+
+#[derive(Serialize)]
+struct LogEntry {
+    seq: u64,
+    timestamp: String,
+    level: String,
+    target: String,
+    event_name: String,
+    file: Option<String>,
+    line: Option<u32>,
+    rendered: String,
+    contexts: Vec<ResolvedLogContext>,
+}
+
+#[derive(Serialize)]
+struct ResolvedLogContext {
+    entity_key: String,
+    schema_name: Option<String>,
+    attributes: HashMap<String, AttributeValue>,
+}
+
+fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> LogsResponse {
+    LogsResponse {
         oldest_seq: result.oldest_seq,
         newest_seq: result.newest_seq,
         next_seq: result.next_seq,
@@ -164,9 +204,9 @@ fn logs_response(registry: &TelemetryRegistryHandle, result: LogQueryResult) -> 
     }
 }
 
-fn render_log_entry(registry: &TelemetryRegistryHandle, entry: &RetainedLogEvent) -> api::LogEntry {
+fn render_log_entry(registry: &TelemetryRegistryHandle, entry: &RetainedLogEvent) -> LogEntry {
     let callsite = entry.event.record.callsite();
-    api::LogEntry {
+    LogEntry {
         seq: entry.seq,
         timestamp: chrono::DateTime::<chrono::Utc>::from(entry.event.time).to_rfc3339(),
         level: callsite.level().to_string(),
@@ -186,25 +226,25 @@ fn render_log_message(event: &LogEvent) -> String {
 fn resolve_log_contexts(
     registry: &TelemetryRegistryHandle,
     event: &LogEvent,
-) -> Vec<api::ResolvedLogContext> {
+) -> Vec<ResolvedLogContext> {
     event
         .record
         .context
         .iter()
         .map(|entity_key| {
             registry
-                .visit_entity(*entity_key, |attrs| api::ResolvedLogContext {
+                .visit_entity(*entity_key, |attrs| ResolvedLogContext {
                     entity_key: format!("{entity_key:?}"),
                     schema_name: Some(attrs.schema_name().to_string()),
                     attributes: attrs
                         .iter_attributes()
-                        .map(|(key, value)| (key.to_string(), convert_attribute_value(value)))
+                        .map(|(key, value)| (key.to_string(), value.clone()))
                         .collect(),
                 })
-                .unwrap_or_else(|| api::ResolvedLogContext {
+                .unwrap_or_else(|| ResolvedLogContext {
                     entity_key: format!("{entity_key:?}"),
                     schema_name: None,
-                    attributes: BTreeMap::new(),
+                    attributes: HashMap::new(),
                 })
         })
         .collect()
@@ -233,7 +273,10 @@ pub async fn get_logs(
         after: q.after,
         limit,
     });
-    Ok(Json(logs_response(&state.metrics_registry, result)))
+    Ok(Json(json_shape(&logs_response(
+        &state.metrics_registry,
+        result,
+    ))))
 }
 
 /// Handler for the `/api/v1/telemetry/metrics` endpoint.
@@ -1242,7 +1285,7 @@ fn escape_prom_help(s: &str) -> String {
 // WebSocket live log stream  (/api/v1/telemetry/logs/stream)
 // ---------------------------------------------------------------------------
 
-/// Map a level string to a numeric severity (TRACE=0 … ERROR=4).
+/// Map a level string to a numeric severity (TRACE=0 through ERROR=4).
 /// Unknown levels are treated as TRACE (lowest severity).
 ///
 /// Uses ASCII-only comparison to avoid allocating a temporary uppercase string.
@@ -1261,6 +1304,7 @@ fn level_severity(level: &str) -> u8 {
 }
 
 /// Map a `tracing::Level` to the same severity scale used by [`level_severity`].
+#[cfg_attr(not(feature = "live-logs-ws"), allow(dead_code))]
 fn tracing_level_severity(level: &otap_df_telemetry::Level) -> u8 {
     match *level {
         otap_df_telemetry::Level::ERROR => 4,
@@ -1276,6 +1320,7 @@ fn tracing_level_severity(level: &otap_df_telemetry::Level) -> u8 {
 /// Applied after rendering so that `search_query` can match against the fully
 /// formatted message text as well as metadata fields (level, target, etc.).
 #[derive(Default)]
+#[cfg_attr(not(feature = "live-logs-ws"), allow(dead_code))]
 struct LogFilter {
     /// Case-insensitive substring matched against: rendered message, level,
     /// target, event_name, and file path.
@@ -1287,9 +1332,10 @@ struct LogFilter {
     minimum_level: Option<u8>,
 }
 
+#[cfg_attr(not(feature = "live-logs-ws"), allow(dead_code))]
 impl LogFilter {
     /// Returns `true` when the rendered log entry passes all active criteria.
-    fn matches(&self, entry: &api::LogEntry) -> bool {
+    fn matches(&self, entry: &LogEntry) -> bool {
         if let Some(min_ts) = &self.minimum_timestamp {
             if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
                 if ts.with_timezone(&chrono::Utc) < *min_ts {
@@ -1331,7 +1377,7 @@ impl LogFilter {
     ///
     /// Checks `minimum_level` and `minimum_timestamp` without rendering the
     /// entry, so we can skip the more expensive `render_log_entry()` call for
-    /// events that would be rejected anyway.  `search_query` is intentionally
+    /// events that would be rejected anyway. `search_query` is intentionally
     /// not checked here because it operates on the rendered text.
     fn prefilter_raw(&self, event: &RetainedLogEvent) -> bool {
         if let Some(min_ts) = &self.minimum_timestamp {
@@ -1373,16 +1419,17 @@ impl LogFilter {
     }
 }
 
-/// Client → server WebSocket messages.
+/// Client to server WebSocket messages.
+#[cfg(feature = "live-logs-ws")]
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum WsClientMsg {
-    /// Begin streaming.  Sends an initial retained-log snapshot, then follows
+    /// Begin streaming. Sends an initial retained-log snapshot, then follows
     /// with live events.
     Subscribe {
         /// Cursor: only include retained entries strictly newer than this seq.
         after: Option<u64>,
-        /// Maximum retained entries in the initial snapshot (clamped 1–1000).
+        /// Maximum retained entries in the initial snapshot (clamped 1-1000).
         limit: Option<usize>,
         /// Case-insensitive text filter (applied server-side).
         #[serde(rename = "searchQuery")]
@@ -1419,7 +1466,8 @@ enum WsClientMsg {
     Ping,
 }
 
-/// Server → client WebSocket messages.
+/// Server to client WebSocket messages.
+#[cfg(feature = "live-logs-ws")]
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WsServerMsg {
@@ -1432,12 +1480,12 @@ enum WsServerMsg {
         dropped_on_ingest: u64,
         dropped_on_retention: u64,
         retained_bytes: usize,
-        logs: Vec<api::LogEntry>,
+        logs: Vec<LogEntry>,
     },
     /// Single live log entry pushed by the server.
     Log {
         #[serde(flatten)]
-        entry: api::LogEntry,
+        entry: LogEntry,
     },
     /// Current pause state and cursor position.
     State { paused: bool, next_seq: u64 },
@@ -1454,6 +1502,7 @@ enum WsServerMsg {
 }
 
 /// Upgrade handler for `GET /api/v1/telemetry/logs/stream`.
+#[cfg(feature = "live-logs-ws")]
 async fn ws_logs_stream(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| handle_ws_logs(socket, state))
 }
@@ -1461,6 +1510,7 @@ async fn ws_logs_stream(State(state): State<AppState>, ws: WebSocketUpgrade) -> 
 /// Send a serialized `WsServerMsg` as a WebSocket text frame.
 ///
 /// Returns `false` if the socket is closed and the caller should stop sending.
+#[cfg(feature = "live-logs-ws")]
 async fn ws_send(ws: &mut WebSocket, msg: &WsServerMsg) -> bool {
     match serde_json::to_string(msg) {
         Ok(text) => ws.send(Message::Text(text.into())).await.is_ok(),
@@ -1472,6 +1522,7 @@ async fn ws_send(ws: &mut WebSocket, msg: &WsServerMsg) -> bool {
 ///
 /// Applies `filter` to the rendered entries so that snapshot and backfill
 /// responses are consistent with what the live stream sends for the same filter.
+#[cfg(feature = "live-logs-ws")]
 async fn ws_send_snapshot(
     ws: &mut WebSocket,
     registry: &TelemetryRegistryHandle,
@@ -1501,14 +1552,15 @@ async fn ws_send_snapshot(
 /// 2. The server sends the initial retained-log snapshot, then streams live
 ///    events via `log` messages.
 /// 3. `pause` / `resume` toggle server-side forwarding without closing the
-///    socket.  While paused the server still drains the broadcast channel so
+///    socket. While paused the server still drains the broadcast channel so
 ///    that the producer is never slowed by this client.
 /// 4. On `backfill` the server re-queries the retained ring buffer and sends a
-///    `snapshot`.  The cursor is updated so subsequent live events do not
+///    `snapshot`. The cursor is updated so subsequent live events do not
 ///    duplicate.
 /// 5. If the client falls more than `SUBSCRIBER_CHANNEL_CAPACITY` events
 ///    behind, the broadcast channel drops the overflow; the server notifies the
 ///    client with an `error` message so it can issue a `backfill`.
+#[cfg(feature = "live-logs-ws")]
 async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
     let Some(log_tap) = state.log_tap.as_ref() else {
         let _ = ws_send(
@@ -1529,8 +1581,8 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
     let mut paused = false;
     let mut filter = LogFilter::default();
     // Tracks the sequence number of the last event we acknowledged (sent or
-    // deliberately skipped while paused).  Used in `state` replies so the
-    // client knows where the live cursor stands.
+    // deliberately skipped while paused). Used in `state` replies so the client
+    // knows where the live cursor stands.
     let mut cursor: u64 = 0;
 
     loop {
@@ -1562,11 +1614,9 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                                 Ok(WsClientMsg::Backfill { after, limit }) => {
                                     let limit = limit.unwrap_or(100).clamp(1, 1000);
                                     let result = log_tap.query(LogQuery { after, limit });
-                                    // Only advance cursor — never move it backward.  A
-                                    // client may request an older `after` (e.g. a lag
-                                    // gap backfill) while the live stream has already
-                                    // moved the cursor forward; preserving the maximum
-                                    // keeps the dedup guard in the live event arm sound.
+                                    // Only advance cursor; never move it backward. A client may
+                                    // request an older `after` (e.g. a lag gap backfill) while the
+                                    // live stream has already moved the cursor forward.
                                     cursor = cursor.max(result.next_seq);
                                     if !ws_send_snapshot(&mut ws, registry, result, &filter).await {
                                         break;
@@ -1586,7 +1636,7 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                             }
                         }
                         Some(Ok(Message::Close(_))) | None => break,
-                        Some(Ok(_)) => {} // binary / ping frames — ignore
+                        Some(Ok(_)) => {} // binary / ping frames; ignore
                         Some(Err(_)) => break,
                     }
                 }
@@ -1600,7 +1650,7 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                             // were already delivered in the most recent snapshot
                             // or backfill (the subscribe-before-query race window).
                             if entry_seq <= cursor {
-                                // Discard silently — already in the snapshot.
+                                // Discard silently; already in the snapshot.
                             } else {
                                 // Advance cursor so `state` replies are accurate
                                 // even when paused or filtered.
@@ -1627,8 +1677,8 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             // The client was too slow; events were dropped from its
-                            // receiver slot.  `cursor` here is the last seq we
-                            // successfully delivered — the client can use it as
+                            // receiver slot. `cursor` here is the last seq we
+                            // successfully delivered; the client can use it as
                             // the `after` param for a backfill to recover the gap.
                             let msg = WsServerMsg::Error {
                                 message: format!(
@@ -1661,7 +1711,7 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
                     {
                         // Subscribe to the broadcast channel BEFORE querying
                         // retained logs so we do not miss events recorded between
-                        // the query and the first receive.  Live events with
+                        // the query and the first receive. Live events with
                         // seq <= cursor (set from snapshot.next_seq below) are
                         // silently discarded in the live_event arm to prevent
                         // duplicates for that race window.
@@ -1703,13 +1753,75 @@ async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
+    use crate::{
+        ControlPlane, ControlPlaneError, PipelineDetails, ReconfigureRequest, RolloutStatus,
+        ShutdownStatus,
+    };
+    use axum::body::{Body, to_bytes};
     use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use tower::ServiceExt;
+
+    struct NoopControlPlane;
+
+    impl ControlPlane for NoopControlPlane {
+        fn shutdown_all(&self, _timeout_secs: u64) -> Result<(), ControlPlaneError> {
+            Err(ControlPlaneError::Internal {
+                message: "not used in telemetry tests".to_string(),
+            })
+        }
+
+        fn shutdown_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _timeout_secs: u64,
+        ) -> Result<ShutdownStatus, ControlPlaneError> {
+            Err(ControlPlaneError::Internal {
+                message: "not used in telemetry tests".to_string(),
+            })
+        }
+
+        fn reconfigure_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _request: ReconfigureRequest,
+        ) -> Result<RolloutStatus, ControlPlaneError> {
+            Err(ControlPlaneError::Internal {
+                message: "not used in telemetry tests".to_string(),
+            })
+        }
+
+        fn pipeline_details(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+        ) -> Result<Option<PipelineDetails>, ControlPlaneError> {
+            Ok(None)
+        }
+
+        fn rollout_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _rollout_id: &str,
+        ) -> Result<Option<RolloutStatus>, ControlPlaneError> {
+            Ok(None)
+        }
+
+        fn shutdown_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _shutdown_id: &str,
+        ) -> Result<Option<ShutdownStatus>, ControlPlaneError> {
+            Ok(None)
+        }
+    }
 
     static TEST_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test_metrics",
@@ -1753,8 +1865,8 @@ mod tests {
         AppState {
             observed_state_store: observed_state_store.handle(),
             metrics_registry,
+            controller: Arc::new(NoopControlPlane),
             log_tap: None,
-            ctrl_msg_senders: Arc::new(Mutex::new(Vec::new())),
             memory_pressure_state: MemoryPressureState::default(),
         }
     }
@@ -1787,6 +1899,40 @@ mod tests {
                 .expect("prometheus body should be utf-8")
                 .is_empty()
         );
+    }
+
+    #[cfg(feature = "live-logs-ws")]
+    #[tokio::test]
+    async fn telemetry_routes_include_logs_stream_websocket_endpoint() {
+        let response = routes()
+            .with_state(test_app_state())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/telemetry/logs/stream")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("route should respond");
+
+        assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(not(feature = "live-logs-ws"))]
+    #[tokio::test]
+    async fn telemetry_routes_exclude_logs_stream_websocket_endpoint_without_feature() {
+        let response = routes()
+            .with_state(test_app_state())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/telemetry/logs/stream")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("route should respond");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// Ensures aggregate group ordering is deterministic: metric-set name first,
@@ -2218,8 +2364,8 @@ mod tests {
     // LogFilter unit tests
     // ---------------------------------------------------------------------------
 
-    fn make_log_entry(rendered: &str, level: &str, target: &str, timestamp: &str) -> api::LogEntry {
-        api::LogEntry {
+    fn make_log_entry(rendered: &str, level: &str, target: &str, timestamp: &str) -> LogEntry {
+        LogEntry {
             seq: 1,
             timestamp: timestamp.to_string(),
             level: level.to_string(),
@@ -2299,11 +2445,9 @@ mod tests {
             "2026-01-01T00:00:01Z",
         );
 
-        // The filter must pass the matching entry and reject the other.
         assert!(filter.matches(&match_entry));
         assert!(!filter.matches(&no_match_entry));
 
-        // Simulate the retain() call used in ws_send_snapshot.
         let mut logs = vec![match_entry, no_match_entry];
         logs.retain(|e| filter.matches(e));
         assert_eq!(logs.len(), 1);
@@ -2312,7 +2456,6 @@ mod tests {
 
     #[test]
     fn level_severity_ordering_is_correct() {
-        // TRACE < DEBUG < INFO < WARN < ERROR
         assert!(level_severity("TRACE") < level_severity("DEBUG"));
         assert!(level_severity("DEBUG") < level_severity("INFO"));
         assert!(level_severity("INFO") < level_severity("WARN"));
@@ -2361,7 +2504,6 @@ mod tests {
 
     #[test]
     fn log_filter_minimum_level_and_search_query_combine() {
-        // Both constraints must pass.
         let filter = LogFilter::from_params(
             Some("critical".to_string()),
             None,
@@ -2376,30 +2518,39 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // WebSocket ↔ HTTP schema alignment tests
+    // WebSocket / HTTP schema alignment tests
     // ---------------------------------------------------------------------------
 
+    #[cfg(feature = "live-logs-ws")]
     #[test]
     fn ws_log_msg_serializes_same_fields_as_api_log_entry() {
         let entry = make_log_entry("hello", "INFO", "admin", "2026-01-01T00:00:00Z");
-        let msg = WsServerMsg::Log {
-            entry: entry.clone(),
-        };
+        let expected_seq = entry.seq;
+        let expected_timestamp = entry.timestamp.clone();
+        let expected_level = entry.level.clone();
+        let expected_target = entry.target.clone();
+        let expected_event_name = entry.event_name.clone();
+        let expected_rendered = entry.rendered.clone();
+        let msg = WsServerMsg::Log { entry };
         let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
         let obj = json.as_object().unwrap();
 
-        // The flattened entry must carry the same fields as api::LogEntry
-        // plus the discriminator tag.
         assert_eq!(obj.get("type").unwrap(), "log");
-        assert_eq!(obj.get("seq").unwrap(), entry.seq);
-        assert_eq!(obj.get("timestamp").unwrap(), &entry.timestamp);
-        assert_eq!(obj.get("level").unwrap(), &entry.level);
-        assert_eq!(obj.get("target").unwrap(), &entry.target);
-        assert_eq!(obj.get("event_name").unwrap(), &entry.event_name);
-        assert_eq!(obj.get("rendered").unwrap(), &entry.rendered);
+        assert_eq!(obj.get("seq").unwrap(), expected_seq);
+        assert_eq!(obj.get("timestamp").unwrap(), &expected_timestamp);
+        assert_eq!(obj.get("level").unwrap(), &expected_level);
+        assert_eq!(obj.get("target").unwrap(), &expected_target);
+        assert_eq!(obj.get("event_name").unwrap(), &expected_event_name);
+        assert_eq!(obj.get("rendered").unwrap(), &expected_rendered);
         assert!(obj.contains_key("contexts"));
+
+        let roundtrip: api::LogEntry =
+            serde_json::from_value(json).expect("log message should match api::LogEntry shape");
+        assert_eq!(roundtrip.seq, 1);
+        assert_eq!(roundtrip.rendered, "hello");
     }
 
+    #[cfg(feature = "live-logs-ws")]
     #[test]
     fn ws_snapshot_logs_use_api_log_entry_shape() {
         let entry = make_log_entry("hello", "INFO", "admin", "2026-01-01T00:00:00Z");
@@ -2417,7 +2568,6 @@ mod tests {
         let logs = json.get("logs").unwrap().as_array().unwrap();
         assert_eq!(logs.len(), 1);
 
-        // Each log in the snapshot must deserialize as a valid api::LogEntry.
         let roundtrip: api::LogEntry = serde_json::from_value(logs[0].clone())
             .expect("snapshot log should match api::LogEntry");
         assert_eq!(roundtrip.seq, 1);

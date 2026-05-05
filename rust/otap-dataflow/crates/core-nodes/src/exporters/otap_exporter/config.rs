@@ -5,6 +5,7 @@
 
 use otap_df_otap::compression::CompressionMethod;
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
+use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use std::time::Duration;
 
@@ -27,6 +28,20 @@ pub struct Config {
     /// Configuration for the arrow payloads
     #[serde(default)]
     pub arrow: ArrowConfig,
+
+    /// Capacity of each per-signal queue feeding the gRPC stream task.
+    #[serde(
+        default = "default_stream_queue_capacity",
+        deserialize_with = "deserialize_positive_stream_queue_capacity"
+    )]
+    pub stream_queue_capacity: usize,
+
+    /// Number of independent gRPC streams to run for each signal type.
+    #[serde(
+        default = "default_streams_per_signal",
+        deserialize_with = "deserialize_positive_streams_per_signal"
+    )]
+    pub streams_per_signal: usize,
 
     /// Timeout for RPC requests. If not specified, no timeout is applied.
     /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
@@ -77,6 +92,41 @@ const fn default_compression_method() -> Option<CompressionMethod> {
 
 const fn default_arrow_payload_compression() -> Option<ArrowPayloadCompression> {
     Some(ArrowPayloadCompression::Zstd)
+}
+
+const fn default_stream_queue_capacity() -> usize {
+    64
+}
+
+const fn default_streams_per_signal() -> usize {
+    1
+}
+
+fn deserialize_positive_usize<'de, D>(deserializer: D, field_name: &str) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(D::Error::custom(format!(
+            "{field_name} must be greater than 0"
+        )));
+    }
+    Ok(value)
+}
+
+fn deserialize_positive_stream_queue_capacity<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_positive_usize(deserializer, "stream_queue_capacity")
+}
+
+fn deserialize_positive_streams_per_signal<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_positive_usize(deserializer, "streams_per_signal")
 }
 
 /// helper method to deserialize the text "none" as the None option. This is needed to override

@@ -54,6 +54,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use std::io::ErrorKind;
@@ -250,6 +251,19 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     deadline,
                     reason: _,
                 }) => {
+                    // If the deadline has already passed, return immediately.
+                    // `Delay::new(Duration::ZERO)` is not guaranteed to resolve
+                    // on the first poll on all platforms (Windows timer
+                    // granularity is ~15 ms), so an explicit check avoids a
+                    // race between the timeout and the flush future.
+                    if deadline.checked_duration_since(Instant::now()).is_none() {
+                        let _ = telemetry_cancel_handle.cancel().await;
+                        return Err(Error::IoError {
+                            node: exporter_id.clone(),
+                            error: std::io::Error::from(ErrorKind::TimedOut),
+                        });
+                    }
+
                     let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
@@ -284,7 +298,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     }
 
                     let mut otap_batch: OtapArrowRecords =
-                        payload.try_into().inspect_err(|_| {
+                        payload.try_into_with_default().inspect_err(|_| {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics.inc_failed(signal_type);
                             }
@@ -422,7 +436,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 /// This calculates the period at which we instruct the [`WriterManager`] to flush any writers
 /// older than the threshold.
 fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Duration {
-    // try to choose a period that is relatively close the the configured threshold.
+    // try to choose a period that is relatively close the configured threshold.
     // this avoids the check happening long after the file writer is beyond the threshold.
     let period = configured_threshold / 60;
 
@@ -469,6 +483,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
     use otap_df_pdata::schema::consts;
+    use otap_df_pdata::{TryFromWithOptions, TryIntoWithOptions};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
@@ -503,10 +518,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "windows",
-        ignore = "Skipping on Windows due to timing flakiness"
-    )]
     fn test_adaptive_schema_dict_upgrade_write() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -568,7 +579,7 @@ mod test {
                         })
                     }
                     let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3).payload();
-                    let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
+                    let mut otap_batch = OtapArrowRecords::try_from_with_default(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
                     let old_column = attrs_batch.remove_column(
@@ -601,7 +612,7 @@ mod test {
                         .await
                         .unwrap();
 
-                    let deadline = Instant::now().add(Duration::from_millis(200));
+                    let deadline = Instant::now().add(Duration::from_secs(1));
                     ctx.send_shutdown(deadline, "test completed").await.unwrap();
                 })
             })
@@ -644,7 +655,7 @@ mod test {
                             value: Some(AnyValue::new_string("terry")),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     let batch2: OtapArrowRecords =
@@ -653,7 +664,7 @@ mod test {
                             value: Some(AnyValue::new_int(418)),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     // double check that these contain schemas that are not the same ...
@@ -668,12 +679,9 @@ mod test {
                         .await
                         .unwrap();
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(200)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(1)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -895,19 +903,15 @@ mod test {
             });
     }
 
-    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
-    #[cfg_attr(
-        any(target_os = "windows", target_os = "macos"),
-        ignore = "Skipping on Windows and macOS due to flakiness"
-    )]
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let base_dir_url = base_dir.replace('\\', "/");
         let exporter = ParquetExporter::new(config::Config {
             storage: object_store::StorageType::File {
-                base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+                base_uri: format!("testdelayed:///{base_dir_url}?delay=500ms"),
             },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
@@ -1030,10 +1034,10 @@ mod test {
                 );
             }
 
-            // shutdown faster than it could possibly flush
+            // Make timeout deterministic: deadline is already due when shutdown is handled.
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Instant::now().add(Duration::from_secs(1)),
+                    deadline: Instant::now(),
                     reason: "shutting down".into(),
                 })
                 .await;

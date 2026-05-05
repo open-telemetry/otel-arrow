@@ -15,11 +15,11 @@ use minijinja::context;
 use portpicker::pick_unused_port;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::PathBuf;
 use std::time::Duration;
 
-const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.j2";
+const VALIDATION_TEMPLATE: &str = include_str!("../templates/validation_template.yaml.j2");
+const CAPTURE_TEMPLATE: &str = include_str!("../templates/capture_template.yaml.j2");
+const GENERATOR_TEMPLATE: &str = include_str!("../templates/generator_template.yaml.j2");
 const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8085";
 const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
 const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
@@ -60,7 +60,6 @@ pub struct Scenario {
     generators: HashMap<String, Generator>,
     captures: HashMap<String, Capture>,
     containers: HashMap<String, ContainerConfig>,
-    template_path: PathBuf,
     admin_addr: String,
     ready_max_attempts: usize,
     ready_backoff: Duration,
@@ -83,7 +82,6 @@ impl Scenario {
             generators: HashMap::new(),
             captures: HashMap::new(),
             containers: HashMap::new(),
-            template_path: PathBuf::from(VALIDATION_TEMPLATE_PATH),
             admin_addr: DEFAULT_ADMIN_ADDR.to_string(),
             ready_max_attempts: DEFAULT_READY_MAX_ATTEMPTS,
             ready_backoff: DEFAULT_READY_BACKOFF,
@@ -197,17 +195,11 @@ impl Scenario {
             .ok_or_else(|| ValidationError::Config("pipeline missing".into()))?;
         let pipeline_yaml = pipeline.to_yaml_string()?;
         let (suv_core_start, suv_core_end) = (pipeline.core_start, pipeline.core_end);
+        let suv_transport_headers_policy = pipeline.transport_headers_policy_yaml()?;
         let capture_pipeline = self.render_captures()?;
         let generator_pipeline = self.render_generators()?;
-        let template = fs::read_to_string(&self.template_path).map_err(|e| {
-            ValidationError::Io(format!(
-                "failed to read {}: {e}",
-                self.template_path.display()
-            ))
-        })?;
-
         render_jinja(
-            &template,
+            VALIDATION_TEMPLATE,
             context! {
                 suv_pipeline => pipeline_yaml,
                 admin_bind_address => &self.admin_addr,
@@ -215,6 +207,7 @@ impl Scenario {
                 generator_pipeline => generator_pipeline,
                 suv_core_start => suv_core_start,
                 suv_core_end => suv_core_end,
+                suv_transport_headers_policy => suv_transport_headers_policy,
             },
         )
     }
@@ -371,8 +364,6 @@ impl Scenario {
 
     /// Render the capture pipelines.
     fn render_captures(&self) -> Result<String, ValidationError> {
-        let template = fs::read_to_string("templates/capture_template.yaml.j2")
-            .map_err(|e| ValidationError::Io(format!("failed to read capture template: {e}")))?;
         let mut captures_rendered: Vec<String> = vec![];
 
         for (label, capture) in self.captures.iter() {
@@ -385,7 +376,7 @@ impl Scenario {
             };
 
             captures_rendered.push(render_jinja(
-                &template,
+                CAPTURE_TEMPLATE,
                 context! {
                     suv_receiver_type => &capture.suv_receiver_type,
                     suv_port => capture.suv_port,
@@ -396,6 +387,7 @@ impl Scenario {
                     capture_label => label,
                     custom_suv_receiver => &custom_suv_receiver,
                     idle_timeout_secs => capture.idle_timeout,
+                    capture_header_keys => &capture.capture_header_keys,
                 },
             )?);
         }
@@ -404,8 +396,6 @@ impl Scenario {
 
     /// Render the generator pipelines.
     fn render_generators(&self) -> Result<String, ValidationError> {
-        let template = fs::read_to_string("templates/generator_template.yaml.j2")
-            .map_err(|e| ValidationError::Io(format!("failed to read generator template: {e}")))?;
         let mut generators_rendered: Vec<String> = vec![];
 
         for (label, generator) in self.generators.iter() {
@@ -442,8 +432,16 @@ impl Scenario {
                 .as_ref()
                 .map_or("localhost", |t| t.server_name.as_str());
 
+            // Only pass transport_headers when non-empty; the template checks
+            // for truthiness so an empty map would be falsy.
+            let transport_headers = if generator.transport_headers.is_empty() {
+                None
+            } else {
+                Some(&generator.transport_headers)
+            };
+
             generators_rendered.push(render_jinja(
-                &template,
+                GENERATOR_TEMPLATE,
                 context! {
                     suv_exporter_type => &generator.suv_exporter_type,
                     control_ports => generator.control_ports,
@@ -465,6 +463,7 @@ impl Scenario {
                     mtls_enabled => mtls_enabled,
                     tls_server_name => tls_server_name,
                     custom_suv_exporter => &custom_suv_exporter,
+                    transport_headers => transport_headers,
                 },
             )?);
         }

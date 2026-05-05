@@ -51,6 +51,10 @@ use std::{
     sync::OnceLock,
 };
 
+// TODO: remove `dead_code` once the capability system is wired into the
+// pipeline build.
+#[allow(dead_code)]
+pub mod capability;
 #[doc(hidden)]
 pub mod clock;
 pub mod error;
@@ -83,6 +87,7 @@ pub mod process_duration;
 mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
+pub mod stopwatch;
 pub mod terminal_state;
 pub mod testing;
 pub mod topic;
@@ -221,6 +226,7 @@ impl<PData> NamedFactory for ExporterFactory<PData> {
 ///
 /// Extension factories are NOT generic over PData — extensions never process
 /// pipeline data. This makes them fully decoupled from the data-plane type.
+#[derive(Clone)]
 pub struct ExtensionFactory {
     /// The name of the extension.
     pub name: &'static str,
@@ -228,6 +234,13 @@ pub struct ExtensionFactory {
     pub description: &'static str,
     /// URL to the extension's documentation.
     pub documentation_url: &'static str,
+    /// The capabilities this extension provides.
+    ///
+    /// `Some(caps)` for active or passive extensions (caps lists are
+    /// non-empty by macro construction). `None` marks a Background
+    /// extension — engine-driven event loop with no capabilities
+    /// exposed to nodes; `register_into` skips capability registration.
+    pub capabilities: Option<capability::ExtensionCapabilities>,
     /// A function that creates a new extension instance.
     pub create: fn(
         pipeline: PipelineContext,
@@ -237,18 +250,6 @@ pub struct ExtensionFactory {
     ) -> Result<ExtensionBundle, otap_df_config::error::Error>,
     /// Validates the node-specific config statically, without creating the component.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
-}
-
-impl Clone for ExtensionFactory {
-    fn clone(&self) -> Self {
-        ExtensionFactory {
-            name: self.name,
-            description: self.description,
-            documentation_url: self.documentation_url,
-            create: self.create,
-            validate_config: self.validate_config,
-        }
-    }
 }
 
 impl NamedFactory for ExtensionFactory {
@@ -395,6 +396,23 @@ impl StampOutputPort for () {
 
 impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+
+/// Trait for forward-path stopwatch compute accumulation on PData.
+///
+/// At most one stopwatch range can be active on a given message at a
+/// time (non-overlapping ranges).
+pub trait StopwatchAccumulation {
+    /// Initialise a fresh stopwatch accumulator (set to 0).
+    /// Called at the start node.
+    fn start_stopwatch(&mut self);
+
+    /// Add `ns` nanoseconds to the active stopwatch accumulator, if any.
+    fn add_stopwatch_compute(&mut self, ns: u64);
+
+    /// Remove and return the accumulated total.
+    /// Returns `None` if no accumulator was active.
+    fn take_stopwatch_compute(&mut self) -> Option<u64>;
 }
 
 /// Effect handler extensions for producers specific to data type.
@@ -1935,7 +1953,6 @@ where
 struct HyperEdgeRuntime {
     sources: Vec<NodeIdPortName>,
 
-    #[allow(dead_code)]
     dispatch_policy: DispatchPolicy,
 
     // names are from the configuration, not yet resolved
@@ -2396,6 +2413,7 @@ mod test {
             name: "urn:test:example",
             description: "test extension",
             documentation_url: "",
+            capabilities: None,
             create: dummy_create,
             validate_config: dummy_validate,
         };
@@ -2441,6 +2459,7 @@ mod test {
             name: "urn:test:example",
             description: "test",
             documentation_url: "",
+            capabilities: None,
             create: dummy_create,
             validate_config: dummy_validate,
         };

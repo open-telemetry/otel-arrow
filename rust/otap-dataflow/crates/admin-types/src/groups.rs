@@ -1,13 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared pipeline-group-scoped admin models.
+//! Shared group-scoped admin models.
 
 use crate::pipelines::Status as PipelineStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Pipeline-group status response.
+/// Group status response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {

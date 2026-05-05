@@ -18,6 +18,7 @@ use crate::policy::{ChannelCapacityPolicy, Policies, TelemetryPolicy};
 use crate::topic::{TopicImplSelectionPolicy, TopicSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 pub use self::resolve::{
@@ -77,6 +78,15 @@ pub struct EngineConfig {
     /// Engine observability declarations.
     #[serde(default)]
     pub observability: EngineObservabilityConfig,
+
+    /// Opaque metadata for applications that embed the dataflow engine.
+    ///
+    /// The engine ignores this field entirely — embedding binaries can
+    /// read namespaced keys for their own engine-level concerns
+    /// (remote management, auth, fleet coordination, etc.).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
+    pub custom: HashMap<String, Value>,
 }
 
 /// Engine-wide topic runtime settings.
@@ -317,6 +327,92 @@ groups:
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         assert!(config.engine.observability.pipeline.is_some());
+    }
+
+    #[test]
+    fn from_yaml_accepts_custom_config() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  custom:
+    remote_management:
+      server_url: "ws://mgmt.example.com/v1"
+      heartbeat_interval_secs: 10
+    custom_auth:
+      provider: "oidc"
+      token_endpoint: "https://auth.example.com/token"
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse custom config");
+        assert_eq!(config.engine.custom.len(), 2);
+
+        let mgmt = config
+            .engine
+            .custom
+            .get("remote_management")
+            .expect("should have remote_management key");
+        assert_eq!(mgmt["server_url"], "ws://mgmt.example.com/v1");
+        assert_eq!(mgmt["heartbeat_interval_secs"], 10);
+
+        let auth = config
+            .engine
+            .custom
+            .get("custom_auth")
+            .expect("should have custom_auth key");
+        assert_eq!(auth["provider"], "oidc");
+    }
+
+    #[test]
+    fn custom_defaults_to_empty() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        assert!(config.engine.custom.is_empty());
+    }
+
+    #[test]
+    fn custom_roundtrips_through_json() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  custom:
+    my_app:
+      key: "value"
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let json = serde_json::to_string(&config).expect("should serialize to json");
+        let roundtripped: OtelDataflowSpec =
+            serde_json::from_str(&json).expect("should deserialize from json");
+        assert_eq!(roundtripped.engine.custom.len(), 1);
+        assert_eq!(roundtripped.engine.custom["my_app"]["key"], "value");
     }
 
     #[test]

@@ -27,7 +27,7 @@ use tokio::net::{TcpListener, UdpSocket};
 #[derive(Clone, Copy)]
 pub enum SourceTagging {
     /// Disabled means no source node-id will be automatically
-    /// inserted for nodes that do not not otherwise subscribe to
+    /// inserted for nodes that do not otherwise subscribe to
     /// Ack/Nack.
     Disabled,
 
@@ -264,6 +264,18 @@ impl<PData> EffectHandlerCore<PData> {
         metrics: &mut MetricSet<M>,
     ) -> Result<(), TelemetryError> {
         self.metrics_reporter.report(metrics)
+    }
+
+    /// Reports processor-local wakeup scheduler metrics, if this processor uses
+    /// the local wakeup service.
+    pub fn report_local_scheduler_metrics(
+        &self,
+        metrics_reporter: &mut MetricsReporter,
+    ) -> Result<(), TelemetryError> {
+        if let Some(scheduler) = &self.local_scheduler {
+            scheduler.report_metrics(metrics_reporter)?;
+        }
+        Ok(())
     }
 
     /// Re-usable function to send a runtime control message. This returns a reference

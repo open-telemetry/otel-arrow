@@ -510,6 +510,34 @@ impl FromIterator<(NodeId, Arc<NodeUserConfig>)> for PipelineNodes {
 }
 
 impl PipelineConfig {
+    /// Compares two pipeline configs while intentionally ignoring the optional
+    /// pipeline-level policies block.
+    ///
+    /// This keeps the "what is pipeline shape vs. what is policy" decision next
+    /// to the struct definition so new fields require an explicit choice.
+    #[must_use]
+    pub fn eq_ignoring_policies(&self, other: &Self) -> bool {
+        let Self {
+            r#type: self_type,
+            policies: _,
+            nodes: self_nodes,
+            extensions: self_extensions,
+            connections: self_connections,
+        } = self;
+        let Self {
+            r#type: other_type,
+            policies: _,
+            nodes: other_nodes,
+            extensions: other_extensions,
+            connections: other_connections,
+        } = other;
+
+        self_type == other_type
+            && self_nodes == other_nodes
+            && self_extensions == other_extensions
+            && self_connections == other_connections
+    }
+
     /// Create a new [`PipelineConfig`] from a JSON string.
     pub fn from_json(
         pipeline_group_id: PipelineGroupId,
@@ -1378,6 +1406,99 @@ mod tests {
     use crate::pipeline::telemetry::{AttributeValue, TelemetryConfig};
     use crate::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
+
+    #[test]
+    fn eq_ignoring_policies_ignores_policy_only_changes() {
+        let current = super::PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("current pipeline should parse");
+        let candidate = super::PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+  telemetry:
+    pipeline_metrics: false
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("candidate pipeline should parse");
+
+        assert_ne!(current, candidate);
+        assert!(current.eq_ignoring_policies(&candidate));
+    }
+
+    #[test]
+    fn eq_ignoring_policies_detects_topology_change() {
+        let current = super::PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("current pipeline should parse");
+        let candidate = super::PipelineConfig::from_yaml(
+            "g1".into(),
+            "p1".into(),
+            r#"
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: exporter
+"#,
+        )
+        .expect("candidate pipeline should parse");
+
+        assert!(!current.eq_ignoring_policies(&candidate));
+    }
 
     #[test]
     fn test_duplicate_node_errors() {

@@ -1332,6 +1332,7 @@ mod tests {
                 pipeline_group_id,
                 pipeline_id,
                 core_id,
+                deployment_generation: 0,
             },
             pipeline_context,
             pipeline_rx,
@@ -1813,6 +1814,7 @@ mod tests {
                     pipeline_group_id: pipeline_group_id.clone(),
                     pipeline_id: pipeline_id.clone(),
                     core_id,
+                    deployment_generation: 0,
                 };
                 let controller_context = ControllerContext::new(metrics_system.registry());
                 let pipeline_context_params = PipelineContextParams {
@@ -3175,6 +3177,7 @@ mod tests {
                 pipeline_group_id,
                 pipeline_id,
                 core_id: 0,
+                deployment_generation: 0,
             },
             pipeline_context.clone(),
             pipeline_rx,
@@ -3416,6 +3419,7 @@ mod tests {
                 pipeline_group_id,
                 pipeline_id,
                 core_id: 0,
+                deployment_generation: 0,
             },
             pipeline_context,
             pipeline_rx,
@@ -3428,6 +3432,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: metric_level,
+                stopwatches: Vec::new(),
             },
             Vec::new(),
             empty_node_metric_handles(),
@@ -3492,6 +3497,7 @@ mod tests {
                 pipeline_group_id,
                 pipeline_id,
                 core_id: 0,
+                deployment_generation: 0,
             },
             pipeline_context,
             pipeline_rx,
@@ -3504,6 +3510,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: MetricLevel::None,
+                stopwatches: Vec::new(),
             },
             Vec::new(),
             empty_node_metric_handles(),
@@ -3612,6 +3619,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: metric_level,
+                stopwatches: Vec::new(),
             },
         );
         let completion_metrics_key = dispatcher.completion_metrics.metric_set_key();

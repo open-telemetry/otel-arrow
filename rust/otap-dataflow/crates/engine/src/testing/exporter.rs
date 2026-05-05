@@ -40,7 +40,7 @@ pub struct TestContext<PData> {
     /// Sender for control messages
     control_tx: Sender<NodeControlMsg<PData>>,
     /// Sender for pipeline data
-    pdata_tx: Sender<PData>,
+    pdata_tx: Option<Sender<PData>>,
     /// Message counter for tracking processed messages
     counters: CtrlMsgCounters,
     /// Receiver for runtime control messages
@@ -71,7 +71,7 @@ impl<PData> TestContext<PData> {
     ) -> Self {
         Self {
             control_tx,
-            pdata_tx,
+            pdata_tx: Some(pdata_tx),
             counters,
             runtime_ctrl_msg_receiver: None,
             pipeline_completion_msg_receiver: None,
@@ -142,7 +142,11 @@ impl<PData> TestContext<PData> {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_pdata(&self, content: PData) -> Result<(), SendError<PData>> {
-        self.pdata_tx.send(content).await
+        self.pdata_tx
+            .as_ref()
+            .expect("pdata sender must exist during the active test phase")
+            .send(content)
+            .await
     }
 
     /// Sleeps for the specified duration.
@@ -362,9 +366,14 @@ impl<PData> ValidationPhase<PData> {
         let ValidationPhase {
             rt,
             local_tasks,
-            context,
+            mut context,
             run_exporter_handle,
         } = self;
+
+        // Validation does not drive new pdata. Drop the harness-side sender
+        // clone before waiting for exporter shutdown so tests do not keep the
+        // exporter input channel artificially open after the scenario finishes.
+        let _ = context.pdata_tx.take();
 
         // First run all the spawned tasks to completion
         rt.block_on(local_tasks);

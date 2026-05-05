@@ -1311,7 +1311,6 @@ mod test {
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int32)),
                     true,
                 ),
-                Field::new("is_monotonic", DataType::Boolean, true),
             ])),
             vec![
                 // id
@@ -1426,14 +1425,6 @@ mod test {
                     UInt8Array::from(vec![None, Some(0), None, Some(1), Some(2)]),
                     Arc::new(Int32Array::from_iter(vec![2, 1, 0])),
                 )),
-                // is_monotonic
-                Arc::new(BooleanArray::from_iter(vec![
-                    None,
-                    Some(false),
-                    None,
-                    None,
-                    None,
-                ])),
             ],
         )
         .unwrap();
@@ -4035,7 +4026,7 @@ mod test {
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
         // check the serialized values are what is expected
-        let mut proto_buf = ProtoBuffer::new();
+        let mut proto_buf = ProtoBuffer::default();
         proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
         let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
 
@@ -4279,7 +4270,7 @@ mod test {
         assert_eq!(logs_attrs, &expected_attrs);
 
         // check the serialized values are what is expected
-        let mut proto_buf = ProtoBuffer::new();
+        let mut proto_buf = ProtoBuffer::default();
         proto_encode_cbor_bytes(&expected_serialized_array, &mut proto_buf).unwrap();
         let deserialized_array = AnyValue::decode(proto_buf.as_ref()).unwrap();
         assert_eq!(

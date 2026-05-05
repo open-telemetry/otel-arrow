@@ -692,8 +692,10 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
     }
 
     // Acquire balanced-group capacity atomically from the publisher's point of
-    // view: if one group is full, drop any partial acquisitions before waiting
-    // and retry from a fresh mixed-topic snapshot.
+    // view. Mixed topics are intentionally all-or-nothing across balanced and
+    // broadcast delivery, so publishers must not keep permits reserved in
+    // "fast" groups while they wait on a "slow" one. Drop any partial
+    // acquisitions before awaiting capacity and retry from a fresh snapshot.
     async fn acquire_balanced_admission(
         &self,
     ) -> Result<(Arc<[Arc<ConsumerGroup<T>>]>, BalancedPermitVec), Error> {
@@ -750,6 +752,9 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             }
         }
 
+        // Broadcast is intentionally last so mixed async publish has the same
+        // visible contract as mixed try_publish: no broadcast subscriber can
+        // observe a message before the balanced side has admitted it.
         self.broadcast_ring.publish(Envelope {
             id,
             tracked: false,
@@ -772,6 +777,9 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         let id = self.next_message_id();
         if self.has_balanced_groups.load(Ordering::Acquire) {
             let (groups, permits) = self.acquire_balanced_admission().await?;
+            // Tracked publish capacity is consumed only after admission
+            // succeeds. Waiting on a full balanced group must not hand back a
+            // receipt for a message that has not been accepted anywhere yet.
             let receipt = self.outcomes.register(id, timeout, permit);
             let envelope = Envelope {
                 id,
@@ -821,6 +829,8 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         };
         let (permits, blocking_group) = Self::try_acquire_balanced_admission(&groups)?;
         if blocking_group.is_some() {
+            // Keep try_publish all-or-nothing for mixed topics: if balanced
+            // admission fails, nothing is published to broadcast either.
             Ok((PublishOutcome::DroppedOnFull, id))
         } else {
             for (group, permit) in groups.as_ref().iter().zip(permits) {

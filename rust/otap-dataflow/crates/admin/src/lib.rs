@@ -12,21 +12,117 @@ mod pipeline_group;
 mod telemetry;
 
 use axum::Router;
+use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
+pub use otap_df_admin_types::pipelines::{
+    PipelineDetails, PipelineRolloutState, PipelineRolloutSummary, ReconfigureRequest,
+    RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
+};
+use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
 use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_engine::control::PipelineAdminSender;
 use otap_df_engine::memory_limiter::MemoryPressureState;
 use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::log_tap::InternalLogTapHandle;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
+
+/// Control-plane error surfaced to admin handlers.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ControlPlaneError {
+    /// The requested pipeline group does not exist.
+    GroupNotFound,
+    /// The requested pipeline does not exist.
+    PipelineNotFound,
+    /// Another incompatible live operation is active in the current consistency scope.
+    RolloutConflict,
+    /// Submitted pipeline configuration failed validation or violated a runtime boundary.
+    InvalidRequest {
+        /// Human-readable validation failure detail.
+        message: String,
+    },
+    /// The requested rollout could not be found.
+    RolloutNotFound,
+    /// The requested shutdown could not be found.
+    ShutdownNotFound,
+    /// Unexpected internal failure while processing the request.
+    Internal {
+        /// Human-readable internal failure detail.
+        message: String,
+    },
+}
+
+impl ControlPlaneError {
+    /// Converts a control-plane error into the public operation rejection model.
+    #[must_use]
+    pub fn as_operation_error(&self) -> OperationError {
+        match self {
+            Self::GroupNotFound => OperationError::new(OperationErrorKind::GroupNotFound),
+            Self::PipelineNotFound => OperationError::new(OperationErrorKind::PipelineNotFound),
+            Self::RolloutConflict => OperationError::new(OperationErrorKind::Conflict),
+            Self::InvalidRequest { message } => {
+                OperationError::new(OperationErrorKind::InvalidRequest)
+                    .with_message(message.clone())
+            }
+            Self::RolloutNotFound => OperationError::new(OperationErrorKind::RolloutNotFound),
+            Self::ShutdownNotFound => OperationError::new(OperationErrorKind::ShutdownNotFound),
+            Self::Internal { message } => {
+                OperationError::new(OperationErrorKind::Internal).with_message(message.clone())
+            }
+        }
+    }
+}
+
+/// Control-plane interface implemented by the controller runtime.
+pub trait ControlPlane: Send + Sync {
+    /// Requests shutdown of all currently running runtime instances.
+    fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError>;
+
+    /// Requests shutdown of all currently running runtime instances for one logical pipeline.
+    fn shutdown_pipeline(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+    ) -> Result<ShutdownStatus, ControlPlaneError>;
+
+    /// Reconfigures a logical pipeline and returns the rollout job snapshot.
+    fn reconfigure_pipeline(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        request: ReconfigureRequest,
+    ) -> Result<RolloutStatus, ControlPlaneError>;
+
+    /// Returns the live active config for a logical pipeline.
+    fn pipeline_details(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+    ) -> Result<Option<PipelineDetails>, ControlPlaneError>;
+
+    /// Returns the detailed status for a rollout job.
+    fn rollout_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        rollout_id: &str,
+    ) -> Result<Option<RolloutStatus>, ControlPlaneError>;
+
+    /// Returns the detailed status for a shutdown job.
+    fn shutdown_status(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        shutdown_id: &str,
+    ) -> Result<Option<ShutdownStatus>, ControlPlaneError>;
+}
 
 /// Shared state for the HTTP admin server.
 #[derive(Clone)]
@@ -37,11 +133,11 @@ struct AppState {
     /// The metrics registry for querying current metrics.
     metrics_registry: TelemetryRegistryHandle,
 
+    /// Resident controller control plane for runtime mutations.
+    controller: Arc<dyn ControlPlane>,
+
     /// Optional internal log tap for querying retained internal logs.
     log_tap: Option<InternalLogTapHandle>,
-
-    /// The control message senders for controlling pipelines.
-    ctrl_msg_senders: Arc<Mutex<Vec<Arc<dyn PipelineAdminSender>>>>,
 
     /// Shared process-wide memory pressure state.
     memory_pressure_state: MemoryPressureState,
@@ -51,7 +147,7 @@ struct AppState {
 pub async fn run(
     config: HttpAdminSettings,
     observed_store: ObservedStateHandle,
-    ctrl_msg_senders: Vec<Arc<dyn PipelineAdminSender>>,
+    controller: Arc<dyn ControlPlane>,
     metrics_registry: TelemetryRegistryHandle,
     memory_pressure_state: MemoryPressureState,
     log_tap: Option<InternalLogTapHandle>,
@@ -60,8 +156,8 @@ pub async fn run(
     let app_state = AppState {
         observed_state_store: observed_store,
         metrics_registry,
+        controller,
         log_tap,
-        ctrl_msg_senders: Arc::new(Mutex::new(ctrl_msg_senders)),
         memory_pressure_state,
     };
 

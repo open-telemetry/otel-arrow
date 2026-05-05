@@ -15,4 +15,3 @@ workspace = true
 [dependencies]
 thiserror = { workspace = true }
 tokio = { workspace = true }
-arrayvec = { workspace = true }

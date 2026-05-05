@@ -17,9 +17,8 @@ groups:
             type: receiver:traffic_generator
             config:
               traffic_config:
-                max_signal_count: 10000
-                max_batch_size: 100
-                signals_per_second: 100
+                max_batch_size: 10
+                signals_per_second: 1000
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           batch:
@@ -35,7 +34,7 @@ groups:
           debug:
             type: processor:debug
             config:
-              verbosity: detailed
+              verbosity: basic
               mode: signal
           noop:
             type: exporter:noop

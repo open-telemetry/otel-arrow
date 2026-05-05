@@ -255,4 +255,14 @@ impl<T> LocalReceiver<T> {
             LocalReceiverInner::Mpmc(receiver) => receiver.is_empty(),
         }
     }
+
+    /// Returns `true` once all senders are gone or the channel has been
+    /// explicitly closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match &self.inner {
+            LocalReceiverInner::Mpsc(receiver) => receiver.is_closed(),
+            LocalReceiverInner::Mpmc(receiver) => receiver.is_closed(),
+        }
+    }
 }

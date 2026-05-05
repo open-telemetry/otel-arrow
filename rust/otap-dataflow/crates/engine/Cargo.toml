@@ -28,7 +28,6 @@ otap-df-telemetry-macros = { workspace = true }
 
 thiserror = { workspace = true }
 serde_json = { workspace = true }
-serde = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
 async-trait = { workspace = true }
@@ -36,14 +35,11 @@ futures = { workspace = true }
 flume = { workspace = true }
 bitflags = { workspace = true }
 bytemuck = { workspace = true }
-bytes = { workspace = true }
 smallvec = { workspace = true }
 socket2 = { workspace = true }
 uuid = { workspace = true }
-once_cell = { workspace = true }
 data-encoding = { workspace = true }
 prost = { workspace = true }
-byte-unit = { workspace = true }
 cpu-time = { workspace = true }
 memory-stats = { workspace = true }
 nix = { workspace = true, features = ["resource"] }

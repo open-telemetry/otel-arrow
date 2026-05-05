@@ -820,6 +820,7 @@ impl GrpcClientPool {
         let mut client = LogsServiceClient::new(self.base_channel.clone());
         if let Some(encoding) = self.compression {
             client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
         }
         client
     }
@@ -828,6 +829,7 @@ impl GrpcClientPool {
         let mut client = MetricsServiceClient::new(self.base_channel.clone());
         if let Some(encoding) = self.compression {
             client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
         }
         client
     }
@@ -836,6 +838,7 @@ impl GrpcClientPool {
         let mut client = TraceServiceClient::new(self.base_channel.clone());
         if let Some(encoding) = self.compression {
             client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
         }
         client
     }
@@ -862,13 +865,25 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
 
-    #[cfg(not(windows))]
+    use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
     use otap_df_config::transport_headers_policy::PropagationSelectorType;
+    use otap_df_config::transport_headers_policy::{
+        HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
+        PropagationOverride, PropagationSelector,
+    };
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::PipelineCompletionMsg;
+    use otap_df_engine::control::{
+        Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
+        pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+    };
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
+    use otap_df_engine::message::{Receiver, Sender};
+    use otap_df_engine::node::NodeWithPDataReceiver;
+    use otap_df_engine::testing::create_not_send_channel;
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
@@ -883,7 +898,9 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -893,25 +910,6 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
-    // Imports only used by tests that are skipped on Windows
-    #[cfg(not(windows))]
-    use {
-        otap_df_config::transport_headers::{TransportHeader, TransportHeaders},
-        otap_df_config::transport_headers_policy::{
-            HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
-            PropagationOverride, PropagationSelector,
-        },
-        otap_df_engine::control::{
-            Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
-            pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
-        },
-        otap_df_engine::local::message::{LocalReceiver, LocalSender},
-        otap_df_engine::message::{Receiver, Sender},
-        otap_df_engine::node::NodeWithPDataReceiver,
-        otap_df_engine::testing::create_not_send_channel,
-        otap_df_telemetry::metrics::MetricSetSnapshot,
-        otap_df_telemetry::reporter::MetricsReporter,
-    };
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
     async fn wait_for_ack_or_nack(
@@ -1153,8 +1151,6 @@ mod tests {
         _ = shutdown_sender.send("Shutdown");
     }
 
-    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
-    #[cfg(not(windows))]
     #[test]
     fn test_receiver_not_ready_on_start_and_reconnect() {
         // the purpose of this test is to that the exporter behaves as expected in the face of
@@ -1181,6 +1177,7 @@ mod tests {
                 config: Config {
                     grpc: GrpcClientSettings {
                         grpc_endpoint: grpc_endpoint.clone(),
+                        connect_timeout: Duration::from_millis(500),
                         ..Default::default()
                     },
                     max_in_flight: 32,
@@ -1458,7 +1455,6 @@ mod tests {
     // ---- build_grpc_metadata unit tests ----------------------------------------
 
     /// Helper: Creates an [`EffectHandler`] with an optional propagation policy set.
-    #[cfg(not(windows))]
     fn make_effect_handler_with_policy(
         policy: Option<HeaderPropagationPolicy>,
     ) -> EffectHandler<OtapPdata> {
@@ -1470,7 +1466,6 @@ mod tests {
     }
 
     /// Helper: Creates a [`Context`] that carries the given transport headers.
-    #[cfg(not(windows))]
     fn context_with_headers(headers: TransportHeaders) -> Context {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
             .with_transport_headers(headers);
@@ -1479,7 +1474,6 @@ mod tests {
     }
 
     /// Helper: Creates a [`Context`] without any transport headers.
-    #[cfg(not(windows))]
     fn context_without_headers() -> Context {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
         let (context, _) = pdata.into_parts();
@@ -1487,7 +1481,6 @@ mod tests {
     }
 
     /// Helper: Propagation policy that propagates all captured headers.
-    #[cfg(not(windows))]
     fn propagate_all_policy() -> HeaderPropagationPolicy {
         HeaderPropagationPolicy::new(
             PropagationDefault {
@@ -1501,7 +1494,6 @@ mod tests {
         )
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_without_policy() {
         let handler = make_effect_handler_with_policy(None);
@@ -1513,7 +1505,6 @@ mod tests {
         assert!(result.is_none(), "should return None when no policy is set");
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_without_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1526,7 +1517,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_propagates_text_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1558,7 +1548,6 @@ mod tests {
         assert_eq!(request_id.to_str().unwrap(), "req-xyz-789");
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_drops_filtered_headers() {
         let policy = HeaderPropagationPolicy::new(
@@ -1602,7 +1591,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_propagates_binary_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1629,7 +1617,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_appends_bin_suffix_for_binary_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1653,7 +1640,6 @@ mod tests {
         assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_preserves_duplicate_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1691,7 +1677,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_when_all_dropped() {
         // Policy that drops everything (selector = None means no headers are selected).

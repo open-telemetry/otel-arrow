@@ -21,4 +21,4 @@ quote.workspace = true
 syn.workspace = true
 
 [dev-dependencies]
-trybuild.workspace = true
+

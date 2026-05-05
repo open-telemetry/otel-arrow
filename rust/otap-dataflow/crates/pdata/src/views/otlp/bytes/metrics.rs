@@ -855,7 +855,7 @@ pub struct RawSummaryDataPoint<'a> {
     byte_parser: ProtoBytesParser<'a, SummaryDataPointFieldRanges>,
 }
 
-/// Known field ranges for for fields in `SummaryDataPoint` message
+/// Known field ranges for fields in `SummaryDataPoint` message
 #[derive(Default)]
 pub struct SummaryDataPointFieldRanges {
     start_time_unix_nano: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
@@ -2154,7 +2154,7 @@ mod test {
         // be "packed" encoded: bucket_counts and explicit_bounds. However, proto docs say we need
         // to support maybe reading these as packed & expanded, so we test for this
 
-        let mut buffer = ProtoBuffer::new();
+        let mut buffer = ProtoBuffer::default();
 
         // first write packed encoded
         buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
@@ -2229,7 +2229,7 @@ mod test {
         // ExponentialHistogramDataPoint Bucket's bucket_counts field which
         // contains a repeated uint64
 
-        let mut buffer = ProtoBuffer::new();
+        let mut buffer = ProtoBuffer::default();
 
         // test packed encoding
         buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);

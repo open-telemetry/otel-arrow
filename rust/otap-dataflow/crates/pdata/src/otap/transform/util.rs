@@ -72,7 +72,7 @@ macro_rules! id_column_dispatch {
 pub(crate) use id_column_dispatch;
 
 /// Create a new record batch by taking the specified ranges from the provided record batch.
-pub(crate) fn take_record_batch_ranges(
+pub fn take_record_batch_ranges(
     rb: &RecordBatch,
     ranges: &[Range<usize>],
 ) -> arrow::error::Result<RecordBatch> {

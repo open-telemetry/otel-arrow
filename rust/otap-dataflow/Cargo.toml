@@ -36,11 +36,8 @@ otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
 otap-df-engine.workspace = true
 otap-df-otap.workspace = true
-thiserror.workspace = true
-serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
-sysinfo.workspace = true
 dhat = { workspace = true, optional = true }
 cfg-if.workspace = true
 
@@ -92,6 +89,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
+clap_complete = "4.5.55"
 core_affinity = "0.8.3"
 criterion = "0.8.0"
 data-encoding = "2.9.0"
@@ -214,12 +212,12 @@ weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git",
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = "=4.6.1"
+zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-azure_core = {version = "0.34.0", default-features = false }
-azure_identity = {version = "0.34.0", default-features = false }
+azure_core = {version = "0.35.0", default-features = false }
+azure_identity = {version = "0.35.0", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
@@ -249,11 +247,16 @@ testcontainers = "0.27"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
 urlencoding = "2"
-geneva-uploader = "0.4.0"
+# Pinned to open-telemetry/opentelemetry-rust-contrib main on 2026-04-25.
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "ce866b48a1645f1fb222bdea19c42821a2b48d5a" }
+
+[patch."https://github.com/open-telemetry/otel-arrow"]
+otap-df-pdata = { path = "crates/pdata" }
+otap-df-pdata-views = { path = "crates/pdata-views" }
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
-default = ["jemalloc", "crypto-ring", "dev-tools"]
+default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
@@ -267,6 +270,9 @@ dhat-heap = [
 
 # Dev/test tooling (fake data generator).
 dev-tools = ["otap-df-core-nodes/dev-tools"]
+
+# Admin UI live log streaming over WebSocket.
+admin-live-logs-ws = ["otap-df-controller/admin-live-logs-ws"]
 
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).

@@ -3,6 +3,7 @@
 
 //! Create and run a multi-core pipeline
 
+use cfg_if::cfg_if;
 use clap::Parser;
 use otap_df_config::config_provider::{ConfigFormat, resolve_config};
 use otap_df_config::engine::OtelDataflowSpec;
@@ -16,7 +17,6 @@ use otap_df_controller::startup;
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
-use cfg_if::cfg_if;
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 /// Project license text (Apache-2.0), embedded at compile time.
@@ -238,6 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         dhat_start();
     }
+
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
     otap_df_otap::crypto::install_crypto_provider()
@@ -324,14 +325,14 @@ mod tests {
             Ok(CoreAllocation::core_set(vec![
                 CoreRange { start: 0, end: 4 },
                 CoreRange { start: 5, end: 5 },
-                CoreRange { start: 6, end: 7 },
+                CoreRange { start: 6, end: 7 }
             ]))
         );
         assert_eq!(
             parse_core_id_allocation("0..4"),
             Ok(CoreAllocation::core_set(vec![CoreRange {
                 start: 0,
-                end: 4,
+                end: 4
             }]))
         );
     }
@@ -499,7 +500,7 @@ connections:
             args.core_id_range,
             Some(CoreAllocation::core_set(vec![
                 CoreRange { start: 1, end: 3 },
-                CoreRange { start: 7, end: 7 },
+                CoreRange { start: 7, end: 7 }
             ]))
         );
         assert_eq!(args.num_cores, None);

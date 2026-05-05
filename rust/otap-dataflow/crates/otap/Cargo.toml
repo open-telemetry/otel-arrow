@@ -14,55 +14,39 @@ workspace = true
 
 [dependencies]
 arrow.workspace = true
-arrow-ipc.workspace = true
 async-trait.workspace = true
-ciborium.workspace = true
 futures.workspace = true
-futures-timer.workspace = true
 http.workspace = true
 humantime-serde.workspace = true
 object_store = {workspace = true, features = ["fs"]}
-parquet.workspace = true
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 slotmap = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
-uuid.workspace = true
 tonic = { workspace = true }
 tonic-middleware = { workspace = true }
-tonic-prost = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 smallvec = { workspace = true }
-bitflags = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
 base64 = { workspace = true }
-tracing = { workspace = true }
+cfg-if.workspace = true
 
-data_engine_kql_parser = { workspace = true }
-data_engine_expressions = { workspace =  true }
 otap-df-engine = { workspace = true }
 otap-df-engine-macros = { workspace = true }
 otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
-otap-df-opl = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
-otap-df-pdata-views = { workspace = true }
-otap-df-query-engine = { workspace = true }
 otap-df-telemetry = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 
-chrono.workspace = true
 tower-service.workspace = true
-fluke-hpack.workspace = true
 serde.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
-async-stream.workspace = true
 humantime.workspace = true
-rand.workspace = true
 reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
 tower = { workspace = true }
 hyper-util = { workspace = true }
@@ -87,8 +71,6 @@ rustls-openssl = { workspace = true, optional = true }
 
 # Quiver persistence engine (durable buffer processor)
 quiver = { workspace = true }
-blake3.workspace = true
-byte-unit.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 rustls-symcrypt = { workspace = true, optional = true }
@@ -103,13 +85,11 @@ azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:
 aws = ["object_store/aws", "object_store/cloud"]
 
 [dev-dependencies]
-flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio-util.workspace = true
 time.workspace = true
-wiremock.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true

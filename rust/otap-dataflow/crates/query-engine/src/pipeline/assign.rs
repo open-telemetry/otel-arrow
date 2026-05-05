@@ -21,8 +21,10 @@ use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
     RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::{eq, neq};
-use arrow::compute::{cast, filter, max, take};
+use arrow::compute::kernels::merge::merge;
+use arrow::compute::{and_not, cast, filter, max, take};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use async_trait::async_trait;
 use data_engine_expressions::QueryLocation;
@@ -41,7 +43,8 @@ use otap_df_pdata::otap::transform::upsert_attributes::{
 };
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otap_df_pdata::schema::consts::metadata;
+use otap_df_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -57,6 +60,10 @@ use crate::pipeline::expr::{
     SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::project::anyval::{
+    attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
+    is_any_value_data_type, wrap_as_any_value_struct,
+};
 use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
 
@@ -75,7 +82,7 @@ pub struct Assignment<'a> {
 /// Pipeline stage for assigning the result of an expression evaluation to an OTAP column.
 ///
 /// This can do more than one assignment to a given record batch at a time. This minimizes the
-/// overhead of of materializing intermediate results multiple times when there are multiple
+/// overhead of materializing intermediate results multiple times when there are multiple
 /// assignments to be made.
 pub(crate) struct AssignPipelineStage {
     /// Identifier of the destination column
@@ -198,12 +205,36 @@ impl AssignPipelineStage {
             // safe to expect here
             .expect("dest column found");
 
+        // AnyValue destinations (e.g., body) need special handling: the result may be a
+        // concrete typed array that needs wrapping into an AnyValue struct, or it may already
+        // be an AnyValue struct that can be assigned directly.
+        if expected_column_logical_type == ExprLogicalType::AnyValue {
+            let root_batch = root_batch.clone();
+            return self.assign_any_value_to_root(
+                otap_batch,
+                eval_result,
+                dest_scope,
+                dest_column_name,
+                &root_batch,
+            );
+        }
+
         let expected_column_data_type = expected_column_logical_type
             .datatype()
             // safety: this will only return None if the logical data type for the field is
-            // ambiguous, which is the case for attributes/AnyValues, but all the fields on the
-            // root batch are known/un-ambiguous, so this will return Some and is safe to expect
+            // ambiguous, which is the case for attributes/AnyValues, but we've handled AnyValue
+            // above, so the remaining types are all concrete and safe to expect here
             .expect("dest column data type");
+
+        // if we've received an AnyValue as the assignment source, but the destination is not an
+        // AnyValue, we coerce attempt to coerce it into a single value
+        if let ColumnarValue::Array(values) = &eval_result.values {
+            if is_any_value_data_type(values.data_type()) {
+                let coerced_value_col =
+                    attempt_coerce_value_column_from_any_value_struct_column(values)?;
+                eval_result.values = ColumnarValue::Array(coerced_value_col);
+            }
+        }
 
         // coerce static scalar int" if the result was a static scalar integer, it will have been
         // produced as an int64 by default, however the expression tree doesn't actually specify
@@ -288,6 +319,64 @@ impl AssignPipelineStage {
         otap_batch.set(
             root_payload_type,
             try_upsert_column(dest_column_name, values, root_batch)?,
+        )?;
+
+        Ok(otap_batch)
+    }
+
+    /// Assign an expression result to an AnyValue column on the root batch (e.g., `body`).
+    ///
+    /// If the result is already an AnyValue struct, it is assigned directly. Otherwise the
+    /// concrete typed array is wrapped into an AnyValue struct via [`wrap_as_any_value_struct`].
+    fn assign_any_value_to_root(
+        &self,
+        mut otap_batch: OtapArrowRecords,
+        eval_result: PhysicalExprEvalResult,
+        dest_scope: &Rc<DataScope>,
+        dest_column_name: &str,
+        root_batch: &RecordBatch,
+    ) -> Result<OtapArrowRecords> {
+        // Convert the evaluation result to an array (no dict encoding for struct columns)
+        let mut values = eval_result_to_array(&eval_result.values, false, root_batch.num_rows())?;
+
+        // Align row order if the result came from a different data scope (e.g., attributes)
+        let already_aligned = eval_result.data_scope.is_scalar()
+            || eval_result.data_scope.as_ref() == dest_scope.as_ref();
+
+        if !already_aligned {
+            let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+                unreachable!("unexpected data_scope for non-aligned result")
+            };
+
+            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let vals_take_indices = join_exec.rows_to_take(
+                &PhysicalExprEvalResult::new(
+                    ColumnarValue::Scalar(ScalarValue::Null),
+                    Rc::clone(dest_scope),
+                    root_batch,
+                ),
+                &eval_result,
+                &OtapArrowRecords::Logs(Logs::default()),
+            )?;
+
+            values = take(&values, &vals_take_indices, None)?;
+        }
+
+        // If the value is already an AnyValue struct, use it directly. Otherwise coerce
+        // dict encoding to match AnyValue field rules, then wrap into an AnyValue struct.
+        let any_value_column = if is_any_value_data_type(values.data_type()) {
+            // for any rows that didn't have the attribute value that produced this AnyValue array
+            //after joining here we may end up with nulls in the type column. Need to fill them
+            fill_null_type_as_empty(&values)?
+        } else {
+            let values = coerce_to_any_value_struct_column(values)?;
+            wrap_as_any_value_struct(&values)?
+        };
+
+        let root_payload_type = otap_batch.root_payload_type();
+        otap_batch.set(
+            root_payload_type,
+            try_upsert_column(dest_column_name, any_value_column, root_batch)?,
         )?;
 
         Ok(otap_batch)
@@ -429,7 +518,7 @@ impl AssignPipelineStage {
 
             // if the evaluation was of the expression turned out to be null, we'll create
             // empty attributes from the Null scalar value.
-            let eval_result = eval_result
+            let mut eval_result = eval_result
                 .take()
                 .unwrap_or_else(|| PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
 
@@ -477,6 +566,17 @@ impl AssignPipelineStage {
             self.id_bitmap_pool.release(update_parent_id_set);
             let parent_ids = UInt16Array::from(parent_ids);
 
+            // Attempt to coerce the AnyValue into a single column. In this case, we do this as an
+            // optimization: this makes the join faster because we can take fewer columns, and it
+            // also makes it so we avoid entering `decompose_any_value_upsert` upsert.
+            if let ColumnarValue::Array(ref arr) = eval_result.values {
+                if is_any_value_data_type(arr.data_type()) {
+                    let coerced_value_col =
+                        attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                    eval_result.values = ColumnarValue::Array(coerced_value_col);
+                }
+            }
+
             let aligned_values = if let ColumnarValue::Scalar(s) = eval_result.values {
                 // if it's a scalar, there's actually no alignment needed
                 ColumnarValue::Scalar(s)
@@ -485,7 +585,7 @@ impl AssignPipelineStage {
                 // the resulting record batch.
                 let ColumnarValue::Array(result_values) = &eval_result.values else {
                     // safety: this is the else block of an if statement where we've tried to check if
-                    // this is is a scalar. Since we've determined it's not scalar, it must be array.
+                    // this is a scalar. Since we've determined it's not scalar, it must be array.
                     unreachable!("expected ColumnarResult::Array")
                 };
                 let left_join_input = &PhysicalExprEvalResult::new_with_parent_ids(
@@ -522,6 +622,24 @@ impl AssignPipelineStage {
 
                 ColumnarValue::Array(take(&result_values, &vals_take_indices, None)?)
             };
+
+            // If the expression produced an AnyValue struct and we were not already able to
+            // coerce it into a single array of a single concrete type array, we split the upsert
+            // for this attribute into multiple upserts for each type:
+            if let ColumnarValue::Array(ref arr) = aligned_values {
+                if is_any_value_data_type(arr.data_type()) {
+                    let type_filled_arr = fill_null_type_as_empty(arr)?;
+                    let per_type = decompose_any_value_upsert(
+                        attrs_key,
+                        &existing_key_mask,
+                        &type_filled_arr,
+                        &parent_ids,
+                    )?;
+                    attrs_upserts.extend(per_type);
+
+                    continue;
+                }
+            }
 
             attrs_upserts.push(AttributeUpsert {
                 attrs_key,
@@ -619,11 +737,26 @@ impl AssignPipelineStage {
             }
         };
 
+        // If we've created a new column, it won't have the metadata indicating the Id column is
+        // not delta encoded. Insert the metadata here if it is needed:
+        let mut batch_with_new_ids = try_upsert_column(consts::ID, new_ids, root_record_batch)?;
+        let schema = batch_with_new_ids.schema_ref().as_ref();
+        if get_field_metadata(schema, consts::ID, metadata::COLUMN_ENCODING).is_none() {
+            let new_schema = update_field_metadata(
+                schema,
+                consts::ID,
+                metadata::COLUMN_ENCODING,
+                metadata::encodings::PLAIN,
+            );
+            let (_, columns, _) = batch_with_new_ids.into_parts();
+            // safety: it is safe to update create a new record batch with the same previous
+            // schema nd columns with just updated metadata
+            batch_with_new_ids =
+                RecordBatch::try_new(Arc::new(new_schema), columns).expect("can replace schema");
+        }
+
         // replace the ID column and replace the root batch
-        otap_batch.set(
-            otap_batch.root_payload_type(),
-            try_upsert_column(consts::ID, new_ids, root_record_batch)?,
-        )?;
+        otap_batch.set(otap_batch.root_payload_type(), batch_with_new_ids)?;
 
         Ok(())
     }
@@ -1059,6 +1192,170 @@ impl NextIdTracker {
     }
 }
 
+/// Decompose an AnyValue struct result into one [`AttributeUpsert`] per distinct value type.
+///
+/// When an expression produces an AnyValue struct (because different rows had different input
+/// types, producing different output types), we cannot pass it directly to `upsert_attributes`
+/// which expects a single concrete typed value. Instead we split by type discriminant:
+///
+/// For each value field in the struct (e.g. `str`, `int`, `double`, `empty`):
+///
+/// 1. Build a type-specific `existing_key_mask` by ANDing the original key mask with
+///    `existing_type_col == discriminant`. This ensures the sub-upserts have non-overlapping
+///    ownership of existing rows (required by `upsert_attributes`).
+///
+/// 2. Filter `parent_ids` to only those whose new value has this discriminant.
+///
+/// 3. Extract the concrete value column for this type from the struct.
+///
+fn decompose_any_value_upsert<'a>(
+    attrs_key: &'a str,
+    existing_key_mask: &BooleanArray,
+    any_value_arr: &ArrayRef,
+    parent_ids: &UInt16Array,
+) -> Result<Vec<AttributeUpsert<'a, UInt16Type>>> {
+    let struct_arr = any_value_arr
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "expected AnyValue result to be a StructArray".into(),
+        })?;
+
+    // Extract the new-values type discriminant (one per aligned parent_id row).
+    let new_type_col = struct_arr
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "AnyValue struct is missing the 'type' field".into(),
+        })?;
+    let new_types = new_type_col
+        .as_any()
+        .downcast_ref::<UInt8Array>()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "AnyValue 'type' field is not UInt8".into(),
+        })?;
+
+    let mut upserts = Vec::new();
+
+    // Walk each value field in the struct (skip the `type` discriminant field itself).
+    for (field_idx, field) in struct_arr.fields().iter().enumerate() {
+        if field.name() == consts::ATTRIBUTE_TYPE {
+            continue;
+        }
+
+        // Determine the discriminant for this value field.
+        let discriminant: u8 = match field.name().as_str() {
+            n if n == consts::ATTRIBUTE_STR => AttributeValueType::Str as u8,
+            n if n == consts::ATTRIBUTE_INT => AttributeValueType::Int as u8,
+            n if n == consts::ATTRIBUTE_DOUBLE => AttributeValueType::Double as u8,
+            n if n == consts::ATTRIBUTE_BOOL => AttributeValueType::Bool as u8,
+            n if n == consts::ATTRIBUTE_BYTES => AttributeValueType::Bytes as u8,
+            n if n == consts::ATTRIBUTE_SER => {
+                return Err(Error::NotYetSupportedError {
+                    message: "Inserting attribute from mixed type AnyValue \
+                        column for serialized type not yet supported"
+                        .into(),
+                });
+            }
+            other => {
+                return Err(Error::ExecutionError {
+                    cause: format!("unexpected AnyValue field name '{other}'"),
+                });
+            }
+        };
+
+        let new_type_match = eq(new_types, &UInt8Array::new_scalar(discriminant))?;
+
+        // 1. Build sub-mask: existing_key_mask AND existing_type == discriminant.
+        let typed_existing_key_mask = merge(
+            existing_key_mask,
+            &new_type_match,
+            &BooleanArray::new_scalar(false),
+        )?;
+        let typed_existing_key_mask = typed_existing_key_mask
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            // safety: since the inputs to "merge" that were used to create this were boolean
+            // arrays, we can safely assume this will also be a boolean array
+            .expect("merged mask boolean")
+            .clone();
+
+        // 2. Filter parent_ids to those whose new value has this discriminant.
+        //    new_types has one entry per parent_id row.
+        let filtered_parent_ids = filter(parent_ids, &new_type_match)?;
+
+        let filtered_parent_ids = filtered_parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "filtered parent_ids is not UInt16".into(),
+            })?
+            .clone();
+
+        // Skip this type if there are no rows to upsert (no existing rows with this type
+        // and no new values with this type).
+        if typed_existing_key_mask.true_count() == 0 && filtered_parent_ids.is_empty() {
+            continue;
+        }
+
+        // 3. Extract the concrete value column and filter to matching rows.
+        let value_col = struct_arr.column(field_idx);
+        let filtered_values = filter(value_col.as_ref(), &new_type_match)?;
+
+        upserts.push(AttributeUpsert {
+            attrs_key,
+            existing_key_mask: typed_existing_key_mask,
+            new_values: ColumnarValue::Array(filtered_values),
+            upsert_parent_ids: filtered_parent_ids,
+        });
+    }
+
+    // handle attributes or nulls (which we'll also interpret to mean empty attribute)
+    let mut empty = eq(
+        &new_type_col,
+        &UInt8Array::new_scalar(AttributeValueType::Empty as u8),
+    )?;
+
+    if let Some(nulls) = any_value_arr.nulls() {
+        empty = and_not(
+            &empty,
+            &BooleanArray::new(
+                BooleanBuffer::new(nulls.buffer().clone(), 0, nulls.len()),
+                None,
+            ),
+        )?;
+    }
+
+    if empty.has_true() {
+        let typed_existing_key_mask =
+            merge(existing_key_mask, &empty, &BooleanArray::new_scalar(false))?;
+        let typed_existing_key_mask = typed_existing_key_mask
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            // safety: since the inputs to "merge" that were used to create this were boolean
+            // arrays, we can safely assume this will also be a boolean array
+            .expect("merged mask boolean")
+            .clone();
+
+        let filtered_parent_ids = filter(parent_ids, &empty)?;
+        let filtered_parent_ids = filtered_parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "filtered parent_ids is not UInt16".into(),
+            })?
+            .clone();
+
+        upserts.push(AttributeUpsert {
+            attrs_key,
+            existing_key_mask: typed_existing_key_mask,
+            new_values: ColumnarValue::Scalar(ScalarValue::Null),
+            upsert_parent_ids: filtered_parent_ids,
+        });
+    }
+
+    Ok(upserts)
+}
+
 /// Validate that the results of the passed expression can be assigned to the destination.
 /// There are multiple validations performed:
 ///
@@ -1334,6 +1631,35 @@ fn eval_result_to_array(
     }
 }
 
+/// Coerce an array's dictionary encoding to match the rules for AnyValue value fields.
+///
+/// - `Utf8` and `Int64`: dictionary encoding is allowed but must use a `UInt16` key.
+///   If the key type is smaller (e.g. `UInt8`), the array is cast to `Dictionary(UInt16, _)`.
+/// - All other types: dictionary encoding is not allowed. Dict-encoded arrays are cast to
+///   their plain value type.
+/// - Non-dict arrays are returned as-is.
+fn coerce_to_any_value_struct_column(values: ArrayRef) -> Result<ArrayRef> {
+    match values.data_type() {
+        DataType::Dictionary(key_type, value_type) => {
+            let allows_dict = matches!(value_type.as_ref(), DataType::Utf8 | DataType::Int64);
+            if allows_dict {
+                // Dict is allowed but must use u16 key
+                if key_type.as_ref() != &DataType::UInt16 {
+                    let target =
+                        DataType::Dictionary(Box::new(DataType::UInt16), value_type.clone());
+                    Ok(cast(&values, &target)?)
+                } else {
+                    Ok(values)
+                }
+            } else {
+                // Dict not allowed for this value type — downcast to plain
+                Ok(cast(&values, value_type.as_ref())?)
+            }
+        }
+        _ => Ok(values), // not dict-encoded, use as-is
+    }
+}
+
 /// Inserts the column into the record batch if the column does not exist, otherwise replaces the
 /// existing column with the new one.
 ///
@@ -1406,7 +1732,7 @@ fn try_upsert_column(
 #[cfg(test)]
 mod test {
     use arrow::{
-        array::{StringArray, UInt16Array},
+        array::{Array, StringArray, StructArray, UInt8Array, UInt16Array},
         compute::{
             filter_record_batch,
             kernels::{cast, cmp::eq},
@@ -1418,6 +1744,7 @@ mod test {
     use otap_df_pdata::{
         OtapArrowRecords,
         otap::Logs,
+        otlp::attributes::AttributeValueType,
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
@@ -2080,6 +2407,495 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_assign_logs_body_when_source_is_non_any_value_col() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("DEBUG").finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let pipeline_expr = OplParser::parse("logs | set body = severity_text")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("INFO"))
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("DEBUG"))
+                .severity_text("DEBUG")
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_when_source_is_single_type_of_anyvalue() {
+        // test all scalar types
+        let sources = [
+            AnyValue::new_int(5),
+            AnyValue::new_string("hello"),
+            AnyValue::new_bytes(b"world"),
+            AnyValue::new_double(5.14),
+            AnyValue::new_bool(true),
+            AnyValue { value: None },
+        ];
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        for input_any_val in sources {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x", input_any_val.clone())])
+                    .finish(),
+            ]);
+
+            let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+            let result = pipeline.execute(input).await.unwrap();
+
+            // assert we've inserted a struct column with all the correct args
+            let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+            let logs_body = logs_rb.column_by_name(consts::BODY).unwrap();
+            let DataType::Struct(struct_fields) = logs_body.data_type() else {
+                panic!(
+                    "invalid data type for logs body {:?}",
+                    logs_body.data_type()
+                )
+            };
+            if input_any_val.value.is_some() {
+                assert_eq!(struct_fields.len(), 2); // type & val
+            } else {
+                assert_eq!(struct_fields.len(), 1); // just type - empty values  = no column
+            }
+
+            let expected = vec![
+                LogRecord::build()
+                    .body(input_any_val.clone())
+                    .attributes(vec![KeyValue::new("x", input_any_val.clone())])
+                    .finish(),
+            ];
+            let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+                panic!("invalid signal type");
+            };
+
+            assert_eq!(
+                &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+                &expected,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_when_source_is_anyval_with_mixed_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue { value: None })])
+                .finish(),
+        ]);
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        // assert we've inserted a struct column with all the correct args
+        let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
+        let logs_body = logs_rb.column_by_name(consts::BODY).unwrap();
+        let DataType::Struct(struct_fields) = logs_body.data_type() else {
+            panic!(
+                "invalid data type for logs body {:?}",
+                logs_body.data_type()
+            )
+        };
+        assert!(struct_fields.find(consts::ATTRIBUTE_TYPE).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_STR).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_INT).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_DOUBLE).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_BYTES).is_some());
+        assert!(struct_fields.find(consts::ATTRIBUTE_BOOL).is_some());
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .body(AnyValue::new_int(5))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bytes(b"world"))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_double(5.14))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bool(true))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue { value: None })
+                .attributes(vec![KeyValue::new("x", AnyValue { value: None })])
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_from_attr_mixed_types_where_some_rows_dont_have_attr() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_bytes(b"world"))])
+                .event_name("4")
+                .finish(),
+        ]);
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        // because of the join we do between the attribute parent_ids and
+        let expected = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .body(AnyValue::new_int(5))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .body(AnyValue::new_bytes(b"world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_bytes(b"world"))])
+                .event_name("4")
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_logs_body_from_attr_uniform_type_where_some_rows_dont_have_attr() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(6))])
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_int(7))])
+                .event_name("4")
+                .finish(),
+        ]);
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        // because of the join we do between the attribute parent_ids and
+        let expected = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .body(AnyValue::new_int(5))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(6))])
+                .body(AnyValue::new_int(6))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_int(7))])
+                .event_name("4")
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_attribute_from_logs_body_when_mixed_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().body(AnyValue::new_int(5)).finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bytes(b"world"))
+                .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().body(AnyValue::new_double(5.14)).finish(),
+            LogRecord::build().body(AnyValue::new_bool(true)).finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"x\"] = body";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .body(AnyValue::new_int(5))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bytes(b"world"))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue { value: None })])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_double(5.14))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_bool(true))
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_expressions_when_any_value_mixed_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().body(AnyValue::new_int(2)).finish(),
+            LogRecord::build().body(AnyValue::new_double(5.14)).finish(),
+            LogRecord::build().body(AnyValue::new_int(4)).finish(),
+            LogRecord::build().body(AnyValue::new_double(4.18)).finish(),
+        ]);
+
+        let query = "logs | extend body = body + body";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build().body(AnyValue::new_int(4)).finish(),
+            LogRecord::build()
+                .body(AnyValue::new_double(10.28))
+                .finish(),
+            LogRecord::build().body(AnyValue::new_int(8)).finish(),
+            LogRecord::build().body(AnyValue::new_double(8.36)).finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_set_body_with_null_rows() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("1")
+                .finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build()
+                .severity_text("DEBUG")
+                .event_name("3")
+                .finish(),
+            LogRecord::build().event_name("4").finish(),
+        ]);
+
+        let query = "logs | extend body = severity_text";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        // check the structure of the actual column
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        let body_column = logs
+            .column_by_name("body")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+
+        assert!(body_column.is_valid(0));
+        assert!(body_column.is_null(1));
+        assert!(body_column.is_valid(2));
+
+        // check that we correctly put "empty" for the type
+        let type_field = body_column
+            .column_by_name(consts::ATTRIBUTE_TYPE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+        let expected_types = UInt8Array::from_iter_values([
+            AttributeValueType::Str as u8,
+            AttributeValueType::Empty as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Empty as u8,
+        ]);
+        assert_eq!(type_field, &expected_types);
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("INFO"))
+                .severity_text("INFO")
+                .event_name("1")
+                .finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("DEBUG"))
+                .severity_text("DEBUG")
+                .event_name("3")
+                .finish(),
+            LogRecord::build().event_name("4").finish(),
+        ];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assign_set_body_with_all_nulls() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("1")
+                .finish(),
+        ]);
+
+        let query = "logs | extend body = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        // check the structure of the actual column
+        let logs = result.get(ArrowPayloadType::Logs).unwrap();
+        assert!(logs.column_by_name("body").is_none());
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let expected = vec![LogRecord::build().event_name("1").finish()];
+
+        assert_eq!(
+            &result_logs_data.resource_logs[0].scope_logs[0].log_records,
+            &expected,
+        );
+    }
+
+    #[tokio::test]
     async fn test_insert_root_column_wont_assign_null_to_non_nullable_column() {
         let traces_data = to_traces_data(vec![
             Span::build()
@@ -2279,6 +3095,77 @@ mod test {
     #[tokio::test]
     async fn test_upserts_attribute_computed_from_self_kql_parser() {
         test_upserts_attribute_computed_from_self::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_inserting_attribute_when_source_is_anyval_with_mixed_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(5))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bytes(b"world"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_double(5.14))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"y\"] = attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_int(5)),
+                KeyValue::new("y", AnyValue::new_int(5)),
+            ]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_string("hello")),
+                KeyValue::new("y", AnyValue::new_string("hello")),
+            ]
+        );
+        let log_2 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[2];
+        assert_eq!(
+            log_2.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_bytes(b"world")),
+                KeyValue::new("y", AnyValue::new_bytes(b"world")),
+            ]
+        );
+        let log_3 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[3];
+        assert_eq!(
+            log_3.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_double(5.14)),
+                KeyValue::new("y", AnyValue::new_double(5.14)),
+            ]
+        );
+        let log_4 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[4];
+        assert_eq!(
+            log_4.attributes,
+            vec![
+                KeyValue::new("x", AnyValue::new_bool(true)),
+                KeyValue::new("y", AnyValue::new_bool(true)),
+            ]
+        );
     }
 
     async fn test_set_attributes_on_spans<P: Parser>() {

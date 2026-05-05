@@ -12,6 +12,7 @@ use minijinja::context;
 use otap_df_core_nodes::receivers::fake_data_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
+use std::collections::HashMap;
 use std::path::PathBuf;
 const DEFAULT_MAX_SIGNAL_COUNT: usize = 2000;
 const DEFAULT_MAX_BATCH_SIZE: usize = 100;
@@ -223,6 +224,13 @@ pub struct Generator {
 
     pub(crate) tls: Option<TlsConfig>,
 
+    /// Optional transport headers to attach to each generated pdata message.
+    ///
+    /// Keys are header names. Values are optional fixed strings; when left
+    /// empty (`None`), a random value is generated once at startup by the
+    /// fake data generator.
+    pub(crate) transport_headers: HashMap<String, Option<String>>,
+
     /// Optional connection to a test container. When set, the generator's
     /// exporter node is rendered from the connection's Jinja2 template instead
     /// of the built-in OTLP/OTAP exporter, and SUV pipeline wiring is skipped.
@@ -251,6 +259,11 @@ pub struct Capture {
     /// Seconds to wait with no incoming messages before declaring the data
     /// stream settled and performing the final validation check.
     pub(crate) idle_timeout: u8,
+
+    /// Transport header keys the capture pipeline's receiver should extract
+    /// from inbound gRPC metadata. Each key generates a `match_names` rule
+    /// in the pipeline's `header_capture` policy.
+    pub(crate) capture_header_keys: Vec<String>,
 
     /// Optional connection to a test container. When set, the capture's
     /// receiver node is rendered from the connection's Jinja2 template instead
@@ -351,6 +364,23 @@ impl Generator {
         self
     }
 
+    /// Configure transport headers to inject into generated traffic.
+    ///
+    /// Each key is a header name; the value is an optional fixed string.
+    /// When the value is `None`, the fake data generator assigns a random
+    /// value at startup.
+    #[must_use]
+    pub fn with_transport_headers(
+        mut self,
+        headers: impl IntoIterator<Item = (impl Into<String>, Option<impl Into<String>>)>,
+    ) -> Self {
+        self.transport_headers = headers
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.map(Into::into)))
+            .collect();
+        self
+    }
+
     /// Connect this generator to a test container using a custom exporter.
     ///
     /// The generator's `suv_exporter` node will be rendered from the
@@ -385,6 +415,7 @@ impl Default for Generator {
             log_weight: DEFAULT_LOG_WEIGHT,
             data_source: DataSource::Static,
             tls: None,
+            transport_headers: HashMap::new(),
             container_connection: None,
         }
     }
@@ -439,6 +470,21 @@ impl Capture {
         self.idle_timeout = timeout_secs;
         self
     }
+    /// Configure transport header keys to capture from inbound signals.
+    ///
+    /// Each key becomes a `match_names` rule in the capture pipeline's
+    /// `header_capture` policy, enabling the receiver to extract those
+    /// headers from gRPC metadata so they can be validated by transport
+    /// header validation instructions.
+    #[must_use]
+    pub fn with_capture_header_keys(
+        mut self,
+        keys: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.capture_header_keys = keys.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Connect this capture to a test container using a custom receiver.
     ///
     /// The capture's `suv_receiver` node will be rendered from the
@@ -477,6 +523,7 @@ impl Default for Capture {
             control_streams: vec![],
             validate: vec![],
             idle_timeout: DEFAULT_IDLE_TIMEOUT_SECS,
+            capture_header_keys: Vec::new(),
             container_connection: None,
         }
     }
@@ -501,6 +548,7 @@ mod tests {
         assert_eq!(g.data_source, DataSource::Static);
         assert_eq!(g.core_start, 2);
         assert_eq!(g.core_end, 2);
+        assert!(g.transport_headers.is_empty());
     }
 
     #[test]
@@ -513,6 +561,7 @@ mod tests {
         assert_eq!(c.validate, vec![]);
         assert_eq!(c.core_start, 1);
         assert_eq!(c.core_end, 1);
+        assert!(c.capture_header_keys.is_empty());
     }
 
     #[test]
@@ -554,5 +603,31 @@ mod tests {
     fn capture_otap_sets_type() {
         let c = Capture::default().otap_grpc("receiver");
         assert_eq!(c.suv_receiver_type, MessageType::Otap);
+    }
+
+    #[test]
+    fn capture_with_header_keys() {
+        let c = Capture::default().with_capture_header_keys(["x-tenant-id", "x-request-id"]);
+        assert_eq!(
+            c.capture_header_keys,
+            vec!["x-tenant-id".to_string(), "x-request-id".to_string()]
+        );
+    }
+
+    #[test]
+    fn generator_with_transport_headers() {
+        let g = Generator::logs().with_transport_headers([
+            ("x-tenant-id", Some("acme")),
+            ("x-request-id", None::<&str>),
+        ]);
+        assert_eq!(g.transport_headers.len(), 2);
+        assert_eq!(
+            g.transport_headers.get("x-tenant-id"),
+            Some(&Some("acme".to_string()))
+        );
+        assert_eq!(
+            g.transport_headers.get("x-request-id"),
+            Some(&None::<String>)
+        );
     }
 }

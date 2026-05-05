@@ -81,7 +81,7 @@ fn bench_log_pipeline(
         let benchmark_id = BenchmarkId::new("batch_size", batch_size);
         let _ = group.bench_with_input(benchmark_id, batch_size, |b, batch_size| {
             let batch = generate_logs_batch(*batch_size);
-            let pipeline = parse_kql_query_into_pipeline(bench_pipeline_kql, None)
+            let pipeline = parse_kql_logs_query_into_pipeline(bench_pipeline_kql, None)
                 .expect("can parse pipeline");
             b.iter(|| {
                 process_protobuf_otlp_export_logs_service_request_using_pipeline(

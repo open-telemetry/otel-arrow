@@ -1,5 +1,6 @@
 # Engine-wide settings
 {% set admin_bind_address = admin_bind_address | default("127.0.0.1:8085") -%}
+{% set suv_transport_headers_policy = suv_transport_headers_policy | default("") -%}
 version: otel_dataflow/v1
 engine:
   http_admin:
@@ -23,6 +24,10 @@ groups:
               set:
                 - start: {{ suv_core_start | default(0) }}
                   end: {{ suv_core_end | default(0) }}
+{% if suv_transport_headers_policy | length > 0 %}
+          transport_headers:
+{{ suv_transport_headers_policy | indent(12, true) }}
+{% endif %}
 {{ suv_pipeline | indent(8, true)}}
       # ======================================================================
       # Pipeline generating traffic

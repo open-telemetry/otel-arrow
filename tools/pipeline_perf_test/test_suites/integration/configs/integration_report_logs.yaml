@@ -77,7 +77,7 @@ queries:
         SELECT
           component_name,
           metric_name,
-          MAX(value) AS total_increase,
+          MAX(value) - MIN(value) AS total_increase,
           AVG(rate) AS average_rate
         FROM
           observation_only AS ow
@@ -139,15 +139,16 @@ queries:
             ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
         ),
 
-        full_range_aggregates AS (
+        observation_window_aggregates AS (
           SELECT
-            component_name,
-            metric_name,
-            core_id,
-            MAX(value) AS max_value,
-            MIN(value) AS min_value
-          FROM with_rate
-          GROUP BY component_name, metric_name, core_id
+            wr.component_name,
+            wr.metric_name,
+            wr.core_id,
+            MAX(wr.value) - MIN(wr.value) AS total_increase
+          FROM with_rate wr
+          JOIN observation_only ow
+            ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+          GROUP BY wr.component_name, wr.metric_name, wr.core_id
         )
 
         -- Final Aggregation
@@ -155,14 +156,14 @@ queries:
           t.component_name,
           t.metric_name,
           t.core_id,
-          f.max_value AS total_increase,
+          f.total_increase,
           AVG(t.rate) AS average_rate
         FROM trimmed_rates t
-        JOIN full_range_aggregates f
+        JOIN observation_window_aggregates f
           ON t.component_name = f.component_name
           AND t.metric_name = f.metric_name
           AND t.core_id = f.core_id
-        GROUP BY t.component_name, t.metric_name, t.core_id, f.max_value, f.min_value
+        GROUP BY t.component_name, t.metric_name, t.core_id, f.total_increase
         ORDER BY t.component_name, t.metric_name, t.core_id;
 
   - name: Component Metric Rates

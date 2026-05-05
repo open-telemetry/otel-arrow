@@ -479,7 +479,7 @@ mod test {
         ];
 
         // internally, try_fold must be called on the match expression here to convert the string
-        // argument into a regex scalar expression. This test is is to help avoid regressions of
+        // argument into a regex scalar expression. This test is to help avoid regressions of
         // cases where try_fold might not be called on the condition statements
         let result = exec_logs_pipeline::<OplParser>(
             r#"
