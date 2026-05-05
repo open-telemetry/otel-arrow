@@ -3378,52 +3378,61 @@ mod tests {
     #[cfg(feature = "dev-tools")]
     fn emitted_phase1_metric_shapes() -> BTreeMap<String, MetricShape> {
         let metrics = projection_fixture_metrics();
-        metrics
-            .iter()
-            .map(|metric| {
-                let (monotonic, points) = match metric.data.as_ref().expect("metric data") {
-                    otlp_metric::Data::Sum(sum) => (Some(sum.is_monotonic), &sum.data_points),
-                    otlp_metric::Data::Gauge(gauge) => (None, &gauge.data_points),
-                    _ => panic!("unsupported metric data for {}", metric.name),
-                };
-                let attributes = points
-                    .iter()
-                    .flat_map(|point| point.attributes.iter())
-                    .map(|attr| attr.key.clone())
-                    .collect();
-                let mut attribute_values: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-                let mut attribute_types: BTreeMap<String, AttributeValueKind> = BTreeMap::new();
-                for attr in points.iter().flat_map(|point| point.attributes.iter()) {
-                    if let Some(value) = any_value_string(attr.value.as_ref()) {
-                        let _ = attribute_values
-                            .entry(attr.key.clone())
-                            .or_default()
-                            .insert(value);
-                    }
-                    if let Some(kind) = any_value_kind(attr.value.as_ref()) {
-                        let previous = attribute_types.insert(attr.key.clone(), kind);
-                        assert!(
-                            previous.is_none() || previous == Some(kind),
-                            "mixed attribute value types for {} on {}",
-                            attr.key,
-                            metric.name
-                        );
-                    }
+        let mut shapes = BTreeMap::new();
+        for metric in &metrics {
+            let (monotonic, points) = match metric.data.as_ref().expect("metric data") {
+                otlp_metric::Data::Sum(sum) => (Some(sum.is_monotonic), &sum.data_points),
+                otlp_metric::Data::Gauge(gauge) => (None, &gauge.data_points),
+                _ => panic!("unsupported metric data for {}", metric.name),
+            };
+            let value_type = metric_value_type(points);
+            let shape = shapes
+                .entry(metric.name.clone())
+                .or_insert_with(|| MetricShape {
+                    unit: metric.unit.clone(),
+                    monotonic,
+                    attributes: BTreeSet::new(),
+                    all_attributes: BTreeSet::new(),
+                    attribute_types: BTreeMap::new(),
+                    enum_values: BTreeMap::new(),
+                    value_type,
+                });
+            assert_eq!(
+                shape.unit, metric.unit,
+                "unit mismatch across {}",
+                metric.name
+            );
+            assert_eq!(
+                shape.monotonic, monotonic,
+                "instrument/temporality mismatch across {}",
+                metric.name
+            );
+            assert_eq!(
+                shape.value_type, value_type,
+                "value type mismatch across {}",
+                metric.name
+            );
+            for attr in points.iter().flat_map(|point| point.attributes.iter()) {
+                let _ = shape.attributes.insert(attr.key.clone());
+                if let Some(value) = any_value_string(attr.value.as_ref()) {
+                    let _ = shape
+                        .enum_values
+                        .entry(attr.key.clone())
+                        .or_default()
+                        .insert(value);
                 }
-                (
-                    metric.name.clone(),
-                    MetricShape {
-                        unit: metric.unit.clone(),
-                        monotonic,
-                        attributes,
-                        all_attributes: BTreeSet::new(),
-                        attribute_types,
-                        enum_values: attribute_values,
-                        value_type: metric_value_type(points),
-                    },
-                )
-            })
-            .collect()
+                if let Some(kind) = any_value_kind(attr.value.as_ref()) {
+                    let previous = shape.attribute_types.insert(attr.key.clone(), kind);
+                    assert!(
+                        previous.is_none() || previous == Some(kind),
+                        "mixed attribute value types for {} on {}",
+                        attr.key,
+                        metric.name
+                    );
+                }
+            }
+        }
+        shapes
     }
 
     #[cfg(feature = "dev-tools")]
