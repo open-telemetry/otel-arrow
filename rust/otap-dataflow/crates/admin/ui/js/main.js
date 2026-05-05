@@ -4219,7 +4219,20 @@
   // the metrics polling loop.
   const logsSection = document.getElementById("logs-section");
   if (logsSection) {
-    createLogsController({ containerEl: logsSection });
+    if (logsSection.dataset.liveLogsWs === "true") {
+      createLogsController({ containerEl: logsSection });
+    } else {
+      const logsStatus = document.getElementById("logs-status");
+      const logsConnectBtn = document.getElementById("logs-connect-btn");
+      const logsPauseBtn = document.getElementById("logs-pause-btn");
+      const logsBackfillBtn = document.getElementById("logs-backfill-btn");
+      if (logsStatus) {
+        logsStatus.textContent = "Live log streaming disabled";
+      }
+      for (const button of [logsConnectBtn, logsPauseBtn, logsBackfillBtn]) {
+        if (button) button.disabled = true;
+      }
+    }
   }
 
   void fetchAndUpdate();
