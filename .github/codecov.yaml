@@ -1,11 +1,22 @@
+codecov:
+  notify:
+    # Wait for all coverage uploads before posting status. We currently
+    # upload from three jobs: rust-ci `test` (Linux x86_64), rust-ci
+    # `coverage`, and go-ci `test_and_coverage`. Without this, codecov
+    # posts a (failing) partial status as soon as the first upload
+    # arrives, before the other test jobs have even finished.
+    after_n_builds: 3
+    wait_for_ci: true
+
 coverage:
   status:
     project: # Overall repo coverage
       default:
-        target: 85%
+        target: auto      # compare against the base commit
+        threshold: 1%     # allow a small drop without failing
     patch: # Changed lines in PR
       default:
-        target: 70%
+        target: 80%
 
 ignore:
   - "rust/otap-dataflow/crates/quiver-e2e/**" # Test tool, not production code
