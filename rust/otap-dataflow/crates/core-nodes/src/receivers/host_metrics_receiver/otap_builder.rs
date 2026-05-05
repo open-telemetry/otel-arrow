@@ -98,15 +98,15 @@ impl HostMetricsArrowBuilder {
         let mut w = ResourceAttrWriter {
             attrs: &mut self.resource_attrs,
         };
-        w.str("os.type", "linux");
+        w.str(semconv::attr::OS_TYPE, "linux");
         if let Some(id) = &resource.host_id {
-            w.str("host.id", id);
+            w.str(semconv::attr::HOST_ID, id);
         }
         if let Some(name) = &resource.host_name {
-            w.str("host.name", name);
+            w.str(semconv::attr::HOST_NAME, name);
         }
         if let Some(arch) = resource.host_arch {
-            w.str("host.arch", arch);
+            w.str(semconv::attr::HOST_ARCH, arch);
         }
     }
 

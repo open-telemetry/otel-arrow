@@ -1374,12 +1374,10 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 metrics.source_read_errors.add(1);
                                 metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                             }
-                            return Err(Error::ReceiverError {
-                                receiver: effect_handler.receiver_id(),
-                                kind: ReceiverErrorKind::Other,
-                                error: format!("failed to collect host metrics: {err}"),
-                                source_detail: String::new(),
-                            });
+                            otel_warn!(
+                                "host metrics scrape failed; receiver will retry",
+                                error = err.to_string()
+                            );
                         }
                     }
                 }

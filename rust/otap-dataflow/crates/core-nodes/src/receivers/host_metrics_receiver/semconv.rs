@@ -63,3 +63,28 @@ pub(crate) mod metric {
     pub(crate) const PROCESS_CREATED: &str = "system.process.created";
     pub(crate) const UPTIME: &str = "system.uptime";
 }
+
+pub(crate) mod attr {
+    pub(crate) const CPU_LOGICAL_NUMBER: &str = "cpu.logical_number";
+    pub(crate) const CPU_MODE: &str = "cpu.mode";
+    pub(crate) const DISK_IO_DIRECTION: &str = "disk.io.direction";
+    pub(crate) const HOST_ARCH: &str = "host.arch";
+    pub(crate) const HOST_ID: &str = "host.id";
+    pub(crate) const HOST_NAME: &str = "host.name";
+    pub(crate) const NETWORK_INTERFACE_NAME: &str = "network.interface.name";
+    pub(crate) const NETWORK_IO_DIRECTION: &str = "network.io.direction";
+    pub(crate) const OS_TYPE: &str = "os.type";
+    pub(crate) const PROCESS_STATE: &str = "process.state";
+    pub(crate) const SYSTEM_DEVICE: &str = "system.device";
+    pub(crate) const SYSTEM_FILESYSTEM_MODE: &str = "system.filesystem.mode";
+    pub(crate) const SYSTEM_FILESYSTEM_MOUNTPOINT: &str = "system.filesystem.mountpoint";
+    pub(crate) const SYSTEM_FILESYSTEM_STATE: &str = "system.filesystem.state";
+    pub(crate) const SYSTEM_FILESYSTEM_TYPE: &str = "system.filesystem.type";
+    pub(crate) const SYSTEM_MEMORY_LINUX_HUGEPAGES_STATE: &str =
+        "system.memory.linux.hugepages.state";
+    pub(crate) const SYSTEM_MEMORY_LINUX_SLAB_STATE: &str = "system.memory.linux.slab.state";
+    pub(crate) const SYSTEM_MEMORY_STATE: &str = "system.memory.state";
+    pub(crate) const SYSTEM_PAGING_DIRECTION: &str = "system.paging.direction";
+    pub(crate) const SYSTEM_PAGING_FAULT_TYPE: &str = "system.paging.fault.type";
+    pub(crate) const SYSTEM_PAGING_STATE: &str = "system.paging.state";
+}
