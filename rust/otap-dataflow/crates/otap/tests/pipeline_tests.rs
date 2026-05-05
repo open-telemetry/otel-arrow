@@ -7,7 +7,13 @@
 //! asserts that pipeline/node/channel entities are registered after build, runs the
 //! pipeline until a graceful shutdown, and then confirms that all related entities
 //! and metric sets are unregistered to avoid registry leaks.
+//!
+//! Gated behind the `integration-tests` feature, which pulls in
+//! `core-nodes/dev-tools` (for the fake data generator receiver) and
+//! `weaver_common`.
 
+#[cfg(feature = "integration-tests")]
+mod imp {
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_config::pipeline::{
     DispatchPolicy, PipelineConfig, PipelineConfigBuilder, PipelineType,
@@ -387,4 +393,5 @@ fn expected_channel_counts(config: &PipelineConfig) -> (usize, usize) {
     let sender_count = edges.iter().map(|edge| edge.sources.len()).sum();
     let receiver_count = edges.iter().map(|edge| edge.destinations.len()).sum();
     (sender_count, receiver_count)
+}
 }

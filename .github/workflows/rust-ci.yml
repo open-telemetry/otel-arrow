@@ -93,13 +93,15 @@ jobs:
 
   # otap-dataflow on ARM and macOS (non-required): build once per OS, fan out tests.
   # macOS uses the workspace default features. Linux ARM uses a reduced feature set
-  # (mirroring the "Incomplete" Windows variant in `build_required`) plus the `mold`
-  # linker and trimmed test debug info to keep the job under ~30 minutes -- full
-  # feature coverage is handled by the required x86/Windows jobs. Note that
-  # `otap-df-validation` and several `otap-df-otap` integration tests still pull
-  # `core-nodes/dev-tools` (and therefore weaver/openssl-sys) via direct/dev
-  # dependencies, so feature trimming alone cannot drop those C builds; the linker
-  # and debug-info changes are what unblocks the runner.
+  # (mirroring the "Incomplete" Windows variant in `build_required`) and excludes
+  # `otap-df-validation` and `benchmarks`. Both crates depend on
+  # `core-nodes/dev-tools`, which transitively pulls weaver / gix / reqwest /
+  # native-tls / openssl-sys; on Linux that openssl-sys C build is the major
+  # cost not paid by the Windows or macOS variants of native-tls (which is
+  # target-conditional). The `otap-df-otap` crate's `integration-tests` feature
+  # (gating its fake-data-generator-using integration tests) is left disabled
+  # for the same reason. Full feature coverage and validation tests are handled
+  # by the required x86 jobs.
   build_nonrequired:
     strategy:
       fail-fast: false
@@ -123,11 +125,6 @@ jobs:
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
-      - name: Install mold linker (Linux ARM)
-        if: matrix.os == 'ubuntu-24.04-arm'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mold
       - name: install nextest
         uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
@@ -136,25 +133,14 @@ jobs:
         if: matrix.os != 'ubuntu-24.04-arm'
         run: cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
-      - name: Build and archive tests (Incomplete; mold + reduced features + trimmed debug)
+      - name: Build and archive tests (Incomplete; reduced features, excludes validation+benchmarks)
         if: matrix.os == 'ubuntu-24.04-arm'
-        # `mold -run` transparently substitutes `mold` for the system linker for any
-        # child process invoked by cargo/rustc, so the linker swap stays scoped to this
-        # step and does not affect the cached cargo config. Trimming dev/test debug
-        # info to line-tables-only further cuts link size and memory pressure on the
-        # 4 GB ARM runners without losing useful test backtraces. The reduced feature
-        # set mirrors the "Incomplete" Windows build in `build_required`: it drops
-        # `dev-tools` and `admin-live-logs-ws` from the top-level binary so admin
-        # WebSocket / fake-data-generator code paths gated on those features are not
-        # compiled (they remain covered by the required x86 jobs).
-        env:
-          CARGO_PROFILE_DEV_DEBUG: line-tables-only
-          CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: |
-          mold -run cargo nextest archive \
+          cargo nextest archive \
             --no-default-features \
             --features=crypto-ring,jemalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations \
-            --workspace --archive-file nextest-archive.tar.zst
+            --workspace --exclude otap-df-validation --exclude benchmarks \
+            --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

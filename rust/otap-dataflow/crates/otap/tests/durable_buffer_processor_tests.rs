@@ -11,9 +11,16 @@
 //!
 //! The tests use actual Quiver instances (not mocks) to catch integration
 //! issues like timing, threading, and assumption mismatches.
+//!
+//! Gated behind the `integration-tests` feature, which pulls in
+//! `core-nodes/dev-tools` (for the fake data generator receiver).
 
+#[cfg(feature = "integration-tests")]
 mod common;
 
+#[cfg(feature = "integration-tests")]
+mod imp {
+use crate::common;
 use common::counting_exporter::{self, COUNTING_EXPORTER_URN};
 use common::flaky_exporter::{self, FLAKY_EXPORTER_URN};
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
@@ -2406,4 +2413,5 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         metrics.requeued_log_records(),
         metrics.produced_log_records()
     );
+}
 }

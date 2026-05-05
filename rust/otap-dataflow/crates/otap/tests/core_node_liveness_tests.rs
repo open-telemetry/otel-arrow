@@ -7,9 +7,16 @@
 //! real runtime pipeline wiring to validate that retry recovery and shutdown-time
 //! batch flushing still make progress once the nodes are connected through the
 //! engine, without standing up heavier transport-specific topologies.
+//!
+//! Gated behind the `integration-tests` feature, which pulls in
+//! `core-nodes/dev-tools` (for the fake data generator receiver).
 
+#[cfg(feature = "integration-tests")]
 mod common;
 
+#[cfg(feature = "integration-tests")]
+mod imp {
+use crate::common;
 use common::counting_exporter::{self, COUNTING_EXPORTER_URN};
 use common::flaky_exporter::{self, FLAKY_EXPORTER_URN};
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
@@ -577,4 +584,5 @@ fn test_batch_pipeline_uses_timer_wakeup_metrics_with_otlp_bytes_config() {
     metrics.assert_eq("flushes.timer", 5);
 
     counting_exporter::unregister_counter(test_id);
+}
 }

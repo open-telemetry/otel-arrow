@@ -268,8 +268,12 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (fake data generator).
-dev-tools = ["otap-df-core-nodes/dev-tools"]
+# Dev/test tooling (fake data generator) and the otap integration tests
+# that exercise it. Activating this from the workspace default keeps
+# `cargo test` running the full suite locally; CI jobs that drop
+# `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
+# weaver / gix / reqwest / native-tls / openssl-sys C build.
+dev-tools = ["otap-df-core-nodes/dev-tools", "otap-df-otap/integration-tests"]
 
 # Admin UI live log streaming over WebSocket.
 admin-live-logs-ws = ["otap-df-controller/admin-live-logs-ws"]
