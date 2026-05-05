@@ -2780,7 +2780,7 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let proc = root.path().join("proc");
         let proc_one = proc.join("1");
-        std::fs::create_dir_all(&proc_one).expect("proc dirs");
+        std::fs::create_dir_all(proc_one.join("net")).expect("proc dirs");
         std::fs::write(proc.join("stat"), "btime 123\n").expect("stat");
         std::fs::write(
             proc.join("diskstats"),
