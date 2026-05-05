@@ -787,7 +787,7 @@ fn project_snapshot(
             b.append_i64_sum_dp(m, start, now, saturating_i64(memory.shared), |_| {});
         }
         if snap.memory_hugepages {
-            project_hugepages(snap, b, start, now, &memory.hugepages);
+            project_hugepages(b, start, now, &memory.hugepages);
         }
     }
 
@@ -998,17 +998,14 @@ fn project_snapshot(
     // ── Network ──────────────────────────────────────────────────────────────
     for net in &snap.networks {
         let m = b.begin_counter_i64(metric::NETWORK_IO, "By");
-        for (dir, iface_attr, value) in [
-            ("receive", attr::NETWORK_INTERFACE_NAME, net.rx_bytes),
-            ("transmit", attr::NETWORK_INTERFACE_NAME, net.tx_bytes),
-        ] {
+        for (dir, value) in [("receive", net.rx_bytes), ("transmit", net.tx_bytes)] {
             b.append_i64_sum_dp(
                 m,
                 cs.get_joined(metric::NETWORK_IO, &net.name, dir, start),
                 now,
                 saturating_i64(value),
                 |w| {
-                    w.str(iface_attr, &net.name);
+                    w.str(attr::NETWORK_INTERFACE_NAME, &net.name);
                     w.str(attr::NETWORK_IO_DIRECTION, dir);
                 },
             );
@@ -1058,7 +1055,6 @@ fn project_snapshot(
 }
 
 fn project_hugepages(
-    snap: &HostSnapshot,
     b: &mut crate::receivers::host_metrics_receiver::otap_builder::HostMetricsArrowBuilder,
     start: u64,
     now: u64,
@@ -1094,7 +1090,6 @@ fn project_hugepages(
             });
         }
     }
-    let _ = snap; // suppress unused warning; snap may be used in future extensions
 }
 
 #[derive(Default)]
@@ -1176,18 +1171,22 @@ impl CounterTracker {
                 ],
                 &mut starts,
             );
-            self.observe_all(
-                metric::PAGING_OPERATIONS,
-                default_start,
-                now,
-                &[
-                    ("in|major", paging.swap_in as f64),
-                    ("out|major", paging.swap_out as f64),
-                    ("in|minor", paging.page_in as f64),
-                    ("out|minor", paging.page_out as f64),
-                ],
-                &mut starts,
-            );
+            for (direction, fault_type, value) in [
+                ("in", "major", paging.swap_in),
+                ("out", "major", paging.swap_out),
+                ("in", "minor", paging.page_in),
+                ("out", "minor", paging.page_out),
+            ] {
+                self.observe_joined(
+                    metric::PAGING_OPERATIONS,
+                    direction,
+                    fault_type,
+                    value as f64,
+                    default_start,
+                    now,
+                    &mut starts,
+                );
+            }
         }
         if let Some(processes) = processes {
             self.observe(
@@ -2502,6 +2501,54 @@ mod tests {
 
         assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "read", 10), 30);
         assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "write", 10), 10);
+    }
+
+    #[test]
+    fn counter_tracker_rebaselines_paging_operations_by_direction_and_fault_type() {
+        let mut tracker = CounterTracker::default();
+        let paging = PagingStats {
+            swap_in: 100,
+            swap_out: 200,
+            page_in: 300,
+            page_out: 400,
+            ..PagingStats::default()
+        };
+        let starts = tracker.snapshot(10, 20, None, Some(&paging), None, &[], &[]);
+
+        assert_eq!(
+            starts.get_joined(metric::PAGING_OPERATIONS, "in", "major", 10),
+            10
+        );
+        assert_eq!(
+            starts.get_joined(metric::PAGING_OPERATIONS, "out", "minor", 10),
+            10
+        );
+
+        let paging = PagingStats {
+            swap_in: 50,
+            swap_out: 250,
+            page_in: 350,
+            page_out: 450,
+            ..PagingStats::default()
+        };
+        let starts = tracker.snapshot(10, 30, None, Some(&paging), None, &[], &[]);
+
+        assert_eq!(
+            starts.get_joined(metric::PAGING_OPERATIONS, "in", "major", 10),
+            30
+        );
+        assert_eq!(
+            starts.get_joined(metric::PAGING_OPERATIONS, "out", "major", 10),
+            10
+        );
+        assert_eq!(
+            starts.get_joined(metric::PAGING_OPERATIONS, "in", "minor", 10),
+            10
+        );
+        assert_eq!(
+            starts.get_joined(metric::PAGING_OPERATIONS, "out", "minor", 10),
+            10
+        );
     }
 
     #[test]
