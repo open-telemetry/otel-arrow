@@ -17,6 +17,10 @@ use crate::control::{
 };
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
+use crate::flow_measurement::{
+    FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
+    build_flow_measurement_state,
+};
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::{
@@ -24,7 +28,6 @@ use crate::pipeline_ctrl::{
     report_node_metrics_with_handles,
 };
 use crate::processor::FlowMeasurementHook;
-use crate::stopwatch::{StopwatchStartMetrics, StopwatchStopMetrics, build_stopwatch_state};
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
@@ -219,14 +222,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMeasurem
         let mut control_senders = ControlSenders::default();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
 
-        // Build a name→index map from NodeDefs so we can resolve stopwatch
+        // Build a name→index map from NodeDefs so we can resolve flow_measurement
         // config before processors are spawned.
         let node_name_to_index: HashMap<String, usize> = _nodes
             .iter()
             .map(|(nid, _)| (nid.name.to_string(), nid.index))
             .collect();
 
-        // Collect local and shared processor node indices for stopwatch validation.
+        // Collect local and shared processor node indices for flow_measurement validation.
         let processor_indices: HashSet<usize> = processors
             .iter()
             .map(|p| match p {
@@ -235,8 +238,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMeasurem
             })
             .collect();
 
-        // Build stopwatch state and per-node role assignments up front.
-        let stopwatch_state = build_stopwatch_state(
+        // Build flow_measurement state and per-node role assignments up front.
+        let flow_measurement_state = build_flow_measurement_state(
             &telemetry_policy,
             &node_name_to_index,
             &processor_indices,
@@ -328,17 +331,29 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMeasurem
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
-            // Extract stopwatch roles for this processor node.
-            let sw_is_start = stopwatch_state.start_nodes.contains_key(&node_id.index);
-            let sw_start_metric: Option<MetricSet<StopwatchStartMetrics>> = stopwatch_state
+            // Extract flow measurement roles for this processor node.
+            let flow_is_start = flow_measurement_state
                 .start_nodes
-                .get(&node_id.index)
-                .map(|&id| stopwatch_state.start_metrics[id].clone());
-            let sw_stop_metric: Option<MetricSet<StopwatchStopMetrics>> = stopwatch_state
-                .stop_nodes
-                .get(&node_id.index)
-                .map(|&id| stopwatch_state.stop_metrics[id].clone());
-            let sw_active = !stopwatch_state.start_nodes.is_empty();
+                .contains_key(&node_id.index);
+            let flow_is_end = flow_measurement_state
+                .end_nodes
+                .contains_key(&node_id.index);
+            let flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>> =
+                flow_measurement_state
+                    .start_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_measurement_state.signals_incoming_metrics[id].clone());
+            let flow_duration_metric: Option<MetricSet<FlowDurationMetrics>> =
+                flow_measurement_state
+                    .end_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_measurement_state.duration_metrics[id].clone());
+            let flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>> =
+                flow_measurement_state
+                    .end_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_measurement_state.signals_outgoing_metrics[id].clone());
+            let flow_active = flow_measurement_state.is_active();
             let fut = async move {
                 let result = processor
                     .start_with_completion_metrics(
@@ -347,10 +362,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMeasurem
                         metrics_reporter,
                         node_interests,
                         completion_emission_metrics,
-                        sw_is_start,
-                        sw_start_metric,
-                        sw_stop_metric,
-                        sw_active,
+                        flow_is_start,
+                        flow_is_end,
+                        flow_signals_incoming_metric,
+                        flow_duration_metric,
+                        flow_signals_outgoing_metric,
+                        flow_active,
                     )
                     .await;
                 drop(telemetry_guard);

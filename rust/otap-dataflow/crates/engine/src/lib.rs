@@ -75,6 +75,7 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub mod flow_measurement;
 pub(crate) mod indexed_min_heap;
 pub mod local;
 pub mod memory_limiter;
@@ -87,7 +88,6 @@ pub mod process_duration;
 mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
-pub mod stopwatch;
 pub mod terminal_state;
 pub mod testing;
 pub mod topic;
@@ -387,7 +387,7 @@ impl ReceivedAtNode for String {
 // `RuntimePipeline`, and the controller. Test code uses `()` and `String` as stand-in PData
 // types (e.g. `Controller<()>`); these blanket no-op impls let those tests compile without
 // requiring every test PData type to define hook behavior. Real PData types (e.g. `OtapPdata`)
-// override these methods to drive stopwatch signal counting and compute-duration accumulation.
+// override these methods to drive flow_measurement signal counting and compute-duration accumulation.
 impl processor::FlowMeasurementHook for () {}
 impl processor::FlowMeasurementHook for String {}
 
@@ -405,21 +405,21 @@ impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
 }
 
-/// Trait for forward-path stopwatch compute accumulation on PData.
+/// Trait for forward-path flow_measurement compute accumulation on PData.
 ///
-/// At most one stopwatch range can be active on a given message at a
+/// At most one flow_measurement range can be active on a given message at a
 /// time (non-overlapping ranges).
-pub trait StopwatchAccumulation {
-    /// Initialise a fresh stopwatch accumulator (set to 0).
+pub trait FlowMeasurementAccumulation {
+    /// Initialise a fresh flow_measurement accumulator (set to 0).
     /// Called at the start node.
-    fn start_stopwatch(&mut self);
+    fn start_flow_measurement(&mut self);
 
-    /// Add `ns` nanoseconds to the active stopwatch accumulator, if any.
-    fn add_stopwatch_compute(&mut self, ns: u64);
+    /// Add `ns` nanoseconds to the active flow_measurement accumulator, if any.
+    fn add_flow_compute(&mut self, ns: u64);
 
     /// Remove and return the accumulated total.
     /// Returns `None` if no accumulator was active.
-    fn take_stopwatch_compute(&mut self) -> Option<u64>;
+    fn take_flow_compute(&mut self) -> Option<u64>;
 }
 
 /// Effect handler extensions for producers specific to data type.
