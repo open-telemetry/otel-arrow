@@ -522,10 +522,7 @@ pub trait BoundedBuf {
             return Err(Dropped);
         }
 
-        // Find max payload that fits in `avail - tag_bytes` bytes including
-        // its own length-varint. varint_len is monotonic non-decreasing, so
-        // varint_len(s - varint_len(s)) <= varint_len(s) — i.e. the chosen
-        // payload's actual varint always fits in the reserved slot.
+        // Find max payload that fits in `avail - tag_bytes` bytes.
         let s = avail - tag_bytes;
         let len_varint_size = varint_len(s as u64);
         let max_payload = s - len_varint_size;
@@ -983,37 +980,9 @@ impl<const N: usize> AsMut<[u8]> for StackProtoBuffer<N> {
     }
 }
 
-/// Helper for encoding a length-delimited field with an explicit
-/// placeholder width. Prefer [`BoundedBuf::encode_len_delimited`] which
-/// auto-selects the placeholder width; this macro is retained only for
-/// tests that need explicit control.
-///
-/// An N-byte placeholder supports sizes up to 2^(7*n)-1 bytes:
-/// 1=127, 2=16KiB-1, 3=2MiB-1, 4=256MiB-1.
-#[macro_export]
-macro_rules! proto_encode_len_delimited_of_size {
-    ($field_tag: expr, $encode_fn:expr, $buf:expr, $placeholder_bytes:literal) => {{
-        $buf.encode_field_tag($field_tag, $crate::proto::consts::wire_types::LEN)?;
-        let len_start_pos = $crate::otlp::common::BoundedBuf::len($buf);
-        $crate::otlp::common::encode_len_placeholder::<$placeholder_bytes, _>($buf)?;
-        $encode_fn;
-        let len = $crate::otlp::common::BoundedBuf::len($buf) - len_start_pos - $placeholder_bytes;
-        $crate::otlp::common::patch_len_placeholder::<$placeholder_bytes, _>(
-            $buf,
-            len,
-            len_start_pos,
-        );
-    }};
-}
-
 /// Write an `N`-byte length placeholder for later patching.
 ///
-/// Each byte except the last has its continuation bit (MSB) set, with all
-/// value bits zeroed. `N` must be between 1 and 4 inclusive (enforced at
-/// compile time).
-///
-/// Do not call directly — use [`proto_encode_len_delimited_of_size!`] or
-/// [`BoundedBuf::encode_len_delimited`].
+/// Do not call directly, use [`BoundedBuf::encode_len_delimited`].
 #[inline]
 pub fn encode_len_placeholder<const N: usize, B: BoundedBuf>(buf: &mut B) -> EncodeResult {
     const {
@@ -1027,8 +996,7 @@ pub fn encode_len_placeholder<const N: usize, B: BoundedBuf>(buf: &mut B) -> Enc
 
 /// Patch a previously written length placeholder with the actual length.
 ///
-/// Do not call directly — use [`proto_encode_len_delimited_of_size!`] or
-/// [`BoundedBuf::encode_len_delimited`].
+/// Do not call directly, use [`BoundedBuf::encode_len_delimited`].
 #[inline]
 pub fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
     buf: &mut B,
@@ -1727,50 +1695,6 @@ mod test {
     }
 
     #[test]
-    fn test_macro_with_custom_placeholder_size() {
-        use crate::otlp::common::{BoundedBuf, EncodeResult, ProtoBuffer};
-
-        fn encode_large(buf: &mut ProtoBuffer) -> EncodeResult {
-            proto_encode_len_delimited_of_size!(
-                1,
-                {
-                    buf.encode_string(1, "hello")?;
-                },
-                buf,
-                4
-            );
-            Ok(())
-        }
-
-        fn encode_small(buf: &mut ProtoBuffer) -> EncodeResult {
-            proto_encode_len_delimited_of_size!(
-                1,
-                {
-                    buf.encode_string(1, "hello")?;
-                },
-                buf,
-                2
-            );
-            Ok(())
-        }
-
-        let mut buf_large = ProtoBuffer::default();
-        encode_large(&mut buf_large).unwrap();
-
-        let mut buf_small = ProtoBuffer::default();
-        encode_small(&mut buf_small).unwrap();
-
-        // The 2-byte variant should be exactly 2 bytes shorter than the 4-byte variant.
-        assert_eq!(buf_large.len() - buf_small.len(), 2);
-
-        // Both should decode to valid protobuf with the same payload.
-        // Skip the outer tag+len to compare just the inner content.
-        // large: 1 byte tag + 4 byte len + payload
-        // small: 1 byte tag + 2 byte len + payload
-        assert_eq!(&buf_large.as_ref()[5..], &buf_small.as_ref()[3..]);
-    }
-
-    #[test]
     fn test_encode_len_delimited_auto_width() {
         use crate::otlp::common::{BoundedBuf, ProtoBuffer, Result, StackProtoBuffer};
 
@@ -1799,14 +1723,6 @@ mod test {
         // tag(1) + placeholder(4) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 9
         assert_eq!(buf.len(), 9);
     }
-
-    // ----------------------------------------------------------------------
-    // Tests for the bounded/transactional encoding mechanisms introduced for
-    // self-tracing. These lock in invariants that several call-sites depend on
-    // (try_encode rollback, the difference between encode_len_delimited vs
-    // encode_len_delimited_partial, with_max_remaining nesting, truncating
-    // string encoders, and UTF-8-safe truncation).
-    // ----------------------------------------------------------------------
 
     #[test]
     fn try_encode_rolls_back_buffer_on_error() {

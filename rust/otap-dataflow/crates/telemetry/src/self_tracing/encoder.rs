@@ -82,10 +82,7 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
 
 /// Encode the event name from callsite metadata.
 /// Format: "target::name (file:line)" or "target::name" if no file/line.
-fn encode_event_name<B: BoundedBuf>(
-    buf: &mut B,
-    callsite: SavedCallsite,
-) -> EncodeResult {
+fn encode_event_name<B: BoundedBuf>(buf: &mut B, callsite: SavedCallsite) -> EncodeResult {
     buf.encode_len_delimited(LOG_RECORD_EVENT_NAME, |buf| {
         buf.try_extend(callsite.target().as_bytes())?;
         buf.try_extend(b"::")?;
@@ -244,10 +241,7 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
 /// Helper to encode a Debug value as a protobuf string field.
 /// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
 #[inline]
-fn encode_debug_string<B: BoundedBuf>(
-    buf: &mut B,
-    value: &dyn std::fmt::Debug,
-) -> EncodeResult {
+fn encode_debug_string<B: BoundedBuf>(buf: &mut B, value: &dyn std::fmt::Debug) -> EncodeResult {
     buf.encode_len_delimited(ANY_VALUE_STRING_VALUE, |buf| {
         // Wrap in a local fmt::Write adapter so the formatter machinery
         // writes directly into the buffer (no intermediate String). If the
@@ -983,6 +977,127 @@ mod tests {
             lens[3]
         );
     }
+
+    /// Verify `record_debug` formats a Debug value directly into the buffer
+    /// (via the `BoundedBufFmt` adapter) and produces a decodable KeyValue
+    /// whose string matches `format!("{:?}", value)` — i.e. no truncation
+    /// when the value comfortably fits.
+    #[test]
+    fn record_debug_writes_fmt_output_without_intermediate_string() {
+        use otap_df_pdata::otlp::common::StackProtoBuffer;
+        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use prost::Message;
+        use tracing::field::Visit;
+
+        #[derive(Debug)]
+        #[allow(dead_code)]
+        struct Payload {
+            id: u32,
+            label: &'static str,
+        }
+        let value = Payload {
+            id: 7,
+            label: "hello",
+        };
+        let expected_repr = format!("{:?}", value);
+
+        let meta = &DEBUG_TEST_METADATA;
+        let fields = meta.fields();
+        let dbg = fields.field("dbg").unwrap();
+
+        let mut buf = StackProtoBuffer::<256>::with_inline();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&dbg, &value);
+        assert_eq!(visitor.dropped_count(), 0, "no fields should be dropped");
+
+        // Decode the single KeyValue from the buffer.
+        let bytes = buf.as_ref().to_vec();
+        let mut cursor = bytes.as_slice();
+        let (tag, n) = read_varint(cursor);
+        cursor = &cursor[n..];
+        assert_eq!(tag >> 3, LOG_RECORD_ATTRIBUTES);
+        assert_eq!(tag & 0x7, wire_types::LEN);
+        let (len, n) = read_varint(cursor);
+        cursor = &cursor[n..];
+        let kv = ProtoKeyValue::decode(&cursor[..len as usize]).unwrap();
+        assert_eq!(kv.key, "dbg");
+        let s = match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+                s.clone()
+            }
+            other => panic!("expected StringValue, got {other:?}"),
+        };
+        assert_eq!(s, expected_repr);
+    }
+
+    /// When a Debug value overflows the available buffer, `BoundedBufFmt`
+    /// returns `fmt::Error` from the formatter, `encode_debug_string`
+    /// propagates `Dropped`, and the surrounding `try_encode` rolls back
+    /// any partial KeyValue bytes — leaving the buffer unchanged and
+    /// incrementing `dropped_count`.
+    #[test]
+    fn record_debug_overflow_rolls_back_and_increments_dropped() {
+        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use tracing::field::Visit;
+
+        // A Debug impl that writes far more than the buffer can hold.
+        struct Huge;
+        impl std::fmt::Debug for Huge {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                // 4 KiB of output into a 64-byte buffer.
+                for _ in 0..512 {
+                    f.write_str("xxxxxxxx")?;
+                }
+                Ok(())
+            }
+        }
+
+        let meta = &DEBUG_TEST_METADATA;
+        let fields = meta.fields();
+        let dbg = fields.field("dbg").unwrap();
+
+        let mut buf = StackProtoBuffer::<64>::with_inline();
+        let before_len = buf.len();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&dbg, &Huge);
+        assert_eq!(
+            visitor.dropped_count(),
+            1,
+            "the single oversized debug field should be counted as dropped"
+        );
+
+        // No partial KeyValue bytes survive — the transaction was rolled back.
+        assert_eq!(
+            buf.len(),
+            before_len,
+            "buffer must be rolled back to its pre-call length"
+        );
+    }
+
+    static DEBUG_TEST_CALLSITE: DebugTestCallsite = DebugTestCallsite;
+
+    struct DebugTestCallsite;
+
+    impl tracing::Callsite for DebugTestCallsite {
+        fn set_interest(&self, _: tracing::subscriber::Interest) {}
+        fn metadata(&self) -> &tracing::Metadata<'_> {
+            &DEBUG_TEST_METADATA
+        }
+    }
+
+    static DEBUG_TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
+        "debug_test",
+        "otap-df-telemetry",
+        Level::INFO,
+        Some(file!()),
+        Some(line!()),
+        Some(module_path!()),
+        tracing::field::FieldSet::new(
+            &["dbg"],
+            tracing::callsite::Identifier(&DEBUG_TEST_CALLSITE),
+        ),
+        tracing::metadata::Kind::EVENT,
+    );
 
     /// Read an unsigned varint, returning (value, bytes_consumed).
     fn read_varint(bytes: &[u8]) -> (u64, usize) {
