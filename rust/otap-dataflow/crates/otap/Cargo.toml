@@ -112,3 +112,22 @@ otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-state = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
+
+# Integration tests that pull `core-nodes/dev-tools` (fake_data_generator)
+# and `weaver_common`. Listing them here with `required-features` lets cargo
+# skip the test binaries entirely when the `integration-tests` feature is
+# off, keeping the test source files free of `#[cfg]` gating.
+[[test]]
+name = "pipeline_tests"
+path = "tests/pipeline_tests.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "durable_buffer_processor_tests"
+path = "tests/durable_buffer_processor_tests.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "core_node_liveness_tests"
+path = "tests/core_node_liveness_tests.rs"
+required-features = ["integration-tests"]
