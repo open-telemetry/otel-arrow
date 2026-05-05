@@ -32,9 +32,10 @@ use otap_df_config::policy::TelemetryPolicy;
 #[metric_set(name = "stopwatch")]
 #[derive(Debug, Default, Clone)]
 pub struct StopwatchStartMetrics {
-    /// Number of signal items entering the stopwatch range.
-    #[metric(name = "stopwatch.items.consumed", unit = "{item}")]
-    pub items_consumed: Mmsc,
+    /// Number of signal items (log records, spans, or metric data points)
+    /// entering the stopwatch range.
+    #[metric(name = "stopwatch.signals.incoming", unit = "{item}")]
+    pub signals_incoming: Mmsc,
 }
 
 /// Metric set emitted by the stop node of a stopwatch range.
@@ -45,9 +46,10 @@ pub struct StopwatchStopMetrics {
     /// for messages traversing the stopwatch range.
     #[metric(name = "stopwatch.compute.duration", unit = "ns")]
     pub compute_duration: Mmsc,
-    /// Number of signal items leaving the stopwatch range.
-    #[metric(name = "stopwatch.items.produced", unit = "{item}")]
-    pub items_produced: Mmsc,
+    /// Number of signal items (log records, spans, or metric data points)
+    /// leaving the stopwatch range.
+    #[metric(name = "stopwatch.signals.outgoing", unit = "{item}")]
+    pub signals_outgoing: Mmsc,
 }
 
 /// Entity attributes that scope a stopwatch metric set.
@@ -104,7 +106,7 @@ pub(crate) struct StartMeasurements<Accumulator> {
     pub metrics: MetricSet<StopwatchStartMetrics>,
     /// Accumulator for signal-item count observations at the start node.
     /// Drained into `metrics` on periodic telemetry collection.
-    pub items_consumed_acc: Accumulator,
+    pub signals_incoming_acc: Accumulator,
 }
 
 /// Stop-side measurements for a node that terminates a stopwatch range.
@@ -122,7 +124,7 @@ pub(crate) struct StopMeasurements<Accumulator> {
     pub duration_acc: Accumulator,
     /// Accumulator for signal-item count observations at the stop node.
     /// Drained into `metrics` on periodic telemetry collection.
-    pub items_produced_acc: Accumulator,
+    pub signals_outgoing_acc: Accumulator,
 }
 
 /// Per-`EffectHandler` stopwatch state.
@@ -389,16 +391,16 @@ mod tests {
     #[test]
     fn direct_record_increments_items_mmsc() {
         let mut state = one_stopwatch_state();
-        state.start_metrics[0].items_consumed.record(10.0);
-        state.start_metrics[0].items_consumed.record(20.0);
-        state.stop_metrics[0].items_produced.record(7.0);
-        state.stop_metrics[0].items_produced.record(8.0);
+        state.start_metrics[0].signals_incoming.record(10.0);
+        state.start_metrics[0].signals_incoming.record(20.0);
+        state.stop_metrics[0].signals_outgoing.record(7.0);
+        state.stop_metrics[0].signals_outgoing.record(8.0);
 
-        let consumed = state.start_metrics[0].items_consumed.get();
+        let consumed = state.start_metrics[0].signals_incoming.get();
         assert_eq!(consumed.count, 2);
         assert!((consumed.sum - 30.0).abs() < f64::EPSILON);
 
-        let produced = state.stop_metrics[0].items_produced.get();
+        let produced = state.stop_metrics[0].signals_outgoing.get();
         assert_eq!(produced.count, 2);
         assert!((produced.sum - 15.0).abs() < f64::EPSILON);
     }

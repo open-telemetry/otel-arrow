@@ -42,7 +42,7 @@ use std::time::Duration;
 ///
 /// Implemented by both `local::processor::EffectHandler<PData>` and
 /// `shared::processor::EffectHandler<PData>` so that PData-side stopwatch
-/// hooks (see [`ProcessorSendHook`]) can be written once, generic over
+/// hooks (see [`FlowMeasurementHook`]) can be written once, generic over
 /// handler kind.
 pub trait StopwatchEffectHandler {
     /// Whether this node is the start of a stopwatch range.
@@ -57,29 +57,48 @@ pub trait StopwatchEffectHandler {
     /// stop node's local accumulator.
     fn record_stopwatch_stop(&self, total: u64);
     /// Record signal-item count into the start node's local accumulator.
-    fn record_stopwatch_start_items(&self, items: u64);
+    fn record_stopwatch_start_signals(&self, signals: u64);
     /// Record signal-item count into the stop node's local accumulator.
-    fn record_stopwatch_stop_items(&self, items: u64);
+    fn record_stopwatch_stop_signals(&self, signals: u64);
 }
 
-/// Per-`PData` hook called immediately before a processor `EffectHandler`
-/// forwards a message to the output router.
+/// Per-`PData` hooks straddling a processor's `process()` call: an
+/// `after_processor_receive` notification fires immediately after a
+/// `Message::PData` is dequeued (before `process()` runs), and a
+/// `before_processor_send` notification fires immediately before the
+/// effect handler forwards a message to the output router.
 ///
-/// Covers **both** the plain `send_message[_to]` family and the
-/// `send_message_with_source_node[_to]` family — every send method on
-/// every processor handler invokes this hook exactly once. The default
-/// impl is a no-op; PData types with bookkeeping needs (e.g. stopwatch
-/// accumulation on `OtapPdata`) override `before_processor_send`.
+/// The send-side hook covers **both** the plain `send_message[_to]`
+/// family and the `send_message_with_source_node[_to]` family — every
+/// send method on every processor handler invokes it exactly once.
+/// Both methods default to no-ops; PData types with bookkeeping needs
+/// (e.g. stopwatch accumulation on `OtapPdata`) override one or both.
 ///
 /// `EffectHandler<PData>` is generic but lives in the engine crate, while
 /// some `PData` types need bookkeeping defined in their own crate.
 /// Inherent methods shadow extension-trait methods, so we route
 /// per-`PData` behavior through this trait. PData types with nothing to
-/// do can simply write `impl ProcessorSendHook for MyPData {}`.
-pub trait ProcessorSendHook: Sized {
+/// do can simply write `impl FlowMeasurementHook for MyPData {}`.
+///
+/// NOTE: This trait currently lives in `processor.rs` and only fires from
+/// processor run loops / processor effect handlers because processors are
+/// the only nodes that need pre-process and pre-send hooks today (for
+/// stopwatch flow measurement). If receivers or exporters ever need
+/// analogous `before_*` / `after_*` hooks on PData, this trait should be
+/// hoisted to a more generic location (e.g. a top-level `flow_hook` module
+/// or `crate::lib`) and its `H: StopwatchEffectHandler` bound generalized
+/// so it can be invoked from receiver/exporter handlers as well.
+pub trait FlowMeasurementHook: Sized {
     /// Invoked once per message immediately before the processor handler
     /// forwards it to the output router.
     fn before_processor_send<H: StopwatchEffectHandler>(&mut self, _handler: &H) {}
+
+    /// Invoked once per `Message::PData` immediately after it is dequeued
+    /// by a processor's run loop and before `process()` runs. Lets PData
+    /// types observe the *pre-process* state of the data — e.g. counting
+    /// items entering a stopwatch start node before any filter or drop
+    /// inside `process()`. Default impl is a no-op.
+    fn after_processor_receive<H: StopwatchEffectHandler>(&mut self, _handler: &H) {}
 }
 
 /// Processor-local wakeup requirements declared by a processor implementation.
@@ -550,7 +569,7 @@ impl<PData> ProcessorWrapper<PData> {
         node_interests: Interests,
     ) -> Result<(), Error>
     where
-        PData: ReceivedAtNode,
+        PData: ReceivedAtNode + FlowMeasurementHook,
     {
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
@@ -579,7 +598,7 @@ impl<PData> ProcessorWrapper<PData> {
         stopwatches_active: bool,
     ) -> Result<(), Error>
     where
-        PData: ReceivedAtNode,
+        PData: ReceivedAtNode + FlowMeasurementHook,
     {
         let runtime = self
             .prepare_runtime(metrics_reporter.clone(), node_interests)
@@ -613,16 +632,19 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
+                while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
                     if effect_handler.stopwatches_active() {
-                        match &msg {
+                        match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
                                 if effect_handler.is_stopwatch_start()
                                     || effect_handler.is_stopwatch_stop() =>
                             {
                                 effect_handler.report_stopwatch();
                             }
-                            Message::PData(_) => effect_handler.begin_process_timing(),
+                            Message::PData(data) => {
+                                data.after_processor_receive(&effect_handler);
+                                effect_handler.begin_process_timing();
+                            }
                             _ => {}
                         }
                     }
@@ -668,16 +690,19 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
+                while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
                     if effect_handler.stopwatches_active() {
-                        match &msg {
+                        match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
                                 if effect_handler.is_stopwatch_start()
                                     || effect_handler.is_stopwatch_stop() =>
                             {
                                 effect_handler.report_stopwatch();
                             }
-                            Message::PData(_) => effect_handler.begin_process_timing(),
+                            Message::PData(data) => {
+                                data.after_processor_receive(&effect_handler);
+                                effect_handler.begin_process_timing();
+                            }
                             _ => {}
                         }
                     }
@@ -1095,7 +1120,7 @@ mod tests {
         fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
     }
 
-    impl crate::processor::ProcessorSendHook for StopwatchTestPData {
+    impl crate::processor::FlowMeasurementHook for StopwatchTestPData {
         fn before_processor_send<H: crate::processor::StopwatchEffectHandler>(
             &mut self,
             handler: &H,
@@ -1109,7 +1134,6 @@ mod tests {
 
             if handler.is_stopwatch_start() {
                 self.stopwatch_active = true;
-                handler.record_stopwatch_start_items(1);
             }
 
             self.stopwatch_compute_ns = self
@@ -1119,9 +1143,18 @@ mod tests {
             if handler.is_stopwatch_stop() && self.stopwatch_active && self.stopwatch_compute_ns > 0
             {
                 handler.record_stopwatch_stop(self.stopwatch_compute_ns);
-                handler.record_stopwatch_stop_items(1);
+                handler.record_stopwatch_stop_signals(1);
                 self.stopwatch_compute_ns = 0;
                 self.stopwatch_active = false;
+            }
+        }
+
+        fn after_processor_receive<H: crate::processor::StopwatchEffectHandler>(
+            &mut self,
+            handler: &H,
+        ) {
+            if handler.is_stopwatch_start() {
+                handler.record_stopwatch_start_signals(1);
             }
         }
     }
@@ -1245,11 +1278,11 @@ mod tests {
                 processor_task.abort();
                 let _ = processor_task.await;
 
-                let [MetricValue::Mmsc(items_consumed)] = snapshot.get_metrics() else {
+                let [MetricValue::Mmsc(signals_incoming)] = snapshot.get_metrics() else {
                     panic!("expected one start stopwatch MMSC metric");
                 };
-                assert_eq!(items_consumed.count, 1);
-                assert!((items_consumed.sum - 1.0).abs() < f64::EPSILON);
+                assert_eq!(signals_incoming.count, 1);
+                assert!((signals_incoming.sum - 1.0).abs() < f64::EPSILON);
 
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
@@ -1258,10 +1291,10 @@ mod tests {
                         .expect("metrics channel should remain open");
                 let [
                     MetricValue::Mmsc(compute_duration),
-                    MetricValue::Mmsc(items_produced),
+                    MetricValue::Mmsc(signals_outgoing),
                 ] = snapshot.get_metrics()
                 else {
-                    panic!("expected stopwatch duration and produced MMSC metrics");
+                    panic!("expected stopwatch duration and outgoing MMSC metrics");
                 };
                 assert!(
                     compute_duration.count >= 1,
@@ -1271,8 +1304,8 @@ mod tests {
                     compute_duration.sum > 0.0,
                     "stopwatch compute duration sum should be non-zero"
                 );
-                assert_eq!(items_produced.count, 1);
-                assert!((items_produced.sum - 1.0).abs() < f64::EPSILON);
+                assert_eq!(signals_outgoing.count, 1);
+                assert!((signals_outgoing.sum - 1.0).abs() < f64::EPSILON);
             })
             .await;
     }

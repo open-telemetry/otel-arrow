@@ -23,6 +23,7 @@ use crate::pipeline_ctrl::{
     NodeMetricHandles, PipelineCompletionMsgDispatcher, RuntimeCtrlMsgManager,
     report_node_metrics_with_handles,
 };
+use crate::processor::FlowMeasurementHook;
 use crate::stopwatch::{StopwatchStartMetrics, StopwatchStopMetrics, build_stopwatch_state};
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
@@ -174,7 +175,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 }
 
-impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeline<PData> {
+impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMeasurementHook>
+    RuntimePipeline<PData>
+{
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(

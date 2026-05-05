@@ -383,6 +383,13 @@ impl ReceivedAtNode for () {
 impl ReceivedAtNode for String {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
+// `FlowMeasurementHook` is a bound on the `PData` generic of `ProcessorWrapper::start*`,
+// `RuntimePipeline`, and the controller. Test code uses `()` and `String` as stand-in PData
+// types (e.g. `Controller<()>`); these blanket no-op impls let those tests compile without
+// requiring every test PData type to define hook behavior. Real PData types (e.g. `OtapPdata`)
+// override these methods to drive stopwatch signal counting and compute-duration accumulation.
+impl processor::FlowMeasurementHook for () {}
+impl processor::FlowMeasurementHook for String {}
 
 /// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
