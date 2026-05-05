@@ -112,10 +112,15 @@ impl Consumer {
         &mut self,
         records: &mut BatchArrowRecords,
     ) -> Result<ExportMetricsServiceRequest> {
-        check_payload_type_present(records, ArrowPayloadType::UnivariateMetrics)?;
-
         let record_messages = self.consume_bar(records)?;
         let mut otap_batch = OtapArrowRecords::Metrics(from_record_messages(record_messages)?);
+
+        if otap_batch.get(ArrowPayloadType::UnivariateMetrics).is_none() {
+            return Err(Error::RecordBatchNotFound {
+                payload_type: ArrowPayloadType::UnivariateMetrics,
+            });
+        }
+
         self.proto_buffer.clear();
         self.metrics_proto_encoder
             .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -134,10 +139,15 @@ impl Consumer {
         &mut self,
         records: &mut BatchArrowRecords,
     ) -> Result<ExportLogsServiceRequest> {
-        check_payload_type_present(records, ArrowPayloadType::Logs)?;
-
         let record_messages = self.consume_bar(records)?;
         let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages)?);
+
+        if otap_batch.get(ArrowPayloadType::Logs).is_none() {
+            return Err(Error::RecordBatchNotFound {
+                payload_type: ArrowPayloadType::Logs,
+            });
+        }
+
         self.proto_buffer.clear();
         self.logs_proto_encoder
             .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -154,10 +164,15 @@ impl Consumer {
         &mut self,
         records: &mut BatchArrowRecords,
     ) -> Result<ExportTraceServiceRequest> {
-        check_payload_type_present(records, ArrowPayloadType::Spans)?;
-
         let record_messages = self.consume_bar(records)?;
         let mut otap_batch = OtapArrowRecords::Traces(from_record_messages(record_messages)?);
+
+        if otap_batch.get(ArrowPayloadType::Spans).is_none() {
+            return Err(Error::RecordBatchNotFound {
+                payload_type: ArrowPayloadType::Spans,
+            });
+        }
+
         self.proto_buffer.clear();
         self.traces_proto_encoder
             .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -166,33 +181,6 @@ impl Consumer {
             Error::UnexpectedRecordBatchState {
                 reason: format!("error decoding proto serialization {e:?}"),
             }
-        })
-    }
-}
-
-/// Check that the expected root payload type exists somewhere in the batch.
-///
-/// The root payload type (Logs, UnivariateMetrics, Spans) may appear at any
-/// position in the arrow payloads, not necessarily at position 0.
-fn check_payload_type_present(
-    records: &BatchArrowRecords,
-    expected: ArrowPayloadType,
-) -> Result<()> {
-    if records.arrow_payloads.is_empty() {
-        return Err(Error::EmptyBatch);
-    }
-
-    let found = records.arrow_payloads.iter().any(|p| {
-        ArrowPayloadType::try_from(p.r#type)
-            .map(|t| t == expected)
-            .unwrap_or(false)
-    });
-
-    if found {
-        Ok(())
-    } else {
-        Err(Error::RecordBatchNotFound {
-            payload_type: expected,
         })
     }
 }
