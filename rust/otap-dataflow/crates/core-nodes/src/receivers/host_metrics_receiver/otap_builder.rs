@@ -73,6 +73,7 @@ pub(crate) struct HostMetricsArrowBuilder {
     ndp_attrs: StrKeysAttributesRecordBatchBuilder<u32>,
     curr_metric_id: u16,
     curr_dp_id: u32,
+    resource_appended: bool,
 }
 
 impl HostMetricsArrowBuilder {
@@ -84,6 +85,7 @@ impl HostMetricsArrowBuilder {
             ndp_attrs: StrKeysAttributesRecordBatchBuilder::new(),
             curr_metric_id: 0,
             curr_dp_id: 0,
+            resource_appended: false,
         }
     }
 
@@ -91,6 +93,8 @@ impl HostMetricsArrowBuilder {
     /// Must be called exactly once per batch before any metrics are appended.
     #[cfg(target_os = "linux")]
     pub(crate) fn append_resource(&mut self, resource: &HostResource) {
+        debug_assert!(!self.resource_appended, "resource already appended");
+        self.resource_appended = true;
         let mut w = ResourceAttrWriter {
             attrs: &mut self.resource_attrs,
         };

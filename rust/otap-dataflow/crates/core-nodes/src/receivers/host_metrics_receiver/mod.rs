@@ -666,12 +666,12 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         {
             let mut receiver = HostMetricsReceiver::from_config(&node_config.config)?;
             receiver.metrics = Some(pipeline.register_metrics::<HostMetricsReceiverMetrics>());
-            return Ok(ReceiverWrapper::local(
+            Ok(ReceiverWrapper::local(
                 receiver,
                 node,
                 node_config,
                 receiver_config,
-            ));
+            ))
         }
         #[cfg(not(target_os = "linux"))]
         unreachable!("validate_supported_platform returned Ok on a non-Linux platform")
@@ -683,7 +683,7 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 error: e.to_string(),
             }
         })?;
-        validate_config(&config)
+        RuntimeConfig::try_from(config).map(|_| ())
     },
 };
 
@@ -1321,6 +1321,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         Ok(scrape) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.partial_errors.add(scrape.partial_errors);
+                                metrics.source_read_errors.add(scrape.partial_errors);
                             }
                             let pdata = match encode_snapshot(scrape.snapshot) {
                                 Ok(pdata) => pdata,
@@ -1730,5 +1731,24 @@ mod tests {
 
         assert!(filter.matches("eth0"));
         assert!(!filter.matches("lo"));
+    }
+
+    #[test]
+    fn factory_validation_rejects_invalid_regex_filter() {
+        let config = serde_json::json!({
+            "families": {
+                "disk": {
+                    "include": {
+                        "devices": ["["],
+                        "match_type": "regexp"
+                    }
+                }
+            }
+        });
+
+        assert!(matches!(
+            (HOST_METRICS_RECEIVER.validate_config)(&config),
+            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+        ));
     }
 }

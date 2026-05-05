@@ -1579,9 +1579,9 @@ fn statvfs_bytes(path: &Path) -> io::Result<FilesystemStat> {
     let stat = nix::sys::statvfs::statvfs(path).map_err(io::Error::other)?;
     let block_size = stat.fragment_size();
     Ok(FilesystemStat {
-        total_bytes: u64::from(stat.blocks()).saturating_mul(block_size),
-        free_bytes: u64::from(stat.blocks_free()).saturating_mul(block_size),
-        available_bytes: u64::from(stat.blocks_available()).saturating_mul(block_size),
+        total_bytes: stat.blocks().saturating_mul(block_size),
+        free_bytes: stat.blocks_free().saturating_mul(block_size),
+        available_bytes: stat.blocks_available().saturating_mul(block_size),
     })
 }
 
@@ -2159,7 +2159,8 @@ mod tests {
     use super::*;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-        AggregationTemporality, Metric, MetricsData, NumberDataPoint, metric, number_data_point,
+        AggregationTemporality, Metric, MetricsData, NumberDataPoint, metric as otlp_metric,
+        number_data_point,
     };
     use otap_df_pdata::testing::round_trip::decode_metrics;
     #[cfg(feature = "dev-tools")]
@@ -3167,8 +3168,8 @@ mod tests {
             .iter()
             .map(|metric| {
                 let (monotonic, points) = match metric.data.as_ref().expect("metric data") {
-                    metric::Data::Sum(sum) => (Some(sum.is_monotonic), &sum.data_points),
-                    metric::Data::Gauge(gauge) => (None, &gauge.data_points),
+                    otlp_metric::Data::Sum(sum) => (Some(sum.is_monotonic), &sum.data_points),
+                    otlp_metric::Data::Gauge(gauge) => (None, &gauge.data_points),
                     _ => panic!("unsupported metric data for {}", metric.name),
                 };
                 let attributes = points
@@ -3391,7 +3392,7 @@ mod tests {
         let metric = metric_by_name(metrics, name);
         assert_eq!(metric.unit, unit);
         match metric.data.as_ref().expect("metric data") {
-            metric::Data::Sum(sum) => {
+            otlp_metric::Data::Sum(sum) => {
                 let expected_monotonic =
                     monotonic_sum.unwrap_or_else(|| panic!("{name} should be a gauge"));
                 assert_eq!(
@@ -3405,7 +3406,7 @@ mod tests {
                         .all(|point| point.start_time_unix_nano == 1_000)
                 );
             }
-            metric::Data::Gauge(gauge) => {
+            otlp_metric::Data::Gauge(gauge) => {
                 assert!(monotonic_sum.is_none(), "{name} should be a cumulative sum");
                 assert!(
                     gauge
@@ -3426,8 +3427,8 @@ mod tests {
     ) {
         let metric = metric_by_name(metrics, name);
         let point = match metric.data.as_ref().expect("metric data") {
-            metric::Data::Sum(sum) => sum.data_points.first(),
-            metric::Data::Gauge(gauge) => gauge.data_points.first(),
+            otlp_metric::Data::Sum(sum) => sum.data_points.first(),
+            otlp_metric::Data::Gauge(gauge) => gauge.data_points.first(),
             _ => None,
         }
         .expect("data point");
@@ -3441,7 +3442,7 @@ mod tests {
         value: &'static str,
     ) {
         let metric = metric_by_name(metrics, name);
-        let metric::Data::Sum(sum) = metric.data.as_ref().expect("metric data") else {
+        let otlp_metric::Data::Sum(sum) = metric.data.as_ref().expect("metric data") else {
             panic!("{name} should be a cumulative sum");
         };
         assert!(
@@ -3455,8 +3456,8 @@ mod tests {
     fn assert_first_point_int(metrics: &[Metric], name: &'static str, expected: i64) {
         let metric = metric_by_name(metrics, name);
         let point = match metric.data.as_ref().expect("metric data") {
-            metric::Data::Sum(sum) => sum.data_points.first(),
-            metric::Data::Gauge(gauge) => gauge.data_points.first(),
+            otlp_metric::Data::Sum(sum) => sum.data_points.first(),
+            otlp_metric::Data::Gauge(gauge) => gauge.data_points.first(),
             _ => None,
         }
         .expect("data point");
@@ -3475,8 +3476,8 @@ mod tests {
     ) {
         let metric = metric_by_name(metrics, name);
         let point = match metric.data.as_ref().expect("metric data") {
-            metric::Data::Sum(sum) => sum.data_points.first(),
-            metric::Data::Gauge(gauge) => gauge.data_points.first(),
+            otlp_metric::Data::Sum(sum) => sum.data_points.first(),
+            otlp_metric::Data::Gauge(gauge) => gauge.data_points.first(),
             _ => None,
         }
         .expect("data point");
@@ -3495,8 +3496,8 @@ mod tests {
     fn assert_no_first_point_attr(metrics: &[Metric], name: &'static str, key: &'static str) {
         let metric = metric_by_name(metrics, name);
         let point = match metric.data.as_ref().expect("metric data") {
-            metric::Data::Sum(sum) => sum.data_points.first(),
-            metric::Data::Gauge(gauge) => gauge.data_points.first(),
+            otlp_metric::Data::Sum(sum) => sum.data_points.first(),
+            otlp_metric::Data::Gauge(gauge) => gauge.data_points.first(),
             _ => None,
         }
         .expect("data point");
@@ -3508,7 +3509,7 @@ mod tests {
 
     fn assert_first_sum_point_start(metrics: &[Metric], name: &'static str, expected_start: u64) {
         let metric = metric_by_name(metrics, name);
-        let metric::Data::Sum(sum) = metric.data.as_ref().expect("metric data") else {
+        let otlp_metric::Data::Sum(sum) = metric.data.as_ref().expect("metric data") else {
             panic!("{name} should be a cumulative sum");
         };
         let point = sum.data_points.first().expect("data point");

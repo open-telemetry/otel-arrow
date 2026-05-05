@@ -812,6 +812,7 @@ jobs:
       - pest-fmt
       - no_default_features_check
       - pipeline_perf_test
+      - host-metrics-semconv
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -849,6 +850,10 @@ jobs:
           fi
           if [[ "${{ needs.pipeline_perf_test.result }}" != "success" ]]; then
             echo "pipeline_perf_test failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.host-metrics-semconv.result }}" != "success" ]]; then
+            echo "host-metrics-semconv failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"
