@@ -579,11 +579,12 @@ pub trait BoundedBuf {
     /// for this buffer's remaining space.
     #[inline]
     fn placeholder_width(&self) -> usize {
-        if self.remaining() < tag_width_limit(1) {
+        let rem = self.remaining();
+        if rem < tag_width_limit(1) {
             1
-        } else if self.remaining() < tag_width_limit(2) {
+        } else if rem < tag_width_limit(2) {
             2
-        } else if self.remaining() < tag_width_limit(3) {
+        } else if rem < tag_width_limit(3) {
             3
         } else {
             4
@@ -614,9 +615,9 @@ pub trait BoundedBuf {
     }
 
     /// Implementation of [`encode_len_delimited`](Self::encode_len_delimited)
-    /// with an explicit `N`-byte placeholder width.
+    /// with an explicit `B`-byte placeholder width.
     #[inline]
-    fn encode_len_delimited_with<const N: usize, E, F>(
+    fn encode_len_delimited_with<const B: usize, E, F>(
         &mut self,
         field_tag: u64,
         f: F,
@@ -628,10 +629,10 @@ pub trait BoundedBuf {
     {
         self.encode_field_tag(field_tag, wire_types::LEN)?;
         let len_start_pos = self.len();
-        self.try_extend(&make_len_placeholder::<N>())?;
+        self.try_extend(&make_len_placeholder::<B>())?;
         f(self)?;
-        let len = self.len() - len_start_pos - N;
-        patch_len_placeholder::<N, _>(self, len, len_start_pos);
+        let len = self.len() - len_start_pos - B;
+        patch_len_placeholder::<B, _>(self, len, len_start_pos);
         Ok(())
     }
 
