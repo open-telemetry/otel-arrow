@@ -854,14 +854,11 @@ fn project_snapshot(
     // ── Processes ────────────────────────────────────────────────────────────
     if let Some(processes) = snap.processes {
         let m = b.begin_updown_i64(metric::PROCESS_COUNT, "{process}");
-        for (state, value) in [
-            ("running", processes.running),
-            ("blocked", processes.blocked),
-        ] {
-            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
-                w.str(attr::PROCESS_STATE, state);
-            });
-        }
+        b.append_i64_dp(m, start, now, saturating_i64(processes.running), |w| {
+            w.str(attr::PROCESS_STATE, "running");
+        });
+        // /proc/stat procs_blocked has no registered process.state value.
+        // Do not map it to sleeping; Linux blocked tasks are not the same state.
         let m = b.begin_counter_i64(metric::PROCESS_CREATED, "{process}");
         b.append_i64_dp(
             m,
@@ -2331,7 +2328,7 @@ mod tests {
             metrics,
             metric::PROCESS_COUNT,
             attr::PROCESS_STATE,
-            "blocked",
+            "running",
         );
         assert_metric_shape(metrics, metric::PROCESS_CREATED, "{process}", Some(true));
         assert_metric_shape(metrics, metric::DISK_IO, "By", Some(true));
@@ -2675,6 +2672,96 @@ mod tests {
             scrape.snapshot.disks[0].limit_bytes,
             Some(4096 * DISKSTAT_SECTOR_BYTES)
         );
+    }
+
+    #[test]
+    fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let proc = root.path().join("proc");
+        let proc_one = proc.join("1");
+        std::fs::create_dir_all(&proc_one).expect("proc dirs");
+        std::fs::write(proc.join("stat"), "btime 123\n").expect("stat");
+        std::fs::write(
+            proc.join("diskstats"),
+            "8 0 sda 1 0 2 3 4 0 5 6 0 0 0 0 0 0 0 0\n",
+        )
+        .expect("diskstats");
+        std::fs::write(
+            proc_one.join("net/dev"),
+            "Inter-|   Receive                                                |  Transmit\n\
+              face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+              eth0: 10 1 0 0 0 0 0 0 20 2 0 0 0 0 0 0\n",
+        )
+        .expect("netdev");
+        std::fs::write(
+            proc.join("vmstat"),
+            "pgfault 10\npgmajfault 1\npgpgin 2\npgpgout 3\npswpin 4\npswpout 5\n",
+        )
+        .expect("vmstat");
+        std::fs::write(proc.join("swaps"), "Filename Type Size Used Priority\n").expect("swaps");
+
+        let mut source = ProcfsSource::new(
+            Some(root.path()),
+            ProcfsConfig {
+                cpu: false,
+                memory: false,
+                paging: true,
+                system: false,
+                disk: true,
+                filesystem: false,
+                network: true,
+                processes: false,
+                cpu_utilization: false,
+                memory_limit: false,
+                memory_shared: false,
+                memory_hugepages: false,
+                disk_limit: false,
+                filesystem_include_virtual: false,
+                filesystem_limit: false,
+                filesystem_include_devices: None,
+                filesystem_exclude_devices: None,
+                filesystem_include_fs_types: None,
+                filesystem_exclude_fs_types: None,
+                filesystem_include_mount_points: None,
+                filesystem_exclude_mount_points: None,
+                disk_include: None,
+                disk_exclude: None,
+                network_include: None,
+                network_exclude: None,
+                validation: HostViewValidationMode::None,
+            },
+        )
+        .expect("source");
+
+        let expected_start = 123 * NANOS_PER_SEC;
+        let disk_scrape = source
+            .scrape_due(ProcfsFamilies {
+                disk: true,
+                ..ProcfsFamilies::default()
+            })
+            .expect("disk scrape");
+        assert_eq!(disk_scrape.snapshot.start_time_unix_nano, expected_start);
+        assert_eq!(disk_scrape.snapshot.disks.len(), 1);
+
+        std::fs::remove_file(proc.join("stat")).expect("remove stat after cache");
+
+        let network_scrape = source
+            .scrape_due(ProcfsFamilies {
+                network: true,
+                ..ProcfsFamilies::default()
+            })
+            .expect("network scrape");
+        assert_eq!(network_scrape.snapshot.start_time_unix_nano, expected_start);
+        assert_eq!(network_scrape.snapshot.networks.len(), 1);
+
+        let paging_scrape = source
+            .scrape_due(ProcfsFamilies {
+                paging: true,
+                ..ProcfsFamilies::default()
+            })
+            .expect("paging scrape");
+        assert_eq!(paging_scrape.snapshot.start_time_unix_nano, expected_start);
+        assert!(paging_scrape.snapshot.paging.is_some());
     }
 
     #[test]
@@ -3205,8 +3292,8 @@ mod tests {
     }
 
     #[cfg(feature = "dev-tools")]
-    fn is_intentional_semconv_enum_value_gap(name: &str, attr: &str, value: &str) -> bool {
-        name == metric::PROCESS_COUNT && attr == attr::PROCESS_STATE && value == "blocked"
+    fn is_intentional_semconv_enum_value_gap(_name: &str, _attr: &str, _value: &str) -> bool {
+        false
     }
 
     #[cfg(feature = "dev-tools")]
