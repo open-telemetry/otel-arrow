@@ -171,11 +171,11 @@ impl HostMetricsArrowBuilder {
     // ── Datapoint appenders ─────────────────────────────────────────────────
 
     /// Append one i64 data point for `metric_id`.
-    /// `start` is `start_time_unix_nano`; pass `0` for gauges.
+    /// `start` is `start_time_unix_nano`; use `None` for gauges.
     pub(crate) fn append_i64_dp<F>(
         &mut self,
         metric_id: u16,
-        start: u64,
+        start: Option<u64>,
         now: u64,
         value: i64,
         attrs: F,
@@ -185,7 +185,8 @@ impl HostMetricsArrowBuilder {
         let dp_id = self.curr_dp_id;
         self.ndp.append_id(dp_id);
         self.ndp.append_parent_id(metric_id);
-        self.ndp.append_start_time_unix_nano(Some(start as i64));
+        self.ndp
+            .append_start_time_unix_nano(start.map(|v| v as i64));
         self.ndp.append_time_unix_nano(now as i64);
         self.ndp.append_int_value(Some(value));
         self.ndp.append_double_value(None);
@@ -202,11 +203,11 @@ impl HostMetricsArrowBuilder {
     }
 
     /// Append one f64 data point for `metric_id`.
-    /// `start` is `start_time_unix_nano`; pass `0` for gauges.
+    /// `start` is `start_time_unix_nano`; use `None` for gauges.
     pub(crate) fn append_f64_dp<F>(
         &mut self,
         metric_id: u16,
-        start: u64,
+        start: Option<u64>,
         now: u64,
         value: f64,
         attrs: F,
@@ -216,7 +217,8 @@ impl HostMetricsArrowBuilder {
         let dp_id = self.curr_dp_id;
         self.ndp.append_id(dp_id);
         self.ndp.append_parent_id(metric_id);
-        self.ndp.append_start_time_unix_nano(Some(start as i64));
+        self.ndp
+            .append_start_time_unix_nano(start.map(|v| v as i64));
         self.ndp.append_time_unix_nano(now as i64);
         self.ndp.append_int_value(None);
         self.ndp.append_double_value(Some(value));

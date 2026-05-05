@@ -678,6 +678,7 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| {
+        validate_supported_platform()?;
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -1203,10 +1204,14 @@ fn normalized_root_path(root_path: Option<&Path>) -> Result<PathBuf, otap_df_con
     for component in path.components() {
         match component {
             Component::RootDir => {}
-            Component::CurDir => {}
             Component::Normal(part) => normalized.push(part),
-            Component::ParentDir => {
-                let _ = normalized.pop();
+            Component::CurDir | Component::ParentDir => {
+                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "root_path must not contain . or .. components: {}",
+                        path.display()
+                    ),
+                });
             }
             Component::Prefix(_) => {
                 return Err(otap_df_config::error::Error::InvalidUserConfig {

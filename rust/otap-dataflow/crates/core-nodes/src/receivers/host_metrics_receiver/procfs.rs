@@ -681,9 +681,15 @@ fn project_snapshot(
             ("interrupt", cpu.interrupt),
             ("steal", cpu.steal),
         ] {
-            b.append_f64_dp(m, cs.get(metric::CPU_TIME, mode, start), now, value, |w| {
-                w.str(attr::CPU_MODE, mode);
-            });
+            b.append_f64_dp(
+                m,
+                Some(cs.get(metric::CPU_TIME, mode, start)),
+                now,
+                value,
+                |w| {
+                    w.str(attr::CPU_MODE, mode);
+                },
+            );
         }
     }
     if let Some(cpu) = snap.cpu_utilization {
@@ -697,7 +703,7 @@ fn project_snapshot(
             ("interrupt", cpu.interrupt),
             ("steal", cpu.steal),
         ] {
-            b.append_f64_dp(m, 0, now, value, |w| {
+            b.append_f64_dp(m, None, now, value, |w| {
                 w.str(attr::CPU_MODE, mode);
             });
         }
@@ -706,7 +712,7 @@ fn project_snapshot(
         let m = b.begin_updown_i64(metric::CPU_LOGICAL_COUNT, "{cpu}");
         b.append_i64_dp(
             m,
-            start,
+            Some(start),
             now,
             saturating_i64(snap.cpuinfo.logical_count),
             |_| {},
@@ -716,7 +722,7 @@ fn project_snapshot(
         let m = b.begin_updown_i64(metric::CPU_PHYSICAL_COUNT, "{cpu}");
         b.append_i64_dp(
             m,
-            start,
+            Some(start),
             now,
             saturating_i64(snap.cpuinfo.physical_count),
             |_| {},
@@ -726,7 +732,7 @@ fn project_snapshot(
         let m = b.begin_gauge_i64(metric::CPU_FREQUENCY, "Hz");
         for (idx, &freq) in snap.cpuinfo.frequencies_hz.iter().enumerate() {
             let logical = i64::try_from(idx).unwrap_or(i64::MAX);
-            b.append_i64_dp(m, 0, now, frequency_hz_i64(freq), |w| {
+            b.append_i64_dp(m, None, now, frequency_hz_i64(freq), |w| {
                 w.int(attr::CPU_LOGICAL_NUMBER, logical);
             });
         }
@@ -741,7 +747,7 @@ fn project_snapshot(
             ("cached", memory.cached),
             ("buffers", memory.buffered),
         ] {
-            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+            b.append_i64_dp(m, Some(start), now, saturating_i64(value), |w| {
                 w.str(attr::SYSTEM_MEMORY_STATE, state);
             });
         }
@@ -754,31 +760,37 @@ fn project_snapshot(
                 ("cached", memory.cached),
                 ("buffers", memory.buffered),
             ] {
-                b.append_f64_dp(m, 0, now, value as f64 / total, |w| {
+                b.append_f64_dp(m, None, now, value as f64 / total, |w| {
                     w.str(attr::SYSTEM_MEMORY_STATE, state);
                 });
             }
         }
         if memory.has_available {
             let m = b.begin_updown_i64(metric::MEMORY_LINUX_AVAILABLE, "By");
-            b.append_i64_dp(m, start, now, saturating_i64(memory.available), |_| {});
+            b.append_i64_dp(
+                m,
+                Some(start),
+                now,
+                saturating_i64(memory.available),
+                |_| {},
+            );
         }
         let m = b.begin_updown_i64(metric::MEMORY_LINUX_SLAB_USAGE, "By");
         for (state, value) in [
             ("reclaimable", memory.slab_reclaimable),
             ("unreclaimable", memory.slab_unreclaimable),
         ] {
-            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+            b.append_i64_dp(m, Some(start), now, saturating_i64(value), |w| {
                 w.str(attr::SYSTEM_MEMORY_LINUX_SLAB_STATE, state);
             });
         }
         if snap.memory_limit {
             let m = b.begin_updown_i64(metric::MEMORY_LIMIT, "By");
-            b.append_i64_dp(m, start, now, saturating_i64(memory.total), |_| {});
+            b.append_i64_dp(m, Some(start), now, saturating_i64(memory.total), |_| {});
         }
         if snap.memory_shared {
             let m = b.begin_updown_i64(metric::MEMORY_LINUX_SHARED, "By");
-            b.append_i64_dp(m, start, now, saturating_i64(memory.shared), |_| {});
+            b.append_i64_dp(m, Some(start), now, saturating_i64(memory.shared), |_| {});
         }
         if snap.memory_hugepages {
             project_hugepages(snap, b, start, now, &memory.hugepages);
@@ -788,7 +800,7 @@ fn project_snapshot(
     // ── System / uptime ──────────────────────────────────────────────────────
     if let Some(uptime) = snap.uptime_seconds {
         let m = b.begin_gauge_f64(metric::UPTIME, "s");
-        b.append_f64_dp(m, 0, now, uptime, |_| {});
+        b.append_f64_dp(m, None, now, uptime, |_| {});
     }
 
     // ── Paging ───────────────────────────────────────────────────────────────
@@ -800,7 +812,7 @@ fn project_snapshot(
         ] {
             b.append_i64_dp(
                 m,
-                cs.get(metric::PAGING_FAULTS, fault_type, start),
+                Some(cs.get(metric::PAGING_FAULTS, fault_type, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -820,7 +832,7 @@ fn project_snapshot(
         ] {
             b.append_i64_dp(
                 m,
-                cs.get_joined(metric::PAGING_OPERATIONS, direction, fault_type, start),
+                Some(cs.get_joined(metric::PAGING_OPERATIONS, direction, fault_type, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -833,7 +845,7 @@ fn project_snapshot(
     for swap in &snap.swaps {
         let m = b.begin_updown_i64(metric::PAGING_USAGE, "By");
         for (state, value) in [("used", swap.used), ("free", swap.free)] {
-            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+            b.append_i64_dp(m, Some(start), now, saturating_i64(value), |w| {
                 w.str(attr::SYSTEM_DEVICE, &swap.name);
                 w.str(attr::SYSTEM_PAGING_STATE, state);
             });
@@ -843,7 +855,7 @@ fn project_snapshot(
             let m = b.begin_gauge_f64(metric::PAGING_UTILIZATION, "1");
             let total = size as f64;
             for (state, value) in [("used", swap.used), ("free", swap.free)] {
-                b.append_f64_dp(m, 0, now, value as f64 / total, |w| {
+                b.append_f64_dp(m, None, now, value as f64 / total, |w| {
                     w.str(attr::SYSTEM_DEVICE, &swap.name);
                     w.str(attr::SYSTEM_PAGING_STATE, state);
                 });
@@ -854,15 +866,21 @@ fn project_snapshot(
     // ── Processes ────────────────────────────────────────────────────────────
     if let Some(processes) = snap.processes {
         let m = b.begin_updown_i64(metric::PROCESS_COUNT, "{process}");
-        b.append_i64_dp(m, start, now, saturating_i64(processes.running), |w| {
-            w.str(attr::PROCESS_STATE, "running");
-        });
+        b.append_i64_dp(
+            m,
+            Some(start),
+            now,
+            saturating_i64(processes.running),
+            |w| {
+                w.str(attr::PROCESS_STATE, "running");
+            },
+        );
         // /proc/stat procs_blocked has no registered process.state value.
         // Do not map it to sleeping; Linux blocked tasks are not the same state.
         let m = b.begin_counter_i64(metric::PROCESS_CREATED, "{process}");
         b.append_i64_dp(
             m,
-            cs.get(metric::PROCESS_CREATED, "", start),
+            Some(cs.get(metric::PROCESS_CREATED, "", start)),
             now,
             saturating_i64(processes.created),
             |_| {},
@@ -873,7 +891,7 @@ fn project_snapshot(
     for disk in &snap.disks {
         if let Some(limit_bytes) = disk.limit_bytes {
             let m = b.begin_updown_i64(metric::DISK_LIMIT, "By");
-            b.append_i64_dp(m, start, now, saturating_i64(limit_bytes), |w| {
+            b.append_i64_dp(m, Some(start), now, saturating_i64(limit_bytes), |w| {
                 w.str(attr::SYSTEM_DEVICE, &disk.name);
             });
         }
@@ -881,7 +899,7 @@ fn project_snapshot(
         for (dir, value) in [("read", disk.read_bytes), ("write", disk.write_bytes)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined(metric::DISK_IO, &disk.name, dir, start),
+                Some(cs.get_joined(metric::DISK_IO, &disk.name, dir, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -894,7 +912,7 @@ fn project_snapshot(
         for (dir, value) in [("read", disk.read_ops), ("write", disk.write_ops)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined(metric::DISK_OPERATIONS, &disk.name, dir, start),
+                Some(cs.get_joined(metric::DISK_OPERATIONS, &disk.name, dir, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -906,7 +924,7 @@ fn project_snapshot(
         let m = b.begin_counter_f64(metric::DISK_IO_TIME, "s");
         b.append_f64_dp(
             m,
-            cs.get(metric::DISK_IO_TIME, &disk.name, start),
+            Some(cs.get(metric::DISK_IO_TIME, &disk.name, start)),
             now,
             disk.io_time_seconds,
             |w| {
@@ -920,7 +938,7 @@ fn project_snapshot(
         ] {
             b.append_f64_dp(
                 m,
-                cs.get_joined(metric::DISK_OPERATION_TIME, &disk.name, dir, start),
+                Some(cs.get_joined(metric::DISK_OPERATION_TIME, &disk.name, dir, start)),
                 now,
                 value,
                 |w| {
@@ -933,7 +951,7 @@ fn project_snapshot(
         for (dir, value) in [("read", disk.read_merged), ("write", disk.write_merged)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined(metric::DISK_MERGED, &disk.name, dir, start),
+                Some(cs.get_joined(metric::DISK_MERGED, &disk.name, dir, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -953,7 +971,7 @@ fn project_snapshot(
             ("free", fs.free),
             ("reserved", fs.reserved),
         ] {
-            b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+            b.append_i64_dp(m, Some(start), now, saturating_i64(value), |w| {
                 w.str(attr::SYSTEM_DEVICE, &fs.device);
                 w.str(attr::SYSTEM_FILESYSTEM_STATE, state);
                 w.str(attr::SYSTEM_FILESYSTEM_TYPE, &fs.fs_type);
@@ -969,7 +987,7 @@ fn project_snapshot(
                 ("free", fs.free),
                 ("reserved", fs.reserved),
             ] {
-                b.append_f64_dp(m, 0, now, value as f64 / total_f, |w| {
+                b.append_f64_dp(m, None, now, value as f64 / total_f, |w| {
                     w.str(attr::SYSTEM_DEVICE, &fs.device);
                     w.str(attr::SYSTEM_FILESYSTEM_STATE, state);
                     w.str(attr::SYSTEM_FILESYSTEM_TYPE, &fs.fs_type);
@@ -980,7 +998,7 @@ fn project_snapshot(
         }
         if let Some(limit_bytes) = fs.limit_bytes {
             let m = b.begin_updown_i64(metric::FILESYSTEM_LIMIT, "By");
-            b.append_i64_dp(m, start, now, saturating_i64(limit_bytes), |w| {
+            b.append_i64_dp(m, Some(start), now, saturating_i64(limit_bytes), |w| {
                 w.str(attr::SYSTEM_DEVICE, &fs.device);
                 w.str(attr::SYSTEM_FILESYSTEM_TYPE, &fs.fs_type);
                 w.str(attr::SYSTEM_FILESYSTEM_MODE, fs.mode);
@@ -998,7 +1016,7 @@ fn project_snapshot(
         ] {
             b.append_i64_dp(
                 m,
-                cs.get_joined(metric::NETWORK_IO, &net.name, dir, start),
+                Some(cs.get_joined(metric::NETWORK_IO, &net.name, dir, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -1011,7 +1029,7 @@ fn project_snapshot(
         for (dir, value) in [("receive", net.rx_packets), ("transmit", net.tx_packets)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined(metric::NETWORK_PACKET_COUNT, &net.name, dir, start),
+                Some(cs.get_joined(metric::NETWORK_PACKET_COUNT, &net.name, dir, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -1026,7 +1044,7 @@ fn project_snapshot(
         for (dir, value) in [("receive", net.rx_dropped), ("transmit", net.tx_dropped)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined(metric::NETWORK_PACKET_DROPPED, &net.name, dir, start),
+                Some(cs.get_joined(metric::NETWORK_PACKET_DROPPED, &net.name, dir, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -1039,7 +1057,7 @@ fn project_snapshot(
         for (dir, value) in [("receive", net.rx_errors), ("transmit", net.tx_errors)] {
             b.append_i64_dp(
                 m,
-                cs.get_joined(metric::NETWORK_ERRORS, &net.name, dir, start),
+                Some(cs.get_joined(metric::NETWORK_ERRORS, &net.name, dir, start)),
                 now,
                 saturating_i64(value),
                 |w| {
@@ -1059,23 +1077,35 @@ fn project_hugepages(
     hugepages: &HugepageStats,
 ) {
     let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_LIMIT, "{page}");
-    b.append_i64_dp(m, start, now, saturating_i64(hugepages.total), |_| {});
+    b.append_i64_dp(m, Some(start), now, saturating_i64(hugepages.total), |_| {});
     let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_PAGE_SIZE, "By");
     b.append_i64_dp(
         m,
-        start,
+        Some(start),
         now,
         saturating_i64(hugepages.page_size_bytes),
         |_| {},
     );
     let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_RESERVED, "{page}");
-    b.append_i64_dp(m, start, now, saturating_i64(hugepages.reserved), |_| {});
+    b.append_i64_dp(
+        m,
+        Some(start),
+        now,
+        saturating_i64(hugepages.reserved),
+        |_| {},
+    );
     let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_SURPLUS, "{page}");
-    b.append_i64_dp(m, start, now, saturating_i64(hugepages.surplus), |_| {});
+    b.append_i64_dp(
+        m,
+        Some(start),
+        now,
+        saturating_i64(hugepages.surplus),
+        |_| {},
+    );
     let used = hugepages.total.saturating_sub(hugepages.free);
     let m = b.begin_updown_i64(metric::MEMORY_LINUX_HUGEPAGES_USAGE, "{page}");
     for (state, value) in [("used", used), ("free", hugepages.free)] {
-        b.append_i64_dp(m, start, now, saturating_i64(value), |w| {
+        b.append_i64_dp(m, Some(start), now, saturating_i64(value), |w| {
             w.str(attr::SYSTEM_MEMORY_LINUX_HUGEPAGES_STATE, state);
         });
     }
@@ -1083,7 +1113,7 @@ fn project_hugepages(
         let total = hugepages.total as f64;
         let m = b.begin_gauge_f64(metric::MEMORY_LINUX_HUGEPAGES_UTILIZATION, "1");
         for (state, value) in [("used", used), ("free", hugepages.free)] {
-            b.append_f64_dp(m, 0, now, value as f64 / total, |w| {
+            b.append_f64_dp(m, None, now, value as f64 / total, |w| {
                 w.str(attr::SYSTEM_MEMORY_LINUX_HUGEPAGES_STATE, state);
             });
         }
