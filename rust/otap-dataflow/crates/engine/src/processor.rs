@@ -27,14 +27,56 @@ use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
+use crate::stopwatch::StopwatchMetrics;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Stopwatch-relevant slice of a processor `EffectHandler`'s surface.
+///
+/// Implemented by both `local::processor::EffectHandler<PData>` and
+/// `shared::processor::EffectHandler<PData>` so that PData-side stopwatch
+/// hooks (see [`ProcessorSendHook`]) can be written once, generic over
+/// handler kind.
+pub trait StopwatchEffectHandler {
+    /// Whether this node is the start of a stopwatch range.
+    fn is_stopwatch_start(&self) -> bool;
+    /// Whether this node is the end of a stopwatch range.
+    fn is_stopwatch_stop(&self) -> bool;
+    /// Read elapsed nanoseconds since the last send-marker advance and
+    /// advance the marker to "now". Returns 0 when no marker is armed
+    /// (e.g. stopwatches inactive on this pipeline).
+    fn take_elapsed_since_send_marker_ns(&self) -> u64;
+    /// Record a complete stopwatch transit total (nanoseconds) into the
+    /// stop node's local accumulator.
+    fn record_stopwatch_stop(&self, total: u64);
+}
+
+/// Per-`PData` hook called immediately before a processor `EffectHandler`
+/// forwards a message to the output router.
+///
+/// Covers **both** the plain `send_message[_to]` family and the
+/// `send_message_with_source_node[_to]` family — every send method on
+/// every processor handler invokes this hook exactly once. The default
+/// impl is a no-op; PData types with bookkeeping needs (e.g. stopwatch
+/// accumulation on `OtapPdata`) override `before_processor_send`.
+///
+/// `EffectHandler<PData>` is generic but lives in the engine crate, while
+/// some `PData` types need bookkeeping defined in their own crate.
+/// Inherent methods shadow extension-trait methods, so we route
+/// per-`PData` behavior through this trait. PData types with nothing to
+/// do can simply write `impl ProcessorSendHook for MyPData {}`.
+pub trait ProcessorSendHook: Sized {
+    /// Invoked once per message immediately before the processor handler
+    /// forwards it to the output router.
+    fn before_processor_send<H: StopwatchEffectHandler>(&mut self, _handler: &H) {}
+}
 
 /// Processor-local wakeup requirements declared by a processor implementation.
 ///
@@ -147,6 +189,7 @@ pub enum ProcessorWrapper<PData> {
 ///
 /// This allows external control over the message processing loop, useful for testing and custom
 /// processing scenarios.
+#[allow(clippy::large_enum_variant)]
 pub enum ProcessorWrapperRuntime<PData> {
     /// A processor with a `!Send` implementation.
     Local {
@@ -511,6 +554,9 @@ impl<PData> ProcessorWrapper<PData> {
             metrics_reporter,
             node_interests,
             None,
+            false,
+            None,
+            false,
         )
         .await
     }
@@ -522,6 +568,9 @@ impl<PData> ProcessorWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+        stopwatch_is_start: bool,
+        stopwatch_stop_metric: Option<MetricSet<StopwatchMetrics>>,
+        stopwatches_active: bool,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode,
@@ -546,6 +595,11 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
+                effect_handler.set_stopwatch_roles(
+                    stopwatch_is_start,
+                    stopwatch_stop_metric.clone(),
+                    stopwatches_active,
+                );
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -553,11 +607,25 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
+                    if effect_handler.stopwatches_active() {
+                        match &msg {
+                            Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                                if effect_handler.is_stopwatch_stop() =>
+                            {
+                                effect_handler.report_stopwatch();
+                            }
+                            Message::PData(_) => effect_handler.begin_process_timing(),
+                            _ => {}
+                        }
+                    }
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
+                if effect_handler.is_stopwatch_stop() {
+                    effect_handler.report_stopwatch();
+                }
                 processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
@@ -580,6 +648,11 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics);
+                effect_handler.set_stopwatch_roles(
+                    stopwatch_is_start,
+                    stopwatch_stop_metric.clone(),
+                    stopwatches_active,
+                );
 
                 // Start periodic telemetry collection
                 let telemetry_cancel_handle = effect_handler
@@ -587,11 +660,25 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = inbox.recv_when(processor.accept_pdata()).await {
+                    if effect_handler.stopwatches_active() {
+                        match &msg {
+                            Message::Control(NodeControlMsg::CollectTelemetry { .. })
+                                if effect_handler.is_stopwatch_stop() =>
+                            {
+                                effect_handler.report_stopwatch();
+                            }
+                            Message::PData(_) => effect_handler.begin_process_timing(),
+                            _ => {}
+                        }
+                    }
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
+                if effect_handler.is_stopwatch_stop() {
+                    effect_handler.report_stopwatch();
+                }
                 processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
@@ -751,18 +838,26 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::NodeControlMsg::{Config, Shutdown, TimerTick};
+    use crate::control::{
+        Controllable, NodeControlMsg,
+        NodeControlMsg::{Config, Shutdown, TimerTick},
+        pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+    };
+    use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
-    use crate::message::Message;
+    use crate::message::{Message, Receiver, Sender};
+    use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
     use crate::processor::{
         Error, ProcessorRuntimeRequirements, ProcessorWrapper, validate_local_wakeup_requirements,
     };
     use crate::shared::processor as shared;
+    use crate::stopwatch::{StopwatchAttributeSet, StopwatchMetrics};
     use crate::testing::processor::TestRuntime;
     use crate::testing::processor::{TestContext, ValidateContext};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_telemetry::metrics::MetricValue;
     use serde_json::Value;
     use std::ops::Add;
     use std::pin::Pin;
@@ -978,5 +1073,172 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct StopwatchTestPData {
+        stopwatch_compute_ns: u64,
+        stopwatch_active: bool,
+    }
+
+    impl crate::ReceivedAtNode for StopwatchTestPData {
+        fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
+    }
+
+    impl crate::processor::ProcessorSendHook for StopwatchTestPData {
+        fn before_processor_send<H: crate::processor::StopwatchEffectHandler>(
+            &mut self,
+            handler: &H,
+        ) {
+            if !handler.is_stopwatch_start()
+                && !handler.is_stopwatch_stop()
+                && !self.stopwatch_active
+            {
+                return;
+            }
+
+            if handler.is_stopwatch_start() {
+                self.stopwatch_active = true;
+            }
+
+            self.stopwatch_compute_ns = self
+                .stopwatch_compute_ns
+                .saturating_add(handler.take_elapsed_since_send_marker_ns());
+
+            if handler.is_stopwatch_stop() && self.stopwatch_active && self.stopwatch_compute_ns > 0
+            {
+                handler.record_stopwatch_stop(self.stopwatch_compute_ns);
+                self.stopwatch_compute_ns = 0;
+                self.stopwatch_active = false;
+            }
+        }
+    }
+
+    struct SyncOnlyStopwatchProcessor;
+
+    #[async_trait(?Send)]
+    impl local::Processor<StopwatchTestPData> for SyncOnlyStopwatchProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<StopwatchTestPData>,
+            effect_handler: &mut local::EffectHandler<StopwatchTestPData>,
+        ) -> Result<(), Error> {
+            let Message::PData(data) = msg else {
+                return Ok(());
+            };
+
+            let mut value = 0u64;
+            for i in 0..50_000 {
+                value = value.wrapping_add(std::hint::black_box(i));
+            }
+            let _ = std::hint::black_box(value);
+
+            tokio::task::yield_now().await;
+            effect_handler.send_message(data).await?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stopwatch_auto_measures_process_without_timed() {
+        let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
+        let metric_set = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set::<StopwatchMetrics>(StopwatchAttributeSet {
+                stopwatch_name: "auto_measure".into(),
+                start_node: "auto_measure_processor".into(),
+                stop_node: "auto_measure_processor".into(),
+                pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
+            });
+
+        let config = crate::config::ProcessorConfig::new("auto_measure_processor");
+        let node_id = test_node(config.name.clone());
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(
+            "auto_measure_processor",
+        ));
+        let mut processor = ProcessorWrapper::local(
+            SyncOnlyStopwatchProcessor,
+            node_id.clone(),
+            user_config,
+            &config,
+        );
+
+        let (input_tx, input_rx) = otap_df_channel::mpsc::Channel::new(1);
+        processor
+            .set_pdata_receiver(
+                node_id.clone(),
+                Receiver::Local(LocalReceiver::mpsc(input_rx)),
+            )
+            .expect("input receiver should be accepted");
+
+        let (output_tx, output_rx) = otap_df_channel::mpsc::Channel::new(1);
+        processor
+            .set_pdata_sender(
+                node_id,
+                "out".into(),
+                Sender::Local(LocalSender::mpsc(output_tx)),
+            )
+            .expect("output sender should be accepted");
+
+        let control_sender = processor.control_sender();
+        let (metrics_rx, metrics_reporter) =
+            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(8);
+        let collect_metrics_reporter = metrics_reporter.clone();
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(1);
+
+        let local_tasks = tokio::task::LocalSet::new();
+        local_tasks
+            .run_until(async move {
+                let processor_task = tokio::task::spawn_local(async move {
+                    processor
+                        .start_with_completion_metrics(
+                            runtime_ctrl_tx,
+                            completion_tx,
+                            metrics_reporter,
+                            crate::Interests::PROCESS_DURATION,
+                            None,
+                            true,
+                            Some(metric_set),
+                            true,
+                        )
+                        .await
+                });
+
+                input_tx
+                    .send(StopwatchTestPData::default())
+                    .expect("test input should enqueue");
+                let _ = output_rx
+                    .recv()
+                    .await
+                    .expect("processor should forward the test message");
+                control_sender
+                    .send(NodeControlMsg::CollectTelemetry {
+                        metrics_reporter: collect_metrics_reporter,
+                    })
+                    .await
+                    .expect("collect telemetry should enqueue");
+
+                let snapshot =
+                    tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
+                        .await
+                        .expect("stopwatch metric should be reported")
+                        .expect("metrics channel should remain open");
+                processor_task.abort();
+                let _ = processor_task.await;
+
+                let [MetricValue::Mmsc(compute_duration)] = snapshot.get_metrics() else {
+                    panic!("expected one stopwatch MMSC metric");
+                };
+                assert!(
+                    compute_duration.count >= 1,
+                    "stopwatch compute duration should have at least one observation"
+                );
+                assert!(
+                    compute_duration.sum > 0.0,
+                    "stopwatch compute duration sum should be non-zero"
+                );
+            })
+            .await;
     }
 }
