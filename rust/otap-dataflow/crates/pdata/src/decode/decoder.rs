@@ -115,7 +115,10 @@ impl Consumer {
         let record_messages = self.consume_bar(records)?;
         let mut otap_batch = OtapArrowRecords::Metrics(from_record_messages(record_messages)?);
 
-        if otap_batch.get(ArrowPayloadType::UnivariateMetrics).is_none() {
+        if otap_batch
+            .get(ArrowPayloadType::UnivariateMetrics)
+            .is_none()
+        {
             return Err(Error::RecordBatchNotFound {
                 payload_type: ArrowPayloadType::UnivariateMetrics,
             });
