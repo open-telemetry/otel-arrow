@@ -26,6 +26,9 @@ const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
 // AggregationTemporality::Cumulative = 2 (OTLP proto enum value).
 const AGGREGATION_TEMPORALITY_CUMULATIVE: i32 = 2;
 
+#[derive(Clone, Copy)]
+pub(crate) struct MetricHandle(u16);
+
 /// Wraps the per-datapoint attribute builder and hides the dp_id from callers.
 pub(crate) struct DpAttrWriter<'a> {
     attrs: &'a mut StrKeysAttributesRecordBatchBuilder<u32>,
@@ -63,8 +66,8 @@ impl ResourceAttrWriter<'_> {
 
 /// Builds an `OtapArrowRecords::Metrics` batch directly from host metric values.
 ///
-/// Call a `begin_*` method to open a metric, then [`append_i64_dp`] /
-/// [`append_f64_dp`] for each data point.
+/// Call a `begin_*` method to open a metric, then one of the typed data point
+/// appenders for each value.
 /// Call [`finish`] to produce the final batch.
 pub(crate) struct HostMetricsArrowBuilder {
     metrics: MetricsRecordBatchBuilder,
@@ -113,27 +116,27 @@ impl HostMetricsArrowBuilder {
     // ── Metric openers ──────────────────────────────────────────────────────
 
     /// Open a monotonic cumulative Sum metric (i64 data points).
-    pub(crate) fn begin_counter_i64(&mut self, name: &str, unit: &str) -> u16 {
+    pub(crate) fn begin_counter_i64(&mut self, name: &str, unit: &str) -> MetricHandle {
         self.begin_metric(name, unit, MetricType::Sum, true)
     }
 
     /// Open a monotonic cumulative Sum metric (f64 data points).
-    pub(crate) fn begin_counter_f64(&mut self, name: &str, unit: &str) -> u16 {
+    pub(crate) fn begin_counter_f64(&mut self, name: &str, unit: &str) -> MetricHandle {
         self.begin_metric(name, unit, MetricType::Sum, true)
     }
 
     /// Open a non-monotonic cumulative Sum metric / UpDownCounter (i64 data points).
-    pub(crate) fn begin_updown_i64(&mut self, name: &str, unit: &str) -> u16 {
+    pub(crate) fn begin_updown_i64(&mut self, name: &str, unit: &str) -> MetricHandle {
         self.begin_metric(name, unit, MetricType::Sum, false)
     }
 
     /// Open a Gauge metric (f64 data points).
-    pub(crate) fn begin_gauge_f64(&mut self, name: &str, unit: &str) -> u16 {
+    pub(crate) fn begin_gauge_f64(&mut self, name: &str, unit: &str) -> MetricHandle {
         self.begin_metric(name, unit, MetricType::Gauge, false)
     }
 
     /// Open a Gauge metric (i64 data points).
-    pub(crate) fn begin_gauge_i64(&mut self, name: &str, unit: &str) -> u16 {
+    pub(crate) fn begin_gauge_i64(&mut self, name: &str, unit: &str) -> MetricHandle {
         self.begin_metric(name, unit, MetricType::Gauge, false)
     }
 
@@ -143,7 +146,7 @@ impl HostMetricsArrowBuilder {
         unit: &str,
         metric_type: MetricType,
         is_monotonic: bool,
-    ) -> u16 {
+    ) -> MetricHandle {
         let id = self.curr_metric_id;
         self.metrics.append_id(id);
         self.metrics.append_metric_type(metric_type as u8);
@@ -165,16 +168,41 @@ impl HostMetricsArrowBuilder {
             .curr_metric_id
             .checked_add(1)
             .expect("metric_id overflow: more than u16::MAX metrics in one batch");
-        id
+        MetricHandle(id)
     }
 
     // ── Datapoint appenders ─────────────────────────────────────────────────
 
-    /// Append one i64 data point for `metric_id`.
-    /// `start` is `start_time_unix_nano`; use `None` for gauges.
-    pub(crate) fn append_i64_dp<F>(
+    /// Append one i64 Sum data point.
+    pub(crate) fn append_i64_sum_dp<F>(
         &mut self,
-        metric_id: u16,
+        metric: MetricHandle,
+        start: u64,
+        now: u64,
+        value: i64,
+        attrs: F,
+    ) where
+        F: FnOnce(&mut DpAttrWriter<'_>),
+    {
+        self.append_i64_dp(metric, Some(start), now, value, attrs);
+    }
+
+    /// Append one i64 Gauge data point.
+    pub(crate) fn append_i64_gauge_dp<F>(
+        &mut self,
+        metric: MetricHandle,
+        now: u64,
+        value: i64,
+        attrs: F,
+    ) where
+        F: FnOnce(&mut DpAttrWriter<'_>),
+    {
+        self.append_i64_dp(metric, None, now, value, attrs);
+    }
+
+    fn append_i64_dp<F>(
+        &mut self,
+        metric: MetricHandle,
         start: Option<u64>,
         now: u64,
         value: i64,
@@ -184,7 +212,7 @@ impl HostMetricsArrowBuilder {
     {
         let dp_id = self.curr_dp_id;
         self.ndp.append_id(dp_id);
-        self.ndp.append_parent_id(metric_id);
+        self.ndp.append_parent_id(metric.0);
         self.ndp
             .append_start_time_unix_nano(start.map(|v| v as i64));
         self.ndp.append_time_unix_nano(now as i64);
@@ -202,11 +230,36 @@ impl HostMetricsArrowBuilder {
             .expect("dp_id overflow: more than u32::MAX datapoints in one batch");
     }
 
-    /// Append one f64 data point for `metric_id`.
-    /// `start` is `start_time_unix_nano`; use `None` for gauges.
-    pub(crate) fn append_f64_dp<F>(
+    /// Append one f64 Sum data point.
+    pub(crate) fn append_f64_sum_dp<F>(
         &mut self,
-        metric_id: u16,
+        metric: MetricHandle,
+        start: u64,
+        now: u64,
+        value: f64,
+        attrs: F,
+    ) where
+        F: FnOnce(&mut DpAttrWriter<'_>),
+    {
+        self.append_f64_dp(metric, Some(start), now, value, attrs);
+    }
+
+    /// Append one f64 Gauge data point.
+    pub(crate) fn append_f64_gauge_dp<F>(
+        &mut self,
+        metric: MetricHandle,
+        now: u64,
+        value: f64,
+        attrs: F,
+    ) where
+        F: FnOnce(&mut DpAttrWriter<'_>),
+    {
+        self.append_f64_dp(metric, None, now, value, attrs);
+    }
+
+    fn append_f64_dp<F>(
+        &mut self,
+        metric: MetricHandle,
         start: Option<u64>,
         now: u64,
         value: f64,
@@ -216,7 +269,7 @@ impl HostMetricsArrowBuilder {
     {
         let dp_id = self.curr_dp_id;
         self.ndp.append_id(dp_id);
-        self.ndp.append_parent_id(metric_id);
+        self.ndp.append_parent_id(metric.0);
         self.ndp
             .append_start_time_unix_nano(start.map(|v| v as i64));
         self.ndp.append_time_unix_nano(now as i64);
