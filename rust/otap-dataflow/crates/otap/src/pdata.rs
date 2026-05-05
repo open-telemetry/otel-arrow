@@ -711,9 +711,12 @@ fn stopwatch_accumulate<H: StopwatchEffectHandler>(handler: &H, data: &mut OtapP
     if !is_start && !is_stop && !data.has_active_stopwatch() {
         return;
     }
-    let items = data.num_items() as u64;
     let delta_ns = handler.take_elapsed_since_send_marker_ns();
+
+    // Note that num_items() is only called when required at stopwatch start and stop.
+    // It is intentionally not called on every node to minimize performance overhead.
     if is_start {
+        let items: u64 = data.num_items() as u64;
         data.start_stopwatch();
         if items > 0 {
             handler.record_stopwatch_start_items(items);
@@ -724,6 +727,7 @@ fn stopwatch_accumulate<H: StopwatchEffectHandler>(handler: &H, data: &mut OtapP
         if let Some(total) = data.take_stopwatch_compute() {
             handler.record_stopwatch_stop(total);
         }
+        let items: u64 = data.num_items() as u64;
         if items > 0 {
             handler.record_stopwatch_stop_items(items);
         }
