@@ -122,11 +122,11 @@ jobs:
         uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
-      - name: Build and archive tests (default features)
+      - name: Build and archive tests (Complete)
         if: matrix.os != 'ubuntu-24.04-arm'
         run: cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
-      - name: Build and archive tests (Incomplete; reduced features, excludes validation+benchmarks)
+      - name: Build and archive tests (Incomplete)
         if: matrix.os == 'ubuntu-24.04-arm'
         run: |
           cargo nextest archive \
