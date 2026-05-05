@@ -89,8 +89,8 @@ groups:
             config:
               actions:
                 - action: insert
-                  key: pipeline.stage4
-                  value: "4"
+                  key: pipeline.stage3
+                  value: "3"
 
           attr4:
             type: processor:attribute
