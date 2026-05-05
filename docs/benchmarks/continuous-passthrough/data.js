@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777940296705,
+  "lastUpdate": 1777941343611,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "29139614+renovate[bot]@users.noreply.github.com",
-            "name": "renovate[bot]",
-            "username": "renovate[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "3269be94fae53eb7c4a635a65d1aac651ac62105",
-          "message": "chore(deps): update dependency duckdb to v1.5.0 (#2333)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n| [duckdb](https://redirect.github.com/duckdb/duckdb-python)\n([changelog](https://redirect.github.com/duckdb/duckdb-python/releases))\n| `==1.4.4` → `==1.5.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/duckdb/1.5.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/duckdb/1.4.4/1.5.0?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>duckdb/duckdb-python (duckdb)</summary>\n\n###\n[`v1.5.0`](https://redirect.github.com/duckdb/duckdb-python/releases/tag/v1.5.0):\nDuckDB Python 1.5.0 &quot;Variegata&quot;\n\n[Compare\nSource](https://redirect.github.com/duckdb/duckdb-python/compare/v1.4.4...v1.5.0)\n\nThis is the 1.5.0 release of DuckDB's Python bindings. For a list of\nchanges in DuckDB core, have a look at the [DuckDB release\nnotes](https://redirect.github.com/duckdb/duckdb/releases/tag/v1.5.0)\nand [the\nblogpost](https://duckdb.org/2026/03/09/announcing-duckdb-150.html).\n\n##### Breaking Changes\n\n- **Dropped Python 3.9 support.** The minimum supported version is now\nPython 3.10.\n- **Removed deprecated `duckdb.typing` and `duckdb.functional`\nmodules.** These were deprecated in 1.4.0. Use `duckdb.sqltypes` and\n`duckdb.func` instead.\n- **Renamed `column` parameter to `expression`** in relational API\nfunctions (e.g., `min`, `max`, `sum`, `mean`, etc.) to better reflect\nthat these accept expressions, not just column names.\n- **Deprecated `fetch_arrow_table()` and `fetch_record_batch()`** on\nconnections and relations. Use the new `to_arrow_table()` and\n`to_arrow_reader()` methods instead.\n\n##### New Features\n\n- **Polars LazyFrame projection and filter pushdown.** DuckDB can now\npush down projections and filters when scanning Polars LazyFrames,\nincluding support for cast nodes and unstrict casts.\n- **Polars Int128 / UInt128 support.**\n- **VARIANT type support** — Python conversion, NumPy array wrapping,\nand type stubs.\n- **TIME\\_NS type support** — nanosecond-precision time values across\nPython, NumPy, and Spark type systems.\n- **Profiling API** — new `get_profiling_info()` and\n`get_profiling_json()` methods on connections, plus a refactored\n`query_graph` module with improved HTML visualization (dark mode,\nexpandable phases, depth).\n- **`to_arrow_table()` and `to_arrow_reader()`** — new methods on\nconnections and relations as the preferred Arrow export API.\n\n##### Performance\n\n- **`__arrow_c_stream__` on relations** — relations now export via the\nArrow PyCapsule interface using `PhysicalArrowCollector` for zero-copy\nstreaming.\n- **Unified Arrow stream scanning** via `__arrow_c_stream__`, with\nfilter pushdown only when pyarrow is present.\n- **Arrow schema caching** to avoid repeated lookups during scanning.\n- **Arrow object type caching** to avoid repeated detection.\n- **Empty params treated as None for `.sql()`** — avoids unnecessary\nparameter binding overhead.\n- **Simplified GIL management** for `FetchRow`.\n\n##### Bug Fixes\n\n- **Fixed Python object leak in scalar UDFs** — `PyObject_CallObject`\nreturn values are now properly stolen to avoid reference count leaks.\n- **Fixed reference cycle** between connections and relations that could\nprevent garbage collection.\n- **Relations now hold a reference to their connection**, preventing\npremature connection closure.\n- **Fixed fsspec race condition** in the Python filesystem\nimplementation.\n- **Fixed numeric conversion logic** — improved handling of large\nintegers (fallback to VARCHAR) and UNION types.\n- **`pyarrow.dataset` import is now optional** — no longer fails if\npyarrow is installed without the dataset module.\n- **Thrown a reasonable error** when an Arrow array stream has already\nbeen consumed.\n\n##### Build & Packaging\n\n- **jemalloc enabled on Linux x86\\_64 only** (aligned with DuckDB core),\nremoved as a separately bundled extension.\n- **MSVC runtime linked statically** on Windows — eliminates the VS2019\nworkaround from\n[duckdb/duckdb#17991](https://redirect.github.com/duckdb/duckdb/issues/17991).\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am on Monday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My42Ni40IiwidXBkYXRlZEluVmVyIjoiNDMuNjYuNCIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
-          "timestamp": "2026-03-16T15:06:13Z",
-          "tree_id": "9e1a4e0c7ab0d9c0f127f50a2760e8300be90dae",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/3269be94fae53eb7c4a635a65d1aac651ac62105"
-        },
-        "date": 1773684093074,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.0813815593719482,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.46193446596328,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.96686865011218,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 55.12486979166667,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 56.87109375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 475825.1065726199,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 480970.59165678633,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00134,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10983273.822333911,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10923082.83650018,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 177697.69492671313,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "1884c67d731ae445dcab2d6642d7344b37bbad38",
+          "message": "fix(otlp_grpc_exporter): Set accept_compressed in addition to send_compressed (#2829)\n\n# Change Summary\n\nSet `accept_compressed` so that we can process responses if the replies\nare compressed with the same codec.\n\n## What issue does this PR close?\n\n\n* Closes #2828\n\n## How are these changes tested?\n\nI tried them locally and verified the warnings in the issue went away.\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-05-04T23:33:25Z",
+          "tree_id": "5320b9c5a6c8d4ab00dc7b87d62023ae0e477125",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1884c67d731ae445dcab2d6642d7344b37bbad38"
+        },
+        "date": 1777941342653,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.9900990128517151,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.78102318177053,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.248904713987151,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.01328125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.76171875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 6032.745422972894,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6092.475575675596,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003195,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 213528.98204685643,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 176473.58791924306,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
