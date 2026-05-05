@@ -724,11 +724,10 @@ fn stopwatch_accumulate<H: StopwatchEffectHandler>(handler: &H, data: &mut OtapP
         // num_items() is only called at stopwatch boundaries to keep
         // overhead off the per-node hot path. At the stop node this
         // reflects the post-process count — what is actually leaving
-        // the stopwatch range.
-        let signals: u64 = data.num_items() as u64;
-        if signals > 0 {
-            handler.record_stopwatch_stop_signals(signals);
-        }
+        // the stopwatch range. Recorded unconditionally (including 0)
+        // so signals.outgoing.count stays in lockstep with
+        // compute.duration.count and 0-out traversals stay visible.
+        handler.record_stopwatch_stop_signals(data.num_items() as u64);
     }
 }
 
@@ -740,13 +739,13 @@ impl FlowMeasurementHook for OtapPdata {
     /// At the stopwatch start node, count items *entering* the range —
     /// i.e. before `process()` runs and may filter or drop them. This
     /// gives the true input volume to compare against the stop-node
-    /// output volume recorded in [`stopwatch_accumulate`].
+    /// output volume recorded in [`stopwatch_accumulate`]. Recorded
+    /// unconditionally (including 0) so signals.incoming.count stays in
+    /// lockstep with compute.duration.count and 0-in traversals stay
+    /// visible.
     fn after_processor_receive<H: StopwatchEffectHandler>(&mut self, handler: &H) {
         if handler.is_stopwatch_start() {
-            let signals: u64 = self.num_items() as u64;
-            if signals > 0 {
-                handler.record_stopwatch_start_signals(signals);
-            }
+            handler.record_stopwatch_start_signals(self.num_items() as u64);
         }
     }
 }
@@ -859,7 +858,9 @@ impl otap_df_engine::ReceivedAtNode for OtapPdata {
 mod test {
     use super::*;
 
-    use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use crate::testing::{
+        TestCallData, create_empty_test_pdata, create_test_pdata, next_ack, next_nack,
+    };
     use otap_df_channel::mpsc::Channel as LocalChannel;
     use otap_df_engine::ConsumerEffectHandlerExtension;
     use otap_df_engine::control::{
@@ -891,8 +892,11 @@ mod test {
         is_stop: bool,
         elapsed_ns: u64,
         stop_total: Cell<u64>,
+        stop_total_calls: Cell<u32>,
         start_signals: Cell<u64>,
+        start_signals_calls: Cell<u32>,
         stop_signals: Cell<u64>,
+        stop_signals_calls: Cell<u32>,
     }
 
     impl FakeStopwatchHandler {
@@ -902,8 +906,11 @@ mod test {
                 is_stop: false,
                 elapsed_ns,
                 stop_total: Cell::new(0),
+                stop_total_calls: Cell::new(0),
                 start_signals: Cell::new(0),
+                start_signals_calls: Cell::new(0),
                 stop_signals: Cell::new(0),
+                stop_signals_calls: Cell::new(0),
             }
         }
 
@@ -913,8 +920,11 @@ mod test {
                 is_stop: true,
                 elapsed_ns,
                 stop_total: Cell::new(0),
+                stop_total_calls: Cell::new(0),
                 start_signals: Cell::new(0),
+                start_signals_calls: Cell::new(0),
                 stop_signals: Cell::new(0),
+                stop_signals_calls: Cell::new(0),
             }
         }
     }
@@ -934,14 +944,19 @@ mod test {
 
         fn record_stopwatch_stop(&self, total: u64) {
             self.stop_total.set(total);
+            self.stop_total_calls.set(self.stop_total_calls.get() + 1);
         }
 
         fn record_stopwatch_start_signals(&self, signals: u64) {
             self.start_signals.set(signals);
+            self.start_signals_calls
+                .set(self.start_signals_calls.get() + 1);
         }
 
         fn record_stopwatch_stop_signals(&self, signals: u64) {
             self.stop_signals.set(signals);
+            self.stop_signals_calls
+                .set(self.stop_signals_calls.get() + 1);
         }
     }
 
@@ -963,6 +978,39 @@ mod test {
         pdata.after_processor_receive(&stop_handler);
         pdata.before_processor_send(&stop_handler);
         assert_eq!(stop_handler.stop_signals.get(), signals);
+        assert!(stop_handler.stop_total.get() > 0);
+    }
+
+    /// A 0-item batch must still produce one record() call on each MMSC,
+    /// so signals.incoming.count, signals.outgoing.count, and
+    /// compute.duration.count stay in lockstep with the number of
+    /// traversals. Hiding 0-item batches would diverge the counts and
+    /// erase a useful starvation/over-filter signal.
+    #[test]
+    fn stopwatch_hooks_record_zero_item_batches() {
+        let mut pdata = create_empty_test_pdata();
+        assert_eq!(pdata.num_items(), 0);
+
+        // Start node: after_processor_receive must record (incoming = 0)
+        // even though the batch is empty.
+        let start_handler = FakeStopwatchHandler::start(5);
+        pdata.after_processor_receive(&start_handler);
+        pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.start_signals_calls.get(), 1);
+        assert_eq!(start_handler.start_signals.get(), 0);
+        assert_eq!(start_handler.stop_signals_calls.get(), 0);
+
+        // Stop node: before_processor_send must record both
+        // compute.duration AND outgoing = 0, in lockstep.
+        let stop_handler = FakeStopwatchHandler::stop(7);
+        pdata.after_processor_receive(&stop_handler);
+        pdata.before_processor_send(&stop_handler);
+        assert_eq!(
+            stop_handler.stop_total_calls.get(),
+            stop_handler.stop_signals_calls.get(),
+            "compute.duration and signals.outgoing must record together for parity"
+        );
+        assert_eq!(stop_handler.stop_signals.get(), 0);
         assert!(stop_handler.stop_total.get() > 0);
     }
 
