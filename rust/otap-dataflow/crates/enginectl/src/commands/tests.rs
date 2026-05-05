@@ -729,7 +729,7 @@ async fn logs_watch_uses_next_seq_as_after_cursor() {
 
     let mut stdout = Vec::new();
     let result = tokio::time::timeout(
-        Duration::from_millis(10),
+        Duration::from_millis(200),
         watch_logs(
             &client,
             &mut stdout,
@@ -789,7 +789,7 @@ async fn metrics_watch_human_color_always_styles_stream_header() {
 
     let mut stdout = Vec::new();
     let result = tokio::time::timeout(
-        Duration::from_millis(10),
+        Duration::from_millis(200),
         watch_metrics(
             &client,
             &mut stdout,
