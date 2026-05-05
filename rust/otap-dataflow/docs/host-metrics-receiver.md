@@ -10,7 +10,7 @@ Receiver URN: `urn:otel:receiver:host_metrics`
 
 Target crate: `crates/core-nodes`
 
-Target module: `crates/core-nodes/src/receivers/host_metrics`
+Target module: `crates/core-nodes/src/receivers/host_metrics_receiver`
 
 The issue explicitly asks for `core-nodes`. If maintainers prefer to stage this
 receiver in `contrib-nodes` while the implementation and system semantic
@@ -99,7 +99,7 @@ partial scrape behavior that emits successfully collected metrics.
 Use a narrow module layout and keep the boundaries explicit:
 
 ```text
-crates/core-nodes/src/receivers/host_metrics/
+crates/core-nodes/src/receivers/host_metrics_receiver/
   mod.rs
   config.rs
   metrics.rs
@@ -215,10 +215,10 @@ Rules:
 - `include_connection_count: true` is invalid in v1.
 - `processes.mode` only accepts `summary` in v1.
 - `processes.mode: summary` emits `system.process.count` and
-  `system.process.created`; `system.process.count` is limited to `running` and
-  `blocked` states from `/proc/stat`. `blocked` is a documented custom
-  `process.state` value because the current registry has no well-known value
-  for `procs_blocked`. It must not emit per-PID series or PID attributes.
+  `system.process.created`; `system.process.count` is limited to registered
+  `process.state` values. The v1 implementation emits `running` from
+  `/proc/stat`. It parses `procs_blocked` but does not emit it because
+  `blocked` is not a registered `process.state` value.
 - The load family is not shown in the default example because Semantic
   Conventions 1.41.0 does not register a load metric. If maintainers choose an
   experimental Linux load metric, add it as an explicit opt-in.
@@ -355,10 +355,13 @@ must not call blocking `statfs` directly on the receiver task. Use a bounded
 blocking worker path with per-mount timeout/cancellation behavior, and skip
 remote filesystems plus known virtual filesystem types by default.
 
-For process summary, use `/proc/stat` fields first: `processes`,
-`procs_running`, and `procs_blocked`. Do not walk `/proc/<pid>/stat` in the v1
-default path. A per-PID walk is reserved for future richer process modes and
-must tolerate PIDs disappearing between directory read and file read.
+For process summary, use `/proc/stat` fields first. Project `processes` into
+`system.process.created` and `procs_running` into `system.process.count` with
+`process.state=running`. Parse `procs_blocked` for future use, but do not emit
+it in v1 because `blocked` is not a registered `process.state` value. Do not
+walk `/proc/<pid>/stat` in the v1 default path. A per-PID walk is reserved for
+future richer process modes and must tolerate PIDs disappearing between
+directory read and file read.
 
 ## Scheduler
 
@@ -550,7 +553,7 @@ timestamp.
 | `system.network.packet.count` | Yes | Counter | `{packet}` | `system.device`, `network.io.direction`. |
 | `system.network.packet.dropped` | Yes | Counter | `{packet}` | `network.interface.name`, `network.io.direction`. |
 | `system.network.errors` | Yes | Counter | `{error}` | `network.interface.name`, `network.io.direction`. |
-| `system.process.count` | Yes | UpDownCounter | `{process}` | `process.state`; v1 summary emits `running` and custom `blocked` from `/proc/stat`. |
+| `system.process.count` | Yes | UpDownCounter | `{process}` | `process.state`; v1 summary emits `running` from `/proc/stat`. `procs_blocked` is parsed but not emitted because `blocked` is not a registered value. |
 | `system.process.created` | Yes | Counter | `{process}` | Cumulative process creations from `/proc/stat`. |
 
 CPU time and utilization aggregate across logical CPUs by default because
@@ -646,14 +649,16 @@ Initial metric set:
 | `families_scraped` | Counter | `{family}` | Count due families processed. |
 | `scrape_duration_ns` | Mmsc | `ns` | Scrape duration distribution. |
 | `scrape_lag_ns` | Mmsc | `ns` | Scheduled time to actual start. |
-| `source_read_errors` | Counter | `{error}` | Attributes: `family`, `error_class`. |
-| `partial_errors` | Counter | `{error}` | Attributes: `family`, `error_class`. |
+| `source_read_errors` | Counter | `{error}` | Total source read errors seen during scrapes. |
+| `partial_errors` | Counter | `{error}` | Source read errors skipped because other families succeeded. |
 | `batches_sent` | Counter | `{batch}` | Downstream sends. |
-| `send_failures` | Counter | `{error}` | Attribute: `error_class`. |
+| `send_failures` | Counter | `{error}` | Downstream send failures. |
 
-Use `#[attribute_set(name = "...")]` for the low-cardinality attribute set
-covering `family` and `error_class`. Do not put source paths or device names
-into receiver self-observability metric attributes.
+The current internal `MetricSet` API does not support attributes on individual
+metric observations. The implementation therefore uses aggregate counters and a
+code TODO to decide whether fixed per-family/error-class counters are needed
+later. Do not put source paths or device names into receiver
+self-observability metric names or attributes.
 
 ## Validation Plan
 

@@ -1,5 +1,7 @@
 # Host Metrics Receiver
 
+<!-- markdownlint-disable MD013 -->
+
 **URN:** `urn:otel:receiver:host_metrics`
 
 Linux host metrics receiver backed by procfs and sysfs. It emits OpenTelemetry
@@ -11,37 +13,91 @@ network, and aggregate process counts.
 Minimal configuration:
 
 ```yaml
-receivers:
-  host_metrics:
-    collection_interval: 10s
+groups:
+  host:
+    pipelines:
+      collect:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          host_metrics:
+            type: receiver:host_metrics
+            config:
+              collection_interval: 10s
+          publish:
+            type: exporter:topic
+            config:
+              topic: host_metrics
+        connections:
+          - from: host_metrics
+            to: publish
 ```
 
 Collect from a host root mounted into a container:
 
 ```yaml
-receivers:
-  host_metrics:
-    collection_interval: 10s
-    host_view:
-      root_path: /host
-      validation: fail_selected
+groups:
+  host:
+    pipelines:
+      collect:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          host_metrics:
+            type: receiver:host_metrics
+            config:
+              collection_interval: 10s
+              host_view:
+                root_path: /host
+                validation: fail_selected
+          publish:
+            type: exporter:topic
+            config:
+              topic: host_metrics
+        connections:
+          - from: host_metrics
+            to: publish
 ```
 
 Enable selected opt-in metrics:
 
 ```yaml
-receivers:
-  host_metrics:
-    families:
-      cpu:
-        utilization: true
-      memory:
-        limit: true
-        hugepages: true
-      disk:
-        limit: true
-      filesystem:
-        limit: true
+groups:
+  host:
+    pipelines:
+      collect:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          host_metrics:
+            type: receiver:host_metrics
+            config:
+              families:
+                cpu:
+                  utilization: true
+                memory:
+                  limit: true
+                  hugepages: true
+                disk:
+                  limit: true
+                filesystem:
+                  limit: true
+          publish:
+            type: exporter:topic
+            config:
+              topic: host_metrics
+        connections:
+          - from: host_metrics
+            to: publish
 ```
 
 ## Configuration Options
@@ -65,34 +121,60 @@ receivers:
 Families are `cpu`, `memory`, `paging`, `system`, `disk`, `filesystem`,
 `network`, and `processes`.
 
+Host-wide collection must run in a one-core source pipeline. Use a topic
+exporter to fan out to multicore downstream processing when needed.
+
 ## Filters
 
 Disk, filesystem, and network families support include and exclude filters.
 Filter `match_type` values are `strict`, `glob`, and `regexp`.
 
 ```yaml
-receivers:
-  host_metrics:
-    families:
-      disk:
-        exclude:
-          match_type: glob
-          devices: ["loop*", "ram*"]
-      network:
-        exclude:
-          match_type: strict
-          interfaces: ["lo"]
-      filesystem:
-        exclude_fs_types:
-          match_type: strict
-          fs_types: ["tmpfs", "proc", "sysfs"]
+groups:
+  host:
+    pipelines:
+      collect:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          host_metrics:
+            type: receiver:host_metrics
+            config:
+              families:
+                disk:
+                  exclude:
+                    match_type: glob
+                    devices: ["loop*", "ram*"]
+                network:
+                  exclude:
+                    match_type: strict
+                    interfaces: ["lo"]
+                filesystem:
+                  exclude_fs_types:
+                    match_type: strict
+                    fs_types: ["tmpfs", "proc", "sysfs"]
+          publish:
+            type: exporter:topic
+            config:
+              topic: host_metrics
+        connections:
+          - from: host_metrics
+            to: publish
 ```
 
 ## Current Limits
 
 - Linux only.
+- Load metrics are not emitted in v1 because Semantic Conventions 1.41.0 does
+  not register a system load metric.
 - `families.cpu.per_cpu` is rejected in v1.
 - `families.network.include_connection_count` is rejected in v1.
 - Process metrics are aggregate host summaries, not per-process scrapes.
+- `system.process.count` emits the registered `process.state=running` summary.
+  Linux `procs_blocked` is parsed but not emitted because `blocked` is not a
+  registered `process.state` value.
 - Filesystem collection can time out individual `statvfs` calls; avoid enabling
   remote filesystems unless the host environment is known to be healthy.
