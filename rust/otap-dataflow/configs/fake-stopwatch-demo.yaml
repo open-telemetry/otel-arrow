@@ -19,7 +19,7 @@
 #   - stopwatch.items.produced   (MMSC, items observed at the stop node)
 #
 # With the sampler in place, `items.consumed` (at attr1) reflects the full
-# input volume while `items.produced` (at attr5) reflects roughly 1/3 of it,
+# input volume while `items.produced` (at attr4) reflects roughly 1/3 of it,
 # so the difference is directly visible.
 #
 # Note: only non-overlapping stopwatch ranges are supported. A message can be
