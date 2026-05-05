@@ -581,7 +581,7 @@ impl FilterPlan {
                 }
 
                 if expr_source.expr_type.is_concrete() {
-                    // since the type we're not equal, and we know what type exactly the
+                    // since the types were not equal, and we know what type exactly the
                     // expression will return, we know the types do not match here:
                     return Ok(Some(FilterPlan::from(lit(false))));
                 }
