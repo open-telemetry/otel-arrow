@@ -61,7 +61,7 @@ use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
-use datafusion::functions::string::{concat, concat_ws, lower, replace, upper};
+use datafusion::functions::string::{concat, concat_ws, lower, replace, upper, uuid};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
@@ -78,14 +78,14 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{
     ENCODE_FUNC_NAME, LOWER_CASE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME,
-    UPPER_CASE_FUNC_NAME,
+    UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME,
 };
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::functions::{arity_range, regexp_substr, substring};
+use crate::pipeline::functions::{arity_range, regexp_substr, substring, uuidv7};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
@@ -549,11 +549,17 @@ impl ExprLogicalPlanner {
             }
         }
 
-        if invoke_arg_exprs.is_empty() {
-            // TODO: support functions with zero arguments, such as `now()`.
-            Err(Error::NotYetSupportedError {
-                message: "Only functions with one or more arguments currently supported".into(),
-            })
+        let (arg_exprs, source_scope, source_requires_dict_downcast) = if invoke_arg_exprs
+            .is_empty()
+        {
+            // For zero-arg functions (e.g. `uuid()`, `uuidv7()`), evaluate against the root
+            // batch so that volatile UDFs produce one value per row rather than a single
+            // scalar that gets broadcast across rows.
+            (
+                Vec::new(),
+                LogicalExprDataSource::DataSource(DataScope::Root),
+                false,
+            )
         } else {
             let scalar_arg_exprs = invoke_arg_exprs
                 .iter()
@@ -567,30 +573,28 @@ impl ExprLogicalPlanner {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            let (arg_exprs, source_scope, source_requires_dict_downcast) =
-                self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?;
+            self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?
+        };
 
-            let mut logical_expr =
-                Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
+        let mut logical_expr =
+            Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
 
-            if let Some(data_type) = df_udf.cast_result_to {
-                logical_expr = cast(logical_expr, data_type)
-            }
-
-            // TODO: currently this will eagerly remove dictionary encoding when projecting the
-            // source if dictionary encoding is not supported by the function being invoked.
-            // However there may be cases where the overall expression may evaluate faster on
-            // dict-encoded data and we may wish to defer removing the dict encoding.
-            let requires_dict_downcast =
-                source_requires_dict_downcast | df_udf.requires_dict_downcast;
-
-            Ok(ScopedLogicalExpr {
-                logical_expr,
-                expr_type: df_udf.return_type,
-                source: source_scope,
-                requires_dict_downcast,
-            })
+        if let Some(data_type) = df_udf.cast_result_to {
+            logical_expr = cast(logical_expr, data_type)
         }
+
+        // TODO: currently this will eagerly remove dictionary encoding when projecting the
+        // source if dictionary encoding is not supported by the function being invoked.
+        // However there may be cases where the overall expression may evaluate faster on
+        // dict-encoded data and we may wish to defer removing the dict encoding.
+        let requires_dict_downcast = source_requires_dict_downcast | df_udf.requires_dict_downcast;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr,
+            expr_type: df_udf.return_type,
+            source: source_scope,
+            requires_dict_downcast,
+        })
     }
 
     fn plan_function_args<'a>(
@@ -830,6 +834,8 @@ impl DataFusionFunctionDef {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
             }
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
+            UUID_FUNC_NAME => Self::new(uuid(), ExprLogicalType::String, false, None),
+            UUIDV7_FUNC_NAME => Self::new(uuidv7(), ExprLogicalType::String, false, None),
             UPPER_CASE_FUNC_NAME => Self::new(upper(), ExprLogicalType::String, true, None),
             LOWER_CASE_FUNC_NAME => Self::new(lower(), ExprLogicalType::String, true, None),
             _ => return None,
@@ -3912,5 +3918,68 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let expected_col = Arc::new(StringArray::from(vec!["hello rust", "foo qux baz"]));
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    fn run_uuid_function_test(func_name: &str, expected_version: usize) {
+        use std::collections::HashSet;
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![],
+        ));
+
+        let functions = [PipelineFunction::new_external(func_name, vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_arr = match result.map(|r| r.values) {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => panic!("expected Array, got {otherwise:?}"),
+        };
+
+        let str_arr = result_arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap_or_else(|| panic!("expected StringArray, got {result_arr:?}"));
+        assert_eq!(str_arr.len(), 3);
+
+        let unique: HashSet<&str> = str_arr.iter().map(|v| v.unwrap()).collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "expected one distinct UUID per row from {func_name}, got {unique:?}"
+        );
+
+        for value in str_arr.iter().flatten() {
+            let parsed = ::uuid::Uuid::parse_str(value)
+                .unwrap_or_else(|e| panic!("expected valid UUID from {func_name}: {value}: {e}"));
+            assert_eq!(
+                parsed.get_version_num(),
+                expected_version,
+                "expected v{expected_version} UUID from {func_name}, got {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_invocation_uuid_v4() {
+        run_uuid_function_test(UUID_FUNC_NAME, 4);
+    }
+
+    #[test]
+    fn test_function_invocation_uuid_v7() {
+        run_uuid_function_test(UUIDV7_FUNC_NAME, 7);
     }
 }
