@@ -1,0 +1,78 @@
+# Dashboard manifest.
+#
+# Single source of truth for which suites and comparisons are part of the
+# dashboard. All paths are resolved relative to this file's directory.
+#
+# Consumed by dashboard/scripts/dashboard.py:
+#   - `dashboard.py build` (builds the static site)
+#   - `dashboard.py run`   (resolves which suites are runnable)
+#   - `dashboard.py serve` (locates the site root)
+
+site_root: site
+
+# Variables passed straight through to Jinja template rendering at the top
+# level (e.g. `{{ df_engine_image }}`). The scripts have no special
+# knowledge of these keys -- add or remove as templates require.
+variables:
+  df_engine_image: df_engine:latest
+  otelcol_image: otel/opentelemetry-collector-contrib:latest
+  fluent_bit_image: fluent/fluent-bit:latest
+  vector_image: timberio/vector:latest-debian
+  rotel_image: streamfold/rotel:latest
+
+# Allowed values for every meta key a suite may declare. The build validates
+# that each suite's `meta` block uses only these keys and only these values.
+# Suites may omit any key. List-typed meta fields (e.g. protocols) must have
+# every element in the allowed set.
+meta:
+  binary: [dfe, otc, fluentbit, vector, rotel]
+  protocols: [otap, otlp, otlphttp]
+  signals: [logs, metrics, traces]
+  compression: [none, gzip, zstd]
+
+suites:
+  - suites/dfe/dfe-logs-otap-gzip-baseline.yaml
+  - suites/dfe/dfe-logs-otap-gzip-batch.yaml
+  - suites/dfe/dfe-logs-otap-none-attr.yaml
+  - suites/dfe/dfe-logs-otap-none-baseline.yaml
+  - suites/dfe/dfe-logs-otap-none-batch.yaml
+  - suites/dfe/dfe-logs-otap-none-filter.yaml
+  - suites/dfe/dfe-logs-otap-zstd-baseline.yaml
+  - suites/dfe/dfe-logs-otap-zstd-batch.yaml
+  - suites/dfe/dfe-logs-otlp-gzip-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-gzip-batch.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr.yaml
+  - suites/dfe/dfe-logs-otlp-none-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-none-batch.yaml
+  - suites/dfe/dfe-logs-otlp-none-filter.yaml
+  - suites/dfe/dfe-logs-otlp-zstd-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-zstd-batch.yaml
+  - suites/dfe/dfe-logs-otlphttp-none-baseline.yaml
+  - suites/fluentbit/fluentbit-logs-otlp-none-baseline.yaml
+  - suites/fluentbit/fluentbit-logs-otlphttp-gzip-baseline.yaml
+  - suites/fluentbit/fluentbit-logs-otlphttp-none-baseline.yaml
+  - suites/otc/otc-logs-otap-gzip-baseline.yaml
+  - suites/otc/otc-logs-otap-none-baseline.yaml
+  - suites/otc/otc-logs-otap-zstd-baseline.yaml
+  - suites/otc/otc-logs-otlp-gzip-baseline.yaml
+  - suites/otc/otc-logs-otlp-gzip-batch.yaml
+  - suites/otc/otc-logs-otlp-none-baseline.yaml
+  - suites/otc/otc-logs-otlp-none-batch.yaml
+  - suites/otc/otc-logs-otlp-none-filter.yaml
+  - suites/otc/otc-logs-otlp-zstd-baseline.yaml
+  - suites/otc/otc-logs-otlp-zstd-batch.yaml
+  - suites/otc/otc-logs-otlphttp-none-baseline.yaml
+  - suites/rotel/rotel-logs-otlp-gzip-baseline.yaml
+  - suites/rotel/rotel-logs-otlp-none-baseline.yaml
+  - suites/rotel/rotel-logs-otlphttp-gzip-baseline.yaml
+  - suites/rotel/rotel-logs-otlphttp-none-baseline.yaml
+  - suites/vector/vector-logs-otlphttp-gzip-baseline.yaml
+  - suites/vector/vector-logs-otlphttp-none-baseline.yaml
+
+comparisons:
+  - comparisons/dfe_batch_processor.yaml
+  - comparisons/engine_batch_processing.yaml
+  - comparisons/engines_and_protocols.yaml
+  - comparisons/engines_otlp_baseline.yaml
+  - comparisons/filter_processor.yaml
+  - comparisons/passthrough.yaml

@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Telemetry Engine Benchmark Dashboard</title>
+  <link rel="stylesheet" href="shared/styles.css">
+</head>
+<body>
+  <div class="wip-banner" role="alert">
+    <span class="wip-icon" aria-hidden="true">⚠️</span>
+    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>
+    <span class="wip-icon" aria-hidden="true">⚠️</span>
+  </div>
+  <div class="wrap">
+    <h1>Telemetry Engine Benchmark Dashboard</h1>
+    <div class="sub">Suite-based comparison of OTel Dataflow Engine (DFE) and OTel Collector (OTC) benchmark results.</div>
+    <div id="app"></div>
+    <div id="comparison-cards"></div>
+  </div>
+
+  <div id="run-detail-modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <div id="run-detail-title" class="modal-title"></div>
+        <button id="run-detail-close" class="modal-close" type="button">Close</button>
+      </div>
+      <div id="run-detail-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>
+  <script src="data/suite/dfe_logs_otap_gzip_baseline/data.js"></script>
+  <script src="data/suite/dfe_logs_otap_gzip_batch/data.js"></script>
+  <script src="data/suite/dfe_logs_otap_none_baseline/data.js"></script>
+  <script src="data/suite/dfe_logs_otap_none_batch/data.js"></script>
+  <script src="data/suite/dfe_logs_otap_none_filter/data.js"></script>
+  <script src="data/suite/dfe_logs_otap_zstd_baseline/data.js"></script>
+  <script src="data/suite/dfe_logs_otap_zstd_batch/data.js"></script>
+  <script src="data/suite/dfe_logs_otlp_gzip_baseline/data.js"></script>
+  <script src="data/suite/dfe_logs_otlp_gzip_batch/data.js"></script>
+  <script src="data/suite/dfe_logs_otlp_none_baseline/data.js"></script>
+  <script src="data/suite/dfe_logs_otlp_none_batch/data.js"></script>
+  <script src="data/suite/dfe_logs_otlp_none_filter/data.js"></script>
+  <script src="data/suite/dfe_logs_otlp_zstd_baseline/data.js"></script>
+  <script src="data/suite/dfe_logs_otlp_zstd_batch/data.js"></script>
+  <script src="data/suite/dfe_logs_otlphttp_none_baseline/data.js"></script>
+  <script src="data/suite/fluentbit_logs_otlp_none_baseline/data.js"></script>
+  <script src="data/suite/fluentbit_logs_otlphttp_gzip_baseline/data.js"></script>
+  <script src="data/suite/fluentbit_logs_otlphttp_none_baseline/data.js"></script>
+  <script src="data/suite/otc_logs_otap_gzip_baseline/data.js"></script>
+  <script src="data/suite/otc_logs_otap_none_baseline/data.js"></script>
+  <script src="data/suite/otc_logs_otap_zstd_baseline/data.js"></script>
+  <script src="data/suite/otc_logs_otlp_gzip_baseline/data.js"></script>
+  <script src="data/suite/otc_logs_otlp_gzip_batch/data.js"></script>
+  <script src="data/suite/otc_logs_otlp_none_baseline/data.js"></script>
+  <script src="data/suite/otc_logs_otlp_none_batch/data.js"></script>
+  <script src="data/suite/otc_logs_otlp_none_filter/data.js"></script>
+  <script src="data/suite/otc_logs_otlp_zstd_baseline/data.js"></script>
+  <script src="data/suite/otc_logs_otlp_zstd_batch/data.js"></script>
+  <script src="data/suite/otc_logs_otlphttp_none_baseline/data.js"></script>
+  <script src="data/suite/rotel_logs_otlp_gzip_baseline/data.js"></script>
+  <script src="data/suite/rotel_logs_otlp_none_baseline/data.js"></script>
+  <script src="data/suite/rotel_logs_otlphttp_gzip_baseline/data.js"></script>
+  <script src="data/suite/rotel_logs_otlphttp_none_baseline/data.js"></script>
+  <script src="data/suite/vector_logs_otlphttp_gzip_baseline/data.js"></script>
+  <script src="data/suite/vector_logs_otlphttp_none_baseline/data.js"></script>
+  <script>window.COMPARISONS = [
+  {
+    "slug": "dfe_batch_processor",
+    "name": "DFE Batch Processor",
+    "description": "Compare the effect of the batch processor on DFE logs throughput across protocols and compression methods",
+    "suites": [
+      {
+        "name": "DFE OTAP Baseline (None)",
+        "slug": "dfe_logs_otap_none_baseline",
+        "short": "OTAP/None (No Batch)"
+      },
+      {
+        "name": "DFE OTAP Batch (None)",
+        "slug": "dfe_logs_otap_none_batch",
+        "short": "OTAP/None (Batch)"
+      },
+      {
+        "name": "DFE OTAP Baseline (Gzip)",
+        "slug": "dfe_logs_otap_gzip_baseline",
+        "short": "OTAP/Gzip (No Batch)"
+      },
+      {
+        "name": "DFE OTAP Batch (Gzip)",
+        "slug": "dfe_logs_otap_gzip_batch",
+        "short": "OTAP/Gzip (Batch)"
+      },
+      {
+        "name": "DFE OTAP Baseline (Zstd)",
+        "slug": "dfe_logs_otap_zstd_baseline",
+        "short": "OTAP/Zstd (No Batch)"
+      },
+      {
+        "name": "DFE OTAP Batch (Zstd)",
+        "slug": "dfe_logs_otap_zstd_batch",
+        "short": "OTAP/Zstd (Batch)"
+      }
+    ]
+  },
+  {
+    "slug": "engine_batch_processing",
+    "name": "Batch Processing",
+    "description": "Compare the effect of the batching across engines",
+    "suites": [
+      {
+        "name": "DFE OTAP Baseline (None)",
+        "slug": "dfe_logs_otap_none_baseline",
+        "short": "DFE OTAP/None (No Batch)"
+      },
+      {
+        "name": "DFE OTAP Batch (None)",
+        "slug": "dfe_logs_otap_none_batch",
+        "short": "DFE OTAP/None (Batch)"
+      },
+      {
+        "name": "DFE OTAP Baseline (Gzip)",
+        "slug": "dfe_logs_otap_gzip_baseline",
+        "short": "DFE OTAP/Gzip (No Batch)"
+      },
+      {
+        "name": "DFE OTAP Batch (Gzip)",
+        "slug": "dfe_logs_otap_gzip_batch",
+        "short": "DFE OTAP/Gzip (Batch)"
+      },
+      {
+        "name": "DFE OTAP Baseline (Zstd)",
+        "slug": "dfe_logs_otap_zstd_baseline",
+        "short": "DFE OTAP/Zstd (No Batch)"
+      },
+      {
+        "name": "DFE OTAP Batch (Zstd)",
+        "slug": "dfe_logs_otap_zstd_batch",
+        "short": "DFE OTAP/Zstd (Batch)"
+      },
+      {
+        "name": "DFE OTLP Baseline (None)",
+        "slug": "dfe_logs_otlp_none_baseline",
+        "short": "DFE OTLP/None (No Batch)"
+      },
+      {
+        "name": "DFE OTLP Batch (None)",
+        "slug": "dfe_logs_otlp_none_batch",
+        "short": "DFE OTLP/None (Batch)"
+      },
+      {
+        "name": "DFE OTLP Baseline (Gzip)",
+        "slug": "dfe_logs_otlp_gzip_baseline",
+        "short": "DFE OTLP/Gzip (No Batch)"
+      },
+      {
+        "name": "DFE OTLP Batch (Gzip)",
+        "slug": "dfe_logs_otlp_gzip_batch",
+        "short": "DFE OTLP/Gzip (Batch)"
+      },
+      {
+        "name": "DFE OTLP Baseline (Zstd)",
+        "slug": "dfe_logs_otlp_zstd_baseline",
+        "short": "DFE OTLP/Zstd (No Batch)"
+      },
+      {
+        "name": "DFE OTLP Batch (Zstd)",
+        "slug": "dfe_logs_otlp_zstd_batch",
+        "short": "DFE OTLP/Zstd (Batch)"
+      },
+      {
+        "name": "OTC OTLP Baseline (None)",
+        "slug": "otc_logs_otlp_none_baseline",
+        "short": "OTC OTLP/None (No Batch)"
+      },
+      {
+        "name": "OTC OTLP Batch (None)",
+        "slug": "otc_logs_otlp_none_batch",
+        "short": "OTC OTLP/None (Batch)"
+      },
+      {
+        "name": "OTC OTLP Baseline (Gzip)",
+        "slug": "otc_logs_otlp_gzip_baseline",
+        "short": "OTC OTLP/Gzip (No Batch)"
+      },
+      {
+        "name": "OTC OTLP Batch (Gzip)",
+        "slug": "otc_logs_otlp_gzip_batch",
+        "short": "OTC OTLP/Gzip (Batch)"
+      },
+      {
+        "name": "OTC OTLP Baseline (Zstd)",
+        "slug": "otc_logs_otlp_zstd_baseline",
+        "short": "OTC OTLP/Zstd (No Batch)"
+      },
+      {
+        "name": "OTC OTLP Batch (Zstd)",
+        "slug": "otc_logs_otlp_zstd_batch",
+        "short": "OTC OTLP/Zstd (Batch)"
+      }
+    ]
+  },
+  {
+    "slug": "engines_and_protocols",
+    "name": "Engines & Protocols",
+    "description": "Compare the Dataflow Engine to the OpenTelemetry Collector across protocols and compression methods",
+    "suites": [
+      {
+        "name": "Dataflow Engine (OTAP/None)",
+        "slug": "dfe_logs_otap_none_baseline",
+        "short": "DFE (OTAP/None)"
+      },
+      {
+        "name": "Dataflow Engine (OTLP/None)",
+        "slug": "dfe_logs_otlp_none_baseline",
+        "short": "DFE (OTLP/None)"
+      },
+      {
+        "name": "Dataflow Engine (OTLP-HTTP/None)",
+        "slug": "dfe_logs_otlphttp_none_baseline",
+        "short": "DFE (OTLP-HTTP/None)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTAP/None)",
+        "slug": "otc_logs_otap_none_baseline",
+        "short": "OTC (OTAP/None)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTLP/None)",
+        "slug": "otc_logs_otlp_none_baseline",
+        "short": "OTC (OTLP/None)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTLP-HTTP/None)",
+        "slug": "otc_logs_otlphttp_none_baseline",
+        "short": "OTC (OTLP-HTTP/None)"
+      },
+      {
+        "name": "Fluent Bit (OTLP-HTTP/None)",
+        "slug": "fluentbit_logs_otlphttp_none_baseline",
+        "short": "Fluent Bit (OTLP-HTTP/None)"
+      },
+      {
+        "name": "Vector (OTLP-HTTP/None)",
+        "slug": "vector_logs_otlphttp_none_baseline",
+        "short": "Vector (OTLP-HTTP/None)"
+      },
+      {
+        "name": "Rotel (OTLP/None)",
+        "slug": "rotel_logs_otlp_none_baseline",
+        "short": "Rotel (OTLP/None)"
+      },
+      {
+        "name": "Rotel (OTLP-HTTP/None)",
+        "slug": "rotel_logs_otlphttp_none_baseline",
+        "short": "Rotel (OTLP-HTTP/None)"
+      },
+      {
+        "name": "Dataflow Engine (OTAP/Gzip)",
+        "slug": "dfe_logs_otap_gzip_baseline",
+        "short": "DFE (OTAP/Gzip)"
+      },
+      {
+        "name": "Dataflow Engine (OTLP/Gzip)",
+        "slug": "dfe_logs_otlp_gzip_baseline",
+        "short": "DFE (OTLP/Gzip)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTAP/Gzip)",
+        "slug": "otc_logs_otap_gzip_baseline",
+        "short": "OTC (OTAP/Gzip)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTLP/Gzip)",
+        "slug": "otc_logs_otlp_gzip_baseline",
+        "short": "OTC (OTLP/Gzip)"
+      },
+      {
+        "name": "Fluent Bit (OTLP-HTTP/Gzip)",
+        "slug": "fluentbit_logs_otlphttp_gzip_baseline",
+        "short": "Fluent Bit (OTLP-HTTP/Gzip)"
+      },
+      {
+        "name": "Vector (OTLP-HTTP/Gzip)",
+        "slug": "vector_logs_otlphttp_gzip_baseline",
+        "short": "Vector (OTLP-HTTP/Gzip)"
+      },
+      {
+        "name": "Rotel (OTLP/Gzip)",
+        "slug": "rotel_logs_otlp_gzip_baseline",
+        "short": "Rotel (OTLP/Gzip)"
+      },
+      {
+        "name": "Rotel (OTLP-HTTP/Gzip)",
+        "slug": "rotel_logs_otlphttp_gzip_baseline",
+        "short": "Rotel (OTLP-HTTP/Gzip)"
+      },
+      {
+        "name": "Dataflow Engine (OTAP/Zstd)",
+        "slug": "dfe_logs_otap_zstd_baseline",
+        "short": "DFE (OTAP/Zstd)"
+      },
+      {
+        "name": "Dataflow Engine (OTLP/Zstd)",
+        "slug": "dfe_logs_otlp_zstd_baseline",
+        "short": "DFE (OTLP/Zstd)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTAP/Zstd)",
+        "slug": "otc_logs_otap_zstd_baseline",
+        "short": "OTC (OTAP/Zstd)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTLP/Zstd)",
+        "slug": "otc_logs_otlp_zstd_baseline",
+        "short": "OTC (OTLP/Zstd)"
+      }
+    ]
+  },
+  {
+    "slug": "engines_otlp_baseline",
+    "name": "Engines (OTLP, No Compression)",
+    "description": "Compare all engines on OTLP/gRPC and OTLP/HTTP with no compression. Vector is HTTP-only (its opentelemetry sink does not support gRPC); the other four engines cover both transports.",
+    "suites": [
+      {
+        "name": "Dataflow Engine (OTLP/gRPC)",
+        "slug": "dfe_logs_otlp_none_baseline",
+        "short": "DFE (OTLP/gRPC)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTLP/gRPC)",
+        "slug": "otc_logs_otlp_none_baseline",
+        "short": "OTC (OTLP/gRPC)"
+      },
+      {
+        "name": "Rotel (OTLP/gRPC)",
+        "slug": "rotel_logs_otlp_none_baseline",
+        "short": "Rotel (OTLP/gRPC)"
+      },
+      {
+        "name": "Fluent Bit (OTLP/gRPC)",
+        "slug": "fluentbit_logs_otlp_none_baseline",
+        "short": "Fluent Bit (OTLP/gRPC)"
+      },
+      {
+        "name": "Dataflow Engine (OTLP/HTTP)",
+        "slug": "dfe_logs_otlphttp_none_baseline",
+        "short": "DFE (OTLP/HTTP)"
+      },
+      {
+        "name": "OpenTelemetry Collector (OTLP/HTTP)",
+        "slug": "otc_logs_otlphttp_none_baseline",
+        "short": "OTC (OTLP/HTTP)"
+      },
+      {
+        "name": "Rotel (OTLP/HTTP)",
+        "slug": "rotel_logs_otlphttp_none_baseline",
+        "short": "Rotel (OTLP/HTTP)"
+      },
+      {
+        "name": "Fluent Bit (OTLP/HTTP)",
+        "slug": "fluentbit_logs_otlphttp_none_baseline",
+        "short": "Fluent Bit (OTLP/HTTP)"
+      },
+      {
+        "name": "Vector (OTLP/HTTP)",
+        "slug": "vector_logs_otlphttp_none_baseline",
+        "short": "Vector (OTLP/HTTP)"
+      }
+    ]
+  },
+  {
+    "slug": "filter_processor",
+    "name": "Filter Processor",
+    "description": "Compare the cost of a logs filter processor across DFE (OTAP, OTLP) and OTC (OTLP). Filter is configured to include logs whose resource attribute `fake_data_generator` equals `v1` (set by the load generator), so all logs pass through and the comparison isolates per-record filter-evaluation overhead.",
+    "suites": [
+      {
+        "name": "DFE OTAP Baseline (None)",
+        "slug": "dfe_logs_otap_none_baseline",
+        "short": "DFE OTAP (No Filter)"
+      },
+      {
+        "name": "DFE OTAP Filter (None)",
+        "slug": "dfe_logs_otap_none_filter",
+        "short": "DFE OTAP (Filter)"
+      },
+      {
+        "name": "DFE OTLP Baseline (None)",
+        "slug": "dfe_logs_otlp_none_baseline",
+        "short": "DFE OTLP (No Filter)"
+      },
+      {
+        "name": "DFE OTLP Filter (None)",
+        "slug": "dfe_logs_otlp_none_filter",
+        "short": "DFE OTLP (Filter)"
+      },
+      {
+        "name": "OTC OTLP Baseline (None)",
+        "slug": "otc_logs_otlp_none_baseline",
+        "short": "OTC OTLP (No Filter)"
+      },
+      {
+        "name": "OTC OTLP Filter (None)",
+        "slug": "otc_logs_otlp_none_filter",
+        "short": "OTC OTLP (Filter)"
+      }
+    ]
+  },
+  {
+    "slug": "passthrough",
+    "name": "Passthrough",
+    "description": "Comparison of Passthrough Scenarios",
+    "suites": [
+      {
+        "name": "Dataflow Engine (OTAP/None)",
+        "slug": "dfe_logs_otap_none_baseline",
+        "short": "DFE (OTAP/None)"
+      },
+      {
+        "name": "Dataflow Engine (OTLP/None)",
+        "slug": "dfe_logs_otlp_none_baseline",
+        "short": "DFE (OTLP/None)"
+      },
+      {
+        "name": "Dataflow Engine (OTAP/Gzip)",
+        "slug": "dfe_logs_otap_gzip_baseline",
+        "short": "DFE (OTAP/Gzip)"
+      },
+      {
+        "name": "Dataflow Engine (OTLP/Gzip)",
+        "slug": "dfe_logs_otlp_gzip_baseline",
+        "short": "DFE (OTLP/Gzip)"
+      },
+      {
+        "name": "Dataflow Engine (OTAP/Zstd)",
+        "slug": "dfe_logs_otap_zstd_baseline",
+        "short": "DFE (OTAP/Zstd)"
+      },
+      {
+        "name": "Dataflow Engine (OTLP/Zstd)",
+        "slug": "dfe_logs_otlp_zstd_baseline",
+        "short": "DFE (OTLP/Zstd)"
+      }
+    ]
+  }
+];</script>
+  <script type="module" src="shared/app.js"></script>
+</body>
+</html>
