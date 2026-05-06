@@ -10,7 +10,9 @@ use data_engine_expressions::{
 };
 use data_engine_parser_abstractions::ParserOptions;
 
-use crate::consts::{ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{
+    ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME,
+};
 
 /// Create parser options that can be used when parsing an expression that will be executed with
 /// this query engine

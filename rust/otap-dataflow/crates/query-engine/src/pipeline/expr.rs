@@ -77,7 +77,9 @@ use otap_df_pdata::arrays::{
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{
+    ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME,
+};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
