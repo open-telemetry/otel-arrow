@@ -78,16 +78,16 @@ to `site/data/suite/<slug>/` on success.
 
 ## Directory Structure
 
-```
+```text
 tools/comparison_dashboard/
-├── dashboard.py        CLI: validate | build | run | serve
-├── manifest.yaml       Inventory + framework config (variables, meta, etc.)
-├── suites/             Per-binary suite definitions
-├── comparisons/        Comparison definitions
-├── site/               Static dashboard site
-│   ├── shared/         Shared JS/CSS assets
-│   ├── index.html      Generated landing page
-│   ├── compare/        Generated per-comparison pages
-│   └── data/suite/     Published per-suite data
-└── .data/              Run staging area (gitignored)
+  dashboard.py        CLI: validate | build | run | serve
+  manifest.yaml       Inventory + framework config (variables, meta, etc.)
+  suites/             Per-binary suite definitions
+  comparisons/        Comparison definitions
+  site/               Static dashboard site
+    shared/           Shared JS/CSS assets
+    index.html        Generated landing page
+    compare/          Generated per-comparison pages
+    data/suite/       Published per-suite data
+  .data/              Run staging area (gitignored)
 ```
